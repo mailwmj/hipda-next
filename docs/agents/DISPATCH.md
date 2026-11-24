@@ -1,0 +1,49 @@
+# 调度配置（负责人用）
+
+> 方法见 team-lead skill。本文件只写本项目的配置，冲突时以本文件为准。
+
+## 0. 先问用户
+- 要问：改包名 `net.jejer.hipda` 或签名；构建或发布 release；把仓库改为公开或开付费 CI 额度；删除现有功能；用真实账号对论坛做写操作（发帖、回复、短消息、改资料）；在本机启动模拟器。
+- 不用问：开卡片分支、审查通过后合并到 `main` 并推送、触发 GitHub Actions、方案内的依赖升级、文档更新。
+
+## 1. 机器与边界
+| 机器 | Paseo host | 能做 | 不能做 |
+|---|---|---|---|
+| mir-A5（本机） | srv__-KdZo8yWrcE | 写代码、git、gh、按第 2 节规则串行编译 | 并发编译；未经同意启动模拟器 |
+| Home-PC | srv_6ldXy4lma29O | 暂不使用 | — |
+| GitHub Actions | — | 主力编译、单元测试、lint、Roborazzi 截图、阶段验收时的模拟器测试 | — |
+
+## 2. 并发与工作目录
+- 每张卡一个 worktree：`git worktree add ../hipda-next.wt/<卡号> -b card/<卡号>-<简名> origin/main`。一个目录同时只有一个写入者；只读的审查、调研可以并行。
+- 编译以 GitHub Actions 为准：推送分支 → `gh run watch` → 失败时 `gh run view --log-failed`。
+- 本地编译只用于 CI 上复现不了的问题，必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
+- 同时运行的写代码代理最多 3 个。
+
+## 3. 模型路由
+| 工作类型 | 首选 | 备选 | 思考级别 |
+|---|---|---|---|
+| 开发（全部实现卡） | antigravity `gemini-4-neon` | codex `gpt-6.2-sol` | xhigh（备选 high） |
+| 编译与跑测 | antigravity `gemini-4-neon`，每张卡开新会话 | pi `tb-ds/deepseek-flash` | xhigh |
+| 方案与代码独立审查 | antigravity `gemini-4-carbon` | codex `gpt-6.2-sol` | high |
+| 核查 Neon 的调研 | antigravity `gemini-4-carbon` | Haiku | high |
+| 独立规划（负责人是 Claude） | antigravity `gemini-4-neon` | codex `gpt-6.2-astra` | xhigh |
+| 文案顾问 | antigravity `gemini-4-hydrogen` | — | high |
+- agy 的模式一律用 `full-access`；思考级别用 `thinkingOptionId` 传。
+- Neon 实现的卡由 Carbon 审查；Carbon 不可用时用 Sol 审查。编译跑测以 CI 输出为证据，不算独立审查。
+
+## 4. 阻断项与敏感区
+- 只有以下情况阻断合并，并且要能给出具体的触发路径：CI 编译或测试失败；解析器样本测试回归；登录、Cookie、GBK 编码或 Cloudflare 验证通道失效；折叠、展开或旋转导致崩溃，或丢失阅读状态；用户已有的设置或历史数据在迁移中丢失；自动化测试对论坛发起写操作；违反第 2 节的本地编译规则。
+- 敏感区（轻量卡也要审查）：`okhttp/`、`async/LoginHelper.java`、`utils/HiParser*`、`bean/HiSettingsHelper.java`、`db/`、`async/PostHelper.java`、`job/PostJob.java`、Cloudflare 验证相关代码。
+
+## 5. 卡片约定
+- 卡号按阶段编：`M0-1`、`M0-2`……；分支 `card/<卡号>-<简名>`。
+- 提交用 Conventional Commits，类型用英文，描述可以写中文。
+- 自检以 CI 为准：编译 `assembleDebug`、单元测试 `testDebugUnitTest`、`lint`；有截图测试后加 `verifyRoborazziDebug`（以 M0/M4 卡实际落地的任务名为准）。
+- 每张卡都要带上这些话：
+  - 不要在整张卡提交并推送之前结束回合。
+  - 本地编译必须遵守 `docs/agents/DISPATCH.md` 第 2 节。
+  - 不要用真实账号对论坛做写操作。
+  - 完成标准以 CI 运行结果为证据（给出 run 链接和 commit hash）。
+
+## 6. 决策记录
+- 用户的决定记在 `docs/agents/decisions.md`。
