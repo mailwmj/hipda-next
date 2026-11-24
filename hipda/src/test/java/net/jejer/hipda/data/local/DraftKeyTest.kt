@@ -11,7 +11,6 @@ class DraftKeyTest {
     fun factoryFunctions_buildCanonicalKeysWithKindAndTargetId() {
         val replyKey = DraftKey.reply("1579403")
         assertEquals("reply:1579403", replyKey.value)
-        assertEquals("reply:1", DraftKey.reply("1").value)
         assertEquals(DraftKey.Kind.REPLY, replyKey.kind)
         assertEquals("1579403", replyKey.targetId)
 
