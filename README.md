@@ -16,9 +16,11 @@ HiPDA·NG是使用MD风格的版本，即master分支，为目前主要维护版
 多谢原作者 jejer 的分享   
 原项目发布于 https://www.4d4y.com/forum/viewthread.php?tid=1408844
 
-# 开发者注意
+# 开发者构建说明
 
-请把 hipad/fabric.properties.example 复制为 fabric.properties ，否则编译可能失败
+- 构建工具链：JDK 17、Gradle 9.9.2、AGP 9.5.2、Kotlin 2.4.21、`compileSdk 37.1`、`targetSdk 36`、`minSdk 26`
+- 常用构建命令：`./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest`
+- 不再需要旧版 `fabric.properties` 配置文件。
 
 # 权限要求说明
 - android.permission.INTERNET 必需，用于访问HiPDA论坛服务器及图片、更新服务器等。
