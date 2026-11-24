@@ -1,6 +1,6 @@
 # hipda-next 现代化技术方案（草案 v0.1）
 
-> 状态：草案，待 Carbon 评审。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查（P1 的 32 个版本号都存在，而且都是稳定版；需要改的几处已在本文改正），最终以 M0-1 的实测为准。决策记录见 `docs/agents/decisions.md`。
+> 状态：草案 v0.2，已按 Carbon 第一轮评审（T1–T12，全部采纳）修订，待第二轮。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查（P1 的 32 个版本号都存在，而且都是稳定版；需要改的几处已在本文改正），最终以 M0-1 的实测为准。决策记录见 `docs/agents/decisions.md`。
 
 ## 1. 目标
 - 用户看到的结果：一个现代、流畅的 HiPDA 客户端。手机、折叠屏的外屏和内屏、平板、分屏窄窗口、深色和浅色模式下都好用。导航是毛玻璃材质；展开后是列表和详情双栏；动效细腻，有交代。
@@ -27,11 +27,11 @@
 ## 4. 技术栈（版本以 M0-1 和 F2 核实为准）
 | 方面 | 选型 |
 |---|---|
-| 构建 | AGP 9.5.2、Gradle 9.9.2（截至 2026-11-24 的最新稳定版，F2 已核实）；Kotlin DSL 加 version catalog；JDK 17 及以上 |
-| SDK | minSdk 26（Compose 1.13 和同批 Jetpack 库要求至少 24）；targetSdk 36（Play 要求从 2026-08-31 起生效）；compileSdk 37.1（Compose BOM 2026.11.01 要求 minor SDK 37.1） |
+| 构建 | AGP 9.5.2、Gradle 9.9.2（截至 2026-11-24 的最新稳定版，F2 已核实）；Kotlin DSL 加 version catalog；JDK 17 及以上。AGP 9 已内置 Kotlin，Android 模块不得再声明 `org.jetbrains.kotlin.android` 插件；注解处理统一用 KSP，不用 kapt |
+| SDK | minSdk 26（Compose 1.13 和同批 Jetpack 库要求至少 24）；compileSdk 37.1（Compose BOM 2026.11.01 要求 minor SDK 37.1）；targetSdk 在 M0–M6 保持 30，M7 删除旧界面后升到 36（T1：提前升级会让旧页面钻进系统栏、附件下载失效、通知被静默丢弃） |
 | 语言 | Kotlin；旧 Java 代码逐步删除，不做逐文件翻译 |
 | UI | Jetpack Compose（BOM）、Material 3（MotionScheme）、Material 3 Adaptive（`adaptive-layout` 里的 ListDetailPaneScaffold；导航外壳自己写，因为要做毛玻璃胶囊和中等宽度的双栏，不直接用 `material3-adaptive-navigation-suite`）、androidx.window |
-| 导航 | Navigation 3 加 adaptive-navigation3（需 F2 确认是稳定版；不是的话改用 Navigation Compose 2.x） |
+| 导航 | Navigation 3 1.2.2 加 adaptive-navigation3（F2 已确认是稳定版） |
 | 依赖注入 | Hilt（KSP） |
 | 异步 | 协程、StateFlow、ViewModel、WorkManager（通知轮询） |
 | 网络 | OkHttp 5 作为统一的应用层（拦截器、Cookie、编码）；底层传输可替换：优先用与 Chrome 一致的网络栈（`cronet-okhttp`：Android 14+ 用系统自带的 HttpEngine，其次用 Play 服务的 Cronet），都没有时退回 OkHttp 自己的传输。按 GBK 和 UTF-8 自适应解码；Cloudflare 验证通道见第 6 节 |
@@ -42,9 +42,14 @@
 | 测试 | JUnit、MockWebServer、Turbine、Robolectric、Roborazzi（截图）、Compose UI test（动效用 mainClock 逐帧检查）、Macrobenchmark（帧时间，在 CI 模拟器上跑，只在阶段验收时） |
 
 ## 5. 架构
-- 模块：`:hipda`（应用、界面和 DI），`:core-parser`（纯 JVM 解析器和数据模型），`:emoji`（保留表情资源和映射，删除旧的 View 组件）。数据层先放在 `:hipda` 的 `data/` 包内；以后编译时间成问题时再拆成独立模块。
-- 数据流：Repository 返回 Flow 或挂起函数 → ViewModel 暴露 UiState → Compose 单向数据流。一次性事件，例如“发帖成功”，也放进状态里，用户处理后清除，不用 SharedFlow 发事件。
-- 新旧并存期：新界面放在单 Activity 的 Compose 外壳里，还没迁移的页面继续用旧 Activity 打开；EventBus 和 jobqueue 只给旧页面用，M7 时删除。
+- 模块：`:hipda`（应用、界面和 DI），`:core-parser`（纯 JVM 解析器和数据模型），`:emoji`（只保留表情资源和映射，删除旧的 View 组件）。数据层放在 `:hipda` 的 `data/` 包内。
+- 数据流：Repository 返回 Flow 或挂起函数 → ViewModel 暴露 UiState → Compose 单向数据流。一次性事件（例如“发帖成功”）也放进状态里，用户处理后清除。
+- **网络和 Cookie 只有一个来源（T3）**：新的 OkHttpClient 和 `SiteCookieStore` 落地后，旧的 `OkHttpHelper` 改成一层薄门面，委托给同一个客户端和 Cookie 存储；启动时把旧的 `"cookie"` 偏好里的登录 Cookie 一次性迁移过去。旧界面因此也能用上 Cloudflare 验证通道、统一的 UA 和登录态。
+- **新旧界面不混跳（T3）**：M4–M6 期间，新的 Compose 外壳从一个单独的“预览”入口进入（debug 构建里的第二个启动图标），旧界面的入口和跳转都不动。全部新页面完成后，在 M7 一次性切换启动入口、`IntentActivity` 和桌面快捷方式；保留 `.ng.IntentActivity` 这个别名，用户已经设置的“默认用本应用打开链接”不受影响。这样就不需要 EventBus 和双写存储之类的胶水代码。
+- **验证面板有独立的宿主（T3）**：用一个透明的 `ChallengeActivity`（singleTop）承载验证用的 WebView，不管前台是新界面还是旧界面，都能弹出验证面板。
+- **解析器先上测试，再抽模块（T2）**：现有解析器依赖 Context、HiSettingsHelper，还会在解析时开线程发通知，不能原样搬进纯 JVM 模块。顺序是：样本导出工具 → 在 `:hipda` 里对现有解析入口写样本回归测试（Robolectric）→ 再分批抽到 `:core-parser`，同时剥离 Android 依赖和副作用，并把散落在 `PrePostAsyncTask`、`LoginHelper`、`FavoriteHelper`、`PostSmsAsyncTask`、`NotiHelper`、`UploadImgHelper` 里的解析代码收拢过来。每抽一批，都用已有的样本测试证明行为没变。
+- **帖子正文用 Compose 原生渲染（T6）**：解析器已经把引用、图片、跳楼、附件、投票拆成了独立的块，正文文本块只含基础的内联标签、链接和表情。直接用 `AnnotatedString` + `InlineTextContent`（表情取自 `:emoji` 的资源）+ `LinkAnnotation` 渲染，不用 AndroidView 包旧的 TextView。文字颜色的可读性判断（`TextStyle.java:49`）从解析阶段移到渲染阶段，切换深浅色后才不会错色。
+- **共享文件的改动集中在一张卡里（T7）**：M0-2 一次性把方案确定的全部依赖和插件写进 version catalog，建好空的 `:core-parser` 模块，挂上 `@HiltAndroidApp`。后续各条开发线只改自己目录下的源码。界面字符串按功能拆成 `res/values/strings_<功能>.xml`。
 
 ## 6. Cloudflare 验证通道（依据 S1 调研 `docs/design/cloudflare-research.md`，已经 F3 核查）
 - 实测：论坛首页对所有非浏览器请求都返回 403 加托管验证（managed challenge）；但版块页和登录页，用浏览器请求头访问时返回 200。图片域名不受验证影响。所以验证是按路径触发的，不是整站拦截。
@@ -52,11 +57,15 @@
 - 流程：检测到验证页后，先用不可见的 WebView 自动尝试通过；页面进入需要人工操作的阶段，或者超时，才从底部升起验证面板，并复用同一个 WebView，不重新加载。通过后把 Cookie 同步给网络层，原请求自动重试。
 - 并发：同一时间只进行一次验证，其他请求排队等结果；验证失败后冷却 60 秒，避免反复弹出。
 - UA：WebView 和网络层使用同一个 UA，取自 WebView 自己的 UA（去掉 `; wv` 标记）。
+- 拦截器顺序（T5）：`ManualRedirectInterceptor` 在最外层，`BrowserHeaderInterceptor` 和 `AppCookieInterceptor` 在它里面。这样每一跳都按当次的目标地址存取 Cookie：前一跳下发的 Cookie 能带到下一跳，跳到外部域名时不会泄露登录 Cookie。重定向遇到 301、302、303 时把 POST 改为 GET 并去掉请求体；跨域名时去掉敏感请求头；最多跟随 16 跳。
+- 排队不能占住连接（T5）：验证期间的排队放在发起请求之前的协程层，不在 OkHttp 拦截器里阻塞；协调器自己发的恢复请求（例如静默重新登录）用独立的 Dispatcher。后台的提醒轮询遇到验证页时直接放弃本次，不排队等待。
+- 正文兜底只对 403 和 503 生效（T11）。
 - Cookie：由应用层的 Cookie 拦截器统一管理，因为 Cronet 会绕过 OkHttp 的 CookieJar。Cronet 默认会自己跟随重定向（最多 16 次），这样中间跳转的 `Set-Cookie` 就到不了应用层，所以要关掉 Cronet 的自动重定向，由应用层逐跳处理。
 - 测试：用 MockWebServer 模拟验证页，覆盖检测、排队、冷却、重试和 Cookie 同步。
 
 ## 7. 大屏与折叠屏
 - 宽度断点用 Material 窗口尺寸类：紧凑（小于 600dp）、中等（600–839dp）、展开（840dp 及以上）。
+- 窗口高度小于 480dp（手机横屏）时，一律单栏加底部胶囊导航（T12）。
 - 何时分双栏由系统根据可用宽度决定，不提供开关。Material 默认的 `calculatePaneScaffoldDirective` 在中等宽度（600–839dp）只给单栏；我们用自定义的 `PaneScaffoldDirective`：宽度够放下“列表 300dp 加详情 380dp”时就分双栏（规则见产品设计 4.1）。
 - 铰链：默认的 `HingePolicy.AvoidSeparating` 只在铰链把屏幕物理分开时避让，内屏展平时不避让，这正是我们想要的。
 - 状态保持：选中的帖子、阅读位置（页码、楼层、偏移量）、正在输入的回复内容，都存在 SavedStateHandle 或数据库里。折叠、展开、旋转、进程被系统回收后都能恢复。
@@ -65,17 +74,24 @@
 ## 8. 分阶段与验收
 | 阶段 | 结果 | 证据 |
 |---|---|---|
-| M0 构建链 | 用新工具链编译通过，CI 建立，用户看不到变化 | CI 运行记录；模拟器冒烟测试的截图和 logcat |
-| M1 验证通道 | 现有应用能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测验证页、并发请求排队、重试）；用户在真机或模拟器上看到版块列表的截图 |
-| M2 安全网 | 每个解析器都有样本测试；样本由用户登录后用 debug 版里的工具一次性导出，并做脱敏 | 测试报告；故意改坏一个解析器，测试会失败 |
-| M3 数据层 | Kotlin Repository、Hilt、Room/DataStore 迁移 | 单元测试；用旧版数据库文件做的迁移测试 |
-| M4 外壳 | 主题、毛玻璃导航、自适应外壳、动效系统、设计令牌 | Roborazzi：3 种宽度 × 深浅色；动效逐帧测试；“减少动态效果”下的测试 |
-| M5 阅读核心 | 版块、帖子列表、帖子详情、双栏；折叠和展开时状态保持 | 截图测试；状态恢复测试；长帖滚动的帧时间 |
-| M6 其余页面 | 发帖、短消息、搜索、用户信息、设置、看图、登录 | 每页的截图测试和交互测试 |
-| M7 清理 | 删除旧代码和旧依赖；targetSdk 37；Baseline Profile | 依赖清单；覆盖安装的回归测试；启动和滚动的基准数据 |
+| M0 构建链 | 用新工具链编译通过，CI 建立，用户看不到变化（targetSdk 保持 30）；M0-2 建好依赖目录和模块空壳 | CI 运行记录；模拟器冒烟测试的截图和 logcat |
+| M1 验证通道 | 网络和 Cookie 统一到一个来源；现有应用能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测、排队、冷却、重试、逐跳 Cookie、跨域剥离、POST 改 GET）；用户在设备上看到版块列表的截图 |
+| M2 安全网 | 样本导出（脱敏）→ 现有解析器的样本回归测试 → 分批抽到 `:core-parser` | 测试报告；故意改坏一个解析器，测试会失败；脱敏扫描测试 |
+| M3 数据层 | Kotlin Repository、Hilt、Room 和 DataStore 迁移、提醒轮询 | 单元测试；用旧版数据库和偏好文件做的迁移测试 |
+| M4 外壳 | 预览入口里的主题、毛玻璃导航、自适应外壳、动效系统 | Roborazzi 截图；动效逐帧测试；“减少动态效果”测试；重组次数断言 |
+| M5 阅读核心 | 版块、帖子列表、帖子详情（Compose 原生正文）、双栏；折叠和展开时状态保持 | 截图测试；状态恢复测试；重组次数断言 |
+| M6 其余页面 | 编辑器、表情、短消息、提醒、搜索、我的、设置、用户资料、看图、登录、外部链接 | 每页的截图测试和交互测试 |
+| M7 切换和清理 | 切换启动入口；删除旧代码和旧依赖；targetSdk 36（通知权限、MediaStore 下载、全面屏）；收紧 R8 规则；Baseline Profile | 依赖清单；覆盖安装的回归测试（用同一签名先装旧版写入数据，再覆盖安装新版）；真机上的帧时间 |
+
+- **签名（T4）**：覆盖安装要求新旧版本的签名一致。原版发布用的签名需要用户提供或确认（在 DISPATCH §0 的先问列表里）。
+- **老数据迁移的已知断点（T4）**：旧数据库的 `time`、`visit_time` 是 `NUMERIC` 类型，主键没有 `NOT NULL`，Room 会校验失败，迁移时要重建表；除了默认偏好和加密偏好，还有 `"cookie"`、`"saved_historty"`（原代码的拼写）、`"FavCachePrefsFile"` 三个偏好文件要迁移；`allowBackup` 是开着的，备份规则要排除和 Keystore 绑定的加密文件和 Tink 密钥；旧草稿以每次进入页面的随机 UUID 为键，新草稿改用业务键（`reply:<tid>`、`new:<fid>`），旧草稿保留为“未归属的历史草稿”。
+- **性能验证的分工（T9）**：日常 CI 用重组次数断言守住性能不退化；Roborazzi 只验证毛玻璃的降级分支和对比度；真实的模糊效果、API 31 的性能、P90 帧时间和卡顿率，在 M4、M5、M7 的阶段验收时用真机测（没有真机时用模拟器的硬件渲染，并注明数据不可靠）。
+- **截图矩阵分级（T9）**：外壳和双栏的核心页面跑 4 种宽度 × 深浅色；其他页面的主状态跑 3 种宽度；空、错、加载状态跑 2 种宽度。
+- **release 构建（T10）**：CI 每次都编 release；M7 清理 `proguard-rules.txt` 中过宽的 `-keep` 规则。
 
 ## 9. 风险
-1. Cloudflare：cf_clearance 和设备、IP、UA 绑定，默认 30 分钟过期。网络指纹和浏览器不一致时，可能过了验证仍被拦，所以底层优先用与 Chrome 一致的网络栈。没有这种网络栈的旧设备（Android 13 及以下、又没有 Play 服务）风险最高，退回 OkHttp 加单次重试。网络切换导致出口 IP 变化后凭证是否失效，官方没有明说（属于工程经验）；做法是：网络切换后再遇到验证页，就重新验证，不预先清掉凭证。
+1. Cloudflare：cf_clearance 和设备、IP、UA 绑定，默认 30 分钟过期。网络指纹和浏览器不一致时，可能过了验证仍被拦，所以底层优先用与 Chrome 一致的网络栈。没有这种网络栈的旧设备（Android 13 及以下、又没有 Play 服务）风险最高，退回 OkHttp 加单次重试；实测仍过不了时，按 ABI 分包引入 `cronet-bundled`（T11）。网络切换导致出口 IP 变化后凭证是否失效，官方没有明说（属于工程经验）；做法是：网络切换后再遇到验证页，就重新验证，不预先清掉凭证。
 2. 样本采集依赖用户登录，这一步只有用户能做。
-3. 帖子正文是富文本（引用、表情、图片、投票），在 Compose 里渲染的工作量大。先用 AndroidView 包一层旧的 TextView 渲染，再逐步改写。
-4. 老数据迁移：要有覆盖安装测试。
+3. 帖子正文的 Compose 原生渲染：表情、链接、跳楼的点击和长按菜单要重新实现，旧版 `TextViewWithEmoticon` 的行为要逐项对照（以 B 线的样本为输入做截图测试）。
+4. 老数据迁移：断点见第 8 节；M7 前要有覆盖安装测试。
+5. 帖子里的 Emoji：页面按 GBK 提交，Unicode Emoji 要先转成十进制 HTML 实体（`&#...;`），否则会变成问号（`PostHelper.java:84-86`，T8）。
