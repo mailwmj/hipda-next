@@ -29,7 +29,7 @@
 | 卡号 | 开发线 | 结果 | 依赖 |
 |---|---|---|---|
 | M0-1 | — | 构建链升级（targetSdk 保持 30），建立 CI | — |
-| M0-2 | — | 依赖目录一次配齐方案中的全部依赖和插件；建空的 `:core-parser` 模块；接入 Hilt（`@HiltAndroidApp`，旧代码不动）；建好各开发线的空目录和 `strings_<功能>.xml` 的约定 | M0-1 |
+| M0-2 | — | 包名改为 `net.jejer.hipda.next`（含 `shortcuts.xml`、provider authority 等写死包名的地方）；依赖目录一次配齐方案中的全部依赖和插件；建空的 `:core-parser` 模块；接入 Hilt（`@HiltAndroidApp`，旧代码不动）；建好各开发线的空目录和 `strings_<功能>.xml` 的约定 | M0-1 |
 | A1 | A | OkHttp 5 客户端：GBK 和 GB18030 兼容解码、GBK 表单编码、Unicode Emoji 转十进制实体 | M0-2 |
 | A2 | A | `SiteCookieStore`（持久化、加密存储登录 Cookie） | A1 |
 | A3 | A | 与 Chrome 一致的底层传输（`cronet-okhttp`）和拦截器链：手动重定向在外层（POST 改 GET、跨域去掉敏感头、最多 16 跳），Cookie 拦截器在内层 | A2 |
