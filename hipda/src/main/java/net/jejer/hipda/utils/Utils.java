@@ -32,7 +32,7 @@ import net.jejer.hipda.ui.HiApplication;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
-import org.jsoup.safety.Whitelist;
+import org.jsoup.safety.Safelist;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -63,7 +63,7 @@ import java.util.regex.Pattern;
  */
 public class Utils {
 
-    private static Whitelist mWhitelist = null;
+    private static Safelist mWhitelist = null;
     private static int mScreenWidth = -1;
     private static int mScreenHeight = -1;
 
@@ -127,7 +127,7 @@ public class Utils {
      */
     public static String clean(String html) {
         if (mWhitelist == null) {
-            mWhitelist = new Whitelist();
+            mWhitelist = new Safelist();
             mWhitelist.addTags(
                             "a",
                             "br", "p",
