@@ -43,7 +43,7 @@ class HiThemeScreenshotTest {
     fun specimen_w411_dark_step3() = captureSpecimen(
         name = "theme_specimen_w411_dark_step3",
         themeMode = HiThemeMode.DARK,
-        pureBlack = false,
+        pureBlack = true,
         fontSizeStep = HiFontSizeStep.STEP_3,
     )
 
