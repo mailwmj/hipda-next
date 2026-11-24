@@ -56,6 +56,13 @@ jobs:
           path: hipda/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+      - name: Upload release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-apk
+          path: hipda/build/outputs/apk/release/hipda-ng-release.apk
+          if-no-files-found: error
+
       - name: Upload lint reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -119,7 +126,13 @@ jobs:
             grep -n -A 30 "FATAL EXCEPTION" smoke-artifacts/logcat.txt
             exit 1
           fi
-          echo "Smoke check passed: PID=$PID, no app FATAL EXCEPTION in logcat."
+
+          if grep -n "ANR in net\.jejer\.hipda\.ng" smoke-artifacts/logcat.txt; then
+            echo "ERROR: Found ANR for net.jejer.hipda.ng in logcat!"
+            grep -n -A 20 "ANR in net\.jejer\.hipda\.ng" smoke-artifacts/logcat.txt
+            exit 1
+          fi
+          echo "Smoke check passed: PID=$PID, no app FATAL EXCEPTION or ANR in logcat."
           EOF
           chmod +x /tmp/run-smoke.sh
 
