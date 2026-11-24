@@ -47,6 +47,20 @@ jobs:
       - name: Build, lint, and run unit tests
         run: ./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest :core-parser:test --stacktrace
 
+      - name: Verify Roborazzi screenshots
+        id: roborazzi_verify
+        run: ./gradlew :hipda:verifyRoborazziDebug --stacktrace
+
+      - name: Upload Roborazzi diff artifacts on failure
+        if: failure() && steps.roborazzi_verify.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: roborazzi-diffs
+          path: |
+            hipda/build/outputs/roborazzi/
+            hipda/build/reports/roborazzi/
+          if-no-files-found: warn
+
       - name: Verify APK outputs
         run: |
           set -euo pipefail

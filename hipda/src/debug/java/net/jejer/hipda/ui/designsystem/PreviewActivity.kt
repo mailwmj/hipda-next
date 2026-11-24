@@ -1,0 +1,470 @@
+package net.jejer.hipda.ui.designsystem
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import net.jejer.hipda.R
+
+/** Debug 预览入口（仅注册在 `src/debug/AndroidManifest.xml`，不进入 release 包）。 */
+class PreviewActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            var state by remember { mutableStateOf(ThemeSpecimenState()) }
+            HiTheme(
+                themeMode = state.themeMode,
+                pureBlack = state.pureBlack,
+                seed = state.seed,
+                fontSizeStep = state.fontSizeStep,
+                lineHeightPreset = state.lineHeightPreset,
+            ) {
+                ThemeSpecimenScreen(
+                    state = state,
+                    onStateChange = { state = it },
+                    modifier = Modifier.safeDrawingPadding(),
+                )
+            }
+        }
+    }
+}
+
+@Immutable
+data class ThemeSpecimenState(
+    val themeMode: HiThemeMode = HiThemeMode.SYSTEM,
+    val pureBlack: Boolean = false,
+    val seed: HiThemeSeed = HiColorPresets.Brand.toSeed(),
+    val fontSizeStep: HiFontSizeStep = HiFontSizeStep.DEFAULT,
+    val lineHeightPreset: HiLineHeightPreset = HiLineHeightPreset.DEFAULT,
+)
+
+@Composable
+fun ThemeSpecimenScreen(
+    state: ThemeSpecimenState,
+    onStateChange: (ThemeSpecimenState) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            val isWide = maxWidth >= 600.dp
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SpecimenHeader(state = state)
+                if (isWide) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            ControlsSection(state = state, onStateChange = onStateChange)
+                            ColorSwatchesSection()
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            TypographySection()
+                            ButtonsSection()
+                            ShapesAndCardsSection()
+                        }
+                    }
+                } else {
+                    ControlsSection(state = state, onStateChange = onStateChange)
+                    ColorSwatchesSection()
+                    TypographySection()
+                    ButtonsSection()
+                    ShapesAndCardsSection()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpecimenHeader(state: ThemeSpecimenState) {
+    val seedLabel = when (val s = state.seed) {
+        HiThemeSeed.Wallpaper -> stringResource(R.string.preview_seed_wallpaper)
+        is HiThemeSeed.ColorSeed -> HiColorPresets.findById(s.id)?.label ?: s.id
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column {
+            Text(
+                text = stringResource(R.string.preview_launcher_label),
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            Text(
+                text = "${stringResource(R.string.preview_subtitle)} · $seedLabel · ${state.fontSizeStep.baseSp.toInt()}sp",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Surface(
+            shape = HiShapeTokens.Full,
+            color = MaterialTheme.colorScheme.primaryContainer,
+        ) {
+            Text(
+                text = if (HiTheme.state.pureBlack) "OLED" else if (HiTheme.state.darkTheme) "DARK" else "LIGHT",
+                style = MaterialTheme.typography.labelMedium.cappedForChrome(),
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ControlsSection(
+    state: ThemeSpecimenState,
+    onStateChange: (ThemeSpecimenState) -> Unit,
+) {
+    val modes = listOf(
+        HiThemeMode.SYSTEM to R.string.preview_mode_system,
+        HiThemeMode.LIGHT to R.string.preview_mode_light,
+        HiThemeMode.DARK to R.string.preview_mode_dark,
+    )
+    val lineHeights = listOf(
+        HiLineHeightPreset.COMPACT to R.string.preview_line_height_compact,
+        HiLineHeightPreset.STANDARD to R.string.preview_line_height_standard,
+        HiLineHeightPreset.RELAXED to R.string.preview_line_height_relaxed,
+    )
+    SpecimenCard(title = stringResource(R.string.preview_section_controls)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            modes.forEach { (mode, labelRes) ->
+                FilterChip(
+                    selected = state.themeMode == mode,
+                    onClick = { onStateChange(state.copy(themeMode = mode)) },
+                    label = { Text(stringResource(labelRes), style = MaterialTheme.typography.labelMedium.cappedForChrome()) },
+                    shape = HiShapeTokens.Small,
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = stringResource(R.string.preview_pure_black), style = MaterialTheme.typography.bodyMedium)
+            Switch(
+                checked = state.pureBlack,
+                onCheckedChange = { onStateChange(state.copy(pureBlack = it)) },
+            )
+        }
+        Text(text = stringResource(R.string.preview_seed_label), style = MaterialTheme.typography.labelMedium)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilterChip(
+                selected = state.seed is HiThemeSeed.Wallpaper,
+                onClick = { onStateChange(state.copy(seed = HiThemeSeed.Wallpaper)) },
+                label = { Text(stringResource(R.string.preview_seed_wallpaper), style = MaterialTheme.typography.labelMedium.cappedForChrome()) },
+                shape = HiShapeTokens.Full,
+            )
+            HiColorPresets.ALL.forEach { preset ->
+                val selected = (state.seed as? HiThemeSeed.ColorSeed)?.id == preset.id
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(HiShapeTokens.Full)
+                        .semantics { contentDescription = preset.label }
+                        .clickable(role = Role.RadioButton) {
+                            onStateChange(state.copy(seed = preset.toSeed()))
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(HiShapeTokens.Full)
+                            .background(preset.color)
+                            .then(
+                                if (selected) {
+                                    Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, HiShapeTokens.Full)
+                                } else {
+                                    Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, HiShapeTokens.Full)
+                                },
+                            ),
+                    )
+                }
+            }
+        }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            HiFontSizeStep.entries.forEach { step ->
+                FilterChip(
+                    selected = state.fontSizeStep == step,
+                    onClick = { onStateChange(state.copy(fontSizeStep = step)) },
+                    label = { Text("${step.baseSp.toInt()}sp", style = MaterialTheme.typography.labelMedium.cappedForChrome()) },
+                    shape = HiShapeTokens.Small,
+                )
+            }
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            lineHeights.forEach { (preset, labelRes) ->
+                FilterChip(
+                    selected = state.lineHeightPreset == preset,
+                    onClick = { onStateChange(state.copy(lineHeightPreset = preset)) },
+                    label = { Text(stringResource(labelRes), style = MaterialTheme.typography.labelMedium.cappedForChrome()) },
+                    shape = HiShapeTokens.Small,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ColorSwatchesSection() {
+    val cs = MaterialTheme.colorScheme
+    val swatches = listOf(
+        Triple("Primary", cs.primary, cs.onPrimary),
+        Triple("PrimaryC", cs.primaryContainer, cs.onPrimaryContainer),
+        Triple("Secondary", cs.secondary, cs.onSecondary),
+        Triple("Tertiary", cs.tertiary, cs.onTertiary),
+        Triple("Surface", cs.surface, cs.onSurface),
+        Triple("SurfLow", cs.surfaceContainerLow, cs.onSurface),
+        Triple("SurfCont", cs.surfaceContainer, cs.onSurface),
+        Triple("SurfHigh", cs.surfaceContainerHigh, cs.onSurface),
+        Triple("Error", cs.error, cs.onError),
+    )
+    SpecimenCard(title = stringResource(R.string.preview_section_colors)) {
+        swatches.chunked(3).forEach { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                rowItems.forEach { (name, bg, fg) ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(36.dp)
+                            .clip(HiShapeTokens.Small)
+                            .background(bg)
+                            .border(0.5.dp, cs.outlineVariant, HiShapeTokens.Small)
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Text(
+                            text = name,
+                            color = fg,
+                            style = MaterialTheme.typography.labelSmall.cappedForChrome(),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TypographySection() {
+    val tokens = HiTheme.typography
+    SpecimenCard(title = stringResource(R.string.preview_section_typography)) {
+        Text(text = stringResource(R.string.preview_sample_headline), style = MaterialTheme.typography.titleLarge)
+        Text(text = stringResource(R.string.preview_sample_thread_unread), style = tokens.threadTitle)
+        Text(
+            text = stringResource(R.string.preview_sample_thread_read),
+            style = tokens.threadTitleRead,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(text = stringResource(R.string.preview_sample_body), style = tokens.postBody)
+        Text(
+            text = stringResource(R.string.preview_sample_meta),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ButtonsSection() {
+    val compactPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+    SpecimenCard(title = stringResource(R.string.preview_section_buttons)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Button(onClick = {}, shape = HiShapeTokens.Small, contentPadding = compactPadding) {
+                Text(stringResource(R.string.preview_btn_primary))
+            }
+            FilledTonalButton(onClick = {}, shape = HiShapeTokens.Small, contentPadding = compactPadding) {
+                Text(stringResource(R.string.preview_btn_tonal))
+            }
+            OutlinedButton(onClick = {}, shape = HiShapeTokens.Small, contentPadding = compactPadding) {
+                Text(stringResource(R.string.preview_btn_outlined))
+            }
+            TextButton(onClick = {}, shape = HiShapeTokens.Small, contentPadding = compactPadding) {
+                Text(stringResource(R.string.preview_btn_text))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShapesAndCardsSection() {
+    val cs = MaterialTheme.colorScheme
+    SpecimenCard(title = stringResource(R.string.preview_section_shapes)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(
+                R.string.preview_shape_small to HiShapeTokens.Small,
+                R.string.preview_shape_medium to HiShapeTokens.Medium,
+                R.string.preview_shape_large to HiShapeTokens.Large,
+                R.string.preview_shape_full to HiShapeTokens.Full,
+            ).forEach { (labelRes, shape) ->
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp),
+                    shape = shape,
+                    color = cs.surfaceContainerHighest,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = stringResource(labelRes),
+                            style = MaterialTheme.typography.labelSmall.cappedForChrome(),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        HiCappedFontScale {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = HiShapeTokens.Full,
+                color = cs.surfaceContainerHigh,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    listOf(
+                        R.string.preview_nav_forum,
+                        R.string.preview_nav_messages,
+                        R.string.preview_nav_search,
+                        R.string.preview_nav_mine,
+                    ).forEachIndexed { idx, labelRes ->
+                        val bg = if (idx == 0) cs.secondaryContainer else Color.Transparent
+                        val fg = if (idx == 0) cs.onSecondaryContainer else cs.onSurfaceVariant
+                        Box(
+                            modifier = Modifier
+                                .clip(HiShapeTokens.Full)
+                                .background(bg)
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = stringResource(labelRes),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = fg,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpecimenCard(
+    title: String,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = HiShapeTokens.Medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            content()
+        }
+    }
+}
