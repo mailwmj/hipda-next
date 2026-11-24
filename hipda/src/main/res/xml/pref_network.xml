@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <PreferenceCategory android:title="@string/pref_category_image">
+
+        <ListPreference
+            android:defaultValue="prefer_thumb"
+            android:entries="@array/pref_image_policy"
+            android:entryValues="@array/pref_image_policy_values"
+            android:key="PERF_WIFI_IMAGE_POLICY"
+            android:negativeButtonText="@null"
+            android:positiveButtonText="@null"
+            android:title="@string/pref_title_wifi_image_policy"/>
+
+        <ListPreference
+            android:defaultValue="none"
+            android:entries="@array/pref_image_policy"
+            android:entryValues="@array/pref_image_policy_values"
+            android:key="PERF_MOBILE_IMAGE_POLICY"
+            android:negativeButtonText="@null"
+            android:positiveButtonText="@null"
+            android:title="@string/pref_title_mobile_image_policy"/>
+
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/pref_category_image_more">
+
+        <ListPreference
+            android:defaultValue="500"
+            android:entries="@array/pref_cache_size_titles"
+            android:entryValues="@array/pref_cache_size_values"
+            android:key="PERF_CACHE_SIZE_IN_MB"
+            android:negativeButtonText="@null"
+            android:positiveButtonText="@null"
+            android:title="@string/pref_cache_size_title"/>
+
+    </PreferenceCategory>
+
+</PreferenceScreen>

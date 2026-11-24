@@ -1,0 +1,17 @@
+.gradle
+local.properties
+gradle.properties
+fabric.properties
+
+.idea/
+*.iml
+
+.navigation
+.DS_Store
+build
+
+**/build
+**/build/**
+*.swp
+
+captures

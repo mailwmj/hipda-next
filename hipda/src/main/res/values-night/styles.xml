@@ -1,0 +1,75 @@
+<resources xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="ThemeDark" parent="ThemeDarkBase">
+
+        <item name="android:windowBackground">?attr/window_background</item>
+        <item name="android:windowIsTranslucent">true</item>
+
+        <item name="preferenceTheme">@style/PreferenceThemeOverlay.v14.Material</item>
+
+        <item name="actionBarPopupTheme">@style/MyToolbar.PopupTheme</item>
+        <item name="actionBarTheme">@style/ThemeOverlay.AppCompat.Dark.ActionBar</item>
+        <item name="actionBarMargin">0dp</item>
+
+        <!-- MaterialDrawer : change smaller drawer item's color -->
+        <item name="material_drawer_secondary_text">?material_drawer_primary_text</item>
+        <item name="material_drawer_selected_text">?colorAccent</item>
+
+        <!-- change searchView suggestion background color-->
+        <item name="android:autoCompleteTextViewStyle">@style/MyAutoCompleteTextView</item>
+
+        <item name="colorPrimary">@color/theme_dark</item>
+        <item name="colorPrimaryDark">@color/theme_dark</item>
+        <item name="colorAccent">@color/hipda</item>
+
+        <item name="android:textColor">@color/textColorPrimary</item>
+        <item name="android:textColorPrimary">@color/textColorPrimary</item>
+        <item name="android:textColorSecondary">@color/textColorSecondary</item>
+        <item name="panelMenuListTheme">@style/Theme.CompactMenu</item>
+
+        <item name="background">@color/dark_theme_background</item>
+        <item name="window_background">@color/window_background</item>
+        <item name="emojiBackground">@color/md_grey_900</item>
+    </style>
+
+    <style name="ThemeBlack" parent="ThemeDark">
+        <item name="colorPrimary">@color/theme_black</item>
+        <item name="colorPrimaryDark">@color/theme_black</item>
+
+        <item name="window_background">@color/black</item>
+    </style>
+
+    <style name="ThemeImageViewer" parent="ThemeBlack">
+        <item name="colorPrimary">@color/transparent</item>
+        <item name="colorPrimaryDark">@color/transparent</item>
+        <item name="android:windowBackground">@color/transparent</item>
+        <item name="android:navigationBarColor">@color/transparent</item>
+        <item name="android:statusBarColor">@color/transparent</item>
+        <item name="android:windowTranslucentNavigation">true</item>
+        <item name="android:windowTranslucentStatus">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="27">shortEdges</item>
+    </style>
+
+    <style name="MyAutoCompleteTextView" parent="Widget.AppCompat.AutoCompleteTextView">
+        <item name="android:popupBackground">?background</item>
+    </style>
+
+    <style name="MaterialDrawer.DrawerArrowStyle" parent="Widget.AppCompat.DrawerArrowToggle">
+        <item name="spinBars">false</item>
+        <item name="color">@android:color/white</item>
+    </style>
+
+    <style name="MaterialDrawer.DrawerArrowStyle.Dark" parent="Widget.AppCompat.DrawerArrowToggle">
+        <item name="spinBars">false</item>
+        <item name="color">@android:color/black</item>
+    </style>
+
+    <style name="MyToolbar.PopupTheme" parent="ThemeOverlay.AppCompat.Dark">
+        <item name="android:textColor">?android:textColorPrimary</item>
+    </style>
+
+    <style name="Popup.Matisse" parent="Widget.AppCompat.Light.ListPopupWindow">
+        <item name="android:popupBackground">@color/md_grey_800</item>
+    </style>
+
+</resources>
