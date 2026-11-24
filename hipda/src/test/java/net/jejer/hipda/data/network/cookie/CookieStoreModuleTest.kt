@@ -15,6 +15,7 @@ import net.jejer.hipda.data.security.KeysetBackend
 import net.jejer.hipda.data.security.TinkAeadProvider
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -32,6 +33,7 @@ class CookieStoreModuleTest {
 
     @Before
     fun setUp() {
+        OkHttp.initialize(ApplicationProvider.getApplicationContext())
         TinkAeadProvider.ensureTinkRegistered()
         aeadProvider = TinkAeadProvider(InMemoryKeysetBackend())
     }

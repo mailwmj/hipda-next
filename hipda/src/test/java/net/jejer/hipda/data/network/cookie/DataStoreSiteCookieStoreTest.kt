@@ -1,7 +1,9 @@
 package net.jejer.hipda.data.network.cookie
 
+import android.app.Application
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.Serializer
+import androidx.test.core.app.ApplicationProvider
 import com.google.crypto.tink.Aead
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.RegistryConfiguration
@@ -29,6 +31,7 @@ import net.jejer.hipda.data.security.KeysetBackend
 import net.jejer.hipda.data.security.TinkAeadProvider
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -37,7 +40,12 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class, sdk = [34])
 class DataStoreSiteCookieStoreTest {
 
     @get:Rule
@@ -48,6 +56,7 @@ class DataStoreSiteCookieStoreTest {
 
     @Before
     fun setUp() {
+        OkHttp.initialize(ApplicationProvider.getApplicationContext())
         TinkAeadProvider.ensureTinkRegistered()
         aeadProvider = TinkAeadProvider(InMemoryKeysetBackend())
         clockMillis = AtomicLong(System.currentTimeMillis())
