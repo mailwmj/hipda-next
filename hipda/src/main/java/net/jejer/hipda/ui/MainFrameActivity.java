@@ -143,8 +143,9 @@ public class MainFrameActivity extends BaseActivity {
         updateFabGravity();
 
         mNetworkReceiver = new NetworkStateReceiver();
-        registerReceiver(mNetworkReceiver,
-                new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
+        ContextCompat.registerReceiver(this, mNetworkReceiver,
+                new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
 
         if (savedInstanceState == null) {
             TaskHelper.updateImageHost();

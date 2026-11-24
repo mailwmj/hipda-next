@@ -173,7 +173,8 @@ public class NotiHelper {
             intent.putExtra(Constants.EXTRA_USERNAME, username);
         if (HiUtils.isValidId(uid))
             intent.putExtra(Constants.EXTRA_UID, uid);
-        PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         String title = "HiPDA论坛提醒";
         String content = getContentText(threadCount, smsCount);

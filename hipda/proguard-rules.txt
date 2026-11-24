@@ -1,6 +1,12 @@
 -keepattributes SourceFile,LineNumberTable
 -keepattributes EnclosingMethod
 -keepattributes *Annotation*
+-keepattributes Signature,InnerClasses
+
+# Gson 2.9.0 & CookieStore (R8 full mode)
+-keep class com.google.gson.reflect.TypeToken { *; }
+-keep class * extends com.google.gson.reflect.TypeToken
+-keep class net.gotev.cookiestore.** { *; }
 
 -keep class net.jejer.hipda.** { *; }
 
@@ -8,11 +14,14 @@
 -dontwarn javax.annotation.Nullable
 -dontwarn javax.annotation.ParametersAreNonnullByDefault
 
-# OKHttp 3.14.0
+# OKHttp 3.14.0 / 4.x optional JVM TLS providers
 -dontwarn javax.annotation.**
 -keepnames class okhttp3.internal.publicsuffix.PublicSuffixDatabase
 -dontwarn org.codehaus.mojo.animal_sniffer.*
 -dontwarn okhttp3.internal.platform.ConscryptPlatform
+-dontwarn org.bouncycastle.jsse.**
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**
 
 #google stuff
 -keep class androidx.**
@@ -35,8 +44,13 @@
 -keep class **.R$* {
     <fields>;
 }
+-keep class com.mikepenz.iconics.typeface.ITypeface { *; }
+-keep class * implements com.mikepenz.iconics.typeface.ITypeface { *; }
 
+# android-priority-jobqueue (MessageFactory instantiates Message subclasses via reflection)
 -dontwarn com.birbit.android.jobqueue.scheduling.Gcm*
+-keep class com.birbit.android.jobqueue.messaging.Message { *; }
+-keep class * extends com.birbit.android.jobqueue.messaging.Message { *; }
 
 #EventBus 3.x
 -keepclassmembers class ** {

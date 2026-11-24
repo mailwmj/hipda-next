@@ -248,39 +248,39 @@ public class ThreadListFragment extends BaseFragment
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case android.R.id.home:
-                // Implemented in activity
-                return false;
-            case R.id.action_new_thread:
-                FragmentUtils.showNewPostActivity(getActivity(), mForumId, mSessionId);
-                return true;
-            case R.id.action_filter_by_type:
-                showForumTypesDialog();
-                return true;
-            case R.id.action_search:
-                FragmentUtils.showSearchActivity(getActivity(), true, mForumId, "");
-                return true;
-            case R.id.action_order_by:
-                if (!mInloading) {
-                    item.setChecked(!item.isChecked());
-                    HiSettingsHelper.getInstance().setSortByPostTime(mForumId, item.isChecked());
-                    setActionBarSubtitle();
-                    mLoadingView.setState(ContentLoadingView.LOAD_NOW);
-                    refresh();
-                }
-                return true;
-            case R.id.action_show_stick_threads:
+        int itemId = item.getItemId();
+        if (itemId == android.R.id.home) {
+            // Implemented in activity
+            return false;
+        } else if (itemId == R.id.action_new_thread) {
+            FragmentUtils.showNewPostActivity(getActivity(), mForumId, mSessionId);
+            return true;
+        } else if (itemId == R.id.action_filter_by_type) {
+            showForumTypesDialog();
+            return true;
+        } else if (itemId == R.id.action_search) {
+            FragmentUtils.showSearchActivity(getActivity(), true, mForumId, "");
+            return true;
+        } else if (itemId == R.id.action_order_by) {
+            if (!mInloading) {
                 item.setChecked(!item.isChecked());
-                HiSettingsHelper.getInstance().setShowStickThreads(item.isChecked());
+                HiSettingsHelper.getInstance().setSortByPostTime(mForumId, item.isChecked());
+                setActionBarSubtitle();
                 mLoadingView.setState(ContentLoadingView.LOAD_NOW);
                 refresh();
-                return true;
-            case R.id.action_open_by_url:
-                showOpenUrlDialog();
-                return true;
-            default:
-                return super.onOptionsItemSelected(item);
+            }
+            return true;
+        } else if (itemId == R.id.action_show_stick_threads) {
+            item.setChecked(!item.isChecked());
+            HiSettingsHelper.getInstance().setShowStickThreads(item.isChecked());
+            mLoadingView.setState(ContentLoadingView.LOAD_NOW);
+            refresh();
+            return true;
+        } else if (itemId == R.id.action_open_by_url) {
+            showOpenUrlDialog();
+            return true;
+        } else {
+            return super.onOptionsItemSelected(item);
         }
     }
 

@@ -62,10 +62,10 @@ public class NotiWorker extends Worker {
                     .Builder(NotiWorker.class, NOTI_REPEAT_MINUTTE, TimeUnit.MINUTES)
                     .setConstraints(constraints)
                     .build();
-            WorkManager.getInstance()
+            WorkManager.getInstance(HiApplication.getAppContext())
                     .enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request);
         } else {
-            WorkManager.getInstance().cancelUniqueWork(WORK_NAME);
+            WorkManager.getInstance(HiApplication.getAppContext()).cancelUniqueWork(WORK_NAME);
         }
     }
 }
