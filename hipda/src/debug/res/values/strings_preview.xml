@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="preview_launcher_label">HiPDA 预览</string>
+    <string name="preview_subtitle">设计系统主题样张</string>
+    <string name="preview_section_controls">主题控制</string>
+    <string name="preview_mode_system">跟随系统</string>
+    <string name="preview_mode_light">浅色</string>
+    <string name="preview_mode_dark">深色</string>
+    <string name="preview_pure_black">纯黑深色背景</string>
+    <string name="preview_seed_label">主题色</string>
+    <string name="preview_seed_wallpaper">跟随壁纸</string>
+    <string name="preview_font_size_label">字号</string>
+    <string name="preview_line_height_label">行距</string>
+    <string name="preview_line_height_compact">紧凑 1.5</string>
+    <string name="preview_line_height_standard">标准 1.65</string>
+    <string name="preview_line_height_relaxed">宽松 1.8</string>
+    <string name="preview_section_colors">色彩令牌</string>
+    <string name="preview_section_typography">字体与排版</string>
+    <string name="preview_sample_headline">版块标题与页面层级</string>
+    <string name="preview_sample_thread_unread">未读帖子列表标题：折叠屏展开后双栏阅读体验</string>
+    <string name="preview_sample_thread_read">已读帖子列表标题：降一级字重并弱化颜色</string>
+    <string name="preview_sample_body">正文使用系统字体，默认 16sp、行高 1.65，支持五档字号与三档行距调节，长帖阅读清晰舒适。</string>
+    <string name="preview_sample_meta">第 1 楼 · 10 分钟前 · 42 条回复</string>
+    <string name="preview_section_buttons">按钮与交互</string>
+    <string name="preview_btn_primary">发新帖</string>
+    <string name="preview_btn_tonal">回复</string>
+    <string name="preview_btn_outlined">收藏</string>
+    <string name="preview_btn_text">撤销</string>
+    <string name="preview_section_shapes">卡片与圆角</string>
+    <string name="preview_shape_small">小 8dp</string>
+    <string name="preview_shape_medium">中 12dp</string>
+    <string name="preview_shape_large">大 20dp</string>
+    <string name="preview_shape_full">全圆角</string>
+    <string name="preview_nav_forum">论坛</string>
+    <string name="preview_nav_messages">消息</string>
+    <string name="preview_nav_search">搜索</string>
+    <string name="preview_nav_mine">我的</string>
+</resources>
