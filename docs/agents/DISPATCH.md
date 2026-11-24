@@ -35,7 +35,7 @@
 - Neon 实现的卡由 Carbon 审查；Carbon 不可用时用 Sol 审查。编译跑测以 CI 输出为证据，不算独立审查。
 
 ## 4. 阻断项与敏感区
-- 只有以下情况阻断合并，并且要能给出具体的触发路径：CI 编译或测试失败；解析器样本测试回归；登录、Cookie、GBK 编码或 Cloudflare 验证通道失效；折叠、展开或旋转导致崩溃，或丢失阅读状态；用户已有的设置或历史数据在迁移中丢失；自动化测试对论坛发起写操作；违反第 2 节的本地编译规则。
+- 只有以下情况阻断合并，并且要能给出具体的触发路径：CI 编译或测试失败；解析器样本测试回归；登录、Cookie、GBK 编码或 Cloudflare 验证通道失效；折叠、展开或旋转导致崩溃，或丢失阅读状态；自动化测试对论坛发起写操作；违反第 2 节的本地编译规则。
 - 敏感区（轻量卡也要审查）：`okhttp/`、`async/LoginHelper.java`、`utils/HiParser*`、`bean/HiSettingsHelper.java`、`db/`、`async/PostHelper.java`、`job/PostJob.java`、Cloudflare 验证相关代码。
 
 ## 5. 卡片约定

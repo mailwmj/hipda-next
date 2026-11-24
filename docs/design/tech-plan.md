@@ -5,7 +5,7 @@
 ## 1. 目标
 - 用户看到的结果：一个现代、流畅的 HiPDA 客户端。手机、折叠屏的外屏和内屏、平板、分屏窄窗口、深色和浅色模式下都好用。导航是毛玻璃材质；展开后是列表和详情双栏；动效细腻，有交代。
 - 功能范围与现有应用一致，不扩张。只删除已经失效的功能（例如检查更新），以及可以由系统自动判断的设置项。
-- 包名 `net.jejer.hipda.ng` 保持不变，老用户覆盖安装后，设置、登录、草稿和历史都保留。
+- 不兼容老版本和老用户（用户决定）：不做数据迁移，不要求沿用原签名，不做覆盖安装测试。
 
 ## 2. 约束
 - 站点 4d4y.com 前面有 Cloudflare 人机验证：非浏览器的请求会拿到 403 和 `cf-mitigated: challenge`。所以 CI 不能访问真实站点，解析器只能用离线的 HTML 样本做测试。
@@ -37,17 +37,17 @@
 | 网络 | OkHttp 5 作为统一的应用层（拦截器、Cookie、编码）；底层传输可替换：优先用与 Chrome 一致的网络栈（`cronet-okhttp`：Android 14+ 用系统自带的 HttpEngine，其次用 Play 服务的 Cronet），都没有时退回 OkHttp 自己的传输。按 GBK 和 UTF-8 自适应解码；Cloudflare 验证通道见第 6 节 |
 | 解析 | jsoup 最新稳定版，放在纯 JVM 模块 `:core-parser`，没有 Android 依赖，测试快 |
 | 图片 | Coil 3（与网络层共用同一个 OkHttpClient）、Telephoto（看大图） |
-| 存储 | Room（迁移旧的 content.db 和 history.db）、DataStore（迁移旧的 SharedPreferences；凭据加密） |
+| 存储 | Room（草稿、浏览历史、阅读位置）、DataStore（设置；凭据用 Tink 加密）。全新结构，不迁移旧数据 |
 | 毛玻璃 | Haze 2.x（`haze-blur` 模块，API 是 `Modifier.hazeSource` 和 `Modifier.hazeBlur`；1.x 的 `hazeEffect(state, style)` 签名已经移除）：API 31 及以上用真实模糊（API 31 上，任何快照状态变化都会让 Haze 重新抓取背景，需要在 M4 实测性能，必要时只在 32 及以上开启）；API 30 及以下降级为高不透明度的 scrim。Haze 不会自动检测省电模式和系统的“降低透明度”设置，要由应用自己监听，并传入 `blurEnabled(false)`；降级后的描边和阴影也由应用自己画 |
 | 测试 | JUnit、MockWebServer、Turbine、Robolectric、Roborazzi（截图）、Compose UI test（动效用 mainClock 逐帧检查）、Macrobenchmark（帧时间，在 CI 模拟器上跑，只在阶段验收时） |
 
 ## 5. 架构
 - 模块：`:hipda`（应用、界面和 DI），`:core-parser`（纯 JVM 解析器和数据模型），`:emoji`（只保留表情资源和映射，删除旧的 View 组件）。数据层放在 `:hipda` 的 `data/` 包内。
 - 数据流：Repository 返回 Flow 或挂起函数 → ViewModel 暴露 UiState → Compose 单向数据流。一次性事件（例如“发帖成功”）也放进状态里，用户处理后清除。
-- **网络和 Cookie 只有一个来源（T3）**：新的 OkHttpClient 和 `SiteCookieStore` 落地后，旧的 `OkHttpHelper` 改成一层薄门面，委托给同一个客户端和 Cookie 存储；启动时把旧的 `"cookie"` 偏好里的登录 Cookie 一次性迁移过去。旧界面因此也能用上 Cloudflare 验证通道、统一的 UA 和登录态。
-- **新旧界面不混跳（T3）**：M4–M6 期间，新的 Compose 外壳从一个单独的“预览”入口进入（debug 构建里的第二个启动图标），旧界面的入口和跳转都不动。全部新页面完成后，在 M7 一次性切换启动入口、`IntentActivity` 和桌面快捷方式；保留 `.ng.IntentActivity` 这个别名，用户已经设置的“默认用本应用打开链接”不受影响。这样就不需要 EventBus 和双写存储之类的胶水代码。
+- **旧界面只作参考（用户决定不兼容老版本）**：旧界面保持原样，不接入新的网络层和验证通道，M7 时删除。新代码有自己的 OkHttpClient 和 `SiteCookieStore`，不读写旧的偏好和数据库。
+- **新旧界面不混跳（T3）**：M4–M6 期间，新的 Compose 外壳从一个单独的“预览”入口进入（debug 构建里的第二个启动图标），旧界面的入口和跳转都不动。全部新页面完成后，在 M7 一次性切换启动入口、`IntentActivity` 和桌面快捷方式。这样就不需要 EventBus 和双写存储之类的胶水代码。
 - **验证面板有独立的宿主（T3）**：用一个透明的 `ChallengeActivity`（singleTop）承载验证用的 WebView，不管前台是新界面还是旧界面，都能弹出验证面板。
-- **解析器先上测试，再抽模块（T2）**：现有解析器依赖 Context、HiSettingsHelper，还会在解析时开线程发通知，不能原样搬进纯 JVM 模块。顺序是：样本导出工具 → 在 `:hipda` 里对现有解析入口写样本回归测试（Robolectric）→ 再分批抽到 `:core-parser`，同时剥离 Android 依赖和副作用，并把散落在 `PrePostAsyncTask`、`LoginHelper`、`FavoriteHelper`、`PostSmsAsyncTask`、`NotiHelper`、`UploadImgHelper` 里的解析代码收拢过来。每抽一批，都用已有的样本测试证明行为没变。
+- **解析器先上测试，再抽模块（T2）**：现有解析器依赖 Context、HiSettingsHelper，还会在解析时开线程发通知，不能原样搬进纯 JVM 模块。顺序是：样本导出工具（debug 构建里的工具页，用新的网络层和验证通道抓取页面）→ 在 `:hipda` 里对现有解析入口写样本回归测试（Robolectric）→ 再分批抽到 `:core-parser`，同时剥离 Android 依赖和副作用，并把散落在 `PrePostAsyncTask`、`LoginHelper`、`FavoriteHelper`、`PostSmsAsyncTask`、`NotiHelper`、`UploadImgHelper` 里的解析代码收拢过来。每抽一批，都用已有的样本测试证明行为没变。
 - **帖子正文用 Compose 原生渲染（T6）**：解析器已经把引用、图片、跳楼、附件、投票拆成了独立的块，正文文本块只含基础的内联标签、链接和表情。直接用 `AnnotatedString` + `InlineTextContent`（表情取自 `:emoji` 的资源）+ `LinkAnnotation` 渲染，不用 AndroidView 包旧的 TextView。文字颜色的可读性判断（`TextStyle.java:49`）从解析阶段移到渲染阶段，切换深浅色后才不会错色。
 - **共享文件的改动集中在一张卡里（T7）**：M0-2 一次性把方案确定的全部依赖和插件写进 version catalog，建好空的 `:core-parser` 模块，挂上 `@HiltAndroidApp`。后续各条开发线只改自己目录下的源码。界面字符串按功能拆成 `res/values/strings_<功能>.xml`。
 
@@ -75,16 +75,15 @@
 | 阶段 | 结果 | 证据 |
 |---|---|---|
 | M0 构建链 | 用新工具链编译通过，CI 建立，用户看不到变化（targetSdk 保持 30）；M0-2 建好依赖目录和模块空壳 | CI 运行记录；模拟器冒烟测试的截图和 logcat |
-| M1 验证通道 | 网络和 Cookie 统一到一个来源；现有应用能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测、排队、冷却、重试、逐跳 Cookie、跨域剥离、POST 改 GET）；用户在设备上看到版块列表的截图 |
+| M1 验证通道 | 新的网络层能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测、排队、冷却、重试、逐跳 Cookie、跨域剥离、POST 改 GET）；debug 工具页在设备上成功抓到版块页的截图 |
 | M2 安全网 | 样本导出（脱敏）→ 现有解析器的样本回归测试 → 分批抽到 `:core-parser` | 测试报告；故意改坏一个解析器，测试会失败；脱敏扫描测试 |
-| M3 数据层 | Kotlin Repository、Hilt、Room 和 DataStore 迁移、提醒轮询 | 单元测试；用旧版数据库和偏好文件做的迁移测试 |
+| M3 数据层 | Kotlin Repository、Hilt、Room 和 DataStore（全新结构，不迁移旧数据）、提醒轮询 | 单元测试 |
 | M4 外壳 | 预览入口里的主题、毛玻璃导航、自适应外壳、动效系统 | Roborazzi 截图；动效逐帧测试；“减少动态效果”测试；重组次数断言 |
 | M5 阅读核心 | 版块、帖子列表、帖子详情（Compose 原生正文）、双栏；折叠和展开时状态保持 | 截图测试；状态恢复测试；重组次数断言 |
 | M6 其余页面 | 编辑器、表情、短消息、提醒、搜索、我的、设置、用户资料、看图、登录、外部链接 | 每页的截图测试和交互测试 |
-| M7 切换和清理 | 切换启动入口；删除旧代码和旧依赖；targetSdk 36（通知权限、MediaStore 下载、全面屏）；收紧 R8 规则；Baseline Profile | 依赖清单；覆盖安装的回归测试（用同一签名先装旧版写入数据，再覆盖安装新版）；真机上的帧时间 |
+| M7 切换和清理 | 切换启动入口；删除旧代码和旧依赖；targetSdk 36（通知权限、MediaStore 下载、全面屏）；收紧 R8 规则；Baseline Profile | 依赖清单；全新安装后的冒烟测试；真机上的帧时间 |
 
-- **签名（T4）**：覆盖安装要求新旧版本的签名一致。原版发布用的签名需要用户提供或确认（在 DISPATCH §0 的先问列表里）。
-- **老数据迁移的已知断点（T4）**：旧数据库的 `time`、`visit_time` 是 `NUMERIC` 类型，主键没有 `NOT NULL`，Room 会校验失败，迁移时要重建表；除了默认偏好和加密偏好，还有 `"cookie"`、`"saved_historty"`（原代码的拼写）、`"FavCachePrefsFile"` 三个偏好文件要迁移；`allowBackup` 是开着的，备份规则要排除和 Keystore 绑定的加密文件和 Tink 密钥；旧草稿以每次进入页面的随机 UUID 为键，新草稿改用业务键（`reply:<tid>`、`new:<fid>`），旧草稿保留为“未归属的历史草稿”。
+- **新的存储结构（T4 中仍然适用的部分）**：备份规则排除和 Keystore 绑定的加密文件和 Tink 密钥；草稿用业务键（`reply:<tid>`、`new:<fid>`）。
 - **性能验证的分工（T9）**：日常 CI 用重组次数断言守住性能不退化；Roborazzi 只验证毛玻璃的降级分支和对比度；真实的模糊效果、API 31 的性能、P90 帧时间和卡顿率，在 M4、M5、M7 的阶段验收时用真机测（没有真机时用模拟器的硬件渲染，并注明数据不可靠）。
 - **截图矩阵分级（T9）**：外壳和双栏的核心页面跑 4 种宽度 × 深浅色；其他页面的主状态跑 3 种宽度；空、错、加载状态跑 2 种宽度。
 - **release 构建（T10）**：CI 每次都编 release；M7 清理 `proguard-rules.txt` 中过宽的 `-keep` 规则。
@@ -93,5 +92,4 @@
 1. Cloudflare：cf_clearance 和设备、IP、UA 绑定，默认 30 分钟过期。网络指纹和浏览器不一致时，可能过了验证仍被拦，所以底层优先用与 Chrome 一致的网络栈。没有这种网络栈的旧设备（Android 13 及以下、又没有 Play 服务）风险最高，退回 OkHttp 加单次重试；实测仍过不了时，按 ABI 分包引入 `cronet-bundled`（T11）。网络切换导致出口 IP 变化后凭证是否失效，官方没有明说（属于工程经验）；做法是：网络切换后再遇到验证页，就重新验证，不预先清掉凭证。
 2. 样本采集依赖用户登录，这一步只有用户能做。
 3. 帖子正文的 Compose 原生渲染：表情、链接、跳楼的点击和长按菜单要重新实现，旧版 `TextViewWithEmoticon` 的行为要逐项对照（以 B 线的样本为输入做截图测试）。
-4. 老数据迁移：断点见第 8 节；M7 前要有覆盖安装测试。
 5. 帖子里的 Emoji：页面按 GBK 提交，Unicode Emoji 要先转成十进制 HTML 实体（`&#...;`），否则会变成问号（`PostHelper.java:84-86`，T8）。
