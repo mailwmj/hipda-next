@@ -12,7 +12,8 @@ kotlin {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
-    inputs.dir(rootProject.layout.projectDirectory.dir("hipda/src/test/resources/samples"))
+    val hipdaSamplesDir = rootProject.layout.projectDirectory.dir("hipda/src/test/resources/samples")
+    inputs.dir(providers.provider { hipdaSamplesDir.takeIf { it.asFile.isDirectory } })
         .withPropertyName("hipdaTestSamples")
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .optional()
