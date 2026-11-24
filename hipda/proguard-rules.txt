@@ -1,6 +1,12 @@
 -keepattributes SourceFile,LineNumberTable
 -keepattributes EnclosingMethod
 -keepattributes *Annotation*
+-keepattributes Signature,InnerClasses
+
+# Gson 2.9.0 & CookieStore (R8 full mode)
+-keep class com.google.gson.reflect.TypeToken { *; }
+-keep class * extends com.google.gson.reflect.TypeToken
+-keep class net.gotev.cookiestore.** { *; }
 
 -keep class net.jejer.hipda.** { *; }
 
