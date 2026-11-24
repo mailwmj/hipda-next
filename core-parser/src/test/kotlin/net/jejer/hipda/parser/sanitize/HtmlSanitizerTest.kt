@@ -3,10 +3,12 @@ package net.jejer.hipda.parser.sanitize
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.firstMatch
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.parser.Parser
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.util.Base64
 
 class HtmlSanitizerTest {
 
@@ -444,6 +446,460 @@ class HtmlSanitizerTest {
         """.trimIndent()
         val cookieLeaks = SampleLeakScanner.scan(leakyCookieHtml)
         assertEquals(3, cookieLeaks.count { it.type == LeakType.COOKIE_VALUE })
+    }
+
+    @Test
+    fun blocker1SanitizesAndScansSmsSummaryLinksTitlesImagesAndAlts() {
+        val raw = """
+            <ul class="pm_list">
+              <li class="s_clear">
+                <p class="cite"><cite>PeerAlice</cite> 2026-11-20</p>
+                <div class="summary">闲鱼：<a href="https://m.tb.cn/h.5SecretXianyu?tk=9988" title="私密闲鱼链接">https://m.tb.cn/h.5SecretXianyu?tk=9988</a> <a href="mailto:alice_real@gmail.com">alice_real@gmail.com</a> <img src="https://private.example.com/wechat_qr_999.png" alt="微信号 alice_wx" /><img src="images/smilies/default/smile.gif" /></div>
+              </li>
+            </ul>
+        """.trimIndent()
+
+        val rawLeaks = SampleLeakScanner.scan(raw)
+        assertTrue(rawLeaks.any { it.type == LeakType.SMS_CONTENT })
+        assertTrue(rawLeaks.any { it.type == LeakType.SMS_PEER })
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.SMS_DETAIL, identity)
+        assertFalse(sanitized.contains("SecretXianyu"))
+        assertFalse(sanitized.contains("m.tb.cn"))
+        assertFalse(sanitized.contains("私密闲鱼链接"))
+        assertFalse(sanitized.contains("alice_real@gmail.com"))
+        assertFalse(sanitized.contains("wechat_qr_999"))
+        assertFalse(sanitized.contains("alice_wx"))
+
+        val doc = Jsoup.parse(sanitized)
+        val links = doc.select("div.summary a")
+        assertEquals(2, links.size)
+        assertEquals(SanitizeSelectors.PLACEHOLDER_SMS_URL, links[0].attr("href"))
+        assertEquals("测试内容测试", links[0].attr("title"))
+        assertEquals(SanitizeSelectors.PLACEHOLDER_SMS_URL, links[1].attr("href"))
+
+        val imgs = doc.select("div.summary img")
+        assertEquals(2, imgs.size)
+        assertEquals(SanitizeSelectors.PLACEHOLDER_SMS_IMAGE_URL, imgs[0].attr("src"))
+        assertEquals("微信号 alice_wx".length, imgs[0].attr("alt").length)
+        assertEquals("images/smilies/default/smile.gif", imgs[1].attr("src"))
+
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty(), "Sanitized SMS links/images must pass scanner")
+
+        // 即使正文已是占位词，未脱敏的 href/title/src/alt 也必须被扫描器捕获
+        val attrOnlyLeak = """
+            <ul class="pm_list"><li class="s_clear">
+              <p class="cite"><cite>HiPeer</cite> 2026-11-20</p>
+              <div class="summary">测试内容<a href="https://m.tb.cn/secret" title="私密标题">测试内容</a><img src="https://private.example.com/qr.png" alt="私密微信号" /></div>
+            </li></ul>
+        """.trimIndent()
+        val attrLeaks = SampleLeakScanner.scan(attrOnlyLeak)
+        assertTrue(attrLeaks.count { it.type == LeakType.SMS_CONTENT } >= 4)
+    }
+
+    @Test
+    fun blocker2SanitizesAndScansBase64EncodedAttachmentAid() {
+        val rawAid = "MTIzNDU2fGExYjJjM2Q0fDE3MDAwMDAwMDB8NTQzMjF8OTk5OTk5"
+        val raw = """
+            <dl class="t_attachlist">
+              <p class="attachname">
+                <a href="attachment.php?aid=$rawAid">doc.pdf</a>
+              </p>
+            </dl>
+        """.trimIndent()
+
+        val rawLeaks = SampleLeakScanner.scan(raw)
+        assertTrue(rawLeaks.any { it.type == LeakType.ATTACHMENT_AID }, "Scanner must detect unsanitized attachment aid")
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_DETAIL, identity)
+        assertFalse(sanitized.contains(rawAid))
+
+        val href = Jsoup.parse(sanitized).firstMatch("a")!!.attr("href")
+        assertTrue(href.startsWith("attachment.php?aid="))
+        val encoded = href.substringAfter("aid=")
+        val decoded = String(Base64.getDecoder().decode(encoded))
+        val parts = decoded.split("|")
+        assertEquals(5, parts.size)
+        assertEquals("123456", parts[0])
+        assertEquals("00000000", parts[1])
+        assertEquals("10000", parts[3])
+        assertEquals("999999", parts[4])
+        assertFalse(decoded.contains("54321"))
+        assertFalse(decoded.contains("a1b2c3d4"))
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
+
+        // Discuz 7.0 四段 URL 编码载荷（含 = -> %3D）
+        val aid4Raw = Base64.getEncoder().encodeToString("9876|deadbeef|1700000000|54321".toByteArray())
+            .replace("=", "%3D")
+        val html4 = """<a href="attachment.php?nothumb=yes&amp;aid=$aid4Raw">img.jpg</a>"""
+        assertTrue(SampleLeakScanner.scan(html4).any { it.type == LeakType.ATTACHMENT_AID })
+        val sanitized4 = HtmlSanitizer.sanitize(html4, PageType.THREAD_DETAIL, identity)
+        assertFalse(sanitized4.contains(aid4Raw))
+        assertTrue(SampleLeakScanner.scan(sanitized4).isEmpty())
+    }
+
+    @Test
+    fun blocker3SanitizesEncodedSpecialCharTextareaAndCaseInsensitiveUsernames() {
+        // 1. 含空格 + 编码
+        val spaceUser = Identity("54321", "Real User")
+        val spaceRaw = """<a href="space.php?username=Real+User">link</a>"""
+        val spaceSanitized = HtmlSanitizer.sanitize(spaceRaw, PageType.USER_INFO, spaceUser)
+        assertFalse(spaceSanitized.contains("Real+User"))
+        assertEquals("space.php?username=HiUser", Jsoup.parse(spaceSanitized).firstMatch("a")!!.attr("href"))
+
+        // 2. PHP rawurlencode (~) 与 urlencode (*) 变体
+        val tildeUser = Identity("54321", "~风~")
+        val tildeRaw = """<a href="space.php?username=~%B7%E7~">~风~</a>"""
+        val tildeSanitized = HtmlSanitizer.sanitize(tildeRaw, PageType.USER_INFO, tildeUser)
+        assertFalse(tildeSanitized.contains("%B7%E7", ignoreCase = true))
+        assertFalse(tildeSanitized.contains("~风~"))
+        assertEquals("space.php?username=HiUser", Jsoup.parse(tildeSanitized).firstMatch("a")!!.attr("href"))
+
+        val starUser = Identity("54321", "风*")
+        val starRaw = """<a href="space.php?username=%B7%E7%2A">风*</a>"""
+        val starSanitized = HtmlSanitizer.sanitize(starRaw, PageType.USER_INFO, starUser)
+        assertFalse(starSanitized.contains("%B7%E7", ignoreCase = true))
+        assertEquals("space.php?username=HiUser", Jsoup.parse(starSanitized).firstMatch("a")!!.attr("href"))
+
+        // 3. textarea 内 GBK 编码用户名
+        val gbkUser = Identity("54321", "张三")
+        val textareaRaw = """<textarea name="message">[url=https://www.4d4y.com/forum/space.php?username=%D5%C5%C8%FD]profile[/url]</textarea>"""
+        val textareaSanitized = HtmlSanitizer.sanitize(textareaRaw, PageType.POST_FORM, gbkUser)
+        assertFalse(textareaSanitized.contains("%D5%C5%C8%FD", ignoreCase = true))
+        assertTrue(textareaSanitized.contains("space.php?username=HiUser]profile[/url]"))
+
+        // 4. 无 #umenu 页面的大小写不同用户名
+        val caseRaw = """<html><head><title>realuser 的个人资料</title></head><body><p>欢迎您回来，realuser</p></body></html>"""
+        val caseSanitized = HtmlSanitizer.sanitize(caseRaw, PageType.USER_INFO, identity)
+        assertFalse(caseSanitized.contains("realuser", ignoreCase = true))
+        assertEquals("HiUser 的个人资料", Jsoup.parse(caseSanitized).title())
+        assertEquals("欢迎您回来，HiUser", Jsoup.parse(caseSanitized).firstMatch("p")!!.text())
+    }
+
+    @Test
+    fun blocker4SanitizesOneWaySmsDetailPeerUsernameWithoutPeerMessageOrMsgto() {
+        val raw = """
+            <html>
+            <head><title>与 PeerBob 的短消息 - Hi!PDA</title></head>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=54321" class="noborder">RealUser</a></cite></div>
+              <div class="itemtitle s_clear"><h2>共有 1 条与 <a href="space.php?uid=67890">PeerBob</a> 的交谈记录</h2></div>
+              <ul class="pm_list">
+                <li class="s_clear self">
+                  <p class="cite"><cite>RealUser</cite> 2026-11-20</p>
+                  <div class="summary">你好 PeerBob</div>
+                </li>
+              </ul>
+              <form action="pm.php?action=send&amp;uid=67890" method="post">
+                <input type="hidden" id="formhash" name="formhash" value="a1b2c3d4" />
+              </form>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val rawLeaks = SampleLeakScanner.scan(raw)
+        assertTrue(rawLeaks.any { it.type == LeakType.SMS_PEER })
+        assertTrue(rawLeaks.any { it.type == LeakType.SMS_CONTENT })
+        assertTrue(rawLeaks.any { it.type == LeakType.FORMHASH })
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.SMS_DETAIL, identity)
+        assertFalse(sanitized.contains("PeerBob"))
+        assertFalse(sanitized.contains("67890"))
+        assertFalse(sanitized.contains("54321"))
+        val doc = Jsoup.parse(sanitized)
+        assertEquals("与 HiPeer 的短消息 - Hi!PDA", doc.title())
+        assertEquals("HiPeer", doc.firstMatch("div.itemtitle a")!!.text())
+        assertEquals("space.php?uid=20000", doc.firstMatch("div.itemtitle a")!!.attr("href"))
+        assertEquals("pm.php?action=send&uid=20000", doc.firstMatch("form")!!.attr("action"))
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
+    }
+
+    @Test
+    fun blocker5SanitizesAndScansIpsEmailsExpandedCookiesScriptInputsDiscuzUidVariantsAndXmlCdata() {
+        // 1. USER_INFO IP 与邮箱
+        val profileRaw = """
+            <ul class="commonlist">
+              <li>邮箱: real_personal_mail@163.com</li>
+              <li>注册 IP: 114.242.19.88 - - 北京</li>
+              <li>上次访问 IP: 223.104.3.155:51234</li>
+              <li>IPv6: 2408:8207:192c:a100::1234</li>
+            </ul>
+        """.trimIndent()
+        val profileLeaks = SampleLeakScanner.scan(profileRaw)
+        assertTrue(profileLeaks.count { it.type == LeakType.PERSONAL_INFO } >= 4)
+
+        val profileSanitized = HtmlSanitizer.sanitize(profileRaw, PageType.USER_INFO, identity)
+        assertFalse(profileSanitized.contains("real_personal_mail@163.com"))
+        assertFalse(profileSanitized.contains("114.242.19.88"))
+        assertFalse(profileSanitized.contains("223.104.3.155"))
+        assertFalse(profileSanitized.contains("2408:8207"))
+        assertTrue(profileSanitized.contains("user@example.com"))
+        assertTrue(profileSanitized.contains("127.0.0.1"))
+        assertTrue(profileSanitized.contains("::1"))
+        assertTrue(SampleLeakScanner.scan(profileSanitized).isEmpty())
+
+        // 2. 脚本内嵌 input formhash、扩展 Cookie、parseInt/JSON discuz_uid
+        val scriptRaw = """
+            <html><body>
+              <script>
+                var tpl = '<input type="hidden" name="formhash" value="deadbeef" />';
+                var discuz_uid = parseInt('99999');
+                var meta = {"discuz_uid": "88888"};
+                document.cookie = "cdb_loginuser=MyLoginAlias; cdb_activationauth=actSecret99; cdb_oldtopics=D776655D; __cf_bm=cfbmSecret";
+              </script>
+            </body></html>
+        """.trimIndent()
+        val scriptLeaks = SampleLeakScanner.scan(scriptRaw)
+        assertTrue(scriptLeaks.any { it.type == LeakType.FORMHASH })
+        assertEquals(2, scriptLeaks.count { it.type == LeakType.DISCUZ_UID })
+        assertEquals(4, scriptLeaks.count { it.type == LeakType.COOKIE_VALUE })
+
+        val scriptSanitized = HtmlSanitizer.sanitize(scriptRaw, PageType.THREAD_DETAIL, identity)
+        assertFalse(scriptSanitized.contains("deadbeef"))
+        assertFalse(scriptSanitized.contains("99999"))
+        assertFalse(scriptSanitized.contains("88888"))
+        assertFalse(scriptSanitized.contains("MyLoginAlias"))
+        assertFalse(scriptSanitized.contains("actSecret99"))
+        assertFalse(scriptSanitized.contains("D776655D"))
+        assertFalse(scriptSanitized.contains("cfbmSecret"))
+        assertTrue(scriptSanitized.contains("parseInt('10000')"))
+        assertTrue(scriptSanitized.contains("\"discuz_uid\": \"10000\""))
+        assertTrue(SampleLeakScanner.scan(scriptSanitized).isEmpty())
+
+        // 3. Discuz AJAX XML CDATA 保持结构并脱敏
+        val xmlRaw = """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，RealUser <input type="hidden" name="formhash" value="a1b2c3d4" />]]></root>"""
+        val xmlLeaks = SampleLeakScanner.scan(xmlRaw)
+        assertTrue(xmlLeaks.any { it.type == LeakType.FORMHASH })
+
+        val xmlSanitized = HtmlSanitizer.sanitize(xmlRaw, PageType.LOGIN, identity)
+        assertFalse(xmlSanitized.contains("RealUser"))
+        assertFalse(xmlSanitized.contains("a1b2c3d4"))
+        assertTrue(xmlSanitized.contains("<![CDATA["))
+        val xmlDoc = Jsoup.parse(xmlSanitized, "", Parser.xmlParser())
+        val rootText = xmlDoc.select("root").text()
+        assertTrue(rootText.contains("欢迎您回来，HiUser"))
+        assertTrue(rootText.contains("00000000"))
+        assertTrue(SampleLeakScanner.scan(xmlSanitized).isEmpty())
+    }
+
+    @Test
+    fun blocker6ShortUidDoesNotCorruptFidPageFontSizeOrYears() {
+        val shortUidIdentity = Identity(uid = "2", username = "RealUser")
+        val raw = """
+            <html>
+            <head><script>var discuz_uid = '2';</script></head>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=2" class="noborder">RealUser</a></cite></div>
+              <a href="forumdisplay.php?fid=2">Discovery</a>
+              <a href="viewthread.php?tid=54321&amp;page=2">2</a>
+              <div class="quote"><font size="2">OtherUser 2026-11-20</font></div>
+              <img src="https://img02.4d4y.com/forum/uc_server/data/avatar/000/00/00/02_avatar_middle.jpg" />
+              <p>(UID: 2)</p>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_DETAIL, shortUidIdentity)
+        val doc = Jsoup.parse(sanitized)
+
+        assertEquals("space.php?uid=10000", doc.firstMatch("#umenu cite a")!!.attr("href"))
+        assertEquals("forumdisplay.php?fid=2", doc.select("a")[1].attr("href"))
+        assertEquals("viewthread.php?tid=54321&page=2", doc.select("a")[2].attr("href"))
+        assertEquals("2", doc.select("a")[2].text())
+        assertEquals("2", doc.firstMatch("div.quote font")!!.attr("size"))
+        assertEquals("OtherUser 2026-11-20", doc.firstMatch("div.quote font")!!.text())
+        assertTrue(doc.firstMatch("img")!!.attr("src").contains("000/01/00/00_avatar_middle.jpg"))
+        assertEquals("(UID: 10000)", doc.firstMatch("p")!!.text())
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
+    }
+
+    @Test
+    fun blocker6UsernameSpaceDoesNotCorruptSpacePhpUrls() {
+        val raw = """
+            <html>
+            <head><script>var space = 1; var url = 'space.php?uid=54321'; var discuz_uid = '54321';</script></head>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=54321" class="noborder">space</a></cite></div>
+              <p>欢迎回来，space</p>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_LIST, Identity("54321", "space"))
+        val doc = Jsoup.parse(sanitized)
+
+        assertEquals("space.php?uid=10000", doc.firstMatch("#umenu cite a")!!.attr("href"))
+        assertEquals("HiUser", doc.firstMatch("#umenu cite a")!!.text())
+        assertTrue(doc.firstMatch("script")!!.data().contains("var space = 1;"))
+        assertTrue(doc.firstMatch("script")!!.data().contains("space.php?uid=10000"))
+        assertEquals("欢迎回来，HiUser", doc.firstMatch("p")!!.text())
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
+    }
+
+    @Test
+    fun blocker6UsernameReplyDoesNotCorruptJumpToFloorOrReplyUiLabels() {
+        val raw = """
+            <html>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=54321" class="noborder">回复</a></cite></div>
+              <strong><a href="redirect.php?goto=findpost&amp;pid=200&amp;ptid=100">回复 1# OtherUser</a></strong>
+              <strong><a href="redirect.php?goto=findpost&amp;pid=201&amp;ptid=100">回复 2# 回复</a></strong>
+              <a href="post.php?action=reply&amp;tid=100">回复</a>
+              <span>回复: 56</span>
+              <p>OtherUser 回复了您的帖子</p>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_DETAIL, Identity("54321", "回复"))
+        val doc = Jsoup.parse(sanitized)
+        val strongs = doc.select("strong a")
+
+        assertEquals("HiUser", doc.firstMatch("#umenu cite a")!!.text())
+        assertEquals("回复 1# OtherUser", strongs[0].text())
+        assertEquals("回复 2# HiUser", strongs[1].text())
+        assertEquals("回复", doc.firstMatch("a[href*=post.php]")!!.text())
+        assertEquals("回复: 56", doc.firstMatch("span")!!.text())
+        assertEquals("OtherUser 回复了您的帖子", doc.firstMatch("p")!!.text())
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
+    }
+
+    @Test
+    fun blocker6UsernameAdminDoesNotCorruptOtherUsernamesOrAssetPaths() {
+        val raw = """
+            <html>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=54321" class="noborder">admin</a></cite></div>
+              <td class="author"><cite><a href="space.php?uid=99999">admin123</a></cite></td>
+              <p>administrator 发布了公告，欢迎 admin</p>
+              <img src="images/default/admin_icon.gif" />
+            </body>
+            </html>
+        """.trimIndent()
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_LIST, Identity("54321", "admin"))
+        val doc = Jsoup.parse(sanitized)
+
+        assertEquals("HiUser", doc.firstMatch("#umenu cite a")!!.text())
+        assertTrue(sanitized.contains("admin123"))
+        assertTrue(sanitized.contains("administrator 发布了公告，欢迎 HiUser"))
+        assertEquals("images/default/admin_icon.gif", doc.firstMatch("img")!!.attr("src"))
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
+    }
+
+    @Test
+    fun blocker6UsernameZerosDoesNotCorruptSanitizedPlaceholders() {
+        val raw = """
+            <html>
+            <head>
+              <script>
+                var discuz_uid = '54321';
+                var formhash = 'a1b2c3d4';
+                var sid = 'xyz';
+                var currentUser = '000';
+              </script>
+            </head>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=54321" class="noborder">000</a></cite></div>
+              <img src="https://img02.4d4y.com/forum/uc_server/data/avatar/000/05/43/21_avatar_middle.jpg" />
+              <p>欢迎您回来，000</p>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_LIST, Identity("54321", "000"))
+        val doc = Jsoup.parse(sanitized)
+        val script = doc.firstMatch("script")!!.data()
+
+        assertTrue(script.contains("var discuz_uid = '10000';"))
+        assertTrue(script.contains("var formhash = '00000000';"))
+        assertTrue(script.contains("var sid = '000';"))
+        assertTrue(script.contains("var currentUser = 'HiUser';"))
+        assertEquals("HiUser", doc.firstMatch("#umenu cite a")!!.text())
+        assertTrue(doc.firstMatch("img")!!.attr("src").contains("000/01/00/00_avatar_middle.jpg"))
+        assertEquals("欢迎您回来，HiUser", doc.firstMatch("p")!!.text())
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
+    }
+
+    @Test
+    fun suggestion7ScannerSymmetryAndNoFalsePositiveOnNonSmsClearSummary() {
+        val nonSmsFeed = """<html><body><ul class="feed"><li class="s_clear"><div class="summary">公开动态内容</div></li></ul></body></html>"""
+        val sanitizedFeed = HtmlSanitizer.sanitize(nonSmsFeed, PageType.USER_INFO, identity)
+        assertTrue(SampleLeakScanner.scan(sanitizedFeed).isEmpty(), "Non-SMS li.s_clear without p.cite must not trigger SMS_CONTENT")
+
+        val leakedTokens = """
+            <html><body>
+              <div id="umenu"><cite><a href="space.php?uid=54321" class="noborder">RealUser</a></cite></div>
+              <input type="hidden" name="hash" value="0123456789abcdef0123456789abcdef" />
+              <input type="hidden" name="sid" value="XyZ789" />
+              <ul class="pm_list">
+                <li>
+                  <p class="cite"><cite><a href="space.php?uid=67890">PeerAlice</a></cite> 2026-11-20</p>
+                  <div class="summary">测试内容</div>
+                </li>
+              </ul>
+            </body></html>
+        """.trimIndent()
+        val leaks = SampleLeakScanner.scan(leakedTokens)
+        assertTrue(leaks.any { it.type == LeakType.UMENU_IDENTITY })
+        assertTrue(leaks.any { it.type == LeakType.SENSITIVE_TOKEN })
+        assertTrue(leaks.any { it.type == LeakType.SMS_PEER })
+    }
+
+    @Test
+    fun suggestion8SanitizesSelfSignatureNotifyBuddyAndBlacklist() {
+        val threadWithSig = """
+            <div id="postlist">
+              <div id="post_1001">
+                <table><tbody>
+                  <tr><td class="postauthor"><div class="postinfo"><a href="space.php?uid=54321">RealUser</a></div></td></tr>
+                  <tr><td class="postbottom"><div class="signatures">个人微信 my_wx_123</div></td></tr>
+                </tbody></table>
+              </div>
+              <div id="post_1002">
+                <table><tbody>
+                  <tr><td class="postauthor"><div class="postinfo"><a href="space.php?uid=88888">OtherUser</a></div></td></tr>
+                  <tr><td class="postbottom"><div class="signatures">别人的公开签名</div></td></tr>
+                </tbody></table>
+              </div>
+            </div>
+        """.trimIndent()
+        val sigSanitized = HtmlSanitizer.sanitize(threadWithSig, PageType.THREAD_DETAIL, identity)
+        assertFalse(sigSanitized.contains("my_wx_123"))
+        assertTrue(sigSanitized.contains("别人的公开签名"))
+
+        val notifyRaw = """
+            <ul class="feed">
+              <li><div class="f_buddy"><a href="space.php?uid=88888">OldWang</a> 请求加您为好友，附言：我是王五，电话 13912345678 <em>2026-11-20</em></div></li>
+            </ul>
+        """.trimIndent()
+        assertTrue(SampleLeakScanner.scan(notifyRaw).any { it.type == LeakType.PERSONAL_INFO })
+        val notifySanitized = HtmlSanitizer.sanitize(notifyRaw, PageType.NOTIFY, identity)
+        assertFalse(notifySanitized.contains("OldWang"))
+        assertFalse(notifySanitized.contains("88888"))
+        assertFalse(notifySanitized.contains("13912345678"))
+        assertTrue(notifySanitized.contains("2026-11-20"))
+        assertTrue(SampleLeakScanner.scan(notifySanitized).isEmpty())
+
+        val blacklistRaw = """
+            <div class="blacklist">
+              <ul class="commonlist">
+                <li><a href="space.php?username=%C0%EE%CB%C4">李四</a></li>
+                <li><a href="space.php?username=%CD%F5%CE%E5">王五</a></li>
+              </ul>
+            </div>
+        """.trimIndent()
+        assertTrue(SampleLeakScanner.scan(blacklistRaw).any { it.type == LeakType.PERSONAL_INFO })
+        val blacklistSanitized = HtmlSanitizer.sanitize(blacklistRaw, PageType.BLACKLIST, identity)
+        assertFalse(blacklistSanitized.contains("李四"))
+        assertFalse(blacklistSanitized.contains("王五"))
+        assertFalse(blacklistSanitized.contains("%C0%EE%CB%C4", ignoreCase = true))
+        val blLinks = Jsoup.parse(blacklistSanitized).select("div.blacklist ul.commonlist a")
+        assertEquals("space.php?username=HiBlocked1", blLinks[0].attr("href"))
+        assertEquals("HiBlocked1", blLinks[0].text())
+        assertEquals("space.php?username=HiBlocked2", blLinks[1].attr("href"))
+        assertEquals("HiBlocked2", blLinks[1].text())
+        assertTrue(SampleLeakScanner.scan(blacklistSanitized).isEmpty())
     }
 
     private fun assertStructureUnchanged(raw: String, sanitized: String, selectors: List<String>) {

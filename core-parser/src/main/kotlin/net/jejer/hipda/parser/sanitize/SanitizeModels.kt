@@ -34,9 +34,14 @@ enum class PageType {
 
 enum class LeakType {
     FORMHASH,
+    SENSITIVE_TOKEN,
     DISCUZ_UID,
     COOKIE_VALUE,
     SMS_CONTENT,
+    SMS_PEER,
+    UMENU_IDENTITY,
+    ATTACHMENT_AID,
+    PERSONAL_INFO,
 }
 
 data class Leak(

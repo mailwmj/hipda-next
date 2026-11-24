@@ -60,9 +60,17 @@ class SamplesAreSanitizedTest {
         """.trimIndent()
 
         val threadFile = tempDir.resolve("leaked_thread.html")
+        val htmFile = tempDir.resolve("leaked_page.htm")
+        val xmlFile = tempDir.resolve("login_rsp.xml")
         val smsDir = Files.createDirectories(tempDir.resolve("sms"))
         val smsFile = smsDir.resolve("leaked_sms.html")
         Files.writeString(threadFile, leakedThreadHtml, StandardCharsets.UTF_8)
+        Files.writeString(htmFile, """<html><head><script>var discuz_uid = '77777';</script></head></html>""", StandardCharsets.UTF_8)
+        Files.writeString(
+            xmlFile,
+            """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来 <input type="hidden" name="formhash" value="a1b2c3d4" />]]></root>""",
+            StandardCharsets.UTF_8,
+        )
         Files.writeString(smsFile, leakedSmsHtml, StandardCharsets.UTF_8)
 
         val error = assertThrows(AssertionError::class.java) {
@@ -71,6 +79,8 @@ class SamplesAreSanitizedTest {
         val message = error.message.orEmpty()
 
         assertTrue(message.contains("leaked_thread.html"), "Failure message should include thread filename: $message")
+        assertTrue(message.contains("leaked_page.htm"), "Failure message should include .htm filename: $message")
+        assertTrue(message.contains("login_rsp.xml"), "Failure message should include .xml filename: $message")
         assertTrue(message.contains("leaked_sms.html"), "Failure message should include sms filename: $message")
         assertTrue(message.contains(LeakType.FORMHASH.name), "Failure message should include FORMHASH: $message")
         assertTrue(message.contains(LeakType.DISCUZ_UID.name), "Failure message should include DISCUZ_UID: $message")
