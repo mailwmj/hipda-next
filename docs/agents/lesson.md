@@ -7,3 +7,6 @@
 
 ## 构建
 - `.gitignore` 忽略了 `gradle.properties`，写在里面的 Gradle 配置不会进仓库，CI 也读不到。（2026-11-24）
+
+## 协作
+- 只读审查员不能在主目录里 `git checkout`：负责人的提交会落到游离的 HEAD 上，推送 `main` 时什么都没推上去。让审查员用 `git show <commit>:<路径>` 读文件，或者在自己新建的 worktree 里检出。（2026-11-24）

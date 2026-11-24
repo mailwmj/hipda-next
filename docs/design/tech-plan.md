@@ -1,6 +1,6 @@
 # hipda-next 现代化技术方案（草案 v0.1）
 
-> 状态：草案 v0.2，已按 Carbon 第一轮评审（T1–T12，全部采纳）修订，待第二轮。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查（P1 的 32 个版本号都存在，而且都是稳定版；需要改的几处已在本文改正），最终以 M0-1 的实测为准。决策记录见 `docs/agents/decisions.md`。
+> 状态：v0.3，已按 Carbon 两轮评审（T1–T17，全部采纳）修订。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查（P1 的 32 个版本号都存在，而且都是稳定版；需要改的几处已在本文改正），最终以 M0-1 的实测为准。决策记录见 `docs/agents/decisions.md`。
 
 ## 1. 目标
 - 用户看到的结果：一个现代、流畅的 HiPDA 客户端。手机、折叠屏的外屏和内屏、平板、分屏窄窗口、深色和浅色模式下都好用。导航是毛玻璃材质；展开后是列表和详情双栏；动效细腻，有交代。
@@ -16,7 +16,7 @@
 
 ## 3. 策略：在原仓库里逐步替换（Strangler）
 1. 先把构建链升级到最新稳定版，保证用户看不到任何变化（M0）。
-2. 打通 Cloudflare 验证通道，让现有应用重新能访问论坛（M1）。
+2. 打通新网络层的 Cloudflare 验证通道（M1）。
 3. 采集 HTML 样本，给每个解析器写测试，作为后续改造的安全网（M2）。
 4. 用 Kotlin 重写数据层，用 Compose 搭新的外壳、设计系统和动效系统（M3、M4）。
 5. 逐屏替换旧界面（M5、M6），最后清理旧代码（M7）。
@@ -48,7 +48,7 @@
 - **旧界面只作参考（用户决定不兼容老版本）**：旧界面保持原样，不接入新的网络层和验证通道，M7 时删除。新代码有自己的 OkHttpClient 和 `SiteCookieStore`，不读写旧的偏好和数据库。
 - **新旧界面不混跳（T3）**：M4–M6 期间，新的 Compose 外壳从一个单独的“预览”入口进入（debug 构建里的第二个启动图标），旧界面的入口和跳转都不动。全部新页面完成后，在 M7 一次性切换启动入口、`IntentActivity` 和桌面快捷方式。这样就不需要 EventBus 和双写存储之类的胶水代码。
 - **验证面板有独立的宿主（T3）**：用一个透明的 `ChallengeActivity`（singleTop）承载验证用的 WebView，不管前台是新界面还是旧界面，都能弹出验证面板。
-- **解析器先上测试，再抽模块（T2）**：现有解析器依赖 Context、HiSettingsHelper，还会在解析时开线程发通知，不能原样搬进纯 JVM 模块。顺序是：样本导出工具（debug 构建里的工具页，用新的网络层和验证通道抓取页面）→ 在 `:hipda` 里对现有解析入口写样本回归测试（Robolectric）→ 再分批抽到 `:core-parser`，同时剥离 Android 依赖和副作用，并把散落在 `PrePostAsyncTask`、`LoginHelper`、`FavoriteHelper`、`PostSmsAsyncTask`、`NotiHelper`、`UploadImgHelper` 里的解析代码收拢过来。每抽一批，都用已有的样本测试证明行为没变。
+- **解析器先上测试，再抽模块（T2）**：现有解析器依赖 Context、HiSettingsHelper，还会在解析时开线程发通知，不能原样搬进纯 JVM 模块。顺序是：样本导出工具（debug 构建里的工具页，内置 WebView 登录，用新的网络层和验证通道抓取页面）→ 在 `:hipda` 里对现有解析入口写样本回归测试（Robolectric）→ 在 `:core-parser` 里用 Kotlin 分批写新的解析器和不可变模型（不依赖 Android、不读写设置、没有副作用；不删改旧的 Java 解析器，M7 时一起删），并把散落在 `PrePostAsyncTask`、`LoginHelper`、`FavoriteHelper`、`PostSmsAsyncTask`、`NotiHelper`、`UploadImgHelper` 里的解析代码收拢过来。每写一批，都用同一批样本断言新旧输出等价。
 - **帖子正文用 Compose 原生渲染（T6）**：解析器已经把引用、图片、跳楼、附件、投票拆成了独立的块，正文文本块只含基础的内联标签、链接和表情。直接用 `AnnotatedString` + `InlineTextContent`（表情取自 `:emoji` 的资源）+ `LinkAnnotation` 渲染，不用 AndroidView 包旧的 TextView。文字颜色的可读性判断（`TextStyle.java:49`）从解析阶段移到渲染阶段，切换深浅色后才不会错色。
 - **共享文件的改动集中在一张卡里（T7）**：M0-2 一次性把方案确定的全部依赖和插件写进 version catalog，建好空的 `:core-parser` 模块，挂上 `@HiltAndroidApp`。后续各条开发线只改自己目录下的源码。界面字符串按功能拆成 `res/values/strings_<功能>.xml`。
 
@@ -70,13 +70,13 @@
 - 何时分双栏由系统根据可用宽度决定，不提供开关。Material 默认的 `calculatePaneScaffoldDirective` 在中等宽度（600–839dp）只给单栏；我们用自定义的 `PaneScaffoldDirective`：宽度够放下“列表 300dp 加详情 380dp”时就分双栏（规则见产品设计 4.1）。
 - 铰链：默认的 `HingePolicy.AvoidSeparating` 只在铰链把屏幕物理分开时避让，内屏展平时不避让，这正是我们想要的。
 - 状态保持：选中的帖子、阅读位置（页码、楼层、偏移量）、正在输入的回复内容，都存在 SavedStateHandle 或数据库里。折叠、展开、旋转、进程被系统回收后都能恢复。
-- 详细的布局和动效规范见产品设计方案（`docs/design/product-design.md`，待写）。
+- 详细的布局和动效规范见产品设计方案（`docs/design/product-design.md`）。
 
 ## 8. 分阶段与验收
 | 阶段 | 结果 | 证据 |
 |---|---|---|
 | M0 构建链 | 用新工具链编译通过，CI 建立，用户看不到变化（targetSdk 保持 30）；M0-2 建好依赖目录和模块空壳 | CI 运行记录；模拟器冒烟测试的截图和 logcat |
-| M1 验证通道 | 新的网络层能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测、排队、冷却、重试、逐跳 Cookie、跨域剥离、POST 改 GET）；debug 工具页在设备上成功抓到版块页的截图 |
+| M1 验证通道 | 新的网络层能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测、排队、冷却、重试、逐跳 Cookie、跨域剥离、POST 改 GET）；B1b 完成后，用户在 debug 工具页登录并抓到版块页的截图 |
 | M2 安全网 | 样本导出（脱敏）→ 现有解析器的样本回归测试 → 分批抽到 `:core-parser` | 测试报告；故意改坏一个解析器，测试会失败；脱敏扫描测试 |
 | M3 数据层 | Kotlin Repository、Hilt、Room 和 DataStore（全新结构，不迁移旧数据）、提醒轮询 | 单元测试 |
 | M4 外壳 | 预览入口里的主题、毛玻璃导航、自适应外壳、动效系统 | Roborazzi 截图；动效逐帧测试；“减少动态效果”测试；重组次数断言 |
@@ -93,4 +93,4 @@
 1. Cloudflare：cf_clearance 和设备、IP、UA 绑定，默认 30 分钟过期。网络指纹和浏览器不一致时，可能过了验证仍被拦，所以底层优先用与 Chrome 一致的网络栈。没有这种网络栈的旧设备（Android 13 及以下、又没有 Play 服务）风险最高，退回 OkHttp 加单次重试；实测仍过不了时，按 ABI 分包引入 `cronet-bundled`（T11）。网络切换导致出口 IP 变化后凭证是否失效，官方没有明说（属于工程经验）；做法是：网络切换后再遇到验证页，就重新验证，不预先清掉凭证。
 2. 样本采集依赖用户登录，这一步只有用户能做。
 3. 帖子正文的 Compose 原生渲染：表情、链接、跳楼的点击和长按菜单要重新实现，旧版 `TextViewWithEmoticon` 的行为要逐项对照（以 B 线的样本为输入做截图测试）。
-5. 帖子里的 Emoji：页面按 GBK 提交，Unicode Emoji 要先转成十进制 HTML 实体（`&#...;`），否则会变成问号（`PostHelper.java:84-86`，T8）。
+4. 帖子里的 Emoji：页面按 GBK 提交，Unicode Emoji 要先转成十进制 HTML 实体（`&#...;`），否则会变成问号（`PostHelper.java:84-86`，T8）。
