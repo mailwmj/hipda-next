@@ -44,8 +44,13 @@
 -keep class **.R$* {
     <fields>;
 }
+-keep class com.mikepenz.iconics.typeface.ITypeface { *; }
+-keep class * implements com.mikepenz.iconics.typeface.ITypeface { *; }
 
+# android-priority-jobqueue (MessageFactory instantiates Message subclasses via reflection)
 -dontwarn com.birbit.android.jobqueue.scheduling.Gcm*
+-keep class com.birbit.android.jobqueue.messaging.Message { *; }
+-keep class * extends com.birbit.android.jobqueue.messaging.Message { *; }
 
 #EventBus 3.x
 -keepclassmembers class ** {
