@@ -84,6 +84,46 @@ jobs:
             emoji/build/reports/lint-results-debug.*
           if-no-files-found: warn
 
+      - name: Summarize unit test results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          files = sorted(glob.glob("**/build/test-results/**/*.xml", recursive=True))
+          if not files:
+              print("No JUnit XML test result files found.")
+              raise SystemExit(0)
+          total_tests = total_fail = total_err = total_skip = 0
+          print("=== Unit Test Summary (JUnit XML) ===")
+          for path in files:
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+              for s in suites:
+                  name = s.attrib.get("name", path)
+                  tests = int(s.attrib.get("tests", 0))
+                  failures = int(s.attrib.get("failures", 0))
+                  errors = int(s.attrib.get("errors", 0))
+                  skipped = int(s.attrib.get("skipped", 0))
+                  passed = tests - failures - errors - skipped
+                  total_tests += tests
+                  total_fail += failures
+                  total_err += errors
+                  total_skip += skipped
+                  print(f"  {name}: {tests} tests, {passed} passed, {failures} failed, {errors} errors, {skipped} skipped")
+          total_pass = total_tests - total_fail - total_err - total_skip
+          print(f"TOTAL: {total_tests} tests, {total_pass} passed, {total_fail} failed, {total_err} errors, {total_skip} skipped")
+          PY
+
+      - name: Upload unit test results and reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-reports
+          path: |
+            **/build/test-results/**/*.xml
+            **/build/reports/tests/**
+          if-no-files-found: warn
+
   emulator-smoke:
     name: Emulator Smoke Test (API 36)
     needs: build
