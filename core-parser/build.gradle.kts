@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.testing.Test
 
 plugins {
@@ -11,6 +12,10 @@ kotlin {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    inputs.dir(rootProject.layout.projectDirectory.dir("hipda/src/test/resources/samples"))
+        .withPropertyName("hipdaTestSamples")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .optional()
 }
 
 dependencies {

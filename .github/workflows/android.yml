@@ -44,15 +44,32 @@ jobs:
       - name: Ensure gradlew is executable
         run: chmod +x gradlew
 
-      - name: Build, lint, and run unit tests
-        run: ./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest :core-parser:test --stacktrace
+      - name: Build and lint
+        run: ./gradlew assembleDebug assembleRelease lintDebug --stacktrace
 
-      - name: Verify Roborazzi screenshots
-        id: roborazzi_verify
-        run: ./gradlew :hipda:verifyRoborazziDebug --stacktrace
+      - name: Verify Room schema consistency
+        run: |
+          set -euo pipefail
+          untracked=$(git ls-files --others --exclude-standard -- hipda/schemas/)
+          diff_failed=0
+          if ! git diff --exit-code -- hipda/schemas/; then
+            diff_failed=1
+          fi
+          if [ "$diff_failed" -ne 0 ] || [ -n "$untracked" ]; then
+            echo "::error::改了 Room 实体但没有提交新的 schema 文件，或忘了升版本。"
+            if [ -n "$untracked" ]; then
+              echo "未提交的新 schema 文件："
+              echo "$untracked"
+            fi
+            exit 1
+          fi
+
+      - name: Run unit tests and verify Roborazzi screenshots
+        id: unit_tests
+        run: ./gradlew testDebugUnitTest :core-parser:test -Proborazzi.test.verify=true --continue --stacktrace
 
       - name: Upload Roborazzi diff artifacts on failure
-        if: failure() && steps.roborazzi_verify.outcome == 'failure'
+        if: failure() && steps.unit_tests.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
           name: roborazzi-diffs
@@ -67,12 +84,14 @@ jobs:
           ls -la hipda/build/outputs/apk/debug/ hipda/build/outputs/apk/release/
           test -f hipda/build/outputs/apk/release/hipda-ng-release.apk
           BUILD_TOOLS_DIR=$(ls -1d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          DEBUG_BADGING=$("$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/debug/hipda-debug.apk)
+          RELEASE_BADGING=$("$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/release/hipda-ng-release.apk)
           echo "=== aapt2 dump badging (debug) ==="
-          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/debug/hipda-debug.apk | grep -E "^package:|^sdkVersion:|^targetSdkVersion:"
+          grep -E "^package:|^sdkVersion:|^targetSdkVersion:" <<< "$DEBUG_BADGING"
           echo "=== aapt2 dump badging (release) ==="
-          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/release/hipda-ng-release.apk | grep -E "^package:|^sdkVersion:|^targetSdkVersion:"
-          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/debug/hipda-debug.apk | grep -q "^package: name='net.jejer.hipda.next'"
-          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/release/hipda-ng-release.apk | grep -q "^package: name='net.jejer.hipda.next'"
+          grep -E "^package:|^sdkVersion:|^targetSdkVersion:" <<< "$RELEASE_BADGING"
+          grep -q "^package: name='net.jejer.hipda.next'" <<< "$DEBUG_BADGING"
+          grep -q "^package: name='net.jejer.hipda.next'" <<< "$RELEASE_BADGING"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
@@ -107,10 +126,15 @@ jobs:
           if not files:
               print("No JUnit XML test result files found.")
               raise SystemExit(0)
-          total_tests = total_fail = total_err = total_skip = 0
+          total_tests = total_fail = total_err = total_skip = parse_errors = 0
           print("=== Unit Test Summary (JUnit XML) ===")
           for path in files:
-              root = ET.parse(path).getroot()
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError as exc:
+                  parse_errors += 1
+                  print(f"::warning file={path}::Failed to parse JUnit XML {path}: {exc}")
+                  continue
               suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
               for s in suites:
                   name = s.attrib.get("name", path)
@@ -126,6 +150,8 @@ jobs:
                   print(f"  {name}: {tests} tests, {passed} passed, {failures} failed, {errors} errors, {skipped} skipped")
           total_pass = total_tests - total_fail - total_err - total_skip
           print(f"TOTAL: {total_tests} tests, {total_pass} passed, {total_fail} failed, {total_err} errors, {total_skip} skipped")
+          if parse_errors:
+              print(f"WARNINGS: skipped {parse_errors} malformed JUnit XML file(s)")
           PY
 
       - name: Upload unit test results and reports
@@ -229,15 +255,15 @@ jobs:
             test -s "$png_file"
 
             local failed=0
-            if grep -n -A 5 "FATAL EXCEPTION" "$log_file" | grep -q "net\.jejer\.hipda"; then
+            if { grep -n -A 5 "FATAL EXCEPTION" "$log_file" || true; } | grep -q "net\.jejer\.hipda"; then
               echo "ERROR [$variant]: Found FATAL EXCEPTION for net.jejer.hipda in logcat!"
-              grep -n -A 40 "FATAL EXCEPTION" "$log_file"
+              grep -n -A 40 "FATAL EXCEPTION" "$log_file" || true
               failed=1
             fi
 
             if grep -n "ANR in net\.jejer\.hipda\.next" "$log_file"; then
               echo "ERROR [$variant]: Found ANR for net.jejer.hipda.next in logcat!"
-              grep -n -A 20 "ANR in net\.jejer\.hipda\.next" "$log_file"
+              grep -n -A 20 "ANR in net\.jejer\.hipda\.next" "$log_file" || true
               failed=1
             fi
 
@@ -258,7 +284,7 @@ jobs:
             echo "Smoke check passed [$variant]: PID=$pid, no app FATAL EXCEPTION or ANR in logcat."
           }
 
-          DEBUG_APK=$(find artifacts/debug -name "*.apk" | head -n 1)
+          DEBUG_APK=$(find artifacts/debug -name "*.apk" | sort | awk 'NR==1{print}')
           RELEASE_APK="artifacts/release/hipda-ng-release-signed.apk"
 
           run_variant_smoke debug "$DEBUG_APK"
