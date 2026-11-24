@@ -17,7 +17,7 @@
 - 每张卡一个 worktree：`git worktree add ../hipda-next.wt/<卡号> -b card/<卡号>-<简名> origin/main`。一个目录同时只有一个写入者；只读的审查、调研可以并行。
 - 编译以 GitHub Actions 为准：推送分支 → `gh run watch` → 失败时 `gh run view --log-failed`。
 - 本地编译只用于 CI 上复现不了的问题，必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
-- 同时运行的写代码代理最多 3 个。
+- 同时运行的代理（含只读）最多 8 个；本地编译仍按上一条串行。
 
 ## 3. 模型路由
 | 工作类型 | 首选 | 备选 | 思考级别 |
@@ -25,10 +25,12 @@
 | 开发（全部实现卡） | antigravity `gemini-4-neon` | codex `gpt-6.2-sol` | xhigh（备选 high） |
 | 编译与跑测 | antigravity `gemini-4-neon`，每张卡开新会话 | pi `tb-ds/deepseek-flash` | xhigh |
 | 方案与代码独立审查 | antigravity `gemini-4-carbon` | codex `gpt-6.2-sol` | high |
-| 核查 Neon 的调研 | antigravity `gemini-4-carbon` | Haiku | high |
+| 核查 Neon 的调研 | antigravity `gemini-4-carbon` | codex `gpt-6.2-sol` | high |
+| 翻代码、清单类调研、代码搜索 | antigravity `gemini-4-neon`（结构清楚的搜索）或 `gemini-4-hydrogen`（涉及 UI/交互/文案判断） | — | xhigh |
 | 独立规划（负责人是 Claude） | antigravity `gemini-4-neon` | codex `gpt-6.2-astra` | xhigh |
-| 文案顾问 | antigravity `gemini-4-hydrogen` | — | high |
+| 方案、文案、交互、动效顾问 | antigravity `gemini-4-hydrogen` | antigravity `gemini-4-neon` | xhigh |
 - agy 的模式一律用 `full-access`；思考级别用 `thinkingOptionId` 传。
+- 不用 Haiku：翻代码和搜索按复杂度交给 Neon 或 Hydrogen。Hydrogen 的结论要核对 文件:行号 后才能用。
 - Neon 实现的卡由 Carbon 审查；Carbon 不可用时用 Sol 审查。编译跑测以 CI 输出为证据，不算独立审查。
 
 ## 4. 阻断项与敏感区
