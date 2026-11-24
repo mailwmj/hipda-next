@@ -1,2 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<full-backup-content />
+<!--
+  Android Auto Backup (API <= 30) only matches exact file paths or directories; wildcards (*) and
+  filename prefixes (e.g. "hx_") are NOT matched by BackupAgent.
+  Exclude all SharedPreferences (covers Tink keysets in hx_tink_keysets.xml and any future hx_*
+  keyset prefs; new app settings live in files/datastore/settings.preferences_pb) plus every
+  hx_-prefixed encrypted DataStore file explicitly. Keep in sync with data_extraction_rules.xml;
+  BackupExclusionRulesTest enforces coverage.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="sharedpref" path="hx_tink_keysets.xml" />
+    <exclude domain="file" path="datastore/hx_credentials" />
+    <exclude domain="file" path="datastore/hx_site_cookies" />
+</full-backup-content>
