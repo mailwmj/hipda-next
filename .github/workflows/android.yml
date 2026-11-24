@@ -88,6 +88,41 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Prepare smoke test script
+        run: |
+          cat <<'EOF' > /tmp/run-smoke.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p smoke-artifacts
+          APK_PATH=$(find artifacts/apk -name "*.apk" | head -n 1)
+          echo "Installing APK: $APK_PATH"
+          test -n "$APK_PATH"
+          adb logcat -c
+          adb install -r "$APK_PATH"
+          adb shell am start -W -n net.jejer.hipda.ng/net.jejer.hipda.ui.MainFrameActivity
+          sleep 15
+          adb logcat -d > smoke-artifacts/logcat.txt
+          adb exec-out screencap -p > smoke-artifacts/main-activity.png
+          ls -lh smoke-artifacts/
+          test -s smoke-artifacts/main-activity.png
+
+          PID=$(adb shell pidof net.jejer.hipda.ng | tr -d '\r' || true)
+          echo "App PID: ${PID:-<not running>}"
+          if [ -z "$PID" ]; then
+            echo "ERROR: net.jejer.hipda.ng process is not running!"
+            tail -n 100 smoke-artifacts/logcat.txt
+            exit 1
+          fi
+
+          if grep -n -A 5 "FATAL EXCEPTION" smoke-artifacts/logcat.txt | grep -q "net\.jejer\.hipda"; then
+            echo "ERROR: Found FATAL EXCEPTION for net.jejer.hipda in logcat!"
+            grep -n -A 30 "FATAL EXCEPTION" smoke-artifacts/logcat.txt
+            exit 1
+          fi
+          echo "Smoke check passed: PID=$PID, no app FATAL EXCEPTION in logcat."
+          EOF
+          chmod +x /tmp/run-smoke.sh
+
       - name: Run emulator smoke test
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -97,34 +132,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          script: |
-            set -euo pipefail
-            mkdir -p smoke-artifacts
-            APK_PATH=$(find artifacts/apk -name "*.apk" | head -n 1)
-            echo "Installing APK: $APK_PATH"
-            adb logcat -c
-            adb install -r "$APK_PATH"
-            adb shell am start -W -n net.jejer.hipda.ng/net.jejer.hipda.ui.MainFrameActivity
-            sleep 15
-            adb logcat -d > smoke-artifacts/logcat.txt
-            adb exec-out screencap -p > smoke-artifacts/main-activity.png
-            ls -lh smoke-artifacts/
-            test -s smoke-artifacts/main-activity.png
-
-            PID=$(adb shell pidof net.jejer.hipda.ng | tr -d '\r' || true)
-            echo "App PID: ${PID:-<not running>}"
-            if [ -z "$PID" ]; then
-              echo "ERROR: net.jejer.hipda.ng process is not running!"
-              tail -n 100 smoke-artifacts/logcat.txt
-              exit 1
-            fi
-
-            if grep -n -A 5 "FATAL EXCEPTION" smoke-artifacts/logcat.txt | grep -q "net\.jejer\.hipda"; then
-              echo "ERROR: Found FATAL EXCEPTION for net.jejer.hipda in logcat!"
-              grep -n -A 30 "FATAL EXCEPTION" smoke-artifacts/logcat.txt
-              exit 1
-            fi
-            echo "Smoke check passed: PID=$PID, no app FATAL EXCEPTION in logcat."
+          script: /tmp/run-smoke.sh
 
       - name: Upload emulator smoke artifacts
         if: always()
