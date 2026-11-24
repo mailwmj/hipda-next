@@ -6,6 +6,7 @@ import okhttp3.CookieJar
 import okhttp3.Request
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HttpClientModuleTest {
@@ -20,6 +21,14 @@ class HttpClientModuleTest {
         assertEquals(30_000, client.readTimeoutMillis)
         assertEquals(30_000, client.writeTimeoutMillis)
         assertEquals(CookieJar.NO_COOKIES, client.cookieJar)
+    }
+
+    @Test
+    fun provideOkHttpClientHasEmptyInterceptorsAndNetworkInterceptors() {
+        val client = HttpClientModule.provideOkHttpClient()
+
+        assertTrue(client.interceptors.isEmpty())
+        assertTrue(client.networkInterceptors.isEmpty())
     }
 
     @Test

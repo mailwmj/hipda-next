@@ -104,6 +104,84 @@ class SiteCharsetTest {
         assertEquals("", decodeBody(ByteArray(0), null))
     }
 
+    @Test
+    fun utf8BomForcesUtf8AndStripsLeadingBom() {
+        val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+        val payload = bom + "中文".toByteArray(Charsets.UTF_8)
+
+        assertEquals("中文", decodeBody(payload, null))
+        assertEquals("中文", decodeBody(payload, "text/html; charset=utf-8"))
+        assertEquals("", decodeBody(bom, null))
+        assertEquals("", decodeBody(bom, "text/html; charset=utf-8"))
+    }
+
+    @Test
+    fun unclosedHtmlCommentAcross4KbIgnoresCommentedMeta() {
+        val html = "<!-- <meta charset=\"utf-8\"> " + "x".repeat(4100) + " -->中文"
+        val bytes = html.toByteArray(GBK)
+
+        assertEquals(html, decodeBody(bytes, null))
+    }
+
+    @Test
+    fun metaTagCrossing4KbBoundaryIsStillDetected() {
+        val html = " ".repeat(4086) + "<meta charset=\"utf-8\">中文"
+        val bytes = html.toByteArray(Charsets.UTF_8)
+
+        assertEquals(html, decodeBody(bytes, null))
+    }
+
+    @Test
+    fun quotedParamContainingCharsetDoesNotShadowRealCharset() {
+        val gbkText = "中文䶮"
+        val gbkBytes = gbkText.toByteArray(GB18030)
+
+        assertEquals(
+            gbkText,
+            decodeBody(gbkBytes, "text/html; param=\"foo; charset=utf-8\"; charset=gbk"),
+        )
+        assertEquals(
+            gbkText,
+            decodeBody(gbkBytes, "text/html; param=\"foo; charset=utf-8\""),
+        )
+
+        val utf8Text = "回退正则取首个合法字符集😀"
+        assertEquals(
+            utf8Text,
+            decodeBody(
+                utf8Text.toByteArray(Charsets.UTF_8),
+                "text/html; broken param; charset=bad!name; charset=utf-8",
+            ),
+        )
+    }
+
+    @Test
+    fun gbkAliasesSingleQuotesAndMalformedCharsetNameHandledSafely() {
+        val expected = "中文䶮"
+        val bytes = expected.toByteArray(GB18030)
+
+        assertEquals(expected, decodeBody(bytes, "text/html; charset=x-gbk"))
+        assertEquals(expected, decodeBody(bytes, "text/html; charset='gbk'"))
+        assertEquals(expected, decodeBody(bytes, "text/html; charset=bad!name"))
+    }
+
+    @Test
+    fun multibyteCharactersCrossing4KbBoundaryDecodeIntact() {
+        val gbkCrossing = "a".repeat(4095) + "中文测试"
+        assertEquals(gbkCrossing, decodeBody(gbkCrossing.toByteArray(GBK), null))
+
+        val utf8Head = "<meta charset=\"utf-8\">"
+        val utf8Crossing = utf8Head + "a".repeat(4095 - utf8Head.length) + "中文😀测试"
+        assertEquals(utf8Crossing, decodeBody(utf8Crossing.toByteArray(Charsets.UTF_8), null))
+
+        val metaWithUtf8Crossing =
+            " ".repeat(4080) + "<meta name=\"中\" charset=\"utf-8\">中文"
+        assertEquals(
+            metaWithUtf8Crossing,
+            decodeBody(metaWithUtf8Crossing.toByteArray(Charsets.UTF_8), null),
+        )
+    }
+
     private companion object {
         val GBK: Charset = Charset.forName("GBK")
         val GB18030: Charset = Charset.forName("GB18030")

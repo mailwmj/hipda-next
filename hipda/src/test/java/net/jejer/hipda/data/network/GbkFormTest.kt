@@ -22,6 +22,23 @@ class GbkFormTest {
     @Test
     fun unpairedSurrogateBecomesDecimalEntityWithoutThrowing() {
         assertEquals("前&#55357;后", toGbkSafe("前\uD83D后"))
+        assertEquals("尾&#55357;", toGbkSafe("尾\uD83D"))
+        assertEquals("&#56832;", toGbkSafe("\uDE00"))
+    }
+
+    @Test
+    fun variationSelectorAndKeycapEmojiSequencesBecomeDecimalEntities() {
+        assertEquals("&#10084;&#65039;", toGbkSafe("❤️"))
+        assertEquals("1&#65039;&#8419;", toGbkSafe("1️⃣"))
+    }
+
+    @Test
+    fun tildeIsPercentEncodedInGbkFormBody() {
+        val body = gbkFormBody(listOf("k" to "~"))
+        val buffer = Buffer()
+        body.writeTo(buffer)
+
+        assertEquals("k=%7E", buffer.readUtf8())
     }
 
     @Test
