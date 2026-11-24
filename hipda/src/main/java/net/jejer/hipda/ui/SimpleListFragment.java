@@ -206,34 +206,34 @@ public class SimpleListFragment extends BaseFragment
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case android.R.id.home:
-                // Implemented in activity
-                return false;
-            case R.id.action_refresh:
-                refresh();
-                return true;
-            case R.id.action_favories:
-                mLoadingView.setState(ContentLoadingView.LOAD_NOW);
-                if (mFavoritesMenuItem.getTitle().toString().equals(getString(R.string.action_attention))) {
-                    mFavoritesMenuItem.setTitle(R.string.action_favorites);
-                    mType = SimpleListJob.TYPE_ATTENTION;
-                    setActionBarTitle(R.string.title_my_attention);
-                } else {
-                    mFavoritesMenuItem.setTitle(R.string.action_attention);
-                    mType = SimpleListJob.TYPE_FAVORITES;
-                    setActionBarTitle(R.string.title_my_favorites);
-                }
-                mSimpleListItemBeans.clear();
-                mSimpleListAdapter.setDatas(mSimpleListItemBeans);
-                mRecyclerView.setFooterState(XFooterView.STATE_HIDDEN);
-                refresh();
-                return true;
-            case R.id.action_send_sms:
-                showSendSmsDialog("", "", this);
-                return true;
-            default:
-                return super.onOptionsItemSelected(item);
+        int itemId = item.getItemId();
+        if (itemId == android.R.id.home) {
+            // Implemented in activity
+            return false;
+        } else if (itemId == R.id.action_refresh) {
+            refresh();
+            return true;
+        } else if (itemId == R.id.action_favories) {
+            mLoadingView.setState(ContentLoadingView.LOAD_NOW);
+            if (mFavoritesMenuItem.getTitle().toString().equals(getString(R.string.action_attention))) {
+                mFavoritesMenuItem.setTitle(R.string.action_favorites);
+                mType = SimpleListJob.TYPE_ATTENTION;
+                setActionBarTitle(R.string.title_my_attention);
+            } else {
+                mFavoritesMenuItem.setTitle(R.string.action_attention);
+                mType = SimpleListJob.TYPE_FAVORITES;
+                setActionBarTitle(R.string.title_my_favorites);
+            }
+            mSimpleListItemBeans.clear();
+            mSimpleListAdapter.setDatas(mSimpleListItemBeans);
+            mRecyclerView.setFooterState(XFooterView.STATE_HIDDEN);
+            refresh();
+            return true;
+        } else if (itemId == R.id.action_send_sms) {
+            showSendSmsDialog("", "", this);
+            return true;
+        } else {
+            return super.onOptionsItemSelected(item);
         }
     }
 

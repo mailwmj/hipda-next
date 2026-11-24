@@ -391,82 +391,81 @@ public class ThreadDetailFragment extends BaseFragment {
         }
     }
 
-    @SuppressLint("NonConstantResourceId")
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case android.R.id.home:
-                // Implemented in activity
-                return false;
-            case R.id.action_only_author:
-                if (isInAuthorOnlyMode()) {
-                    cancelAuthorOnlyMode();
-                } else {
-                    if (mCache.get(1) != null) {
-                        DetailBean detailBean = mCache.get(1).getAll().get(0);
-                        enterAuthorOnlyMode(detailBean.getUid());
-                    } else {
-                        enterAuthorOnlyMode(ThreadDetailJob.FIND_AUTHOR_ID);
-                    }
-                }
-                return true;
-            case R.id.action_open_url:
-                String url = HiUtils.DetailListUrl + mTid;
-                if (mViewBeginPage > 1)
-                    url += "&page=" + mViewBeginPage;
-                try {
-                    CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
-                    builder.setStartAnimations(getActivity(), R.anim.slide_in_right, 0);
-                    builder.setExitAnimations(getActivity(), 0, R.anim.slide_out_right);
-                    CustomTabsIntent customTabsIntent = builder.build();
-                    customTabsIntent.launchUrl(getActivity(), Uri.parse(url));
-                } catch (Exception e) {
-                    UIUtils.toast("没有找到浏览器应用 : " + e.getMessage());
-                }
-                return true;
-            case R.id.action_copy_url:
-                ClipboardManager clipboard = (ClipboardManager) getActivity().getSystemService(Context.CLIPBOARD_SERVICE);
-                ClipData clip = ClipData.newPlainText("THREAD URL FROM HiPDA", HiUtils.DetailListUrl + mTid);
-                clipboard.setPrimaryClip(clip);
-                UIUtils.toast("帖子地址已经复制到粘贴板");
-                return true;
-            case R.id.action_share_thread:
-                Intent sharingIntent = new Intent(android.content.Intent.ACTION_SEND);
-                sharingIntent.setType("text/plain");
-                String shareBody = "主题：" + mTitle + "\n";
-                if (mCache.get(1) != null && mCache.get(1).getAll().size() > 0)
-                    shareBody += ("作者：" + mCache.get(1).getAll().get(0).getAuthor()) + "\n";
-                shareBody += HiUtils.DetailListUrl + mTid;
-                sharingIntent.putExtra(android.content.Intent.EXTRA_TEXT, shareBody);
-                startActivity(Intent.createChooser(sharingIntent, "分享帖子"));
-                return true;
-            case R.id.action_reply:
-                showPost("");
-                return true;
-            case R.id.action_refresh_detail:
-                mLoadingView.setState(ContentLoadingView.LOAD_NOW);
-                refresh();
-                return true;
-            case R.id.action_goto:
-                showGotoPageDialog();
-                return true;
-            case R.id.action_add_favorite:
-                if (FavoriteHelper.getInstance().isInFavorite(mTid))
-                    FavoriteHelper.getInstance().removeFavorite(getActivity(), FavoriteHelper.TYPE_FAVORITE, mTid);
-                else
-                    FavoriteHelper.getInstance().addFavorite(getActivity(), FavoriteHelper.TYPE_FAVORITE, mTid);
-                return true;
-            case R.id.action_add_attention:
-                if (FavoriteHelper.getInstance().isInAttention(mTid))
-                    FavoriteHelper.getInstance().removeFavorite(getActivity(), FavoriteHelper.TYPE_ATTENTION, mTid);
-                else
-                    FavoriteHelper.getInstance().addFavorite(getActivity(), FavoriteHelper.TYPE_ATTENTION, mTid);
-                return true;
-            case R.id.action_show_all:
+        int itemId = item.getItemId();
+        if (itemId == android.R.id.home) {
+            // Implemented in activity
+            return false;
+        } else if (itemId == R.id.action_only_author) {
+            if (isInAuthorOnlyMode()) {
                 cancelAuthorOnlyMode();
-                return true;
-            default:
-                return super.onOptionsItemSelected(item);
+            } else {
+                if (mCache.get(1) != null) {
+                    DetailBean detailBean = mCache.get(1).getAll().get(0);
+                    enterAuthorOnlyMode(detailBean.getUid());
+                } else {
+                    enterAuthorOnlyMode(ThreadDetailJob.FIND_AUTHOR_ID);
+                }
+            }
+            return true;
+        } else if (itemId == R.id.action_open_url) {
+            String url = HiUtils.DetailListUrl + mTid;
+            if (mViewBeginPage > 1)
+                url += "&page=" + mViewBeginPage;
+            try {
+                CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
+                builder.setStartAnimations(getActivity(), R.anim.slide_in_right, 0);
+                builder.setExitAnimations(getActivity(), 0, R.anim.slide_out_right);
+                CustomTabsIntent customTabsIntent = builder.build();
+                customTabsIntent.launchUrl(getActivity(), Uri.parse(url));
+            } catch (Exception e) {
+                UIUtils.toast("没有找到浏览器应用 : " + e.getMessage());
+            }
+            return true;
+        } else if (itemId == R.id.action_copy_url) {
+            ClipboardManager clipboard = (ClipboardManager) getActivity().getSystemService(Context.CLIPBOARD_SERVICE);
+            ClipData clip = ClipData.newPlainText("THREAD URL FROM HiPDA", HiUtils.DetailListUrl + mTid);
+            clipboard.setPrimaryClip(clip);
+            UIUtils.toast("帖子地址已经复制到粘贴板");
+            return true;
+        } else if (itemId == R.id.action_share_thread) {
+            Intent sharingIntent = new Intent(android.content.Intent.ACTION_SEND);
+            sharingIntent.setType("text/plain");
+            String shareBody = "主题：" + mTitle + "\n";
+            if (mCache.get(1) != null && mCache.get(1).getAll().size() > 0)
+                shareBody += ("作者：" + mCache.get(1).getAll().get(0).getAuthor()) + "\n";
+            shareBody += HiUtils.DetailListUrl + mTid;
+            sharingIntent.putExtra(android.content.Intent.EXTRA_TEXT, shareBody);
+            startActivity(Intent.createChooser(sharingIntent, "分享帖子"));
+            return true;
+        } else if (itemId == R.id.action_reply) {
+            showPost("");
+            return true;
+        } else if (itemId == R.id.action_refresh_detail) {
+            mLoadingView.setState(ContentLoadingView.LOAD_NOW);
+            refresh();
+            return true;
+        } else if (itemId == R.id.action_goto) {
+            showGotoPageDialog();
+            return true;
+        } else if (itemId == R.id.action_add_favorite) {
+            if (FavoriteHelper.getInstance().isInFavorite(mTid))
+                FavoriteHelper.getInstance().removeFavorite(getActivity(), FavoriteHelper.TYPE_FAVORITE, mTid);
+            else
+                FavoriteHelper.getInstance().addFavorite(getActivity(), FavoriteHelper.TYPE_FAVORITE, mTid);
+            return true;
+        } else if (itemId == R.id.action_add_attention) {
+            if (FavoriteHelper.getInstance().isInAttention(mTid))
+                FavoriteHelper.getInstance().removeFavorite(getActivity(), FavoriteHelper.TYPE_ATTENTION, mTid);
+            else
+                FavoriteHelper.getInstance().addFavorite(getActivity(), FavoriteHelper.TYPE_ATTENTION, mTid);
+            return true;
+        } else if (itemId == R.id.action_show_all) {
+            cancelAuthorOnlyMode();
+            return true;
+        } else {
+            return super.onOptionsItemSelected(item);
         }
     }
 
