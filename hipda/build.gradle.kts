@@ -71,6 +71,8 @@ dependencies {
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.browser)
+    implementation(libs.androidx.swiperefreshlayout)
+    implementation(libs.androidx.documentfile)
 
     implementation(libs.jsoup)
 
