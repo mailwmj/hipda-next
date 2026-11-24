@@ -30,11 +30,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: "[TEMP PROOF #1] Verify smoke script detects FATAL EXCEPTION under SIGPIPE load"
+      - name: "[TEMP PROOF #1] Verify smoke script detects FATAL EXCEPTION under SIGPIPE/EPIPE load"
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import re, subprocess
+          import re
           text = open(".github/workflows/android.yml").read()
           m = re.search(r"cat <<'EOF' > /tmp/run-smoke\.sh\n(.*?)\n          EOF", text, re.S)
           assert m, "Failed to extract /tmp/run-smoke.sh from android.yml"
@@ -87,8 +87,8 @@ jobs:
           grep -n -A 5 "FATAL EXCEPTION" "$work/sample-logcat.txt" | grep -q "net\.jejer\.hipda"
           old_rc=$?
           set -e
-          echo "=== SIGPIPE comparison: old pipeline rc=$old_rc (141 means SIGPIPE silently missed crash!) ==="
-          test "$old_rc" -eq 141
+          echo "=== SIGPIPE/EPIPE comparison: old pipeline rc=$old_rc (non-zero means pipefail silently missed crash!) ==="
+          test "$old_rc" -ne 0
 
           echo "=== Running actual /tmp/run-smoke.sh with stubbed adb (expecting non-zero crash failure) ==="
           cd "$work"
