@@ -40,6 +40,9 @@ object SettingsModule {
     fun provideSettingsDataStore(
         @ApplicationContext context: Context,
     ): DataStore<Preferences> = PreferenceDataStoreFactory.create(
+        corruptionHandler = ReplaceFileCorruptionHandler(
+            produceNewData = { emptyPreferences() },
+        ),
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
         produceFile = { settingsDataStoreFile(context) },
     )
