@@ -1,5 +1,6 @@
 package net.jejer.hipda.parser.sanitize
 
+import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import org.jsoup.select.NodeTraversor
@@ -81,4 +82,7 @@ object SanitizeSelectors {
     }
 
     internal fun Node.collectTextNodes(): List<TextNode> = buildList { forEachNode { if (it is TextNode) add(it) } }
+
+    // 避免 Kotlin 2.4 推断 Jsoup Element.selectFirst 的 @org.jspecify.annotations.Nullable 类型注解报错
+    internal fun Element.firstMatch(selector: String): Element? = select(selector).firstOrNull()
 }

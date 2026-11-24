@@ -1,5 +1,6 @@
 package net.jejer.hipda.parser.sanitize
 
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.firstMatch
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -50,17 +51,17 @@ class HtmlSanitizerTest {
         assertFalse(sanitized.contains("%E5%BC%A0%E4%B8%89", ignoreCase = true))
 
         assertTrue(doc.title().contains("HiUser"))
-        assertEquals("post_54321", doc.selectFirst("div.postbox")?.id(), "DOM id must not be modified")
-        assertEquals("space.php?uid=10000&username=HiUser", doc.selectFirst("a[title]")?.attr("href"))
-        assertEquals("访问 HiUser 的空间", doc.selectFirst("a[title]")?.attr("title"))
-        assertEquals("HiUser", doc.selectFirst("a[title]")?.text())
+        assertEquals("post_54321", doc.firstMatch("div.postbox")?.id(), "DOM id must not be modified")
+        assertEquals("space.php?uid=10000&username=HiUser", doc.firstMatch("a[title]")?.attr("href"))
+        assertEquals("访问 HiUser 的空间", doc.firstMatch("a[title]")?.attr("title"))
+        assertEquals("HiUser", doc.firstMatch("a[title]")?.text())
         assertEquals("search.php?srchuid=10000&srchuname=HiUser", doc.select("a")[1].attr("href"))
         assertEquals("viewthread.php?tid=9543210", doc.select("a")[2].attr("href"))
-        assertTrue(doc.selectFirst("img")!!.attr("src").contains("000/01/00/00_avatar_middle.jpg"))
-        assertEquals("HiUser", doc.selectFirst("img")?.attr("alt"))
-        assertEquals("用户详情 (UID: 10000)", doc.selectFirst("p")?.text())
-        assertEquals("HiUser", doc.selectFirst("input[name=author]")?.attr("value"))
-        val script = doc.selectFirst("script")!!.data()
+        assertTrue(doc.firstMatch("img")!!.attr("src").contains("000/01/00/00_avatar_middle.jpg"))
+        assertEquals("HiUser", doc.firstMatch("img")?.attr("alt"))
+        assertEquals("用户详情 (UID: 10000)", doc.firstMatch("p")?.text())
+        assertEquals("HiUser", doc.firstMatch("input[name=author]")?.attr("value"))
+        val script = doc.firstMatch("script")!!.data()
         assertTrue(script.contains("var currentUser = 'HiUser';"))
         assertTrue(script.contains("var currentUid = '10000';"))
         assertTrue(script.contains("var encodedUser = 'HiUser';"))
@@ -106,15 +107,15 @@ class HtmlSanitizerTest {
         val sanitized = HtmlSanitizer.sanitize(raw, PageType.POST_FORM, identity)
         val doc = Jsoup.parse(sanitized)
 
-        assertEquals("00000000", doc.selectFirst("input[name=formhash]")?.attr("value"))
-        assertEquals("00000000", doc.selectFirst("input[name=m_formhash]")?.attr("value"))
-        assertEquals("0".repeat(32), doc.selectFirst("input[name=hash]")?.attr("value"))
-        assertEquals("000000", doc.selectFirst("input[name=sid]")?.attr("value"))
-        assertEquals("000000000", doc.selectFirst("input[name=auth]")?.attr("value"))
-        assertEquals("0000", doc.selectFirst("input[name=seccode]")?.attr("value"))
+        assertEquals("00000000", doc.firstMatch("input[name=formhash]")?.attr("value"))
+        assertEquals("00000000", doc.firstMatch("input[name=m_formhash]")?.attr("value"))
+        assertEquals("0".repeat(32), doc.firstMatch("input[name=hash]")?.attr("value"))
+        assertEquals("000000", doc.firstMatch("input[name=sid]")?.attr("value"))
+        assertEquals("000000000", doc.firstMatch("input[name=auth]")?.attr("value"))
+        assertEquals("0000", doc.firstMatch("input[name=seccode]")?.attr("value"))
         assertEquals(
             "post.php?action=reply&formhash=00000000&sid=000000",
-            doc.selectFirst("form")?.attr("action"),
+            doc.firstMatch("form")?.attr("action"),
         )
         assertEquals(
             "logging.php?action=logout&formhash=00000000",
@@ -125,7 +126,7 @@ class HtmlSanitizerTest {
             doc.select("a")[1].attr("href"),
         )
 
-        val script = doc.selectFirst("script")!!.data()
+        val script = doc.firstMatch("script")!!.data()
         assertTrue(script.contains("var formhash = '00000000';"))
         assertTrue(script.contains("\"hash\": \"${"0".repeat(32)}\""))
         assertTrue(script.contains("sid: '000000'"))
@@ -191,13 +192,13 @@ class HtmlSanitizerTest {
         val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_LIST, identity)
         val doc = Jsoup.parse(sanitized)
 
-        val umenu = doc.selectFirst("div#umenu")!!
-        val userLink = umenu.selectFirst("cite a.noborder")!!
+        val umenu = doc.firstMatch("div#umenu")!!
+        val userLink = umenu.firstMatch("cite a.noborder")!!
         assertEquals("space.php?uid=10000", userLink.attr("href"))
         assertEquals("HiUser", userLink.text())
         assertTrue(umenu.html().contains("space.php"), "LoginHelper.checkLoggedin requires space.php")
-        assertEquals("logging.php?action=logout&formhash=00000000", umenu.select("a").last()!!.attr("href"))
-        assertEquals("退出", umenu.select("a").last()!!.text())
+        assertEquals("logging.php?action=logout&formhash=00000000", umenu.select("a").lastOrNull()!!.attr("href"))
+        assertEquals("退出", umenu.select("a").lastOrNull()!!.text())
         assertStructureUnchanged(raw, sanitized, listOf("div#umenu", "#umenu cite a", "#umenu cite a.noborder", "div#umenu a"))
         assertTrue(SampleLeakScanner.scan(sanitized).isEmpty())
     }
@@ -241,18 +242,18 @@ class HtmlSanitizerTest {
         val items = doc.select("ul.pm_list li")
 
         assertEquals(2, items.size)
-        assertEquals("HiPeer", items[0].selectFirst("p.cite cite")?.text())
-        assertEquals("space.php?uid=20000", items[0].selectFirst("p.cite cite a")?.attr("href"))
-        assertEquals("space.php?uid=20000", items[0].selectFirst("a.avatar")?.attr("href"))
-        assertTrue(items[0].selectFirst("a.avatar img")!!.attr("src").contains("000/02/00/00_avatar_middle.jpg"))
-        assertEquals("测试内容测试内容测试", items[0].selectFirst("div.summary")?.text())
-        assertEquals("今晚八点老地方见面！".length, items[0].selectFirst("div.summary")!!.text().length)
-        assertEquals("2026-11-20 10:00", items[0].selectFirst("p.cite")?.ownText())
+        assertEquals("HiPeer", items[0].firstMatch("p.cite cite")?.text())
+        assertEquals("space.php?uid=20000", items[0].firstMatch("p.cite cite a")?.attr("href"))
+        assertEquals("space.php?uid=20000", items[0].firstMatch("a.avatar")?.attr("href"))
+        assertTrue(items[0].firstMatch("a.avatar img")!!.attr("src").contains("000/02/00/00_avatar_middle.jpg"))
+        assertEquals("测试内容测试内容测试", items[0].firstMatch("div.summary")?.text())
+        assertEquals("今晚八点老地方见面！".length, items[0].firstMatch("div.summary")!!.text().length)
+        assertEquals("2026-11-20 10:00", items[0].firstMatch("p.cite")?.ownText())
 
-        assertEquals("HiPeer", items[1].selectFirst("p.cite cite")?.text())
-        assertEquals("space.php?uid=20000", items[1].selectFirst("p.cite cite a")?.attr("href"))
-        assertEquals("测试内", items[1].selectFirst("div.summary")?.text())
-        assertEquals("好呀呀".length, items[1].selectFirst("div.summary")!!.text().length)
+        assertEquals("HiPeer", items[1].firstMatch("p.cite cite")?.text())
+        assertEquals("space.php?uid=20000", items[1].firstMatch("p.cite cite a")?.attr("href"))
+        assertEquals("测试内", items[1].firstMatch("div.summary")?.text())
+        assertEquals("好呀呀".length, items[1].firstMatch("div.summary")!!.text().length)
 
         assertFalse(sanitized.contains("PeerAlice"))
         assertFalse(sanitized.contains("PeerBob"))
@@ -314,23 +315,23 @@ class HtmlSanitizerTest {
         assertEquals("与 HiPeer 的短消息", doc.title())
 
         // Peer message
-        assertEquals("HiPeer", items[0].selectFirst("p.cite cite")?.text())
-        assertEquals("space.php?uid=20000", items[0].selectFirst("a.avatar")?.attr("href"))
-        assertEquals("space.php?uid=20000", items[0].selectFirst("div.summary a")?.attr("href"))
-        assertEquals("测试内容", items[0].selectFirst("div.summary a")?.text())
+        assertEquals("HiPeer", items[0].firstMatch("p.cite cite")?.text())
+        assertEquals("space.php?uid=20000", items[0].firstMatch("a.avatar")?.attr("href"))
+        assertEquals("space.php?uid=20000", items[0].firstMatch("div.summary a")?.attr("href"))
+        assertEquals("测试内容", items[0].firstMatch("div.summary a")?.text())
         assertEquals(1, items[0].select("div.summary br").size)
         assertEquals(1, items[0].select("div.summary img").size)
 
         // Self message
-        assertEquals("HiUser", items[1].selectFirst("p.cite cite")?.text())
-        assertEquals("space.php?uid=10000", items[1].selectFirst("a.avatar")?.attr("href"))
-        assertEquals("收到 UserTwo 的消息了".length, items[1].selectFirst("div.summary")!!.text().length)
-        assertEquals("测试内容测试内容测试内容测试内", items[1].selectFirst("div.summary")?.text())
+        assertEquals("HiUser", items[1].firstMatch("p.cite cite")?.text())
+        assertEquals("space.php?uid=10000", items[1].firstMatch("a.avatar")?.attr("href"))
+        assertEquals("收到 UserTwo 的消息了".length, items[1].firstMatch("div.summary")!!.text().length)
+        assertEquals("测试内容测试内容测试内容测试内", items[1].firstMatch("div.summary")?.text())
 
         // Reply form
-        assertEquals("pm.php?action=send&uid=20000", doc.selectFirst("form")?.attr("action"))
-        assertEquals("00000000", doc.selectFirst("input#formhash")?.attr("value"))
-        assertEquals("HiPeer", doc.selectFirst("input[name=msgto]")?.attr("value"))
+        assertEquals("pm.php?action=send&uid=20000", doc.firstMatch("form")?.attr("action"))
+        assertEquals("00000000", doc.firstMatch("input#formhash")?.attr("value"))
+        assertEquals("HiPeer", doc.firstMatch("input[name=msgto]")?.attr("value"))
 
         assertFalse(sanitized.contains("UserTwo"))
         assertFalse(sanitized.contains("67890"))

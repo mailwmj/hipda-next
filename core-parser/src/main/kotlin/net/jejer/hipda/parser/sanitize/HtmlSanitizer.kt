@@ -25,6 +25,7 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.USERNAME_QUERY_PARAM_RE
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.avatarPathToUid
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.buildSmsPlaceholder
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.collectTextNodes
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.firstMatch
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.forEachNode
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isAllZeroMask
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.maskSameLength
@@ -108,10 +109,10 @@ object HtmlSanitizer {
         }?.let(peerNames::add)
 
         for (item in doc.select(SMS_ITEMS)) {
-            item.selectFirst(SMS_AUTHOR_CITE)?.let { addName(it.text()) }
-            item.selectFirst(SMS_AUTHOR_LINK)?.let { addUid(extractUidParam(it.attr("href"))) }
-            item.selectFirst(SMS_AVATAR_LINK)?.let { addUid(extractUidParam(it.attr("href"))) }
-            item.selectFirst(SMS_AVATAR_IMG)?.let { img ->
+            item.firstMatch(SMS_AUTHOR_CITE)?.let { addName(it.text()) }
+            item.firstMatch(SMS_AUTHOR_LINK)?.let { addUid(extractUidParam(it.attr("href"))) }
+            item.firstMatch(SMS_AVATAR_LINK)?.let { addUid(extractUidParam(it.attr("href"))) }
+            item.firstMatch(SMS_AVATAR_IMG)?.let { img ->
                 AVATAR_PATH_REGEX.find(img.attr("src"))?.let { addUid(avatarPathToUid(it.groupValues[1])) }
             }
         }
@@ -232,16 +233,16 @@ object HtmlSanitizer {
 
     private fun normalizeSmsPeerNodes(doc: Document) {
         for (item in doc.select(SMS_ITEMS)) {
-            val cite = item.selectFirst(SMS_AUTHOR_CITE)
+            val cite = item.firstMatch(SMS_AUTHOR_CITE)
             val isSelf = cite?.text()?.trim() == PLACEHOLDER_USERNAME
             if (cite != null && !isSelf && cite.text().isNotBlank()) {
-                val authorLink = cite.selectFirst("a")
+                val authorLink = cite.firstMatch("a")
                 replaceElementTextPreservingChildren(authorLink ?: cite, PLACEHOLDER_PEER_USERNAME)
                 authorLink?.let { replaceLinkParams(it, PLACEHOLDER_PEER_UID, preserveSelfUid = true) }
             }
             if (!isSelf) {
-                item.selectFirst(SMS_AVATAR_LINK)?.let { replaceLinkParams(it, PLACEHOLDER_PEER_UID, preserveSelfUid = true) }
-                item.selectFirst(SMS_AVATAR_IMG)?.let { img ->
+                item.firstMatch(SMS_AVATAR_LINK)?.let { replaceLinkParams(it, PLACEHOLDER_PEER_UID, preserveSelfUid = true) }
+                item.firstMatch(SMS_AVATAR_IMG)?.let { img ->
                     val src = img.attr("src")
                     val updated = AVATAR_PATH_REGEX.replace(src) {
                         if (it.groupValues[1] == PLACEHOLDER_SELF_AVATAR_PATH) it.value else PLACEHOLDER_PEER_AVATAR_PATH
