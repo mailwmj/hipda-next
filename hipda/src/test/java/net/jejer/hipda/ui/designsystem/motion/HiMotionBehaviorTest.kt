@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,12 +16,15 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalAccessorScope
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
@@ -30,13 +34,17 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import net.jejer.hipda.testing.RecompositionCounter
 import net.jejer.hipda.testing.assertFrameContinuity
 import net.jejer.hipda.testing.withAnimatorDurationScale
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
+import net.jejer.hipda.ui.designsystem.HiThemeSeed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -77,7 +85,30 @@ class HiMotionBehaviorTest {
 
     @Test
     fun reducedMotion_transitionsAndSizeAnimationsCompleteInOneFrame() {
-        // 对照组：正常缩放 1f 时，1 帧（16ms）后尚未到达 200dp 终点
+        // 1) 直接 Animatable 验证：缩放 0f 时，单次 advanceTimeByFrame() 立即到达终点并结束
+        withAnimatorDurationScale(0f) {
+            val anim = Animatable(0f)
+            var scope: CoroutineScope? = null
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    scope = rememberCoroutineScope()
+                }
+            }
+            waitForIdle()
+            mainClock.autoAdvance = false
+            val beforeTime = mainClock.currentTime
+            val job = requireNotNull(scope).launch(start = CoroutineStart.UNDISPATCHED) {
+                anim.animateTo(200f, animationSpec = HiMotion.spatialDefault())
+            }
+            mainClock.advanceTimeByFrame()
+            waitForIdle()
+            assertEquals("单帧推进应只前进 1 帧", beforeTime + 16L, mainClock.currentTime)
+            assertEquals(200f, anim.value, 0.001f)
+            assertFalse("缩放为 0 时动画应在首帧结束", anim.isRunning)
+            assertTrue("缩放为 0 时动画协程应在首帧完成", job.isCompleted)
+        }
+
+        // 2) 对照组：正常缩放 1f 时，经历“触发重组 + 首动画帧 + 渲染帧”后仍处于过渡中途
         withAnimatorDurationScale(1f) {
             var expanded by mutableStateOf(false)
             var currentOffsetDp = 0.dp
@@ -91,14 +122,19 @@ class HiMotionBehaviorTest {
                     Box(Modifier.offset(x = x).size(24.dp).testTag("moving"))
                 }
             }
+            waitForIdle()
             mainClock.autoAdvance = false
             expanded = true
-            mainClock.advanceTimeByFrame()
+            Snapshot.sendApplyNotifications()
+            mainClock.advanceTimeByFrame() // 触发重组并启动动画
+            mainClock.advanceTimeByFrame() // 动画首帧（t=0ms）
+            mainClock.advanceTimeByFrame() // 动画次帧（t=16ms）
             waitForIdle()
-            assertTrue("正常缩放 1 帧后应处于过渡中途，实际 $currentOffsetDp", currentOffsetDp < 190.dp)
+            assertTrue("正常缩放 16ms 后应处于过渡中途，实际 $currentOffsetDp", currentOffsetDp < 150.dp)
         }
 
-        // 减少动态效果：缩放 0f 时，AnimatedVisibility、animateDpAsState、hiAnimateContentSize 一帧到位
+        // 3) 减少动态效果：缩放 0f 时，AnimatedVisibility、animateDpAsState、hiAnimateContentSize
+        //    在首动画帧立即到达终点，不残留任何中间状态
         withAnimatorDurationScale(0f) {
             var active by mutableStateOf(false)
             var currentOffsetDp = 0.dp
@@ -128,10 +164,14 @@ class HiMotionBehaviorTest {
                     }
                 }
             }
+            waitForIdle()
 
             mainClock.autoAdvance = false
             active = true
-            mainClock.advanceTimeByFrame()
+            Snapshot.sendApplyNotifications()
+            mainClock.advanceTimeByFrame() // 触发重组并启动动画
+            mainClock.advanceTimeByFrame() // 动画首帧：scale=0 直接跳到终点
+            mainClock.advanceTimeByFrame() // 提交最终帧状态到组合与布局
             waitForIdle()
 
             assertEquals(200f, currentOffsetDp.value, 0.01f)
@@ -140,8 +180,11 @@ class HiMotionBehaviorTest {
             assertEquals(expectedHeightPx, actualHeightPx, 1f)
             onNodeWithTag("panel").assertIsDisplayed()
 
-            // 退场同样 1 帧完成，不残留中间节点
+            // 退场同样首动画帧完成，不残留中间节点
             active = false
+            Snapshot.sendApplyNotifications()
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
             mainClock.advanceTimeByFrame()
             waitForIdle()
             assertEquals(0f, currentOffsetDp.value, 0.01f)
@@ -266,39 +309,81 @@ class HiMotionBehaviorTest {
     }
 
     @Test
-    fun hiTheme_fixedSeedDoesNotReadLocalConfiguration() = withAnimatorDurationScale(1f) {
+    fun hiTheme_fixedSeedDoesNotReadLocalConfiguration() {
         val baseConfig = Configuration(ApplicationProvider.getApplicationContext<Context>().resources.configuration)
-        var currentConfig by mutableStateOf(Configuration(baseConfig).apply { screenWidthDp = 411 })
-        val themeBodyCounter = RecompositionCounter("HiThemeFixedSeedBody")
-        var firstScheme: ColorScheme? = null
-        var latestScheme: ColorScheme? = null
 
-        setContent {
-            CompositionLocalProvider(LocalConfiguration provides currentConfig) {
-                HiTheme(
-                    themeMode = HiThemeMode.LIGHT,
-                    pureBlack = false,
-                    seed = HiColorPresets.Brand.toSeed(),
-                ) {
-                    themeBodyCounter.Track()
-                    val scheme = MaterialTheme.colorScheme
-                    if (firstScheme == null) firstScheme = scheme
-                    latestScheme = scheme
-                    Box(Modifier.height(10.dp))
+        // 1) 固定种子分支：零次读取 LocalConfiguration，配置变化不触发重组与配色重算
+        withAnimatorDurationScale(1f) {
+            var currentConfig by mutableStateOf(Configuration(baseConfig).apply { screenWidthDp = 411 })
+            var localConfigurationReads = 0
+            val configProvider: CompositionLocalAccessorScope.() -> Configuration = {
+                localConfigurationReads++
+                currentConfig
+            }
+            val themeBodyCounter = RecompositionCounter("HiThemeFixedSeedBody")
+            var firstScheme: ColorScheme? = null
+            var latestScheme: ColorScheme? = null
+
+            setContent {
+                CompositionLocalProvider(LocalConfiguration providesComputed configProvider) {
+                    HiTheme(
+                        themeMode = HiThemeMode.LIGHT,
+                        pureBlack = false,
+                        seed = HiColorPresets.Brand.toSeed(),
+                    ) {
+                        themeBodyCounter.Track()
+                        val scheme = MaterialTheme.colorScheme
+                        if (firstScheme == null) firstScheme = scheme
+                        latestScheme = scheme
+                        Box(Modifier.height(10.dp))
+                    }
                 }
             }
+            waitForIdle()
+            assertEquals("固定种子分支不应读取 LocalConfiguration", 0, localConfigurationReads)
+            themeBodyCounter.assertEquals(1)
+
+            currentConfig = Configuration(baseConfig).apply { screenWidthDp = 900 }
+            waitForIdle()
+            currentConfig = Configuration(baseConfig).apply { screenWidthDp = 1280 }
+            waitForIdle()
+
+            assertEquals("配置变化后固定种子分支仍不应读取 LocalConfiguration", 0, localConfigurationReads)
+            themeBodyCounter.assertAtMost(1)
+            assertSame("固定种子下配色对象应保持同一实例", firstScheme, latestScheme)
         }
-        waitForIdle()
-        themeBodyCounter.assertEquals(1)
 
-        currentConfig = Configuration(baseConfig).apply { screenWidthDp = 900 }
-        waitForIdle()
-        currentConfig = Configuration(baseConfig).apply { screenWidthDp = 1280 }
-        waitForIdle()
+        // 2) 对照组（Android 12+ 跟随壁纸分支）：确实会读取并响应 LocalConfiguration 变化
+        withAnimatorDurationScale(1f) {
+            var currentConfig by mutableStateOf(Configuration(baseConfig).apply { screenWidthDp = 411 })
+            var localConfigurationReads = 0
+            val configProvider: CompositionLocalAccessorScope.() -> Configuration = {
+                localConfigurationReads++
+                currentConfig
+            }
 
-        // 固定种子分支不读 LocalConfiguration，因此配置变化不会触发 HiTheme 重新组合或重算配色
-        themeBodyCounter.assertAtMost(1)
-        assertSame("固定种子下配色对象应保持同一实例", firstScheme, latestScheme)
+            setContent {
+                CompositionLocalProvider(LocalConfiguration providesComputed configProvider) {
+                    HiTheme(
+                        themeMode = HiThemeMode.LIGHT,
+                        pureBlack = false,
+                        seed = HiThemeSeed.Wallpaper,
+                    ) {
+                        Box(Modifier.height(10.dp))
+                    }
+                }
+            }
+            waitForIdle()
+            val initialReads = localConfigurationReads
+            assertTrue("Android 12+ 跟随壁纸分支应读取 LocalConfiguration", initialReads >= 1)
+
+            currentConfig = Configuration(baseConfig).apply { screenWidthDp = 900 }
+            waitForIdle()
+            assertTrue(
+                "跟随壁纸分支应响应 LocalConfiguration 变化（初始 $initialReads，变化后 $localConfigurationReads）",
+                localConfigurationReads > initialReads,
+            )
+        }
     }
 }
 

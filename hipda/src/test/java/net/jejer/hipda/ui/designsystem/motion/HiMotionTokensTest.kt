@@ -61,7 +61,7 @@ class HiMotionTokensTest {
         val colorSpec: SpringSpec<Color> = HiMotion.effectsSlow()
 
         assertEquals(1400f, floatSpec.stiffness, 0.001f)
-        assertEquals(0.1.dp, dpSpec.visibilityThreshold)
+        assertEquals(Dp.VisibilityThreshold, dpSpec.visibilityThreshold)
         assertEquals(Offset.VisibilityThreshold, offsetSpec.visibilityThreshold)
         assertEquals(IntOffset.VisibilityThreshold, intOffsetSpec.visibilityThreshold)
         assertEquals(IntSize.VisibilityThreshold, intSizeSpec.visibilityThreshold)
