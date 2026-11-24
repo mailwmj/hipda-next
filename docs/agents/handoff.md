@@ -1,32 +1,19 @@
-# 负责人交接（2026-11-24 16:20 UTC）
+# 负责人交接（2026-11-24 17:15 UTC 更新）
 
-接手的负责人：先按 team-lead skill 的“Session start”读 DISPATCH、lesson、decisions，再读本文件。用中文和用户交流。
+接手的负责人：先按 team-lead skill 的“Session start”读 DISPATCH、lesson、decisions，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际结果为准（lesson.md）。
 
 ## 当前状态
-- 已定稿：`docs/design/tech-plan.md` v0.3、`docs/design/backlog.md` v0.3（Carbon 两轮评审 T1–T17 全部采纳）。
-- **产品设计 `docs/design/product-design.md` 还是 v0.1，必须先升级到 v0.2**（见下一节），再派 C 线和 E 线的界面卡。
-- M0-1（构建链，分支 `card/M0-1-build-chain`，会话 `e0494703`）：正在改 targetSdk→30、补 R8 保留规则、加 release 冒烟（先证明会失败再修好）、CI 安全改动。完成后：对改动部分做一次增量验证（Hydrogen）和增量审查（Carbon），然后合并到 main。它的队列里排了 M0-2（见下）。
-- 用户决定（都已记在 decisions.md）：不兼容老版本、删除举报、新包名 `net.jejer.hipda.next`、实现用 Neon xhigh、跑测试用 Hydrogen xhigh、调研用 Neon xhigh、审查和核查用 Carbon high、最多 8 个代理并行、编译以 GitHub Actions 为主。
-
-## 产品设计 v0.2 要落实的修改（C2 的 P1–P15 和 Hydrogen 的 H1–H16 全部采纳）
-原始意见：`get_agent_activity` 查看会话 `dd219b3b`（C2）和 `ae1f9fc4`（Hydrogen，最后一条含完整的界面文案表，存成 `docs/design/copy.md`，去掉“举报”）。要点：
-1. 信息架构：论坛顶部标签第一项“今日新帖”，右侧固定“管理版块”按钮，顶栏“发新帖”；消息页 `短消息 | 提醒`，点提醒打开帖子并定位楼层；我的 = 收藏与关注（两个标签）、我的帖子（主题 | 回复）、浏览历史、设置；搜索框识别站内地址。
-2. 布局：高度 < 480dp 一律单栏、紧凑胶囊；600–839dp 胶囊相对整个窗口居中；分隔线 1dp 不占宽、触摸区 48dp；≥840dp 列表 = 剩余宽度 35%（320–420dp）；均衡吸附点受“详情 ≥380、列表 ≤40%”钳制；右栏为空时不允许“列表收起”；键盘可见时隐藏胶囊；左栏切帖替换右栏根页面；宽 <840dp 时完整编辑器覆盖两栏居中；字号 5 档每档 1sp，导航文字最多 1.25 倍缩放，胶囊最小高 64dp。
-3. 毛玻璃只用于主导航和帖子详情底部工具条（同时最多 2 块），顶栏用纯色滚动变色。
-4. 动效：减少动态效果 = 0ms 一帧到位（删掉“100ms 淡入淡出”）；加 `spatialSnap`(0.85/1400)、`exit`=刚度×2.0 阻尼 1.0、`spinnerPeriod`、`skeletonPeriod`、`loadingShowDelay`(150ms，至少停 250ms，只用于被动加载)、`highlightHold`、`pageIndicatorHide`；6.3 表每行写明令牌；列表进帖子改为 `spatialDefault` 水平推入（容器变换只用于看图）；双栏同级换帖原地淡入淡出，右栏下钻 24dp 滑入；刷新按 ID 原地对比、不整屏淡出；长帖上下连续加载并锁定锚点；Snackbar 浮在内容上；列表项按压只显示状态层不缩放；补齐选择指示器、引用高亮、键盘联动、主题渐变、删除撤销、看图退出降级（缩略图不可见时原地缩到 0.85 淡出）、看图下拉参数（240dp 内缩到 0.8、遮罩最低 0.3、>120dp 或 >800dp/s 关闭）；扫描测试也禁止无参 `fadeIn()` 等。
-5. 交互：图片默认自动加载、头像总是加载、系统“流量节省程序”开启时才点击加载；草稿按业务键自动保存，编辑已发表楼层有“还原原文”；多图上传条；短消息乐观发送和失败气泡重发；冷却倒计时；只看过滤胶囊；用户资料 `资料 | TA 的帖子`；搜索初始态显示最近搜索和筛选；登录错误原地、按需显示安全提问；切换已保存账号不确认，手动退出后不静默重登；非末页回复后不跳到末尾，Snackbar“回复已发送 · 查看”；跳页面板（可输入页码、滑块、首页 -1 +1 末页 跳转，任何跳转都收起）；表情面板规范（复用键盘高度，默认 280dp 且 ≤45% 窗高）；Cloudflare 等待超 2 秒显示“正在检查安全环境…”，≥600dp 用居中对话框；设置分组（外观与阅读、版块与屏蔽、通知与免打扰、网络与缓存、关于）。
-6. 文案：错误提示有按钮时只写原因；术语表改成“标准说法 ↔ 禁止的精确词组”；暂不做自定义字体导入。
-7. 验收：截图矩阵按分级；加手机横屏 891×411、分屏 340×800、最大字号；性能真机测并注明 60/120Hz；错误映射单测；补“向上加载无跳动”“键盘弹出隐藏胶囊”“连点多帖一次返回”“主题切换保持状态”“看图退出两种分支”。
-写完 v0.2 后交给 C2（会话 `dd219b3b`）做第二轮（只看是否解决和是否引入新问题），通过后定稿。
-
-## 已排好的开发（agy Neon xhigh，并行）
-- M0-2 排在 M0-1 会话的队列里（同一会话，新分支 `card/M0-2-foundation`，基于 M0-1 分支）。
-- 定时任务（18:01 UTC）会启动第一批不依赖产品设计的卡：A1、B1a、C1b、D1、D3a，每张卡开工前先检查 `origin/card/M0-2-foundation` 的 CI 是否为绿，不是就报告 STUCK。它们的分支都基于 `card/M0-2-foundation`。
-- 每张卡回来后：Hydrogen 新会话做验证，Carbon 做审查，按 review 规则合并。
+- 已定稿：`tech-plan.md` v0.3、`backlog.md` v0.3、`product-design.md` **v0.2.1**（C2 两轮通过）、`copy.md`。
+- M0-1 已合并到 main（`ac97265`，验证 V-M0-1、审查 R-M0-1 均针对 `2b1d25f`）。
+- M0-2（`card/M0-2-foundation` @ `621dbba`，CI 绿）：独立验证 V-M0-2、审查 R-M0-2 进行中；通过后合并到 main。注意：分支上的 `docs/agents/DISPATCH.md` 基于旧版，合并时保留 main 的版本，只加“界面字符串放在 strings_<功能>.xml”一行。
+- 第一批 6 张卡（Neon xhigh，worktree 在 `../hipda-next.wt/<卡号>`，基线 `621dbba`，卡片全文在负责人会话的 scratch 目录 `card-<卡号>.md`）：A1、B1a、C1、C1b、D1、D3a。每张回来后：Hydrogen 新会话验证 + Carbon 审查，再合并。
+- 待办：R-M0-1 的建议（冒烟脚本 `grep | grep -q` 在 pipefail 下的 SIGPIPE 边界）留给下一张改 CI 的卡。
 
 ## 用户要做的事
 - B1b 完成后：在 debug 工具页登录 → 确认能抓到版块页 → 一键导出样本。
 - 有真机折叠屏的话，阶段验收时测一次。
 
 ## 会话 ID（都带标签 team-lead=hipda-next）
-P1 6e72a897、R1 afb8550e、R2 714fe8b8、S1 f7fec42d、F1 37a0d0cf、F2 0a068aa6、F3 66c5439b、F4 cee6daee、H1(Hydrogen 顾问) ae1f9fc4、C1(技术评审) 4e554492、C2(产品评审) dd219b3b、M0-1 e0494703、V-M0-1 2054f242、R-M0-1 03d809eb。
+- 进行中：A1 3415ca52、B1a 037d7a6f、C1 0732782b、C1b 60c8eb8c、D1 dffbea3f、D3a 355358c1、R-M0-2 5701a912、V-M0-2 6be2196f。
+- 空闲可复用：M0-1/M0-2 实现 e0494703、C2(产品评审) dd219b3b、H1(Hydrogen 顾问) ae1f9fc4、C1(技术评审) 4e554492、V-M0-1 2054f242、R-M0-1 03d809eb。
+- 已完成的调研与核查：P1 6e72a897、R1 afb8550e、R2 714fe8b8、S1 f7fec42d、F1 37a0d0cf、F2 0a068aa6、F3 66c5439b、F4 cee6daee。
