@@ -1,6 +1,6 @@
 # hipda-next 产品设计方案（v0.2.1）
 
-> 状态：v0.2.1，已按第二轮评审的 N1–N5 修订（均衡吸附公式、铰链最小栏宽、双栏底部留白和滚动驱动、两处文案、删除页码气泡、矮窗表情面板高度）；此前已按第一轮评审修订：Carbon（C2）的 P1–P15、Hydrogen（H1）的 H1–H16 全部采纳，待 C2 第二轮确认。依据：用户的设计要求（`docs/agents/decisions.md`）、状态变化清单 `docs/design/state-inventory.md`（106 条，P0 42 条，覆盖情况见附录 A）、折叠屏与大屏调研 `docs/design/foldable-research.md`、Cloudflare 调研 `docs/design/cloudflare-research.md`。全部界面文案见 `docs/design/copy.md`。技术实现见 `tech-plan.md`。
+> 状态：**定稿 v0.2.1**（C2 第二轮复核通过，评审对象 b856ded）。第一轮：Carbon（C2）的 P1–P15、Hydrogen（H1）的 H1–H16 全部采纳；第二轮：N1–N5 全部采纳。依据：用户的设计要求（`docs/agents/decisions.md`）、状态变化清单 `docs/design/state-inventory.md`（106 条，P0 42 条，覆盖情况见附录 A）、折叠屏与大屏调研 `docs/design/foldable-research.md`、Cloudflare 调研 `docs/design/cloudflare-research.md`。全部界面文案见 `docs/design/copy.md`。技术实现见 `tech-plan.md`。
 >
 > 本文的数值（尺寸、弹簧参数、时长）是起点，在 M4、M5 用截图测试、逐帧测试和真机校准；校准后改本文，不在代码里另立数值。
 
