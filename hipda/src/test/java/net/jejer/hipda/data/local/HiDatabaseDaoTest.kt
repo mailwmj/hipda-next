@@ -120,6 +120,36 @@ class HiDatabaseDaoTest {
     }
 
     @Test
+    fun draft_corruptedAttachmentsJsonInDatabaseReadsAsEmptyList() = runTest {
+        val key = DraftKey.reply("7777")
+        database.openHelper.writableDatabase.execSQL(
+            """
+            INSERT INTO drafts (`key`, subject, type_id, content, quote_pid, attachments, updated_at)
+            VALUES (?, '', '', '带损坏附件字段的草稿', NULL, '{bad', 5000)
+            """.trimIndent(),
+            arrayOf(key.value),
+        )
+
+        draftDao.observe(key).test {
+            val loaded = awaitItem()
+            assertNotNull(loaded)
+            assertEquals(
+                DraftEntity(
+                    key = key.value,
+                    subject = "",
+                    typeId = "",
+                    content = "带损坏附件字段的草稿",
+                    quotePid = null,
+                    attachments = emptyList(),
+                    updatedAt = 5_000L,
+                ),
+                loaded,
+            )
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun browseHistory_observeRecentOrderedDescendingAndUpsertMovesToTop() = runTest {
         val oldest = BrowseHistoryEntity(
             tid = "101",
@@ -261,41 +291,122 @@ class HiDatabaseDaoTest {
     }
 
     @Test
+    fun browseHistory_sameLastVisitedAtUsesTidAscendingForObserveAndTrim() = runTest {
+        val newest = BrowseHistoryEntity(
+            tid = "509",
+            title = "最新",
+            fid = "2",
+            forumName = "Discovery",
+            author = "u9",
+            lastVisitedAt = 600L,
+        )
+        val tiedC = BrowseHistoryEntity(
+            tid = "503",
+            title = "同时间 C",
+            fid = "2",
+            forumName = "Discovery",
+            author = "u3",
+            lastVisitedAt = 500L,
+        )
+        val tiedA = BrowseHistoryEntity(
+            tid = "501",
+            title = "同时间 A",
+            fid = "2",
+            forumName = "Discovery",
+            author = "u1",
+            lastVisitedAt = 500L,
+        )
+        val tiedB = BrowseHistoryEntity(
+            tid = "502",
+            title = "同时间 B",
+            fid = "2",
+            forumName = "Discovery",
+            author = "u2",
+            lastVisitedAt = 500L,
+        )
+        val oldest = BrowseHistoryEntity(
+            tid = "500",
+            title = "最旧",
+            fid = "2",
+            forumName = "Discovery",
+            author = "u0",
+            lastVisitedAt = 400L,
+        )
+
+        listOf(tiedC, oldest, tiedA, newest, tiedB).forEach { browseHistoryDao.upsert(it) }
+
+        browseHistoryDao.observeRecent(limit = 10).test {
+            assertEquals(listOf("509", "501", "502", "503", "500"), awaitItem().map { it.tid })
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        browseHistoryDao.observeRecent(limit = 3).test {
+            assertEquals(listOf("509", "501", "502"), awaitItem().map { it.tid })
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        browseHistoryDao.trimTo(max = 3)
+        browseHistoryDao.observeRecent(limit = 10).test {
+            assertEquals(listOf("509", "501", "502"), awaitItem().map { it.tid })
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun readingPosition_getReturnsNullWhenAbsentAndUpsertOverwrites() = runTest {
         assertNull(readingPositionDao.get("4001"))
 
-        val firstPosition = ReadingPositionEntity(
+        val userFilterPosition = ReadingPositionEntity(
             tid = "4001",
             page = 1,
             pid = "80001",
             offsetPx = 148,
-            authorFilterUid = "12345",
+            filterMode = ReadingFilterMode.USER,
+            filterUid = "12345",
+            filterUserName = "alice",
             updatedAt = 1_000L,
         )
-        readingPositionDao.upsert(firstPosition)
-        assertEquals(firstPosition, readingPositionDao.get("4001"))
+        readingPositionDao.upsert(userFilterPosition)
+        assertEquals(userFilterPosition, readingPositionDao.get("4001"))
 
-        val updatedPosition = ReadingPositionEntity(
+        val opFilterPosition = ReadingPositionEntity(
+            tid = "4001",
+            page = 2,
+            pid = "80050",
+            offsetPx = 64,
+            filterMode = ReadingFilterMode.OP,
+            filterUid = "10001",
+            filterUserName = "op_author",
+            updatedAt = 1_500L,
+        )
+        readingPositionDao.upsert(opFilterPosition)
+        assertEquals(opFilterPosition, readingPositionDao.get("4001"))
+
+        val clearedFilterPosition = ReadingPositionEntity(
             tid = "4001",
             page = 4,
             pid = "80120",
             offsetPx = 0,
-            authorFilterUid = null,
+            filterMode = ReadingFilterMode.NONE,
+            filterUid = null,
+            filterUserName = null,
             updatedAt = 2_000L,
         )
-        readingPositionDao.upsert(updatedPosition)
-        assertEquals(updatedPosition, readingPositionDao.get("4001"))
+        readingPositionDao.upsert(clearedFilterPosition)
+        assertEquals(clearedFilterPosition, readingPositionDao.get("4001"))
 
         val otherThreadPosition = ReadingPositionEntity(
             tid = "4002",
             page = 2,
             pid = "90005",
             offsetPx = 32,
-            authorFilterUid = null,
+            filterMode = ReadingFilterMode.NONE,
+            filterUid = null,
+            filterUserName = null,
             updatedAt = 1_500L,
         )
         readingPositionDao.upsert(otherThreadPosition)
-        assertEquals(updatedPosition, readingPositionDao.get("4001"))
+        assertEquals(clearedFilterPosition, readingPositionDao.get("4001"))
         assertEquals(otherThreadPosition, readingPositionDao.get("4002"))
     }
 
@@ -315,27 +426,40 @@ class HiDatabaseDaoTest {
     }
 
     @Test
-    fun converters_roundTripEmptySpecialCharactersAndBlankFallback() {
+    fun converters_roundTripAndFallbackSafelyOnInvalidInputs() {
         val converters = HiDatabaseConverters()
 
         val emptyJson = converters.fromStringList(emptyList())
         assertEquals("[]", emptyJson)
         assertEquals(emptyList<String>(), converters.toStringList(emptyJson))
+        assertEquals(emptyList<String>(), converters.toStringList(null))
         assertEquals(emptyList<String>(), converters.toStringList(""))
         assertEquals(emptyList<String>(), converters.toStringList("   "))
+        assertEquals(emptyList<String>(), converters.toStringList("{bad"))
+        assertEquals(emptyList<String>(), converters.toStringList("null"))
+        assertEquals(emptyList<String>(), converters.toStringList("[null]"))
 
         val complex = listOf("1001", "a,b", "quote\"here", "bracket[1]")
         val encoded = converters.fromStringList(complex)
         assertEquals(complex, converters.toStringList(encoded))
+
+        ReadingFilterMode.entries.forEach { mode ->
+            val raw = converters.fromReadingFilterMode(mode)
+            assertEquals(mode, converters.toReadingFilterMode(raw))
+        }
+        assertEquals(ReadingFilterMode.NONE, converters.toReadingFilterMode(null))
+        assertEquals(ReadingFilterMode.NONE, converters.toReadingFilterMode(""))
+        assertEquals(ReadingFilterMode.NONE, converters.toReadingFilterMode("UNKNOWN"))
     }
 
     @Test
-    fun exportedSchema_matchesVersion1IdentityHash() {
-        val schemaFile = File("schemas/net.jejer.hipda.data.local.HiDatabase/1.json")
+    fun exportedSchema_matchesCurrentVersionIdentityHash() {
+        val currentVersion = database.openHelper.readableDatabase.version
+        val schemaFile = File("schemas/${HiDatabase::class.java.name}/$currentVersion.json")
         assertTrue("Expected exported Room schema at ${schemaFile.absolutePath}", schemaFile.isFile)
         val root = Json.parseToJsonElement(schemaFile.readText()).jsonObject
         val dbJson = root.getValue("database").jsonObject
-        assertEquals(1, dbJson.getValue("version").jsonPrimitive.int)
+        assertEquals(currentVersion, dbJson.getValue("version").jsonPrimitive.int)
         val schemaHash = dbJson.getValue("identityHash").jsonPrimitive.content
 
         val runtimeHash = database.openHelper.readableDatabase.query(

@@ -40,6 +40,10 @@ class DraftKeyTest {
             "123 ",
             "123\n",
             "１２３",
+            "9223372036854775808",
+            "9999999999999999999",
+            "10000000000000000000",
+            "99999999999999999999999999",
         )
 
         invalidIds.forEach { badId ->
@@ -62,6 +66,10 @@ class DraftKeyTest {
         assertEquals(DraftKey.newThread("2"), DraftKey.parse("new:2"))
         assertEquals(DraftKey.newThread("59"), DraftKey.parse("new:59"))
         assertEquals(DraftKey.edit("9876543210"), DraftKey.parse("edit:9876543210"))
+        assertEquals(
+            DraftKey.reply(Long.MAX_VALUE.toString()),
+            DraftKey.parse("reply:${Long.MAX_VALUE}"),
+        )
     }
 
     @Test
@@ -97,6 +105,10 @@ class DraftKeyTest {
             "reply: 123",
             "reply:123\n",
             "reply:１２３",
+            "reply:9223372036854775808",
+            "new:9999999999999999999",
+            "edit:10000000000000000000",
+            "reply:99999999999999999999999999",
         )
 
         invalidKeys.forEach { raw ->

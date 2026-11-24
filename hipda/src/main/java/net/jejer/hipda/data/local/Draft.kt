@@ -33,6 +33,7 @@ value class DraftKey private constructor(val value: String) {
 
     companion object {
         private const val SEPARATOR = ':'
+        private const val MAX_ID_LENGTH = 19
 
         fun reply(tid: String): DraftKey = create(Kind.REPLY, tid, "tid")
 
@@ -62,7 +63,10 @@ value class DraftKey private constructor(val value: String) {
         }
 
         private fun isValidId(id: String): Boolean =
-            id.isNotEmpty() && id[0] in '1'..'9' && id.all { it in '0'..'9' }
+            id.length in 1..MAX_ID_LENGTH &&
+                id[0] in '1'..'9' &&
+                id.all { it in '0'..'9' } &&
+                id.toLongOrNull() != null
     }
 }
 

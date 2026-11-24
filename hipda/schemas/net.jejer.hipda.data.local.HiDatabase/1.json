@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "d27952dfe1ebff9281887585628962f2",
+    "identityHash": "a219a9d252c9f2b82be8067acade1e20",
     "entities": [
       {
         "tableName": "drafts",
@@ -118,7 +118,7 @@
       },
       {
         "tableName": "reading_positions",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`tid` TEXT NOT NULL, `page` INTEGER NOT NULL, `pid` TEXT NOT NULL, `offset_px` INTEGER NOT NULL, `author_filter_uid` TEXT, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`tid`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`tid` TEXT NOT NULL, `page` INTEGER NOT NULL, `pid` TEXT NOT NULL, `offset_px` INTEGER NOT NULL, `filter_mode` TEXT NOT NULL, `filter_uid` TEXT, `filter_user_name` TEXT, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`tid`))",
         "fields": [
           {
             "fieldPath": "tid",
@@ -145,8 +145,19 @@
             "notNull": true
           },
           {
-            "fieldPath": "authorFilterUid",
-            "columnName": "author_filter_uid",
+            "fieldPath": "filterMode",
+            "columnName": "filter_mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "filterUid",
+            "columnName": "filter_uid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "filterUserName",
+            "columnName": "filter_user_name",
             "affinity": "TEXT"
           },
           {
@@ -166,7 +177,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'd27952dfe1ebff9281887585628962f2')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a219a9d252c9f2b82be8067acade1e20')"
     ]
   }
 }
