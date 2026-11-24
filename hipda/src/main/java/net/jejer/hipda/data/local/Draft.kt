@@ -83,8 +83,6 @@ data class DraftEntity(
     val attachments: List<String> = emptyList(),
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long,
-    @ColumnInfo(name = "ci_schema_drift_probe")
-    val ciSchemaDriftProbe: String = "",
 )
 
 @Dao
