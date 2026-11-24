@@ -1,0 +1,133 @@
+name: Android CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'card/**'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      emulator:
+        description: 'Run API 36 emulator smoke test'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, Lint & Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Ensure gradlew is executable
+        run: chmod +x gradlew
+
+      - name: Build, lint, and run unit tests
+        run: ./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest --stacktrace
+
+      - name: Verify APK outputs
+        run: |
+          ls -la hipda/build/outputs/apk/debug/ hipda/build/outputs/apk/release/
+          test -f hipda/build/outputs/apk/release/hipda-ng-release.apk
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-apk
+          path: hipda/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-reports
+          path: |
+            hipda/build/reports/lint-results-debug.*
+            emoji/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+
+  emulator-smoke:
+    name: Emulator Smoke Test (API 36)
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.emulator == true || inputs.emulator == 'true') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download debug APK
+        uses: actions/download-artifact@v8
+        with:
+          name: debug-apk
+          path: artifacts/apk
+
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run emulator smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            set -euo pipefail
+            mkdir -p smoke-artifacts
+            APK_PATH=$(find artifacts/apk -name "*.apk" | head -n 1)
+            echo "Installing APK: $APK_PATH"
+            adb logcat -c
+            adb install -r "$APK_PATH"
+            adb shell am start -W -n net.jejer.hipda.ng/net.jejer.hipda.ui.MainFrameActivity
+            sleep 15
+            adb logcat -d > smoke-artifacts/logcat.txt
+            adb exec-out screencap -p > smoke-artifacts/main-activity.png
+            ls -lh smoke-artifacts/
+            test -s smoke-artifacts/main-activity.png
+
+            PID=$(adb shell pidof net.jejer.hipda.ng | tr -d '\r' || true)
+            echo "App PID: ${PID:-<not running>}"
+            if [ -z "$PID" ]; then
+              echo "ERROR: net.jejer.hipda.ng process is not running!"
+              tail -n 100 smoke-artifacts/logcat.txt
+              exit 1
+            fi
+
+            if grep -n -A 5 "FATAL EXCEPTION" smoke-artifacts/logcat.txt | grep -q "net\.jejer\.hipda"; then
+              echo "ERROR: Found FATAL EXCEPTION for net.jejer.hipda in logcat!"
+              grep -n -A 30 "FATAL EXCEPTION" smoke-artifacts/logcat.txt
+              exit 1
+            fi
+            echo "Smoke check passed: PID=$PID, no app FATAL EXCEPTION in logcat."
+
+      - name: Upload emulator smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: emulator-smoke-artifacts
+          path: smoke-artifacts/
+          if-no-files-found: warn
