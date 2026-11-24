@@ -23,7 +23,8 @@
 | 工作类型 | 首选 | 备选 | 思考级别 |
 |---|---|---|---|
 | 开发（全部实现卡） | antigravity `gemini-4-neon` | codex `gpt-6.2-sol` | xhigh（备选 high） |
-| 编译与跑测 | antigravity `gemini-4-neon`，每张卡开新会话 | pi `tb-ds/deepseek-flash` | xhigh |
+| 编译与跑测（验证、跑测试） | antigravity `gemini-4-hydrogen`，每张卡开新会话 | antigravity `gemini-4-neon` | xhigh |
+| 调研 | antigravity `gemini-4-neon` | antigravity `gemini-4-hydrogen` | xhigh |
 | 方案与代码独立审查 | antigravity `gemini-4-carbon` | codex `gpt-6.2-sol` | high |
 | 核查 Neon 的调研 | antigravity `gemini-4-carbon` | codex `gpt-6.2-sol` | high |
 | 翻代码、清单类调研、代码搜索 | antigravity `gemini-4-neon`（结构清楚的搜索）或 `gemini-4-hydrogen`（涉及 UI/交互/文案判断） | — | xhigh |
@@ -38,6 +39,7 @@
 - 敏感区（轻量卡也要审查）：`okhttp/`、`async/LoginHelper.java`、`utils/HiParser*`、`bean/HiSettingsHelper.java`、`db/`、`async/PostHelper.java`、`job/PostJob.java`、Cloudflare 验证相关代码。
 
 ## 5. 卡片约定
+- 卡片大小按改动量和可验证性来定，不按时间：一个行为，2–5 条验收；生产代码约 150–400 行，最多 5 个文件；敏感区约 200 行以内；纯搬代码的卡例外。详见 `docs/design/backlog.md` 的拆分规则。
 - 卡号按阶段编：`M0-1`、`M0-2`……；分支 `card/<卡号>-<简名>`。
 - 提交用 Conventional Commits，类型用英文，描述可以写中文。
 - 自检以 CI 为准：编译 `assembleDebug`、单元测试 `testDebugUnitTest`、`lint`；有截图测试后加 `verifyRoborazziDebug`（以 M0/M4 卡实际落地的任务名为准）。
