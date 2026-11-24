@@ -12,13 +12,17 @@ import app.cash.turbine.test
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -208,33 +212,36 @@ class DataStoreSettingsRepositoryTest {
     fun recreatingRepository_persistsAllModifiedValues() = runTest {
         val file = newSettingsFile()
         val scope1 = CoroutineScope(StandardTestDispatcher(testScheduler) + SupervisorJob())
-        val repo1: SettingsRepository = DataStoreSettingsRepository(createDataStore(file, scope1))
+        val expected = try {
+            val repo1: SettingsRepository = DataStoreSettingsRepository(createDataStore(file, scope1))
 
-        repo1.setThemeMode(ThemeMode.DARK)
-        repo1.setPureBlack(true)
-        repo1.setThemeSeed("emerald")
-        repo1.setFontStep(3)
-        repo1.setLineSpacing(LineSpacing.LOOSE)
-        repo1.setFollowedForums(listOf(60, 7, 59, 2))
-        repo1.setShowStickyThreads(false)
-        repo1.setSortByPostTime(2, true)
-        repo1.setSortByPostTime(7, false)
-        repo1.setTailEnabled(true)
-        repo1.setTailText("Android")
-        repo1.setTailUrl("https://www.4d4y.com")
-        repo1.setNotificationsEnabled(false)
-        repo1.setSilentModeEnabled(true)
-        repo1.setSilentBeginMinutes(21 * 60)
-        repo1.setSilentEndMinutes(6 * 60 + 30)
-        repo1.setForumServer("https://alt.4d4y.com")
-        repo1.setImageCacheLimitMb(300)
-        repo1.setPaneSplitPortrait(PaneSplit.COLLAPSED)
-        repo1.setPaneSplitLandscape(PaneSplit.BALANCED)
+            repo1.setThemeMode(ThemeMode.DARK)
+            repo1.setPureBlack(true)
+            repo1.setThemeSeed("emerald")
+            repo1.setFontStep(3)
+            repo1.setLineSpacing(LineSpacing.LOOSE)
+            repo1.setFollowedForums(listOf(60, 7, 59, 2))
+            repo1.setShowStickyThreads(false)
+            repo1.setSortByPostTime(2, true)
+            repo1.setSortByPostTime(7, false)
+            repo1.setTailEnabled(true)
+            repo1.setTailText("Android")
+            repo1.setTailUrl("https://www.4d4y.com")
+            repo1.setNotificationsEnabled(false)
+            repo1.setSilentModeEnabled(true)
+            repo1.setSilentBeginMinutes(21 * 60)
+            repo1.setSilentEndMinutes(6 * 60 + 30)
+            repo1.setForumServer("https://alt.4d4y.com")
+            repo1.setImageCacheLimitMb(300)
+            repo1.setPaneSplitPortrait(PaneSplit.COLLAPSED)
+            repo1.setPaneSplitLandscape(PaneSplit.BALANCED)
 
-        val expected = repo1.settings.first()
-        scope1.cancel()
-        advanceUntilIdle()
-        scope1.coroutineContext[Job]?.join()
+            repo1.settings.first()
+        } finally {
+            scope1.cancel()
+            advanceUntilIdle()
+            scope1.coroutineContext[Job]?.join()
+        }
 
         val scope2 = CoroutineScope(StandardTestDispatcher(testScheduler) + SupervisorJob())
         try {
@@ -249,6 +256,29 @@ class DataStoreSettingsRepositoryTest {
             scope2.cancel()
             advanceUntilIdle()
             scope2.coroutineContext[Job]?.join()
+        }
+    }
+
+    @Test
+    fun concurrentSetSortByPostTime_preservesAllForumUpdates() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        try {
+            val dataStore = createDataStore(newSettingsFile(), scope)
+            val repository: SettingsRepository = DataStoreSettingsRepository(dataStore)
+            val fids = listOf(2, 6, 7, 12, 22, 23, 24, 25, 50, 56, 57, 59, 60, 62, 63)
+
+            coroutineScope {
+                fids.forEach { fid ->
+                    launch(Dispatchers.Default) {
+                        repository.setSortByPostTime(fid, true)
+                    }
+                }
+            }
+
+            assertEquals(fids.associateWith { true }, repository.settings.first().sortByPostTime)
+        } finally {
+            scope.cancel()
+            scope.coroutineContext[Job]?.join()
         }
     }
 
