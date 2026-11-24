@@ -18,7 +18,7 @@ HiPDA·NG是使用MD风格的版本，即master分支，为目前主要维护版
 
 # 开发者构建说明
 
-- 构建工具链：JDK 17、Gradle 9.9.2、AGP 9.5.2、Kotlin 2.4.21、`compileSdk 37.1`、`targetSdk 36`、`minSdk 26`
+- 构建工具链：JDK 17、Gradle 9.9.2、AGP 9.5.2、Kotlin 2.4.21、`compileSdk 37.1`、`targetSdk 30`、`minSdk 26`
 - 常用构建命令：`./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest`
 - 不再需要旧版 `fabric.properties` 配置文件。
 

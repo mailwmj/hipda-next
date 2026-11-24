@@ -3,7 +3,7 @@ agp = "9.5.2"
 kotlin = "2.4.21"
 compileSdk = "37"
 compileSdkMinor = "1"
-targetSdk = "36"
+targetSdk = "30"
 minSdk = "26"
 
 appcompat = "1.8.0"
