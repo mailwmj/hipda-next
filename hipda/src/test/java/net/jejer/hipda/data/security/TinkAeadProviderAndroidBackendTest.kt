@@ -54,8 +54,10 @@ class TinkAeadProviderAndroidBackendTest {
                     throw GeneralSecurityException("Simulated AndroidKeysetManager decrypt failure")
                 }
                 sp.edit().putString(normalizedKeysetName, "rebuilt-valid-keyset").commit()
-                KeysetHandle.generateNew(PredefinedAeadParameters.AES256_GCM)
-                    .getPrimitive(RegistryConfiguration.get(), Aead::class.java)
+                KeysetHandle.generateNew(
+                    PredefinedAeadParameters.AES256_GCM,
+                    RegistryConfiguration.get(),
+                ).getPrimitive(RegistryConfiguration.get(), Aead::class.java)
             },
             masterKeyDeleter = { masterKeyDeletes.incrementAndGet() },
         )

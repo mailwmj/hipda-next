@@ -404,8 +404,10 @@ class TinkAeadProviderTest {
             if (attempt <= failuresBeforeSuccess) {
                 throw failureFactory()
             }
-            return KeysetHandle.generateNew(PredefinedAeadParameters.AES256_GCM)
-                .getPrimitive(RegistryConfiguration.get(), Aead::class.java)
+            return KeysetHandle.generateNew(
+                PredefinedAeadParameters.AES256_GCM,
+                RegistryConfiguration.get(),
+            ).getPrimitive(RegistryConfiguration.get(), Aead::class.java)
         }
 
         override fun clearKeysetEntry(normalizedKeysetName: String) {
