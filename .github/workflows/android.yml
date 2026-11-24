@@ -45,12 +45,20 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build, lint, and run unit tests
-        run: ./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest --stacktrace
+        run: ./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest :core-parser:test --stacktrace
 
       - name: Verify APK outputs
         run: |
+          set -euo pipefail
           ls -la hipda/build/outputs/apk/debug/ hipda/build/outputs/apk/release/
           test -f hipda/build/outputs/apk/release/hipda-ng-release.apk
+          BUILD_TOOLS_DIR=$(ls -1d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          echo "=== aapt2 dump badging (debug) ==="
+          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/debug/hipda-debug.apk | grep -E "^package:|^sdkVersion:|^targetSdkVersion:"
+          echo "=== aapt2 dump badging (release) ==="
+          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/release/hipda-ng-release.apk | grep -E "^package:|^sdkVersion:|^targetSdkVersion:"
+          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/debug/hipda-debug.apk | grep -q "^package: name='net.jejer.hipda.next'"
+          "$BUILD_TOOLS_DIR/aapt2" dump badging hipda/build/outputs/apk/release/hipda-ng-release.apk | grep -q "^package: name='net.jejer.hipda.next'"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
@@ -74,6 +82,46 @@ jobs:
           path: |
             hipda/build/reports/lint-results-debug.*
             emoji/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+
+      - name: Summarize unit test results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          files = sorted(glob.glob("**/build/test-results/**/*.xml", recursive=True))
+          if not files:
+              print("No JUnit XML test result files found.")
+              raise SystemExit(0)
+          total_tests = total_fail = total_err = total_skip = 0
+          print("=== Unit Test Summary (JUnit XML) ===")
+          for path in files:
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+              for s in suites:
+                  name = s.attrib.get("name", path)
+                  tests = int(s.attrib.get("tests", 0))
+                  failures = int(s.attrib.get("failures", 0))
+                  errors = int(s.attrib.get("errors", 0))
+                  skipped = int(s.attrib.get("skipped", 0))
+                  passed = tests - failures - errors - skipped
+                  total_tests += tests
+                  total_fail += failures
+                  total_err += errors
+                  total_skip += skipped
+                  print(f"  {name}: {tests} tests, {passed} passed, {failures} failed, {errors} errors, {skipped} skipped")
+          total_pass = total_tests - total_fail - total_err - total_skip
+          print(f"TOTAL: {total_tests} tests, {total_pass} passed, {total_fail} failed, {total_err} errors, {total_skip} skipped")
+          PY
+
+      - name: Upload unit test results and reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-reports
+          path: |
+            **/build/test-results/**/*.xml
+            **/build/reports/tests/**
           if-no-files-found: warn
 
   emulator-smoke:
@@ -153,10 +201,10 @@ jobs:
             test -n "$apk_path"
             test -f "$apk_path"
 
-            adb uninstall net.jejer.hipda.ng || true
+            adb uninstall net.jejer.hipda.next || true
             adb logcat -c
             adb install -r "$apk_path"
-            adb shell am start -W -n net.jejer.hipda.ng/net.jejer.hipda.ui.MainFrameActivity
+            adb shell am start -W -n net.jejer.hipda.next/net.jejer.hipda.ui.MainFrameActivity
             sleep 15
 
             local log_file="smoke-artifacts/logcat-${variant}.txt"
@@ -173,17 +221,17 @@ jobs:
               failed=1
             fi
 
-            if grep -n "ANR in net\.jejer\.hipda\.ng" "$log_file"; then
-              echo "ERROR [$variant]: Found ANR for net.jejer.hipda.ng in logcat!"
-              grep -n -A 20 "ANR in net\.jejer\.hipda\.ng" "$log_file"
+            if grep -n "ANR in net\.jejer\.hipda\.next" "$log_file"; then
+              echo "ERROR [$variant]: Found ANR for net.jejer.hipda.next in logcat!"
+              grep -n -A 20 "ANR in net\.jejer\.hipda\.next" "$log_file"
               failed=1
             fi
 
             local pid
-            pid=$(adb shell pidof net.jejer.hipda.ng | tr -d '\r' || true)
+            pid=$(adb shell pidof net.jejer.hipda.next | tr -d '\r' || true)
             echo "[$variant] App PID: ${pid:-<not running>}"
             if [ -z "$pid" ]; then
-              echo "ERROR [$variant]: net.jejer.hipda.ng process is not running!"
+              echo "ERROR [$variant]: net.jejer.hipda.next process is not running!"
               if [ "$failed" -eq 0 ]; then
                 tail -n 100 "$log_file"
               fi

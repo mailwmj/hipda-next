@@ -48,6 +48,7 @@
   - 本地编译必须遵守 `docs/agents/DISPATCH.md` 第 2 节。
   - 不要用真实账号对论坛做写操作。
   - 完成标准以 CI 运行结果为证据（给出 run 链接和 commit hash）。
+- 界面字符串放在 `res/values/strings_<功能>.xml`。
 
 ## 6. 决策记录
 - 用户的决定记在 `docs/agents/decisions.md`。

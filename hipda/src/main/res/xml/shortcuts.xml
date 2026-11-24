@@ -8,7 +8,7 @@
         <intent
             android:action="new_posts"
             android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
-            android:targetPackage="net.jejer.hipda.ng"/>
+            android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
     <shortcut
         android:enabled="true"
@@ -18,7 +18,7 @@
         <intent
             android:action="search"
             android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
-            android:targetPackage="net.jejer.hipda.ng"/>
+            android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
     <shortcut
         android:enabled="true"
@@ -28,7 +28,7 @@
         <intent
             android:action="sms"
             android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
-            android:targetPackage="net.jejer.hipda.ng"/>
+            android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
     <shortcut
         android:enabled="true"
@@ -38,6 +38,6 @@
         <intent
             android:action="favorite"
             android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
-            android:targetPackage="net.jejer.hipda.ng"/>
+            android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
 </shortcuts>
