@@ -7,7 +7,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -20,9 +19,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -53,6 +54,13 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
+import net.jejer.hipda.ui.designsystem.glass.GlassDegradationReason
+import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
+import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
+import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
+import net.jejer.hipda.ui.designsystem.glass.rememberGlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 
 /** Debug 预览入口（仅注册在 `src/debug/AndroidManifest.xml`，不进入 release 包）。 */
 class PreviewActivity : ComponentActivity() {
@@ -78,6 +86,13 @@ class PreviewActivity : ComponentActivity() {
     }
 }
 
+enum class GlassPreviewMode {
+    SYSTEM,
+    FORCE_BLUR,
+    SIMULATE_POWER_SAVE,
+    SIMULATE_REDUCE_TRANSPARENCY,
+}
+
 @Immutable
 data class ThemeSpecimenState(
     val themeMode: HiThemeMode = HiThemeMode.SYSTEM,
@@ -85,6 +100,7 @@ data class ThemeSpecimenState(
     val seed: HiThemeSeed = HiColorPresets.Brand.toSeed(),
     val fontSizeStep: HiFontSizeStep = HiFontSizeStep.DEFAULT,
     val lineHeightPreset: HiLineHeightPreset = HiLineHeightPreset.DEFAULT,
+    val glassPreviewMode: GlassPreviewMode = GlassPreviewMode.SYSTEM,
 )
 
 @Composable
@@ -126,6 +142,7 @@ fun ThemeSpecimenScreen(
                             TypographySection()
                             ButtonsSection()
                             ShapesAndCardsSection()
+                            GlassSpecimenSection(state = state, onStateChange = onStateChange)
                         }
                     }
                 } else {
@@ -134,6 +151,7 @@ fun ThemeSpecimenScreen(
                     TypographySection()
                     ButtonsSection()
                     ShapesAndCardsSection()
+                    GlassSpecimenSection(state = state, onStateChange = onStateChange)
                 }
             }
         }
@@ -214,20 +232,24 @@ private fun ControlsSection(
                 onCheckedChange = { onStateChange(state.copy(pureBlack = it)) },
             )
         }
-        Text(text = stringResource(R.string.preview_seed_label), style = MaterialTheme.typography.labelMedium)
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Text(text = stringResource(R.string.preview_seed_label), style = MaterialTheme.typography.labelMedium)
             FilterChip(
                 selected = state.seed is HiThemeSeed.Wallpaper,
                 onClick = { onStateChange(state.copy(seed = HiThemeSeed.Wallpaper)) },
                 label = { Text(stringResource(R.string.preview_seed_wallpaper), style = MaterialTheme.typography.labelMedium.cappedForChrome()) },
-                shape = HiShapeTokens.Full,
+                shape = HiShapeTokens.Small,
             )
+        }
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             HiColorPresets.ALL.forEach { preset ->
                 val selected = (state.seed as? HiThemeSeed.ColorSeed)?.id == preset.id
                 Box(
@@ -389,7 +411,7 @@ private fun ShapesAndCardsSection() {
                 Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .height(36.dp),
+                        .height(56.dp),
                     shape = shape,
                     color = cs.surfaceContainerHighest,
                 ) {
@@ -406,15 +428,19 @@ private fun ShapesAndCardsSection() {
         Spacer(modifier = Modifier.height(2.dp))
         HiCappedFontScale {
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 64.dp),
                 shape = HiShapeTokens.Full,
                 color = cs.surfaceContainerHigh,
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = 64.dp)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     listOf(
                         R.string.preview_nav_forum,
@@ -435,6 +461,195 @@ private fun ShapesAndCardsSection() {
                                 style = MaterialTheme.typography.labelMedium,
                                 color = fg,
                             )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GlassSpecimenSection(
+    state: ThemeSpecimenState,
+    onStateChange: (ThemeSpecimenState) -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    val systemGlassState by rememberGlassEnvironmentState()
+    val effectiveGlassState = when (state.glassPreviewMode) {
+        GlassPreviewMode.SYSTEM -> systemGlassState
+        GlassPreviewMode.FORCE_BLUR -> GlassEnvironmentState.BlurEnabled
+        GlassPreviewMode.SIMULATE_POWER_SAVE -> GlassEnvironmentState(setOf(GlassDegradationReason.POWER_SAVE_MODE))
+        GlassPreviewMode.SIMULATE_REDUCE_TRANSPARENCY -> GlassEnvironmentState(setOf(GlassDegradationReason.REDUCE_TRANSPARENCY))
+    }
+    val glassModes = listOf(
+        GlassPreviewMode.SYSTEM to R.string.preview_glass_mode_system,
+        GlassPreviewMode.FORCE_BLUR to R.string.preview_glass_mode_blur,
+        GlassPreviewMode.SIMULATE_POWER_SAVE to R.string.preview_glass_mode_power_save,
+        GlassPreviewMode.SIMULATE_REDUCE_TRANSPARENCY to R.string.preview_glass_mode_reduce_transparency,
+    )
+    val glassState = rememberHiGlassState()
+
+    SpecimenCard(title = stringResource(R.string.preview_section_glass)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            glassModes.forEach { (mode, labelRes) ->
+                FilterChip(
+                    selected = state.glassPreviewMode == mode,
+                    onClick = { onStateChange(state.copy(glassPreviewMode = mode)) },
+                    label = {
+                        Text(
+                            text = stringResource(labelRes),
+                            style = MaterialTheme.typography.labelMedium.cappedForChrome(),
+                        )
+                    },
+                    shape = HiShapeTokens.Small,
+                )
+            }
+        }
+        Text(
+            text = stringResource(
+                if (effectiveGlassState.blurEnabled) {
+                    R.string.preview_glass_status_blur
+                } else {
+                    R.string.preview_glass_status_degraded
+                },
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.onSurfaceVariant,
+        )
+        ProvideGlassEnvironment(state = effectiveGlassState) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(216.dp)
+                    .clip(HiShapeTokens.Medium)
+                    .background(cs.background)
+                    .border(0.5.dp, cs.outlineVariant, HiShapeTokens.Medium),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .hiGlassSource(glassState)
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(
+                        Triple(R.string.preview_glass_sample_row_1, cs.primaryContainer, cs.onPrimaryContainer),
+                        Triple(R.string.preview_glass_sample_row_2, cs.tertiaryContainer, cs.onTertiaryContainer),
+                        Triple(R.string.preview_glass_sample_row_3, cs.secondaryContainer, cs.onSecondaryContainer),
+                    ).forEach { (textRes, accentBg, accentFg) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(HiShapeTokens.Small)
+                                .background(cs.surfaceContainer)
+                                .padding(horizontal = 10.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(HiShapeTokens.Small)
+                                    .background(accentBg),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = "Hi",
+                                    style = MaterialTheme.typography.labelSmall.cappedForChrome(),
+                                    color = accentFg,
+                                )
+                            }
+                            Text(
+                                text = stringResource(textRes),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    HiCappedFontScale {
+                        HiGlassSurface(
+                            state = glassState,
+                            shape = HiShapeTokens.Full,
+                            floating = true,
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.preview_glass_toolbar_reply),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = cs.primary,
+                                )
+                                Text(
+                                    text = stringResource(R.string.preview_glass_toolbar_page),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = cs.onSurface,
+                                )
+                                Text(
+                                    text = stringResource(R.string.preview_glass_toolbar_more),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    HiCappedFontScale {
+                        HiGlassSurface(
+                            state = glassState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = 420.dp)
+                                .heightIn(min = 64.dp),
+                            shape = HiShapeTokens.Full,
+                            floating = true,
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                listOf(
+                                    R.string.preview_nav_forum,
+                                    R.string.preview_nav_messages,
+                                    R.string.preview_nav_search,
+                                    R.string.preview_nav_mine,
+                                ).forEachIndexed { idx, labelRes ->
+                                    val bg = if (idx == 0) cs.secondaryContainer else Color.Transparent
+                                    val fg = if (idx == 0) cs.onSecondaryContainer else cs.onSurfaceVariant
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(HiShapeTokens.Full)
+                                            .background(bg)
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    ) {
+                                        Text(
+                                            text = stringResource(labelRes),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = fg,
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

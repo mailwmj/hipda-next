@@ -35,4 +35,17 @@
     <string name="preview_nav_messages">消息</string>
     <string name="preview_nav_search">搜索</string>
     <string name="preview_nav_mine">我的</string>
+    <string name="preview_section_glass">毛玻璃表面</string>
+    <string name="preview_glass_mode_system">跟随系统</string>
+    <string name="preview_glass_mode_blur">模拟模糊</string>
+    <string name="preview_glass_mode_power_save">省电降级</string>
+    <string name="preview_glass_mode_reduce_transparency">降低透明度</string>
+    <string name="preview_glass_status_blur">当前：实时模糊（24dp）</string>
+    <string name="preview_glass_status_degraded">当前：94% 纯色降级</string>
+    <string name="preview_glass_sample_row_1">D 版块 · 折叠屏双栏阅读体验分享与适配记录</string>
+    <string name="preview_glass_sample_row_2">摄影版 · 秋日风光样张与镜头色彩对比讨论</string>
+    <string name="preview_glass_sample_row_3">Geek · Android 16 渲染管线与毛玻璃性能实测</string>
+    <string name="preview_glass_toolbar_reply">回复</string>
+    <string name="preview_glass_toolbar_page">第 2 / 8 页</string>
+    <string name="preview_glass_toolbar_more">更多</string>
 </resources>

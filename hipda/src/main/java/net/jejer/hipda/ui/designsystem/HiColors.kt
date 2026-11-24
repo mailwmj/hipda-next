@@ -196,7 +196,7 @@ fun hiColorSchemeFromSeed(
             onError = OnErrorDark,
             errorContainer = ErrorContainerDark,
             onErrorContainer = OnErrorContainerDark,
-            outline = nv(60f),
+            outline = nv(61f),
             outlineVariant = nv(30f),
             scrim = Color.Black,
             surfaceBright = n(24f),
@@ -253,31 +253,47 @@ private fun Color.toOklch(): Oklch {
 private fun oklchTone(tone: Float, targetChroma: Float, hueDegrees: Float): Color {
     if (tone <= 0f) return Color.Black
     if (tone >= 100f) return Color.White
-    val luminanceY = if (tone <= 8f) tone / 903.2963f else ((tone + 16f) / 116f).pow(3)
-    val okL = cbrt(luminanceY.toDouble()).toFloat()
+    val targetLuminance = if (tone <= 8f) tone / 903.2963f else ((tone + 16f) / 116f).pow(3)
+    if (targetChroma <= 0f) {
+        val g = linearToSrgb(targetLuminance)
+        return Color(g, g, g, 1f)
+    }
+
     val rad = Math.toRadians(hueDegrees.toDouble())
     val cosH = cos(rad).toFloat()
     val sinH = sin(rad).toFloat()
 
-    if (targetChroma <= 0f) {
-        val g = linearToSrgb(luminanceY)
-        return Color(g, g, g, 1f)
+    // OKLab 的 L 与相对亮度 Y 在高彩度下存在轻微偏移；按目标 Y 对 okL 做二分微调，
+    // 确保所有色相在 sRGB 色域裁剪后的输出亮度精确匹配目标 CIE L*。
+    var lowL = 0f
+    var highL = 1f
+    repeat(20) {
+        val midL = (lowL + highL) * 0.5f
+        val chroma = clampChromaToSrgb(midL, targetChroma, cosH, sinH)
+        val (r, g, b) = oklabToLinearRgb(midL, chroma * cosH, chroma * sinH)
+        val luminance = linearRelativeLuminance(r, g, b)
+        if (luminance < targetLuminance) lowL = midL else highL = midL
     }
 
-    var low = 0f
-    var high = targetChroma
-    if (!isInSrgbGamut(okL, high * cosH, high * sinH)) {
-        repeat(16) {
-            val mid = (low + high) * 0.5f
-            if (isInSrgbGamut(okL, mid * cosH, mid * sinH)) low = mid else high = mid
-        }
-    } else {
-        low = high
-    }
-
-    val (r, g, b) = oklabToLinearRgb(okL, low * cosH, low * sinH)
+    val calibratedL = (lowL + highL) * 0.5f
+    val finalChroma = clampChromaToSrgb(calibratedL, targetChroma, cosH, sinH)
+    val (r, g, b) = oklabToLinearRgb(calibratedL, finalChroma * cosH, finalChroma * sinH)
     return Color(linearToSrgb(r), linearToSrgb(g), linearToSrgb(b), 1f)
 }
+
+private fun clampChromaToSrgb(okL: Float, targetChroma: Float, cosH: Float, sinH: Float): Float {
+    if (isInSrgbGamut(okL, targetChroma * cosH, targetChroma * sinH)) return targetChroma
+    var low = 0f
+    var high = targetChroma
+    repeat(16) {
+        val mid = (low + high) * 0.5f
+        if (isInSrgbGamut(okL, mid * cosH, mid * sinH)) low = mid else high = mid
+    }
+    return low
+}
+
+private fun linearRelativeLuminance(r: Float, g: Float, b: Float): Float =
+    0.2126f * r.coerceIn(0f, 1f) + 0.7152f * g.coerceIn(0f, 1f) + 0.0722f * b.coerceIn(0f, 1f)
 
 private fun isInSrgbGamut(okL: Float, okA: Float, okB: Float): Boolean {
     val (r, g, b) = oklabToLinearRgb(okL, okA, okB)
