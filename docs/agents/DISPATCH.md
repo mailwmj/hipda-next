@@ -15,7 +15,7 @@
 
 ## 2. 并发与工作目录
 - 每张卡一个 worktree：`git worktree add ../hipda-next.wt/<卡号> -b card/<卡号>-<简名> origin/main`。一个目录同时只有一个写入者；只读的审查、调研可以并行。
-- 编译以 GitHub Actions 为准：推送分支 → `gh run watch` → 失败时 `gh run view --log-failed`。
+- 编译以 GitHub Actions 为准：推送分支 → `gh run watch <id> --interval 60` → 失败时 `gh run view --log-failed`。不用默认间隔（3 秒），不写循环轮询：多个代理同时轮询会在一小时内耗尽 GitHub API 的 5000 次额度。遇到 `API rate limit exceeded` 时，用 `gh api rate_limit` 查重置时间，等到重置后再查，不要当成 CI 失败。
 - 本地编译只用于 CI 上复现不了的问题，必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
 - 同时运行的代理（含只读）最多 8 个；本地编译仍按上一条串行。
 
