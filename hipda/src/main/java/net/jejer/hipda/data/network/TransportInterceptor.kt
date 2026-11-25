@@ -18,19 +18,14 @@ import org.chromium.net.CronetProvider
  * Terminal application interceptor that lazily initializes a Chrome-compatible Cronet transport
  * (Android 14+ system HttpEngine, then Google Play Services Cronet) on an OkHttp worker thread.
  *
- * Caches both available and unavailable outcomes so initialization runs at most once. When no
- * eligible Cronet provider is available (or when invoked on the main thread before initialization),
- * falls back transparently to OkHttp's own transport via `chain.proceed`.
+ * Caches both available and unavailable outcomes so initialization runs at most once. Falls back
+ * to OkHttp's own transport via `chain.proceed` when unavailable or invoked on the main thread
+ * before initialization.
  */
 class TransportInterceptor internal constructor(
     private val delegateFactory: () -> Interceptor?,
-    private val isMainThread: () -> Boolean,
+    private val isMainThread: () -> Boolean = ::isAndroidMainThread,
 ) : Interceptor {
-
-    constructor(delegateFactory: () -> Interceptor?) : this(
-        delegateFactory = delegateFactory,
-        isMainThread = ::isAndroidMainThread,
-    )
 
     private val initLock = Any()
 
@@ -41,9 +36,7 @@ class TransportInterceptor internal constructor(
     private var delegate: Interceptor? = null
 
     override fun intercept(chain: Interceptor.Chain): Response {
-        if (chain.call().isCanceled()) {
-            throw IOException("Canceled")
-        }
+        if (chain.call().isCanceled()) throw IOException("Canceled")
         val transport = resolveDelegate()
         return transport?.intercept(chain) ?: chain.proceed(chain.request())
     }
@@ -66,9 +59,7 @@ class TransportInterceptor internal constructor(
         fun create(context: Context): TransportInterceptor {
             val appContext = context.applicationContext ?: context
             return TransportInterceptor(
-                delegateFactory = {
-                    createCronetEngine(appContext)?.let(::buildCronetInterceptor)
-                },
+                delegateFactory = { createCronetEngine(appContext)?.let(::buildCronetInterceptor) },
             )
         }
     }
@@ -85,8 +76,7 @@ internal fun createCronetEngine(
     installPlayServicesProvider: (Context) -> Boolean = ::installPlayServicesCronet,
     providersLoader: (Context) -> List<CronetProvider> = CronetProvider::getAllProviders,
 ): CronetEngine? {
-    val appContext = context.applicationContext ?: context
-    val providers = safeCall { providersLoader(appContext) }.orEmpty()
+    val providers = safeCall { providersLoader(context) }.orEmpty()
     if (providers.isEmpty()) return null
 
     // Check non-Play-Services providers first (HttpEngine on API 34+) to avoid triggering
@@ -94,21 +84,14 @@ internal fun createCronetEngine(
     val directEnabled = providers.filter {
         it.name != PROVIDER_NAME_PLAY_SERVICES && safeCall { it.isEnabled } == true
     }
-    val directSelection = selectProvider(
-        directEnabled.map { ProviderInfo(it.name, isEnabled = true) },
-        sdkInt,
-    )
-    if (directSelection != null) {
-        directEnabled.firstOrNull { it.name == directSelection.name }
-            ?.let(::buildEngine)
-            ?.let { return it }
-    }
+    selectProvider(directEnabled.map { ProviderInfo(it.name, isEnabled = true) }, sdkInt)
+        ?.let { selected -> directEnabled.firstOrNull { it.name == selected.name } }
+        ?.let(::buildEngine)
+        ?.let { return it }
 
     val playProviders = providers.filter { it.name == PROVIDER_NAME_PLAY_SERVICES }
-    if (playProviders.isEmpty() || !installPlayServicesProvider(appContext)) return null
-
+    if (playProviders.isEmpty() || !installPlayServicesProvider(context)) return null
     val enabledPlay = playProviders.firstOrNull { safeCall { it.isEnabled } == true } ?: return null
-    selectProvider(listOf(ProviderInfo(enabledPlay.name, isEnabled = true)), sdkInt) ?: return null
     return buildEngine(enabledPlay)
 }
 
@@ -137,8 +120,7 @@ private fun buildEngine(provider: CronetProvider): CronetEngine? = safeCall {
 }
 
 internal fun isAndroidMainThread(): Boolean = try {
-    val mainLooper = Looper.getMainLooper()
-    mainLooper != null && Looper.myLooper() === mainLooper
+    Looper.getMainLooper()?.let { Looper.myLooper() === it } == true
 } catch (_: Throwable) {
     false
 }

@@ -2,6 +2,7 @@ package net.jejer.hipda.data.network
 
 import android.app.Application
 import android.content.Context
+import android.content.ContextWrapper
 import androidx.test.core.app.ApplicationProvider
 import java.net.URL
 import java.net.URLConnection
@@ -28,9 +29,12 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import org.chromium.net.BidirectionalStream
 import org.chromium.net.CronetEngine
 import org.chromium.net.CronetProvider
+import org.chromium.net.ExperimentalBidirectionalStream
 import org.chromium.net.ExperimentalCronetEngine
+import org.chromium.net.ExperimentalUrlRequest
 import org.chromium.net.ICronetEngineBuilder
 import org.chromium.net.UploadDataProvider
 import org.chromium.net.UrlRequest
@@ -561,13 +565,206 @@ class TransportInterceptorTest {
         }
     }
 
+    @Test
+    fun isAndroidMainThread_returnsTrueOnMainThreadAndFalseOnWorkerThread() {
+        assertTrue("Robolectric test thread must be recognized as Android main thread", isAndroidMainThread())
+
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val onWorker = worker.submit(Callable { isAndroidMainThread() }).get(5, TimeUnit.SECONDS)
+            assertFalse("Background worker thread must not be reported as Android main thread", onWorker)
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun defaultMainThreadGuard_defersInitializationOnMainThreadAndInitializesOnWorkerThread() {
+        val factoryCalls = AtomicInteger(0)
+        val delegateCalls = AtomicInteger(0)
+        // Uses merged internal constructor default: isMainThread = ::isAndroidMainThread
+        val transport = TransportInterceptor(
+            delegateFactory = {
+                factoryCalls.incrementAndGet()
+                Interceptor { chain ->
+                    delegateCalls.incrementAndGet()
+                    chain.proceed(chain.request())
+                }
+            },
+        )
+        val client = HttpClientModule.provideOkHttpClient(
+            siteCookieStore = InMemorySiteCookieStore(),
+            userAgentProvider = UserAgentProvider { TEST_UA },
+            transportInterceptor = transport,
+        )
+
+        val server = MockWebServer()
+        server.start()
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            server.enqueue(MockResponse.Builder().code(200).body("main-fallback").build())
+            server.enqueue(MockResponse.Builder().code(200).body("worker-delegate").build())
+
+            client.newCall(Request.Builder().url(server.url("/main-default")).build()).execute().use {
+                assertEquals("main-fallback", it.body.string())
+            }
+            assertEquals("Default main-thread guard must skip factory on main thread", 0, factoryCalls.get())
+            assertEquals(0, delegateCalls.get())
+
+            val workerBody = worker.submit(
+                Callable {
+                    client.newCall(Request.Builder().url(server.url("/worker-default")).build()).execute().use {
+                        it.body.string()
+                    }
+                },
+            ).get(5, TimeUnit.SECONDS)
+            assertEquals("worker-delegate", workerBody)
+            assertEquals(1, factoryCalls.get())
+            assertEquals(1, delegateCalls.get())
+        } finally {
+            worker.shutdownNow()
+            server.close()
+        }
+    }
+
+    @Test
+    fun createFactory_defersOnMainThread_andBuildsRealCronetInterceptorOnWorkerThread() {
+        val fakeEngine = RedirectRecordingFakeCronetEngine()
+        val builder = RecordingCronetEngineBuilder(engineFactory = { fakeEngine })
+        val stubAppContext = StubCronetApplicationContext(appContext, builder)
+        val outerContext = object : ContextWrapper(appContext) {
+            override fun getApplicationContext(): Context = stubAppContext
+        }
+
+        val client = HttpClientModule.provideOkHttpClient(
+            siteCookieStore = InMemorySiteCookieStore(),
+            userAgentProvider = UserAgentProvider { TEST_UA },
+            transportInterceptor = TransportInterceptor.create(outerContext),
+        )
+        assertEquals("TransportInterceptor.create must remain lazy", 0, builder.buildCount)
+
+        val server = MockWebServer()
+        server.start()
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            server.enqueue(MockResponse.Builder().code(200).body("main-thread-fallback").build())
+            // Safety response so a broken TransportInterceptor.create returning { null } fails immediately
+            // against local MockWebServer instead of timing out or reaching external hosts.
+            server.enqueue(MockResponse.Builder().code(200).body("unexpected-okhttp-fallback").build())
+
+            // Main-thread call must fall back to OkHttp without invoking Cronet provider discovery.
+            client.newCall(Request.Builder().url(server.url("/main")).build()).execute().use { response ->
+                assertEquals(200, response.code)
+                assertEquals("main-thread-fallback", response.body.string())
+            }
+            assertEquals(0, builder.buildCount)
+            assertTrue(fakeEngine.recordedRequests.isEmpty())
+
+            // Worker-thread call exercises TransportInterceptor.create -> createCronetEngine ->
+            // CronetProvider.getAllProviders -> buildCronetInterceptor end to end.
+            val workerBody = worker.submit(
+                Callable {
+                    client.newCall(Request.Builder().url(server.url("/forum/redirect.php")).build())
+                        .execute()
+                        .use { response ->
+                            assertEquals(200, response.code)
+                            response.body.string()
+                        }
+                },
+            ).get(10, TimeUnit.SECONDS)
+
+            assertEquals("final-page", workerBody)
+            assertEquals("Default create() factory must build Cronet engine once", 1, builder.buildCount)
+            assertTrue(builder.http2Enabled)
+            assertTrue(builder.quicEnabled)
+            assertTrue(builder.brotliEnabled)
+            assertEquals(0, fakeEngine.followRedirectCalls.get())
+            assertEquals(2, fakeEngine.recordedRequests.size)
+            assertEquals(1, server.requestCount)
+        } finally {
+            worker.shutdownNow()
+            server.close()
+        }
+    }
+
+    @Test
+    fun installPlayServicesCronet_returnsFalseWhenUnavailableAndPreservesInterruptFlag() {
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val installedWithoutGms = worker.submit(
+                Callable { installPlayServicesCronet(appContext) },
+            ).get(10, TimeUnit.SECONDS)
+            assertFalse("Play Services Cronet install must fail safely without GMS", installedWithoutGms)
+
+            val (installedWhenInterrupted, interruptPreserved) = worker.submit(
+                Callable {
+                    Thread.currentThread().interrupt()
+                    try {
+                        val installed = installPlayServicesCronet(appContext)
+                        installed to Thread.currentThread().isInterrupted
+                    } finally {
+                        Thread.interrupted()
+                    }
+                },
+            ).get(10, TimeUnit.SECONDS)
+            assertFalse(installedWhenInterrupted)
+            assertTrue("InterruptedException handling must restore thread interrupt flag", interruptPreserved)
+
+            // Default installPlayServicesProvider wiring inside createCronetEngine also returns null safely.
+            val playProvider = FakeCronetProvider(
+                context = appContext,
+                providerName = PROVIDER_NAME_PLAY_SERVICES,
+                enabled = { true },
+                builderDelegate = RecordingCronetEngineBuilder(),
+            )
+            val engine = worker.submit(
+                Callable {
+                    createCronetEngine(
+                        context = appContext,
+                        sdkInt = 33,
+                        providersLoader = { listOf(playProvider) },
+                    )
+                },
+            ).get(10, TimeUnit.SECONDS)
+            assertNull(engine)
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
     private data class RecordedCronetRequest(
         val url: String,
         val method: String,
         val headers: List<Pair<String, String>>,
     )
 
-    private class RedirectRecordingFakeCronetEngine : CronetEngine() {
+    private class StubCronetApplicationContext(
+        base: Context,
+        val builder: RecordingCronetEngineBuilder,
+    ) : ContextWrapper(base) {
+        private val interceptingClassLoader = object : ClassLoader(base.classLoader) {
+            override fun loadClass(name: String, resolve: Boolean): Class<*> =
+                if (name == HTTP_ENGINE_PROVIDER_CLASS_NAME) {
+                    StubHttpEngineCronetProvider::class.java
+                } else {
+                    super.loadClass(name, resolve)
+                }
+        }
+
+        override fun getApplicationContext(): Context = this
+        override fun getClassLoader(): ClassLoader = interceptingClassLoader
+    }
+
+    class StubHttpEngineCronetProvider(context: Context) : CronetProvider(context) {
+        override fun createBuilder(): CronetEngine.Builder =
+            CronetEngine.Builder((mContext as StubCronetApplicationContext).builder)
+
+        override fun getName(): String = PROVIDER_NAME_HTTP_ENGINE
+        override fun getVersion(): String = "1.0.0"
+        override fun isEnabled(): Boolean = true
+    }
+
+    private class RedirectRecordingFakeCronetEngine : ExperimentalCronetEngine() {
         val recordedRequests = mutableListOf<RecordedCronetRequest>()
         val followRedirectCalls = AtomicInteger(0)
         val cancelCalls = AtomicInteger(0)
@@ -578,33 +775,40 @@ class TransportInterceptorTest {
         override fun stopNetLog() {}
         override fun getGlobalMetricsDeltas(): ByteArray = ByteArray(0)
         override fun openConnection(url: URL?): URLConnection = throw UnsupportedOperationException()
+        override fun openConnection(url: URL?, proxy: java.net.Proxy?): URLConnection =
+            throw UnsupportedOperationException()
         override fun createURLStreamHandlerFactory(): URLStreamHandlerFactory = throw UnsupportedOperationException()
+        override fun newBidirectionalStreamBuilder(
+            url: String?,
+            callback: BidirectionalStream.Callback?,
+            executor: Executor?,
+        ): ExperimentalBidirectionalStream.Builder = throw UnsupportedOperationException()
 
         override fun newUrlRequestBuilder(
             url: String,
             callback: UrlRequest.Callback,
             executor: Executor,
-        ): UrlRequest.Builder = object : UrlRequest.Builder() {
+        ): ExperimentalUrlRequest.Builder = object : ExperimentalUrlRequest.Builder() {
             private var httpMethod: String = "GET"
             private val headers = mutableListOf<Pair<String, String>>()
 
-            override fun setHttpMethod(method: String): UrlRequest.Builder = apply { httpMethod = method }
-            override fun addHeader(header: String, value: String): UrlRequest.Builder = apply {
+            override fun setHttpMethod(method: String): ExperimentalUrlRequest.Builder = apply { httpMethod = method }
+            override fun addHeader(header: String, value: String): ExperimentalUrlRequest.Builder = apply {
                 headers += header to value
             }
 
-            override fun disableCache(): UrlRequest.Builder = this
-            override fun setPriority(priority: Int): UrlRequest.Builder = this
+            override fun disableCache(): ExperimentalUrlRequest.Builder = this
+            override fun setPriority(priority: Int): ExperimentalUrlRequest.Builder = this
             override fun setUploadDataProvider(
                 uploadDataProvider: UploadDataProvider,
                 executor: Executor,
-            ): UrlRequest.Builder = this
+            ): ExperimentalUrlRequest.Builder = this
 
-            override fun allowDirectExecutor(): UrlRequest.Builder = this
+            override fun allowDirectExecutor(): ExperimentalUrlRequest.Builder = this
 
-            override fun build(): UrlRequest {
+            override fun build(): ExperimentalUrlRequest {
                 val snapshot = RecordedCronetRequest(url, httpMethod, headers.toList())
-                return object : UrlRequest() {
+                return object : ExperimentalUrlRequest() {
                     private var bodyDelivered = false
                     private var done = false
 
@@ -612,6 +816,7 @@ class TransportInterceptorTest {
                         recordedRequests += snapshot
                         executor.execute {
                             if (url.endsWith("/redirect.php")) {
+                                val targetUrl = requireNotNull(url.toHttpUrl().resolve("/forum/target.php")).toString()
                                 val info = fakeResponseInfo(
                                     url = url,
                                     statusCode = 302,
@@ -621,7 +826,7 @@ class TransportInterceptorTest {
                                         "Set-Cookie" to "hop_sid=xyz; Path=/",
                                     ),
                                 )
-                                callback.onRedirectReceived(this, info, "https://www.4d4y.com/forum/target.php")
+                                callback.onRedirectReceived(this, info, targetUrl)
                             } else {
                                 val info = fakeResponseInfo(
                                     url = url,
@@ -680,7 +885,9 @@ class TransportInterceptorTest {
 
     private class RecordingCronetEngineBuilder(
         private val onBuild: () -> Unit = {},
+        private val engineFactory: () -> ExperimentalCronetEngine = { NoOpExperimentalCronetEngine() },
     ) : ICronetEngineBuilder() {
+        var buildCount: Int = 0
         var http2Enabled: Boolean = false
         var quicEnabled: Boolean = false
         var brotliEnabled: Boolean = false
@@ -705,8 +912,9 @@ class TransportInterceptorTest {
         override fun setUserAgent(userAgent: String?): ICronetEngineBuilder = this
         override fun getDefaultUserAgent(): String = "fake-ua"
         override fun build(): ExperimentalCronetEngine {
+            buildCount++
             onBuild()
-            return NoOpExperimentalCronetEngine()
+            return engineFactory()
         }
     }
 
@@ -734,6 +942,7 @@ class TransportInterceptorTest {
 
     private companion object {
         const val TEST_UA = "Mozilla/5.0 (Linux; Android 14; Test) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36"
+        const val HTTP_ENGINE_PROVIDER_CLASS_NAME = "org.chromium.net.impl.HttpEngineNativeProvider"
 
         fun fakeResponseInfo(
             url: String,
