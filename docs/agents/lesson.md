@@ -14,6 +14,7 @@
 - Android Auto Backup（`backup_config.xml` / `data_extraction_rules.xml`）不支持 `*` 通配符或文件名前缀，新增加密 DataStore 必须在两份 XML 显式列出精确路径；已由 `BackupExclusionRulesTest` 源码扫描守住（在 `card/D3c-credentials`）。（2026-11-25）
 - Jsoup 1.24.1 的 `selectFirst`/`first`/`last` 带 `@org.jspecify.annotations.Nullable` 且未传递依赖 `jspecify`，在 Kotlin 2.4 泛型推断下报错；`:core-parser` 中用 `select(selector).firstOrNull()` 规避。（2026-11-25）
 - OkHttp 5 Android 的 `Cookie.parse` 解析带 `Domain=` 的 Cookie 会读 `AssetManager` 里的 `PublicSuffixDatabase.list`，单测需用 Robolectric 并在 `@Before` 调 `OkHttp.initialize(ApplicationProvider.getApplicationContext())`。（2026-11-25）
+- 本机的 Android SDK 和 JDK 由 mise 安装、不在环境变量里：本地 Gradle 前先 `export ANDROID_HOME=/home/mir/.local/share/mise/installs/android-sdk/21.0 JAVA_HOME=/home/mir/.local/share/mise/installs/java/latest; export PATH="$JAVA_HOME/bin:$PATH"`（不要在 worktree 写 `local.properties`），否则会误报“没有 SDK”。新 Roborazzi 基线用 `:hipda:recordRoborazziDebug --tests <本卡截图测试类>` 在本地按 DISPATCH 第 2 节录制，必须用 `--tests` 限定，以 CI 的 verify 为准。（2026-11-25）
 
 ## 协作
 - 8 个代理同时用 `gh run watch`（默认每 3 秒查一次）约 40 分钟就耗尽了 GitHub API 每小时 5000 次的额度，所有 `gh` 命令返回 403；规则已写进 DISPATCH §2（`--interval 60`）。（2026-11-24）
