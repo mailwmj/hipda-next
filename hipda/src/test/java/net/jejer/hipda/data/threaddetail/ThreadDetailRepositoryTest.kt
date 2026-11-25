@@ -1177,6 +1177,447 @@ class ThreadDetailRepositoryTest {
     }
 
     @Test
+    fun browseHistory_nonFirstPageNeverOverwritesOpAuthor_coversPage3ThenPage1AndLastPageOnlyAndUserOnly() = runBlocking {
+        val repo = createRepository()
+
+        // 1. Sequence A: visit Page 3 first (no floor 1) -> must NOT record page 3 replier as OP
+        nowMs.set(1_700_100_001_000L)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71001",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "顺序测试长帖",
+                    page = 3,
+                    lastPage = 5,
+                    floors = listOf(
+                        SyntheticFloor(pid = "71101", floor = 101, uid = "9001", author = "ReplierP3", text = "三楼页首回帖"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(repo.loadPage(tid = "71001", page = 3) is ThreadDetailLoadResult.Success)
+        val afterPage3 = browseHistoryDao.observeRecent(10).first().single { it.tid == "71001" }
+        assertEquals("", afterPage3.author)
+
+        // Then visit Page 1 -> populates real OP author from floor 1
+        nowMs.set(1_700_100_002_000L)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71001",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "顺序测试长帖",
+                    page = 1,
+                    lastPage = 5,
+                    floors = listOf(
+                        SyntheticFloor(pid = "71001", floor = 1, uid = "8001", author = "RealOP", text = "主楼内容"),
+                        SyntheticFloor(pid = "71002", floor = 2, uid = "9002", author = "ReplierF2", text = "二楼回复"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(repo.loadPage(tid = "71001", page = 1) is ThreadDetailLoadResult.Success)
+        val afterPage1 = browseHistoryDao.observeRecent(10).first().single { it.tid == "71001" }
+        assertEquals("RealOP", afterPage1.author)
+
+        // Then revisit Page 2, UserOnly(replier), and loadByPostId(non-1st-page) -> must PRESERVE "RealOP"
+        nowMs.set(1_700_100_003_000L)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71001",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "顺序测试长帖",
+                    page = 2,
+                    lastPage = 5,
+                    floors = listOf(
+                        SyntheticFloor(pid = "71051", floor = 51, uid = "9003", author = "ReplierP2", text = "二页首楼"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(repo.loadPage(tid = "71001", page = 2) is ThreadDetailLoadResult.Success)
+        val afterPage2 = browseHistoryDao.observeRecent(10).first().single { it.tid == "71001" }
+        assertEquals("RealOP", afterPage2.author)
+        assertEquals(1_700_100_003_000L, afterPage2.lastVisitedAt)
+
+        nowMs.set(1_700_100_004_000L)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71001",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "顺序测试长帖",
+                    page = 1,
+                    lastPage = 1,
+                    floors = listOf(
+                        SyntheticFloor(pid = "71052", floor = 52, uid = "9003", author = "ReplierP2", text = "只看某人回帖"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(
+            repo.loadPage(tid = "71001", page = 1, filter = ThreadDetailFilter.UserOnly(uid = "9003")) is ThreadDetailLoadResult.Success,
+        )
+        assertEquals("RealOP", browseHistoryDao.observeRecent(10).first().single { it.tid == "71001" }.author)
+
+        nowMs.set(1_700_100_005_000L)
+        server.enqueue(
+            MockResponse.Builder()
+                .code(302)
+                .addHeader("Location", "/forum/viewthread.php?tid=71001&page=2#pid71052")
+                .build(),
+        )
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71001",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "顺序测试长帖",
+                    page = 2,
+                    lastPage = 5,
+                    floors = listOf(
+                        SyntheticFloor(pid = "71052", floor = 52, uid = "9003", author = "ReplierP2", text = "定位楼层"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(repo.loadByPostId(pid = "71052", tid = "71001") is ThreadDetailLoadResult.Success)
+        assertEquals("RealOP", browseHistoryDao.observeRecent(10).first().single { it.tid == "71001" }.author)
+
+        // 2. Sequence B: visit Last Page ONLY (lands on page 10 without floor 1) -> author must stay empty, not last replier
+        nowMs.set(1_700_100_006_000L)
+        server.enqueue(
+            MockResponse.Builder()
+                .code(302)
+                .addHeader("Location", "/forum/viewthread.php?tid=71002&page=10#lastpost")
+                .build(),
+        )
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71002",
+                    fid = 6,
+                    forumName = "Buy & Sell",
+                    title = "仅进末页测试帖",
+                    page = 10,
+                    lastPage = 10,
+                    floors = listOf(
+                        SyntheticFloor(pid = "72451", floor = 451, uid = "9099", author = "LastPageReplier", text = "末页回帖"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(repo.loadLastPage(tid = "71002") is ThreadDetailLoadResult.Success)
+        val lastPageOnly = browseHistoryDao.observeRecent(10).first().single { it.tid == "71002" }
+        assertEquals("", lastPageOnly.author)
+        assertEquals("Buy & Sell", lastPageOnly.forumName)
+
+        // 3. AuthorOnly(null) directly jumping to page 2 (no floor 1 on page 2) uses fallbackOpAuthor from page 1
+        nowMs.set(1_700_100_007_000L)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71003",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "只看楼主二页帖",
+                    page = 1,
+                    lastPage = 2,
+                    floors = listOf(
+                        SyntheticFloor(pid = "73001", floor = 1, uid = "8003", author = "AuthorOnlyOP", text = "一楼"),
+                    ),
+                ),
+            ),
+        )
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71003",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "只看楼主二页帖",
+                    page = 2,
+                    lastPage = 2,
+                    floors = listOf(
+                        SyntheticFloor(pid = "73060", floor = 60, uid = "8003", author = "AuthorOnlyOP", text = "楼主后续回复"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(
+            repo.loadPage(tid = "71003", page = 2, filter = ThreadDetailFilter.AuthorOnly(authorId = null)) is ThreadDetailLoadResult.Success,
+        )
+        assertEquals("AuthorOnlyOP", browseHistoryDao.observeRecent(10).first().single { it.tid == "71003" }.author)
+    }
+
+    @Test
+    fun submitPollVote_customErrorWithPoliteOrRedirectText_classifiedAsSiteErrorWithoutRefresh() = runBlocking {
+        val repo = createRepository()
+
+        // 1. HTML alert_info containing "请稍候/正在跳转" while actually reporting an error -> SiteError, 0 refresh
+        server.enqueue(
+            gbkHtmlResponse(
+                loggedInPageHtml(
+                    """
+                    <div id="wrap">
+                      <div class="alert_info">
+                        <p>操作失败，投票参数异常，请稍候，正在跳转至主题页面</p>
+                        <p><a href="viewthread.php?tid=50010">如果您的浏览器没有自动跳转，请点击这里</a></p>
+                      </div>
+                    </div>
+                    """.trimIndent(),
+                ),
+            ),
+        )
+        val htmlErr = repo.submitPollVote(2, "50010", "fh_s2_1", listOf("101"), maxChoices = 1)
+        assertTrue("Expected SiteError for custom redirect error page, got $htmlErr", htmlErr is ThreadDetailError.SiteError)
+        assertTrue((htmlErr as ThreadDetailError.SiteError).message.contains("正在跳转"))
+        assertEquals(1, server.requestCount)
+
+        // 2. AJAX XML with polite/redirect phrase only (no explicit vote-submitted confirmation) -> SiteError, 0 refresh
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[非常感谢您的参与，请稍候，正在跳转，现在将转入主题页面]]></root>""",
+            ),
+        )
+        val politeXmlErr = repo.submitPollVote(2, "50010", "fh_s2_2", listOf("101"), maxChoices = 1)
+        assertTrue("Expected SiteError for polite/redirect-only XML, got $politeXmlErr", politeXmlErr is ThreadDetailError.SiteError)
+        assertEquals(2, server.requestCount)
+
+        // 3. AJAX XML with error marker + redirect text -> SiteError, 0 refresh
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，投票已经提交失败，请稍候，正在跳转]]></root>""",
+            ),
+        )
+        val negatedXmlErr = repo.submitPollVote(2, "50010", "fh_s2_3", listOf("101"), maxChoices = 1)
+        assertTrue("Expected SiteError when failure phrase negates submission, got $negatedXmlErr", negatedXmlErr is ThreadDetailError.SiteError)
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun loadByPostId_withoutTidAndRedirectUrlTid_fallsBackToHeadScriptParseIntTid() = runBlocking {
+        val repo = createRepository()
+        // Direct 200 response from gotopost.php: no tid in URL, no input[name=tid], no viewthread.php link in #wrap,
+        // only <head><script> tid = parseInt('77003'); body also contains a fake parseInt to verify head scoping.
+        val html = syntheticThreadPageHtml(
+            tidInDom = null,
+            fid = 2,
+            forumName = "Discovery",
+            title = "Head脚本提取TID测试",
+            page = 1,
+            lastPage = 1,
+            headScript = "var STYLEID = '1', fid = parseInt('2'), tid = parseInt('77003');",
+            floors = listOf(
+                SyntheticFloor(
+                    pid = "88903",
+                    floor = 1,
+                    uid = "3003",
+                    author = "ScriptOP",
+                    text = "正文伪造 tid = parseInt('99999') 不应干扰 head 提取",
+                ),
+            ),
+        )
+        server.enqueue(gbkHtmlResponse(html))
+
+        val res = repo.loadByPostId(pid = "88903", tid = null)
+        assertTrue("Expected Success, got $res", res is ThreadDetailLoadResult.Success)
+        val success = res as ThreadDetailLoadResult.Success
+        assertEquals("77003", success.tid)
+        assertEquals("88903", success.targetPostId)
+        assertEquals("/forum/gotopost.php?pid=88903", server.takeRequest().target)
+
+        val history = browseHistoryDao.observeRecent(10).first()
+        assertEquals(listOf("77003"), history.map { it.tid })
+        assertEquals("ScriptOP", history.single().author)
+    }
+
+    @Test
+    fun loadLastPage_loadByPostId_andAuthorOnlyPage1Discovery_triggerSingleSilentReloginOnExpiredSession() = runBlocking {
+        val reloginCalls = AtomicInteger(0)
+        authRepository.onTrySilentRelogin = { _, _ ->
+            reloginCalls.incrementAndGet()
+            authRepository.bumpEpoch()
+            SilentReloginResult.Recovered(authRepository.sessionEpoch)
+        }
+        val repo = createRepository()
+        val page1Html = syntheticThreadPageHtml(
+            tidInDom = "2602293",
+            fid = 2,
+            forumName = "Discovery",
+            title = "过期重登测试帖",
+            page = 1,
+            lastPage = 2,
+            floors = listOf(SyntheticFloor(pid = "53528033", floor = 1, uid = "26171", author = "zhuyi", text = "一楼")),
+        )
+        val page2Html = syntheticThreadPageHtml(
+            tidInDom = "2602293",
+            fid = 2,
+            forumName = "Discovery",
+            title = "过期重登测试帖",
+            page = 2,
+            lastPage = 2,
+            floors = listOf(SyntheticFloor(pid = "53529502", floor = 51, uid = "26171", author = "zhuyi", text = "二页")),
+        )
+
+        // 1. loadLastPage with expired session -> silent relogin + retry succeeds
+        server.enqueue(gbkHtmlResponse(loggedOutHtml("请先登录")))
+        server.enqueue(
+            MockResponse.Builder()
+                .code(302)
+                .addHeader("Location", "/forum/viewthread.php?tid=2602293&page=2")
+                .build(),
+        )
+        server.enqueue(gbkHtmlResponse(page2Html))
+        val lastPageRes = repo.loadLastPage(tid = "2602293", recordHistory = false)
+        assertTrue("Expected loadLastPage Success after relogin, got $lastPageRes", lastPageRes is ThreadDetailLoadResult.Success)
+        assertEquals(1, reloginCalls.get())
+
+        // 2. loadByPostId with expired session -> silent relogin + retry succeeds
+        server.enqueue(gbkHtmlResponse(loggedOutHtml("请先登录")))
+        server.enqueue(
+            MockResponse.Builder()
+                .code(302)
+                .addHeader("Location", "/forum/viewthread.php?tid=2602293&page=2#pid53529502")
+                .build(),
+        )
+        server.enqueue(gbkHtmlResponse(page2Html))
+        val byPostRes = repo.loadByPostId(pid = "53529502", tid = "2602293", recordHistory = false)
+        assertTrue("Expected loadByPostId Success after relogin, got $byPostRes", byPostRes is ThreadDetailLoadResult.Success)
+        assertEquals(2, reloginCalls.get())
+
+        // 3. AuthorOnly(authorId = null) page-1 discovery with expired session -> silent relogin + retry succeeds
+        server.enqueue(gbkHtmlResponse(loggedOutHtml("请先登录")))
+        server.enqueue(gbkHtmlResponse(page1Html))
+        server.enqueue(gbkHtmlResponse(page2Html))
+        val authorOnlyRes = repo.loadPage(
+            tid = "2602293",
+            page = 2,
+            filter = ThreadDetailFilter.AuthorOnly(authorId = null),
+            recordHistory = false,
+        )
+        assertTrue("Expected AuthorOnly Success after page-1 discovery relogin, got $authorOnlyRes", authorOnlyRes is ThreadDetailLoadResult.Success)
+        assertEquals(ThreadDetailFilter.AuthorOnly(authorId = "26171"), (authorOnlyRes as ThreadDetailLoadResult.Success).filter)
+        assertEquals(3, reloginCalls.get())
+    }
+
+    @Test
+    fun submitPollVote_successRefreshDoesNotWriteBrowseHistory_andMultiChoiceSortsLexicographically() = runBlocking {
+        // Also exercises the 6-arg @Inject constructor directly to lock DEFAULT_MAX_BROWSE_HISTORY
+        val client = HttpClientModule.provideOkHttpClient(
+            siteCookieStore = cookieStore,
+            userAgentProvider = UserAgentProvider { TEST_UA },
+            transportInterceptor = TransportInterceptor(
+                delegateFactory = { null },
+                isMainThread = { false },
+            ),
+        ).also(clientsToClose::add)
+        val gateway = SiteAccessGateway(
+            client = client,
+            detector = ChallengeDetector(),
+            solver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) },
+            clock = { nowMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+        val forumHttpClient = ForumHttpClient(
+            siteAccessGateway = gateway,
+            settingsRepository = settingsRepository,
+            authRepository = authRepository,
+        )
+        val repo = DefaultThreadDetailRepository(
+            forumHttpClient = forumHttpClient,
+            authRepository = authRepository,
+            settingsRepository = settingsRepository,
+            blacklistRepository = blacklistRepository,
+            browseHistoryDao = browseHistoryDao,
+            readingPositionDao = readingPositionDao,
+        )
+
+        // Multi-choice with cross-digit IDs ("10", "2", "10") locks lexicographical sort ("10" < "2")
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[非常感谢，您的投票已经提交，现在将转入主题页面]]></root>""",
+            ),
+        )
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticPollThreadHtml(
+                    tid = "50020",
+                    fid = 2,
+                    page = 1,
+                    title = "投票刷新不写历史测试",
+                    maxChoices = 3,
+                    options = listOf(
+                        SyntheticPollOpt(id = null, text = "选项二", rates = "50.00% (1)"),
+                        SyntheticPollOpt(id = null, text = "选项十", rates = "50.00% (1)"),
+                    ),
+                    footer = "您已经投过票",
+                ),
+            ),
+        )
+
+        val voteRes = repo.submitPollVote(
+            fid = 2,
+            tid = "50020",
+            formhash = "fh_lex",
+            optionIds = listOf("2", "10", "2"),
+            maxChoices = 3,
+        )
+        assertTrue("Expected Success, got $voteRes", voteRes is PollVoteResult.Success)
+
+        val postReq = server.takeRequest()
+        assertEquals(
+            listOf(
+                "formhash" to "fh_lex",
+                "pollanswers[]" to "10",
+                "pollanswers[]" to "2",
+            ),
+            decodeOrderedGbkForm(postReq.body?.utf8().orEmpty()),
+        )
+        assertEquals("/forum/viewthread.php?tid=50020&page=1", server.takeRequest().target)
+
+        // Poll refresh must NOT write browse history
+        assertTrue(
+            "Poll vote page-1 refresh must not write browse history",
+            browseHistoryDao.observeRecent(10).first().isEmpty(),
+        )
+
+        // 6-arg @Inject constructor retains history under DEFAULT_MAX_BROWSE_HISTORY (500)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "50021",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "默认上限保留验证",
+                    page = 1,
+                    lastPage = 1,
+                    floors = listOf(SyntheticFloor(pid = "51021", floor = 1, uid = "1001", author = "DefaultCapOP", text = "正文")),
+                ),
+            ),
+        )
+        assertTrue(repo.loadPage(tid = "50021", page = 1) is ThreadDetailLoadResult.Success)
+        assertEquals(listOf("50021"), browseHistoryDao.observeRecent(10).first().map { it.tid })
+
+        // maxBrowseHistory < 1 is rejected fail-closed
+        val rejectedZero = try {
+            createRepository(maxBrowseHistory = 0)
+            false
+        } catch (_: IllegalArgumentException) {
+            true
+        }
+        assertTrue("maxBrowseHistory = 0 must throw IllegalArgumentException", rejectedZero)
+    }
+
+    @Test
     fun threadDetailModule_hasExpectedHiltBindingForThreadDetailRepository() {
         assertTrue(ThreadDetailModule::class.java.isAnnotationPresent(Module::class.java))
         assertTrue(DefaultThreadDetailRepository::class.java.isAnnotationPresent(Singleton::class.java))
@@ -1264,6 +1705,7 @@ class ThreadDetailRepositoryTest {
         page: Int,
         lastPage: Int,
         floors: List<SyntheticFloor>,
+        headScript: String? = null,
     ): String {
         val umenu = if (loggedIn) {
             """<div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite><a href="logging.php?action=logout&amp;formhash=00000000">退出</a></div>"""
@@ -1301,10 +1743,11 @@ class ThreadDetailRepositoryTest {
             </tr></tbody></table></div>
             """.trimIndent()
         }
+        val scriptTag = headScript?.let { """<script type="text/javascript">$it</script>""" }.orEmpty()
         return """
             <!DOCTYPE html>
             <html>
-            <head><meta http-equiv="Content-Type" content="text/html; charset=gbk" /></head>
+            <head><meta http-equiv="Content-Type" content="text/html; charset=gbk" />$scriptTag</head>
             <body>
               $umenu
               <div id="nav"><a href="index.php">4D4Y</a> &raquo; <a href="forumdisplay.php?fid=$fid">$forumName</a> &raquo; $title</div>

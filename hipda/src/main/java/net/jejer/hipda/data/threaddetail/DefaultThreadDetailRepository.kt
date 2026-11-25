@@ -46,7 +46,7 @@ class DefaultThreadDetailRepository internal constructor(
 ) : ThreadDetailRepository {
 
     init {
-        require(maxBrowseHistory >= 0) { "maxBrowseHistory must be >= 0" }
+        require(maxBrowseHistory >= 1) { "maxBrowseHistory must be >= 1" }
     }
 
     @Inject
@@ -431,7 +431,9 @@ class DefaultThreadDetailRepository internal constructor(
         val doc = Jsoup.parse(response.html)
         val forumBaseUrl = deriveForumBaseUrl(forumServer)
         val avatarBaseUrl = deriveAvatarBaseUrl(forumBaseUrl)
-        val effectiveTidHint = tidHint ?: extractTidFromUrl(response.url)
+        val effectiveTidHint = tidHint
+            ?: extractTidFromUrl(response.url)
+            ?: extractTidFromHeadScript(doc)
         val parsed = ThreadDetailParser.parse(
             doc = doc,
             tid = effectiveTidHint,
@@ -457,6 +459,7 @@ class DefaultThreadDetailRepository internal constructor(
         if (recordHistory) {
             recordBrowseHistoryIfValid(
                 parsed = parsed,
+                filter = filter,
                 forumName = resolvedForumName.orEmpty(),
                 fallbackOpAuthor = fallbackOpAuthor,
             )
@@ -473,6 +476,7 @@ class DefaultThreadDetailRepository internal constructor(
 
     private suspend fun recordBrowseHistoryIfValid(
         parsed: ThreadDetailPage,
+        filter: ThreadDetailFilter,
         forumName: String,
         fallbackOpAuthor: String?,
     ) {
@@ -480,17 +484,36 @@ class DefaultThreadDetailRepository internal constructor(
         val normalizedTitle = parsed.title.trim()
         if (normalizedTitle.isEmpty()) return
 
-        val author = parsed.floors.firstOrNull { it.floor == 1 }?.author?.trim()?.takeIf { it.isNotEmpty() }
-            ?: fallbackOpAuthor?.trim()?.takeIf { it.isNotEmpty() }
-            ?: parsed.floors.firstOrNull()?.author?.trim().orEmpty()
-        val fidString = if (parsed.fid > 0) parsed.fid.toString() else ""
+        val verifiedOpAuthor = parsed.floors
+            .firstOrNull { it.floor == 1 }
+            ?.author
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: if (filter is ThreadDetailFilter.AuthorOnly) {
+                fallbackOpAuthor?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: parsed.floors.firstOrNull()?.author?.trim()?.takeIf { it.isNotEmpty() }
+            } else {
+                null
+            }
+
+        val existing = if (verifiedOpAuthor == null || forumName.isEmpty()) {
+            browseHistoryDao.observeRecent(Int.MAX_VALUE)
+                .first()
+                .firstOrNull { it.tid == validTid }
+        } else {
+            null
+        }
+
+        val author = verifiedOpAuthor ?: existing?.author?.trim().orEmpty()
+        val effectiveForumName = forumName.ifEmpty { existing?.forumName.orEmpty() }
+        val fidString = if (parsed.fid > 0) parsed.fid.toString() else existing?.fid.orEmpty()
 
         browseHistoryDao.upsert(
             BrowseHistoryEntity(
                 tid = validTid,
                 title = normalizedTitle,
                 fid = fidString,
-                forumName = forumName,
+                forumName = effectiveForumName,
                 author = author,
                 lastVisitedAt = clock(),
             ),
@@ -719,11 +742,32 @@ class DefaultThreadDetailRepository internal constructor(
 
         private val POLL_SUCCESS_MARKERS = listOf(
             "投票已经提交",
+            "投票已提交",
             "投票成功",
-            "感谢您的参与",
-            "非常感谢",
-            "转入主题页面",
         )
+
+        private val POLL_ERROR_MARKERS = listOf(
+            "对不起",
+            "抱歉",
+            "失败",
+            "错误",
+            "无效",
+            "不能",
+            "无法",
+            "无权",
+            "已经投过",
+            "已投过",
+            "已参与过",
+            "重复投票",
+            "过期",
+            "已结束",
+            "已经关闭",
+            "已关闭",
+            "最多只能选择",
+            "请选择",
+        )
+
+        private val HEAD_SCRIPT_TID_REGEX = Regex("""\btid\s*=\s*parseInt\(\s*['"](\d+)['"]\s*\)""")
 
         internal fun validatePositiveId(raw: String?): String? {
             val trimmed = raw?.trim() ?: return null
@@ -765,6 +809,17 @@ class DefaultThreadDetailRepository internal constructor(
             return validatePositiveId(candidate)
         }
 
+        internal fun extractTidFromHeadScript(doc: Document): String? {
+            for (script in doc.head().select("script")) {
+                val data = script.data()
+                if (data.isEmpty()) continue
+                val match = HEAD_SCRIPT_TID_REGEX.find(data) ?: continue
+                val candidate = validatePositiveId(match.groupValues[1])
+                if (candidate != null) return candidate
+            }
+            return null
+        }
+
         private fun extractForumNameFromNav(doc: Document): String? {
             val navEl = doc.firstMatch("div#nav") ?: return null
             for (link in navEl.select("a")) {
@@ -800,7 +855,11 @@ class DefaultThreadDetailRepository internal constructor(
         private fun isAuthRequiredMessage(message: String): Boolean =
             message.isNotEmpty() && AUTH_REQUIRED_MARKERS.any { marker -> message.contains(marker) }
 
-        private fun isPollVoteSuccessMessage(message: String): Boolean =
-            message.isNotEmpty() && POLL_SUCCESS_MARKERS.any { marker -> message.contains(marker) }
+        private fun isPollVoteSuccessMessage(message: String): Boolean {
+            if (message.isEmpty()) return false
+            if (isAuthRequiredMessage(message)) return false
+            if (POLL_ERROR_MARKERS.any { marker -> message.contains(marker) }) return false
+            return POLL_SUCCESS_MARKERS.any { marker -> message.contains(marker) }
+        }
     }
 }
