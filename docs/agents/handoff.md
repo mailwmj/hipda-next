@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-25 23:12 +07）
+# 负责人交接说明（2026-11-25 23:43 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -7,7 +7,7 @@
 ## 1. 全局进度总览
 
 - 设计文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4（大屏三栏方案 `b4ab916` + kudo 液态玻璃与交互设计修订 `bba139c`，经 R-Dkudo 审查与修订轮 APPROVE `@6f139c4`）；`docs/agents/decisions.md` 已记录 2026-11-25 用户拍板（参考 `kudo-android`、毛玻璃换用 Kyant `backdrop`、同屏上限 `2→3` 等，`0895b83`）。
-- **已合并进 `main`**（当前代码 `HEAD`：`99879a1`；`D5 @ e71c3fb` **main CI `45650433258` 绿**，push 事件未触发，手动 dispatch）：
+- **已合并进 `main`**（当前代码 `HEAD`：`3600f45`；`D9 @ 3600f45` **main CI `45655134227` 绿**）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
   - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
@@ -42,18 +42,18 @@
     - `fix/D7-notify-poll-test` 修复 D7 提醒/短消息仓储切号空帧假退登根因（reviewed `@075f053`）→ `2a3f7ca`
     - D5 帖子详情 Repository + 浏览历史/阅读位置/1 楼投票/黑名单遮蔽（R-D5 APPROVE `@65000ff`；修复轮 1 `@ec0a5e8` 闭合 S1–S4 经 `D5-fixcheck` PASS）→ `e71c3fb`（**main CI `45650433258` 绿**，push 事件未触发，手动 dispatch）
     - D6 发帖/回复/编辑/上传 Repository + 草稿/小尾巴/30s 冷却 + 闭合 R-B9b S3（R-D6 APPROVE + V-D6 PASS `@ce4840e`）→ `99879a1`
+    - D9 提醒轮询 WorkManager + HiltWorker + 免打扰 + 遇验证放弃 + 闭合 R-D7 S1–S4（R-D9 APPROVE + V-D9 PASS `@933a5ac`）→ `3600f45`（**main CI `45655134227` 绿**）
 - **阶段验收状态**：
   - **M1 真机验收通过**：用户已在真机使用 A5c 构建完成登录、抓取全部 16 个页面并导出脱敏样本入仓（`d5ed2ce`）。
   - **M2 解析器安全网与 `:core-parser` 全部合入完成**：`B9a`（`d45b6a2`）、`B9b`（`c0b8c8c`）、`B8`（`cf59951`）、`B7`（`db5857d`）全部合入 `main` 且 main CI 绿（`@db5857d`）。
   - **M4 真机验收通过 + Kyant `backdrop` 底层与 `C4d` 外壳微调全部合入**：`G2`（`5ce63dc`）、`C4d`（`21b1e3c`，真机清单同步至 `e1eb834`）均已合入；待用户用真机 debug 实时调参面板实测定值后回写 §5。
-- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已补档 `D2`/`D5`/`D6` 卡、R/V 卡、报告与 `D5-fixcheck`；`D4`/`C4d` 待下轮归档批次补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`。
+- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `D9`/`R-D9`/`V-D9` 卡与报告；`D4`/`C4d` 待下轮归档批次补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`。
 
 ## 2. 进行中与待派发
 
 | 卡号 | 分支 / worktree | 状态 |
 |---|---|---|
-| D8a（BATCH-4 Wave 5）搜索、今日新帖、收藏与关注 Repository（含 D3d 缓存） | `card/D8a-search-favorite-repo` / `../hipda-next.wt/D8a` | 进行中 / 待收尾（卡片 `D8a.md`、`R-D8a.md` 已就绪） |
-| D9（BATCH-4 Wave 5）提醒轮询（WorkManager + HiltWorker + 免打扰 + R-D7 S1–S4） | `card/D9-notification-polling` / `../hipda-next.wt/D9` | 进行中 / 待收尾（卡片 `D9.md`、`R-D9.md`、`V-D9.md` 已就绪，唯一授权改 `HiNextApplication.kt`/`AndroidManifest.xml`） |
+| D8a（BATCH-4 Wave 5）搜索、今日新帖、收藏与关注 Repository（含 D3d 缓存） | `card/D8a-search-favorite-repo` / `../hipda-next.wt/D8a` | 修复轮 1 进行中（R-D8a B1：收藏/关注 AJAX 成功被误判为失败） |
 | E0（BATCH-5 Wave 1）M5 阅读核心端到端 Tracer Bullet 与 E 线不可逆公共基座 | `card/E0-reading-tracer-bullet` / `../hipda-next.wt/E0` | `BATCH-5.md` 已按 R-BATCH5 修订，`E0.md`/`R-E0.md`/`V-E0.md` 已起草待派发/进行中 |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
@@ -64,7 +64,7 @@
 - **BATCH-4 计划**（已归档至 `docs/agents/cards/BATCH-4.md`）：12 张卡、5 波推进（实现卡并发 ≤ 3）：
   1. **Wave 1–3（全部合入）**：`B9a` → `d45b6a2`、`B9b` → `c0b8c8c`、`B8` → `cf59951`、`D2` → `0e5fb57`、`B7` → `db5857d`（**M2 收官**）、`D8b` → `5c71b35`、`D7` → `18dfa80`（同期 `G2` → `5ce63dc`、`C4d` → `21b1e3c`）
   2. **Wave 4（全部合入 → 解锁 M5 阅读核心）**：`D4` → `243aee8`、`D5` → `e71c3fb`（main CI `45650433258` 绿）、`D6` → `99879a1`
-  3. **Wave 5（收尾 M3）**：`D8a` [Medium]（搜索/今日新帖/收藏与关注，含 D3d）、`D9` [Complex]（WorkManager 提醒轮询 + R-D7 S1–S4）
+  3. **Wave 5（收尾 M3）**：`D9` [Complex] 已合入 → `3600f45`（main CI `45655134227` 绿）；`D8a` [Medium] 修复轮 1 进行中（R-D8a B1 收藏/关注 AJAX 成功误判失败）
 - **BATCH-5 计划**（工作副本 `/home/mir/Documents/hipda-next.wt/_cards/BATCH-5.md`，已按 R-BATCH5 修订）：M5 阅读核心 **8 卡 4 波**（W1 `E0` 曳光弹 → W2 `E1`/`E2a`/`E15` 达里程碑 A 真机浏览包 → W3 `E3`/`E2b`/`E2c` → W4 `E4` 达里程碑 B 完整验收包）。
 - **待观察风险**：
   - **Cloudflare 桌面 UA 下 WebView 过验证尚未在真机触发**：A5c 切换为桌面 Linux Chrome UA + Client Hints（`platform=Linux`、`mobile=false`）后，真机 M1 请求均直接 200 通过、未触发 Cloudflare 人机验证；该 UA 组合下的 WebView 自动/人工过盾与 `cf_clearance` 同步路径尚未经真机实测，列为待观察风险，后续真机首次触发验证时重点核实。
@@ -73,17 +73,13 @@
 
 ## 4. 派发后续卡时必须带入的审查遗留建议（尚待处理项）
 
-> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4 `DiscuzTextDecoder`、B9a 遗留 4 条小修、R-B9b S1–S4、R-B8 S1/S2/S3/S5 核心项、D2 密码转义、R-G1 2 条小修、R-G2 S1–S3、R-C4c 4 条、R-Dkudo `C4d` 提示、R-B7 S1、R-D8b S1–S3、R-D5 S1–S4）已移除，下面为**进行中或尚未落地**的条目：
+> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4 `DiscuzTextDecoder`、B9a 遗留 4 条小修、R-B9b S1–S4、R-B8 S1/S2/S3/S5 核心项、D2 密码转义、R-G1 2 条小修、R-G2 S1–S3、R-C4c 4 条、R-Dkudo `C4d` 提示、R-B7 S1、R-D8b S1–S3、R-D5 S1–S4、R-D7 S1–S4）已移除，下面为**进行中或尚未落地**的条目：
 
-- **→ D9（授权改 `data/message/` 对应文件，已写入卡片）**：
-  - R-D7 S1：收紧 `DefaultSmsRepository.kt:359-366, 393-395` `UNAUTH_AJAX_MARKERS` 中的 `"无权进行当前操作"`（排除含 `"您已经登录"` 的组受限 `NOPERM`），防止已登录无发信权限时误触发静默重登并错映射为 `AuthRequired`。
-  - R-D7 S2：`DefaultNotifyRepository.kt:355-368` `updateFromPageMeta` 在 `promptCounts.notifyTotal == 0` 时同步清理持久化的 `suppressedServerNotifyCount` 水位（与 `pollUnreadCounts` 对齐），防止进程重启后误压制同数量新提醒。
-  - R-D7 S3：`DefaultNotifyRepository.kt:302-325` `pollUnreadCounts` 补齐 `!hasContainer && errorMessage`（`alert_error`）守卫，并对 `:320`/`:142` 的 `readStateStore` 写盘加 `IOException` 兜底，防止磁盘异常向 `D9` Worker 抛出未捕获异常。
-  - R-D7 S4：补齐 3 处单行变异单测（切号/退登重置 15s 冷却、冷启动未调 `getNotifications()` 即校验 `hydrateAccount` 恢复水位与计数、重登重试成功回显含 `"您还未登录"` 锁死短路分支），并顺带修正 `_reports/D7.md:169` 行号笔误（`:349` → `:354`）。
 - **→ D-cleanup（下一张数据层清理卡，未建卡）**：
   - R-D6 S3：`DefaultImageUploadRepository.kt:386-395` 含 `#umenu` 时直接按 `isLoggedIn` 判断，避免误走宽松登录文本兜底。
   - R-D6 S4：补齐 `PrePost`/提交静默重登、`cooldownUntilMs` 切号流、`content://` 与 EXIF 旋转单测。
   - D5-fixcheck 微注：`AuthorOnly` 第 2 页夹具作者非空导致 `DefaultThreadDetailRepository.kt:493` `fallbackOpAuthor` 单删被 `:494` 兜住的夹具冗余（补作者为空/无作者夹具锁死 `:493`）。
+  - R-D9 S1：`NotificationPollingWorker.kt:131` 放宽 `catch` 到 `Exception`，`CancellationException` 照常重抛。
 - **→ “毛玻璃定稿”小卡（待用户用 `G2`/`C4d` debug 实时调参面板给出最终参数后派发）**：
   - 将用户拍板的最终液态玻璃参数与同屏上限 `3` 回写 `docs/design/product-design.md` §5。
 - **→ E1（论坛页）**：
@@ -110,8 +106,11 @@
   - R-D1：在“今日新帖”里点“发新帖”时必须先选定版块（正整数 `fid`）再生成 `DraftKey.newThread(fid)`。
   - R-D6 S1：`E6` 图片上传显式传 `original = false`（按规范压缩后上传）。
 - **→ E7**：C1b#3 — `EmojiGroup.name` 是 `:emoji` 里写死的中文，表情面板分类标签的无障碍 `contentDescription` 需走 `:hipda` 的 `strings_emoji.xml`。
+- **→ E12（设置、账号与通知）**：R-D9 S2 — 将通知文案迁移到 `docs/design/copy.md` 和 `res/values/strings_notification.xml`。
 - **→ M5 / M7 性能验收**：R-M0-2 R4 — `tech-plan.md` §4 提到的 `Macrobenchmark` 尚未加入 `libs.versions.toml`；真机 120Hz 帧时间与卡顿率在 M5/M7 阶段核验。
-- **→ M7-2**：C1b#1 — 删除旧 `EmojiHandler` 等类时，将 `EmojiMapTest` 固化为 `(code, imageSrc, lightRes, darkRes)` 四元组表驱动测试。
+- **→ M7-2**：
+  - C1b#1：删除旧 `EmojiHandler` 等类时，将 `EmojiMapTest` 固化为 `(code, imageSrc, lightRes, darkRes)` 四元组表驱动测试。
+  - R-D9 S3：删除旧 `NotiWorker` 时调用 `WorkManager.cancelUniqueWork("noti_work")` 清理旧周期任务。
 
 ---
 
