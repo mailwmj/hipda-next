@@ -14,6 +14,7 @@
 - Android Auto Backup（`backup_config.xml` / `data_extraction_rules.xml`）不支持 `*` 通配符或文件名前缀，新增加密 DataStore 必须在两份 XML 显式列出精确路径；已由 `BackupExclusionRulesTest` 源码扫描守住（在 `card/D3c-credentials`）。（2026-11-25）
 - Jsoup 1.24.1 的 `selectFirst`/`first`/`last` 带 `@org.jspecify.annotations.Nullable` 且未传递依赖 `jspecify`，在 Kotlin 2.4 泛型推断下报错；`:core-parser` 中用 `select(selector).firstOrNull()` 规避。（2026-11-25）
 - OkHttp 5 Android 的 `Cookie.parse` 解析带 `Domain=` 的 Cookie 会读 `AssetManager` 里的 `PublicSuffixDatabase.list`，单测需用 Robolectric 并在 `@Before` 调 `OkHttp.initialize(ApplicationProvider.getApplicationContext())`。（2026-11-25）
+- 平台 API 的测试替身必须按真实语义建模：A5a 的假 `WebViewCookieAccess` 只按 Cookie 名删除，掩盖了真实 `CookieManager` 里 host-only 过期头删不掉 `Domain=.4d4y.com` Cookie 的行为（R-A5a 阻断）。卡片里写明：替身要按 (name, domain, path) 存取，并模拟已知的平台怪癖。（2026-11-25）
 - 本机的 Android SDK 和 JDK 由 mise 安装、不在环境变量里：本地 Gradle 前先 `export ANDROID_HOME=/home/mir/.local/share/mise/installs/android-sdk/21.0 JAVA_HOME=/home/mir/.local/share/mise/installs/java/latest; export PATH="$JAVA_HOME/bin:$PATH"`（不要在 worktree 写 `local.properties`），否则会误报“没有 SDK”。新 Roborazzi 基线用 `:hipda:recordRoborazziDebug --tests <本卡截图测试类>` 在本地按 DISPATCH 第 2 节录制，必须用 `--tests` 限定，以 CI 的 verify 为准。（2026-11-25）
 
 ## 协作
@@ -21,3 +22,4 @@
 - 只读审查员不能在主目录里 `git checkout`：负责人的提交会落到游离的 HEAD 上，推送 `main` 时什么都没推上去。让审查员用 `git show <commit>:<路径>` 读文件，或者在自己新建的 worktree 里检出。（2026-11-24）
 - 上一任负责人的会话额度用完后，它“排好”的定时任务和后续卡片并不存在：交接时以 `list_schedules`、`list_agents` 的实际结果为准，不以交接文件为准。（2026-11-24）
 - 第三批 C4a/C5a/C5b（Neon xhigh）生产代码写到卡片估计的 2–3 倍：手写 `Layout`/`Modifier.Node`/命令队列、生产代码里放测试专用钩子；C4a 的手写布局二次测量导致窄窗崩溃。界面卡条款已写进 DISPATCH §5；审查卡里要专门检查行数和“标准组件能否替代”。（2026-11-25）
+- 并发/状态机类卡的独立探针验证抓到了审查漏掉的阻断：V-A4b 发现 solver 永不返回时网关永久卡死（R-A4b 判 APPROVE）。所以这类卡保留探针验证（见 DISPATCH §5 流程强度）。（2026-11-25）
