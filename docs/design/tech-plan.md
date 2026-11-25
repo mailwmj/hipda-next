@@ -57,7 +57,7 @@
 - 检测：以响应头 `cf-mitigated: challenge` 为准（Cloudflare 官方的检测方法）。403 一定要判断；429 也判断，这一点来自 fluxdo 的实践，官方文档没有明写；没有这个头时，只在 HTML 响应里按特征兜底。不能只因为页面里有 `challenge-platform` 就判定为验证页，因为正常页面也会被注入 Cloudflare 的检测脚本。
 - 流程：检测到验证页后，先用不可见的 WebView 自动尝试通过；页面进入需要人工操作的阶段，或者超时，才从底部升起验证面板，并复用同一个 WebView，不重新加载。通过后把 Cookie 同步给网络层，原请求自动重试。
 - 并发：同一时间只进行一次验证，其他请求排队等结果；验证失败后冷却 60 秒，避免反复弹出。
-- UA：WebView 和网络层使用同一个 UA，取自 WebView 自己的 UA（去掉 `; wv` 标记）。
+- UA：WebView 和网络层继续共用同一个 UA（`cf_clearance` 与 UA 绑定），但按“请求桌面版网站”策略统一改写为桌面版 Linux Chrome UA（提取系统 WebView 真实 Chrome 主版本号，生成 `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<主版本>.0.0.0 Safari/537.36`，不含 `Android`/`Mobile`/`; wv`/`Version/4.0`），并在 `WebViewFeature.USER_AGENT_METADATA` 可用时同步将 WebView 的 `UserAgentMetadata` 设为 `platform="Linux"`、`mobile=false` 与对应品牌版本，使 `navigator.userAgentData` 和 `Sec-CH-UA-*` 一致；原因是 4d4y.com 以 UA 中的 `Android` 为触发词下发手机版模板（缺失 `#umenu` 导致用户名提取失败，且 `pm.php`/`notice.php` 返回 500）。
 - 拦截器顺序（T5）：`ManualRedirectInterceptor` 在最外层，`BrowserHeaderInterceptor` 和 `AppCookieInterceptor` 在它里面。这样每一跳都按当次的目标地址存取 Cookie：前一跳下发的 Cookie 能带到下一跳，跳到外部域名时不会泄露登录 Cookie。重定向遇到 301、302、303 时把 POST 改为 GET 并去掉请求体；跨域名时去掉敏感请求头；最多跟随 16 跳。
 - 排队不能占住连接（T5）：验证期间的排队放在发起请求之前的协程层，不在 OkHttp 拦截器里阻塞；协调器自己发的恢复请求（例如静默重新登录）用独立的 Dispatcher。后台的提醒轮询遇到验证页时直接放弃本次，不排队等待。
 - 正文兜底只对 403 和 503 生效（T11）。

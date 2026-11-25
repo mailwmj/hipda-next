@@ -13,15 +13,20 @@ fun interface UserAgentProvider {
     fun userAgent(): String
 }
 
-/** Default mobile Chrome User-Agent provider until WebView-backed UA is wired in A5. */
+/**
+ * Default desktop Linux Chrome User-Agent provider used as fallback when system WebView UA
+ * cannot be resolved or does not expose a Chrome major version.
+ */
 @Singleton
 class DefaultUserAgentProvider @Inject constructor() : UserAgentProvider {
 
-    override fun userAgent(): String = DEFAULT_MOBILE_CHROME_UA
+    override fun userAgent(): String = DEFAULT_DESKTOP_CHROME_UA
 
     companion object {
-        const val DEFAULT_MOBILE_CHROME_UA: String =
-            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        const val DEFAULT_CHROME_MAJOR_VERSION: String = "131"
+
+        const val DEFAULT_DESKTOP_CHROME_UA: String =
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$DEFAULT_CHROME_MAJOR_VERSION.0.0.0 Safari/537.36"
     }
 }
 

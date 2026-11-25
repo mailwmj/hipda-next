@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import net.jejer.hipda.data.network.webview.applyUnifiedDesktopUserAgent
 import okhttp3.HttpUrl
 import org.json.JSONObject
 
@@ -191,9 +192,9 @@ open class ChallengeActivity : ComponentActivity() {
                 // Cloudflare Managed Challenge / Turnstile requires JavaScript and DOM storage.
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                userAgentString = userAgent
                 allowFileAccess = false
                 allowContentAccess = false
+                applyUnifiedDesktopUserAgent(this, userAgent)
             }
 
             runCatching {

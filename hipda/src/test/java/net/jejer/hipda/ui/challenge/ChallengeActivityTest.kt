@@ -74,7 +74,7 @@ class ChallengeActivityTest {
 
     private val forumUrl: HttpUrl = "https://www.4d4y.com/forum/".toHttpUrl()
     private val unifiedUa =
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36"
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
     private val httpDateFormatter: DateTimeFormatter =
         DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.US)
             .withZone(ZoneOffset.UTC)

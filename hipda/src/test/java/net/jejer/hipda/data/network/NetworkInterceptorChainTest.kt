@@ -30,6 +30,7 @@ import okio.ForwardingSource
 import okio.buffer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -611,7 +612,11 @@ class NetworkInterceptorChainTest {
         assertTrue(interceptors[1] is BrowserHeaderInterceptor)
         assertTrue(interceptors[2] is AppCookieInterceptor)
         assertTrue(interceptors[3] is TransportInterceptor)
-        assertNotNull(DefaultUserAgentProvider().userAgent().takeIf { it.contains("Mobile Safari") })
+        val defaultUa = DefaultUserAgentProvider().userAgent()
+        assertEquals(DefaultUserAgentProvider.DEFAULT_DESKTOP_CHROME_UA, defaultUa)
+        assertTrue(defaultUa.contains("X11; Linux x86_64"))
+        assertFalse(defaultUa.contains("Android"))
+        assertFalse(defaultUa.contains("Mobile"))
     }
 
     @Test
