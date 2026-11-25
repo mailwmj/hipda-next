@@ -1,6 +1,13 @@
 package net.jejer.hipda.feature.login
 
 import android.app.Application
+import android.content.res.Configuration
+import android.os.Bundle
+import android.os.Looper
+import android.os.Parcel
+import android.util.SparseArray
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.SnackbarHostState
@@ -8,8 +15,19 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
+import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import java.nio.charset.StandardCharsets
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
+import org.robolectric.Robolectric
+import org.robolectric.Shadows.shadowOf
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
@@ -375,6 +393,174 @@ class LoginScreenTest {
     }
 
     @Test
+    fun focusRouting_usernameErrorAndCollapsedSecurityQuestionErrorFocusTargetFields() =
+        withAnimatorDurationScale(0f) {
+            val repo = RecordingAuthRepository()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            try {
+                val vm = LoginViewModel(repo, createIdleGateway(scope))
+                setContent {
+                    HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                        LoginScreen(onDismiss = {}, onLoginSuccess = {}, viewModel = vm)
+                    }
+                }
+                waitForIdle()
+
+                // 1) 空用户名直接提交 -> 错误挂在用户名下方，焦点精确落到用户名框
+                onNodeWithText("登录").performClick()
+                waitForIdle()
+                onNodeWithText("用户名或密码错误").assertIsDisplayed()
+                onNode(hasSetTextAction() and hasText("用户名")).assertIsFocused()
+
+                // 2) 填入用户名和密码后服务端返回用户名不存在 -> 焦点仍精确落回用户名框
+                onNode(hasSetTextAction() and hasText("用户名")).performTextInput("ghost_user")
+                onNode(hasSetTextAction() and hasText("密码")).performTextInput("pass1234")
+                waitForIdle()
+                repo.nextLoginResult = LoginResult.InvalidCredentials("用户名不存在")
+                onNodeWithText("登录").performClick()
+                waitForIdle()
+                onNodeWithText("用户名或密码错误").assertIsDisplayed()
+                onNode(hasSetTextAction() and hasText("用户名")).assertIsFocused()
+
+                // 3) 安全提问未展开（无安全提问）时返回安全提问回答错误 -> 焦点落到安全提问下拉框
+                onNodeWithText("提问回答").assertDoesNotExist()
+                repo.nextLoginResult = LoginResult.InvalidCredentials("安全提问回答错误")
+                onNodeWithText("登录").performClick()
+                waitForIdle()
+                onNodeWithText("安全提问回答错误").assertIsDisplayed()
+                onNodeWithText("安全提问").assertIsFocused()
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun rotationAndSaveableStateRegistry_neverSerializesPasswordOrSecurityAnswerIntoBundle() {
+        val passwordSentinel = "SENTINEL_PWD_9xK7q2M4"
+        val answerSentinel = "SENTINEL_ANS_8zR3v5P1"
+
+        // Part A: SaveableStateRegistry 直接保存/恢复，断言全文搜索不含密码或答案哨兵
+        withAnimatorDurationScale(0f) {
+            val repo = RecordingAuthRepository()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            try {
+                val vm = LoginViewModel(repo, createIdleGateway(scope))
+                val initialRegistry = SaveableStateRegistry(restoredValues = null, canBeSaved = { true })
+                var currentRegistry by mutableStateOf(initialRegistry)
+                setContent {
+                    CompositionLocalProvider(LocalSaveableStateRegistry provides currentRegistry) {
+                        HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                            LoginScreen(onDismiss = {}, onLoginSuccess = {}, viewModel = vm)
+                        }
+                    }
+                }
+                waitForIdle()
+
+                onNode(hasSetTextAction() and hasText("用户名")).performTextInput("alice")
+                onNode(hasSetTextAction() and hasText("密码")).performTextInput(passwordSentinel)
+                onNodeWithContentDescription("显示密码").performClick()
+                onNodeWithText("安全提问").performClick()
+                waitForIdle()
+                onNodeWithText("母亲的名字").performClick()
+                waitForIdle()
+                onNode(hasSetTextAction() and hasText("提问回答")).performTextInput(answerSentinel)
+                waitForIdle()
+
+                val savedMap = initialRegistry.performSave()
+                val dumpedRegistry = dumpArbitraryValue(savedMap)
+                assertTrue("正例校验：rememberSaveable(passwordVisible=true) 应被保存到 Registry", dumpedRegistry.contains("true"))
+                assertFalse("SaveableStateRegistry 不得保存密码哨兵：$dumpedRegistry", dumpedRegistry.contains(passwordSentinel))
+                assertFalse("SaveableStateRegistry 不得保存安全提问答案哨兵：$dumpedRegistry", dumpedRegistry.contains(answerSentinel))
+
+                // 恢复到新 SaveableStateRegistry 后再次保存，依旧零泄露
+                val restoredRegistry = SaveableStateRegistry(restoredValues = savedMap, canBeSaved = { true })
+                currentRegistry = restoredRegistry
+                waitForIdle()
+                val dumpedRestored = dumpArbitraryValue(restoredRegistry.performSave())
+                assertFalse("恢复后的 SaveableStateRegistry 不得包含密码哨兵", dumpedRestored.contains(passwordSentinel))
+                assertFalse("恢复后的 SaveableStateRegistry 不得包含答案哨兵", dumpedRestored.contains(answerSentinel))
+            } finally {
+                scope.cancel()
+            }
+        }
+
+        // Part B: 真实 Activity 旋转保存 onSaveInstanceState(Bundle) + Parcel 二进制全文扫描
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val repo = RecordingAuthRepository()
+        val gateway = createIdleGateway(scope)
+        LoginRotationHarnessActivity.vmFactory = viewModelFactory { initializer { LoginViewModel(repo, gateway) } }
+        LoginRotationHarnessActivity.composedActivities.clear()
+        val controller = Robolectric.buildActivity(LoginRotationHarnessActivity::class.java).setup()
+        try {
+            val activityBefore = controller.get()
+            repeat(4) { shadowOf(Looper.getMainLooper()).idle() }
+            assertTrue(activityBefore in LoginRotationHarnessActivity.composedActivities)
+
+            val vmBefore = ViewModelProvider(activityBefore)[LoginViewModel::class.java]
+            vmBefore.onUsernameChange("alice")
+            vmBefore.onPasswordChange(passwordSentinel)
+            vmBefore.onSecurityQuestionSelected(1)
+            vmBefore.onSecurityAnswerChange(answerSentinel)
+            repeat(4) { shadowOf(Looper.getMainLooper()).idle() }
+
+            val outState = Bundle()
+            controller.saveInstanceState(outState)
+
+            // 1) 递归展开 Bundle 全文搜索
+            val bundleDump = dumpBundle(outState)
+            assertFalse("onSaveInstanceState Bundle 不得包含密码哨兵：$bundleDump", bundleDump.contains(passwordSentinel))
+            assertFalse("onSaveInstanceState Bundle 不得包含答案哨兵：$bundleDump", bundleDump.contains(answerSentinel))
+
+            // 2) Parcel 原始二进制 UTF-8 与 UTF-16LE 全文扫描（覆盖所有 Parcelable 内部字节）
+            val parcel = Parcel.obtain()
+            val marshalled = try {
+                outState.writeToParcel(parcel, 0)
+                parcel.marshall()
+            } finally {
+                parcel.recycle()
+            }
+            val utf8Text = String(marshalled, StandardCharsets.UTF_8)
+            val utf16Text = String(marshalled, StandardCharsets.UTF_16LE)
+            assertFalse("Parcel UTF-8 字节流不得包含密码哨兵", utf8Text.contains(passwordSentinel))
+            assertFalse("Parcel UTF-16LE 字节流不得包含密码哨兵", utf16Text.contains(passwordSentinel))
+            assertFalse("Parcel UTF-8 字节流不得包含答案哨兵", utf8Text.contains(answerSentinel))
+            assertFalse("Parcel UTF-16LE 字节流不得包含答案哨兵", utf16Text.contains(answerSentinel))
+
+            // 3) 真实旋转后新 Activity 复用内存中的 LoginViewModel，用户输入不丢失
+            val rotatedConfig = Configuration(activityBefore.resources.configuration).apply {
+                orientation = Configuration.ORIENTATION_LANDSCAPE
+                screenWidthDp = 749
+                screenHeightDp = 559
+            }
+            controller.configurationChange(rotatedConfig)
+            val activityAfter = controller.get()
+            if (!activityAfter.window.decorView.isAttachedToWindow) {
+                controller.visible()
+            }
+            repeat(4) { shadowOf(Looper.getMainLooper()).idle() }
+
+            assertNotSame(activityBefore, activityAfter)
+            assertTrue("旋转后新 Activity 应完成首次 Compose", activityAfter in LoginRotationHarnessActivity.composedActivities)
+            val vmAfter = ViewModelProvider(activityAfter)[LoginViewModel::class.java]
+            assertSame("旋转后应复用内存 LoginViewModel", vmBefore, vmAfter)
+            assertEquals(passwordSentinel, vmAfter.uiState.value.password)
+            assertEquals(answerSentinel, vmAfter.uiState.value.securityAnswer)
+
+            // 旋转恢复后再次保存 Bundle，同样零凭据泄露
+            val outStateAfter = Bundle()
+            controller.saveInstanceState(outStateAfter)
+            val afterDump = dumpBundle(outStateAfter)
+            assertFalse("旋转后再次保存的 Bundle 不得包含密码哨兵", afterDump.contains(passwordSentinel))
+            assertFalse("旋转后再次保存的 Bundle 不得包含答案哨兵", afterDump.contains(answerSentinel))
+        } finally {
+            controller.destroy()
+            LoginRotationHarnessActivity.vmFactory = null
+            LoginRotationHarnessActivity.composedActivities.clear()
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun loginUiModule_bindsLoginOverlayRendererImplAsSingleton() {
         assertNotNull(LoginUiModule::class.java.getAnnotation(Module::class.java))
         assertTrue(LoginOverlayRendererImpl::class.java.isAnnotationPresent(Singleton::class.java))
@@ -453,5 +639,52 @@ class LoginScreenTest {
         override suspend fun removeAccount(uid: String) = Unit
         override suspend fun trySilentRelogin(failedEpoch: Long, priority: AccessPriority): SilentReloginResult =
             SilentReloginResult.Suppressed
+    }
+
+    private fun dumpBundle(bundle: Bundle): String = buildString {
+        for (key in bundle.keySet()) {
+            append(key).append('=')
+            @Suppress("DEPRECATION")
+            append(dumpArbitraryValue(bundle.get(key)))
+            append('\n')
+        }
+    }
+
+    private fun dumpArbitraryValue(value: Any?): String = when (value) {
+        null -> "null"
+        is Bundle -> "{${dumpBundle(value)}}"
+        is Map<*, *> -> value.entries.joinToString(",", "{", "}") { (k, v) -> "$k=${dumpArbitraryValue(v)}" }
+        is Iterable<*> -> value.joinToString(",", "[", "]") { dumpArbitraryValue(it) }
+        is Array<*> -> value.joinToString(",", "[", "]") { dumpArbitraryValue(it) }
+        is SparseArray<*> -> buildString {
+            append('[')
+            for (i in 0 until value.size()) {
+                if (i > 0) append(',')
+                append(value.keyAt(i)).append(':').append(dumpArbitraryValue(value.valueAt(i)))
+            }
+            append(']')
+        }
+        else -> value.toString()
+    }
+}
+
+class LoginRotationHarnessActivity : ComponentActivity() {
+    override val defaultViewModelProviderFactory: ViewModelProvider.Factory
+        get() = requireNotNull(vmFactory)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val viewModel = ViewModelProvider(this)[LoginViewModel::class.java]
+        setContent {
+            composedActivities.add(this)
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                LoginScreen(onDismiss = {}, onLoginSuccess = {}, viewModel = viewModel)
+            }
+        }
+    }
+
+    companion object {
+        var vmFactory: ViewModelProvider.Factory? = null
+        val composedActivities = mutableSetOf<LoginRotationHarnessActivity>()
     }
 }

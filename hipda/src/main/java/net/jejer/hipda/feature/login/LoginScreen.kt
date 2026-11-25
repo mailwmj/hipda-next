@@ -176,7 +176,6 @@ private fun LoginTopBar(title: String, isModalCard: Boolean, onDismiss: () -> Un
     }
 }
 
-@Suppress("DEPRECATION")
 @Composable
 private fun LoginFormBody(
     uiState: LoginUiState,
@@ -191,6 +190,7 @@ private fun LoginFormBody(
     val cs = MaterialTheme.colorScheme
     val usernameFocus = remember { FocusRequester() }
     val passwordFocus = remember { FocusRequester() }
+    val questionFocus = remember { FocusRequester() }
     val answerFocus = remember { FocusRequester() }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
 
@@ -200,9 +200,9 @@ private fun LoginFormBody(
         val target = when (request.field) {
             LoginField.Username -> usernameFocus
             LoginField.Password -> passwordFocus
-            LoginField.SecurityAnswer -> if (uiState.showSecurityAnswer) answerFocus else null
+            LoginField.SecurityAnswer -> if (uiState.showSecurityAnswer) answerFocus else questionFocus
         }
-        target?.let { runCatching { it.requestFocus() } }
+        runCatching { target.requestFocus() }
         onConsumeFocusRequest(request.id)
     }
 
@@ -266,6 +266,7 @@ private fun LoginFormBody(
             selectedQuestionId = uiState.securityQuestionId,
             enabled = !uiState.isSubmitting,
             collapsedErrorRes = if (!uiState.showSecurityAnswer) answerErr?.messageRes else null,
+            focusRequester = questionFocus,
             onSelect = onSecurityQuestionSelected,
         )
 
@@ -325,6 +326,7 @@ private fun SecurityQuestionDropdown(
     selectedQuestionId: Int,
     enabled: Boolean,
     collapsedErrorRes: Int?,
+    focusRequester: FocusRequester,
     onSelect: (Int) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -342,7 +344,7 @@ private fun SecurityQuestionDropdown(
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded && enabled) },
             isError = collapsedErrorRes != null,
             supportingText = collapsedErrorRes?.let { errRes -> { FieldErrorText(errRes) } },
-            modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = enabled),
+            modifier = Modifier.fillMaxWidth().focusRequester(focusRequester).menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = enabled),
         )
         ExposedDropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
             DISCUZ_SECURITY_QUESTIONS.forEach { option ->

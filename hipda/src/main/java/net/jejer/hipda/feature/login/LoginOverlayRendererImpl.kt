@@ -66,10 +66,11 @@ class LoginOverlayRendererImpl @Inject constructor(
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
                 val snackbarController = LocalPaneSnackbarController.current
                 val loggedOutMessage = stringResource(R.string.login_snackbar_logged_out)
+                val logoutFailedMessage = stringResource(R.string.common_error_load_failed)
                 AccountMenuOverlay(
                     account = account,
                     isLoggingOut = uiState.isLoggingOut,
-                    onLogout = { viewModel.logout(snackbarController, loggedOutMessage, onDismiss) },
+                    onLogout = { viewModel.logout(snackbarController, loggedOutMessage, logoutFailedMessage, onDismiss) },
                     onDismiss = onDismiss,
                 )
             }

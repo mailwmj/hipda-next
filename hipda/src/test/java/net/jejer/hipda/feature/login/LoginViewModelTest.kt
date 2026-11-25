@@ -1,6 +1,7 @@
 package net.jejer.hipda.feature.login
 
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -214,6 +215,60 @@ class LoginViewModelTest {
     }
 
     @Test
+    fun submit_success_immediatelyClearsInMemoryPasswordAndSecurityAnswer() = runTest(testDispatcher) {
+        val repo = FakeAuthRepository()
+        val vm = LoginViewModel(repo, createIdleGateway(this))
+
+        vm.onUsernameChange("alice")
+        vm.onPasswordChange("PlainSecret_99")
+        vm.onSecurityQuestionSelected(1)
+        vm.onSecurityAnswerChange("PlainAnswer_88")
+
+        vm.submit()
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertTrue(state.loginSuccessEventId > 0L)
+        assertFalse(state.isSubmitting)
+        assertEquals("登录成功后必须立即清空内存中的明文密码", "", state.password)
+        assertEquals("登录成功后必须立即清空内存中的安全提问回答", "", state.securityAnswer)
+    }
+
+    @Test
+    fun logout_catchesNonCancellationExceptionAndRethrowsCancellationException() = runTest(testDispatcher) {
+        val repo = FakeAuthRepository(initialAccount = sampleAccount("old_user"))
+        val vm = LoginViewModel(repo, createIdleGateway(this))
+        val events = mutableListOf<String>()
+        val snackbar = object : PaneSnackbarController {
+            override suspend fun show(
+                message: String,
+                target: PaneSnackbarTarget,
+                actionLabel: String?,
+                onAction: (() -> Unit)?,
+            ) {
+                events += "snackbar:$message"
+            }
+        }
+
+        // 1) 普通异常（如磁盘 I/O）：兜底捕获不崩溃，复位 isLoggingOut，不误关浮层，发出失败提示
+        repo.logoutFailure = IOException("disk full")
+        vm.logout(snackbar, "已退出登录", failureMessage = "加载失败") { events += "dismiss" }
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.isLoggingOut)
+        assertEquals(listOf("snackbar:加载失败"), events)
+
+        // 2) CancellationException：照常重抛取消协程（不按失败提示，且 finally 复位 isLoggingOut）
+        events.clear()
+        repo.logoutFailure = CancellationException("cancelled")
+        vm.logout(snackbar, "已退出登录", failureMessage = "加载失败") { events += "dismiss" }
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.isLoggingOut)
+        assertEquals(emptyList<String>(), events)
+    }
+
+    @Test
     fun logout_invokesRepositoryDismissesOverlayAndEmitsSnackbar() = runTest(testDispatcher) {
         val repo = FakeAuthRepository(initialAccount = sampleAccount("old_user"))
         val vm = LoginViewModel(repo, createIdleGateway(this))
@@ -274,6 +329,7 @@ class LoginViewModelTest {
 
         val loginCalls = mutableListOf<LoginCall>()
         var logoutCalls = 0
+        var logoutFailure: Throwable? = null
         var nextLoginResult: LoginResult = LoginResult.Success(
             SavedAccount("1001", "alice", "0123456789abcdef0123456789abcdef", lastLoginAt = 1_000L),
         )
@@ -295,6 +351,7 @@ class LoginViewModelTest {
 
         override suspend fun switchAccount(uid: String): LoginResult = error("unused")
         override suspend fun logout() {
+            logoutFailure?.let { throw it }
             logoutCalls++
             _currentAccount.value = null
         }

@@ -152,22 +152,32 @@ class LoginViewModel @Inject constructor(
         }
     }
 
-    fun logout(snackbarController: PaneSnackbarController, loggedOutMessage: String, onDismiss: () -> Unit) {
+    fun logout(
+        snackbarController: PaneSnackbarController,
+        loggedOutMessage: String,
+        failureMessage: String? = null,
+        onDismiss: () -> Unit,
+    ) {
         if (_uiState.value.isLoggingOut) return
         _uiState.update { it.copy(isLoggingOut = true) }
         viewModelScope.launch {
             var loggedOut = false
+            var failed = false
             try {
                 authRepository.logout()
                 loggedOut = true
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: Exception) {
+                failed = true
             } finally {
                 _uiState.update { it.copy(isLoggingOut = false) }
             }
             if (loggedOut) {
                 onDismiss()
                 snackbarController.show(loggedOutMessage)
+            } else if (failed && failureMessage != null) {
+                snackbarController.show(failureMessage)
             }
         }
     }
@@ -179,7 +189,15 @@ class LoginViewModel @Inject constructor(
 
     private fun handleLoginResult(result: LoginResult) = when (result) {
         is LoginResult.Success -> _uiState.update {
-            it.copy(isSubmitting = false, fieldError = null, generalErrorRes = null, challengeFailure = null, loginSuccessEventId = eventIdGen.incrementAndGet())
+            it.copy(
+                password = "",
+                securityAnswer = "",
+                isSubmitting = false,
+                fieldError = null,
+                generalErrorRes = null,
+                challengeFailure = null,
+                loginSuccessEventId = eventIdGen.incrementAndGet(),
+            )
         }
         is LoginResult.InvalidCredentials -> {
             val isSecErr = UiErrorMapper.mapLoginResult(result)?.messageRes == R.string.common_error_login_security_answer
