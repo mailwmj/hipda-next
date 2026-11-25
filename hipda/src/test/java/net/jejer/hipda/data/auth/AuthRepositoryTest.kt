@@ -8,8 +8,13 @@ import dagger.Provides
 import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.Charset
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -19,7 +24,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
@@ -30,6 +37,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
@@ -46,6 +54,8 @@ import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeSolver
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.access.SolveResult
+import net.jejer.hipda.data.network.webview.WebViewCookieAccess
+import net.jejer.hipda.data.network.webview.WebViewCookieBridge
 import net.jejer.hipda.data.settings.AppSettings
 import net.jejer.hipda.data.settings.LineSpacing
 import net.jejer.hipda.data.settings.PaneSplit
@@ -57,6 +67,7 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Cookie
 import okhttp3.EventListener
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
@@ -66,6 +77,7 @@ import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -81,6 +93,8 @@ class AuthRepositoryTest {
 
     private lateinit var nowMs: AtomicLong
     private lateinit var cookieStore: InMemorySiteCookieStore
+    private lateinit var webViewCookieAccess: RealisticFakeWebViewCookieAccess
+    private lateinit var cookieDispatcher: ExecutorCoroutineDispatcher
     private lateinit var credentialsStore: FakeCredentialsStore
     private lateinit var settingsRepository: FakeSettingsRepository
     private lateinit var server: MockWebServer
@@ -92,6 +106,10 @@ class AuthRepositoryTest {
         OkHttp.initialize(ApplicationProvider.getApplicationContext())
         nowMs = AtomicLong(1_700_000_000_000L)
         cookieStore = InMemorySiteCookieStore(clock = { nowMs.get() })
+        webViewCookieAccess = RealisticFakeWebViewCookieAccess()
+        cookieDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "test-auth-webview-cookie").apply { isDaemon = true }
+        }.asCoroutineDispatcher()
         credentialsStore = FakeCredentialsStore()
         server = MockWebServer()
         server.start()
@@ -104,6 +122,7 @@ class AuthRepositoryTest {
     @After
     fun tearDown() {
         scope.cancel()
+        cookieDispatcher.close()
         clientsToClose.forEach { client ->
             client.dispatcher.cancelAll()
             client.dispatcher.executorService.shutdownNow()
@@ -117,12 +136,13 @@ class AuthRepositoryTest {
         maxRequests: Int? = null,
         maxRequestsPerHost: Int? = null,
         eventListener: EventListener? = null,
+        transportDelegate: okhttp3.Interceptor? = null,
     ): OkHttpClient {
         val base = HttpClientModule.provideOkHttpClient(
             siteCookieStore = cookieStore,
             userAgentProvider = UserAgentProvider { TEST_UA },
             transportInterceptor = TransportInterceptor(
-                delegateFactory = { null },
+                delegateFactory = { transportDelegate },
                 isMainThread = { false },
             ),
         )
@@ -184,6 +204,8 @@ class AuthRepositoryTest {
             recoveryGateway = recoveryGateway,
             clock = { nowMs.get() },
             scope = scope,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
         )
     }
 
@@ -329,10 +351,14 @@ class AuthRepositoryTest {
         assertEquals("20002", account.uid)
         assertEquals("SecondUser", account.username)
 
-        server.takeRequest() // 1st GET saw old session
-        val retryGet = server.takeRequest() // 2nd GET must have cf_clearance and NO old cdb_auth
+        val firstGet = server.takeRequest() // S1: 1st GET already has old cdb_auth cleared and cf_clearance preserved
+        val firstCookieHeader = firstGet.headers["Cookie"].orEmpty()
+        assertFalse("Old cdb_auth must be cleared before first login form GET", firstCookieHeader.contains("old_user_token"))
+        assertTrue("cf_clearance must be preserved on first GET", firstCookieHeader.contains("cf_clearance=cf_keep_me"))
+
+        val retryGet = server.takeRequest() // 2nd GET still preserves cf_clearance after server returned mismatched user
         val retryCookieHeader = retryGet.headers["Cookie"].orEmpty()
-        assertFalse("Old cdb_auth must be cleared before re-fetching login form", retryCookieHeader.contains("old_user_token"))
+        assertFalse("Old cdb_auth must stay cleared before re-fetching login form", retryCookieHeader.contains("old_user_token"))
         assertTrue("cf_clearance must be preserved", retryCookieHeader.contains("cf_clearance=cf_keep_me"))
     }
 
@@ -815,7 +841,8 @@ class AuthRepositoryTest {
         assertEquals(SilentReloginFailureReason.CHALLENGE_ABANDONED, failed.reason)
         assertEquals(0, solverCalls.get())
         assertEquals(1, server.requestCount)
-        assertTrue(repo.authState.value is AuthState.SessionExpired)
+        // B2: BackgroundSilent abandoning a challenge must NOT mutate global authState to SessionExpired
+        assertEquals(AuthState.SignedIn(account), repo.authState.value)
     }
 
     @Test
@@ -966,6 +993,8 @@ class AuthRepositoryTest {
         val repo = DefaultAuthRepository(
             credentialsStore = credentialsStore,
             siteCookieStore = cookieStore,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
             settingsRepository = settingsRepository,
             siteAccessGateway = primaryGateway,
             recoveryGateway = recoveryGateway,
@@ -1092,6 +1121,878 @@ class AuthRepositoryTest {
     }
 
     @Test
+    fun b1_logoutClearsWebViewLoginCookiesPreventingResurrectionOnNextChallengeSync() = runBlocking {
+        val forumUrl = "https://www.4d4y.com/forum/".toHttpUrl()
+        val expires30d = futureHttpDate(30L * 86_400L)
+        val expiresCf = futureHttpDate(1_800L)
+
+        val accountA = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(accountA)
+        credentialsStore.setActive(accountA.uid)
+        settingsRepository.setForumServer("https://www.4d4y.com")
+
+        // Seed 30-day persistent login cookies (both host-only and Domain=.4d4y.com + /forum path)
+        // plus cf_clearance & __cf_bm into SiteCookieStore, then prime WebView via real WebViewCookieBridge.
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(
+                Cookie.parse(forumUrl, "cdb_auth=alice_30d_secret; Domain=.4d4y.com; Path=/; Expires=$expires30d; Secure; HttpOnly")!!,
+                Cookie.parse(forumUrl, "cdb_sid=alice_sid_forum; Path=/forum; Expires=$expires30d; Secure")!!,
+                Cookie.parse(forumUrl, "cf_clearance=old_cf_token; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure")!!,
+                Cookie.parse(forumUrl, "__cf_bm=cf_bm_keep; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure")!!,
+            ),
+        )
+        val bridge = WebViewCookieBridge(cookieStore, webViewCookieAccess, cookieDispatcher)
+        bridge.primeWebView(forumUrl)
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cf_clearance=old_cf_token; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure",
+        )
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "__cf_bm=cf_bm_keep; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure",
+        )
+        assertTrue(webViewCookieAccess.storedRawHeaders(forumUrl).any { it.startsWith("cdb_auth=alice_30d_secret") })
+
+        val dedicatedCookieThread = withContext(cookieDispatcher) { Thread.currentThread() }
+        webViewCookieAccess.recordedThreads.clear()
+        val flushBeforeLogout = webViewCookieAccess.flushCount
+
+        val repo = createRepository()
+        repo.logout()
+
+        assertEquals(AuthState.SignedOut, repo.authState.value)
+        assertTrue(webViewCookieAccess.flushCount > flushBeforeLogout)
+        assertTrue(
+            "All WebView cookie operations must run on dedicated cookieDispatcher thread",
+            webViewCookieAccess.recordedThreads.isNotEmpty() &&
+                webViewCookieAccess.recordedThreads.all { it === dedicatedCookieThread },
+        )
+
+        // Simulate next Cloudflare challenge: clearClearance -> WebView passes challenge -> new cf_clearance -> syncFromWebView
+        bridge.clearClearance(forumUrl)
+        bridge.primeWebView(forumUrl)
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cf_clearance=fresh_cf_after_logout; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure",
+        )
+        bridge.syncFromWebView(forumUrl)
+
+        val storeCookiesAfterChallenge = cookieStore.loadForRequest(forumUrl)
+        assertFalse(
+            "Old cdb_auth must NEVER resurrect into SiteCookieStore after logout + challenge sync, got $storeCookiesAfterChallenge",
+            storeCookiesAfterChallenge.any { it.name == "cdb_auth" },
+        )
+        assertFalse(
+            "Old cdb_sid must NEVER resurrect into SiteCookieStore after logout + challenge sync",
+            storeCookiesAfterChallenge.any { it.name == "cdb_sid" },
+        )
+        assertTrue(storeCookiesAfterChallenge.any { it.name == "cf_clearance" && it.value == "fresh_cf_after_logout" })
+        assertTrue(storeCookiesAfterChallenge.any { it.name == "__cf_bm" && it.value == "cf_bm_keep" })
+    }
+
+    @Test
+    fun b1_removeActiveAccountClearsWebViewLoginCookiesPreventingResurrection() = runBlocking {
+        val forumUrl = "https://www.4d4y.com/forum/".toHttpUrl()
+        val expires30d = futureHttpDate(30L * 86_400L)
+        val expiresCf = futureHttpDate(1_800L)
+
+        val accountA = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(accountA)
+        credentialsStore.setActive(accountA.uid)
+        settingsRepository.setForumServer("https://www.4d4y.com")
+
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(
+                Cookie.parse(forumUrl, "cdb_auth=removed_alice_auth; Domain=.4d4y.com; Path=/; Expires=$expires30d; Secure")!!,
+                Cookie.parse(forumUrl, "cdb_sid=removed_alice_sid; Path=/; Expires=$expires30d; Secure")!!,
+            ),
+        )
+        val bridge = WebViewCookieBridge(cookieStore, webViewCookieAccess, cookieDispatcher)
+        bridge.primeWebView(forumUrl)
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cf_clearance=cf_before_remove; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure",
+        )
+
+        val repo = createRepository()
+        repo.removeAccount(accountA.uid)
+
+        // Simulate subsequent challenge sync
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cf_clearance=cf_after_remove; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure",
+        )
+        bridge.syncFromWebView(forumUrl)
+
+        val cookiesAfterSync = cookieStore.loadForRequest(forumUrl)
+        assertFalse("Removed account cdb_auth must not resurrect", cookiesAfterSync.any { it.name == "cdb_auth" })
+        assertFalse("Removed account cdb_sid must not resurrect", cookiesAfterSync.any { it.name == "cdb_sid" })
+        assertTrue(cookiesAfterSync.any { it.name == "cf_clearance" && it.value == "cf_after_remove" })
+    }
+
+    @Test
+    fun b1_switchAccountClearsWebViewOldAccountCookiesPreventingCrossAccountLeak() = runBlocking {
+        val mockForumUrl = server.url("/forum/")
+        val expires30d = futureHttpDate(30L * 86_400L)
+        val expiresCf = futureHttpDate(1_800L)
+
+        val accountA = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 2_000L)
+        val accountB = SavedAccount("10002", "Bob", computeLegacyPasswordMd5("pwB"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(accountA)
+        credentialsStore.upsert(accountB)
+        credentialsStore.setActive(accountA.uid)
+
+        // Seed Alice's cookies with /forum path + root path and prime WebView via real bridge
+        cookieStore.saveFromResponse(
+            mockForumUrl,
+            listOf(
+                Cookie.parse(mockForumUrl, "cdb_auth=alice_old_auth; Path=/forum; Expires=$expires30d")!!,
+                Cookie.parse(mockForumUrl, "cdb_sid=alice_old_sid; Path=/; Expires=$expires30d")!!,
+                Cookie.parse(mockForumUrl, "cf_clearance=cf_survive_switch; Path=/; Expires=$expiresCf")!!,
+            ),
+        )
+        val bridge = WebViewCookieBridge(cookieStore, webViewCookieAccess, cookieDispatcher)
+        bridge.primeWebView(mockForumUrl)
+        webViewCookieAccess.seedCookie(
+            mockForumUrl,
+            "cf_clearance=cf_survive_switch; Path=/; Expires=$expiresCf",
+        )
+        assertTrue(webViewCookieAccess.storedRawHeaders(mockForumUrl).any { it.contains("alice_old_auth") })
+
+        val repo = createRepository()
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_switch_b_b1")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Bob]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=bob_host_only_root; Path=/; Expires=$expires30d"),
+            ),
+        )
+
+        val switchResult = repo.switchAccount(accountB.uid)
+        assertTrue("Expected switchAccount success, got $switchResult", switchResult is LoginResult.Success)
+
+        // Next challenge syncFromWebView must NOT resurrect Alice's /forum cdb_auth or cdb_sid!
+        bridge.syncFromWebView(mockForumUrl)
+
+        val cookies = cookieStore.loadForRequest(mockForumUrl)
+        assertFalse("Alice's /forum cdb_auth must not survive or leak after switch", cookies.any { it.value == "alice_old_auth" })
+        assertFalse("Alice's cdb_sid must not survive or leak after switch", cookies.any { it.value == "alice_old_sid" })
+        assertTrue(cookies.any { it.name == "cdb_auth" && it.value == "bob_host_only_root" })
+        assertTrue(cookies.any { it.name == "cf_clearance" && it.value == "cf_survive_switch" })
+    }
+
+    @Test
+    fun b1_legacyWebViewWithoutGetCookieInfoClearsDomainAndSubpathAuthCookiesKeepingCfClearance() = runBlocking {
+        val forumUrl = "https://www.4d4y.com/forum/".toHttpUrl()
+        val expires30d = futureHttpDate(30L * 86_400L)
+        val expiresCf = futureHttpDate(1_800L)
+
+        val accountA = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(accountA)
+        credentialsStore.setActive(accountA.uid)
+        settingsRepository.setForumServer("https://www.4d4y.com")
+
+        // Emulate Android WebView < 110 where GET_COOKIE_INFO is unavailable
+        webViewCookieAccess.getCookieInfoSupported = false
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cdb_auth=domain_scoped_auth; Domain=.4d4y.com; Path=/; Expires=$expires30d; Secure",
+        )
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cdb_auth=host_only_forum_auth; Path=/forum; Expires=$expires30d",
+        )
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cdb_sid=host_domain_sid; Domain=www.4d4y.com; Path=/forum/; Expires=$expires30d; Secure",
+        )
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cf_clearance=cf_legacy_keep; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure",
+        )
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "__cf_bm=cf_bm_legacy_keep; Domain=.4d4y.com; Path=/; Expires=$expiresCf; Secure",
+        )
+
+        val repo = createRepository()
+        repo.logout()
+
+        val survivingHeaders = webViewCookieAccess.storedRawHeaders(forumUrl)
+        assertFalse(
+            "All Domain/host-only/subpath cdb_auth variants must be cleared in legacy WebView mode, got $survivingHeaders",
+            survivingHeaders.any { it.startsWith("cdb_auth=") },
+        )
+        assertFalse(
+            "All cdb_sid variants must be cleared in legacy WebView mode, got $survivingHeaders",
+            survivingHeaders.any { it.startsWith("cdb_sid=") },
+        )
+        assertTrue(survivingHeaders.any { it.startsWith("cf_clearance=cf_legacy_keep") })
+        assertTrue(survivingHeaders.any { it.startsWith("__cf_bm=cf_bm_legacy_keep") })
+    }
+
+    @Test
+    fun b2_timing1_foregroundDoesNotCoalesceIntoInFlightBackgroundFlightAndSolvesChallenge() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val bgGetEntered = CountDownLatch(1)
+        val fgGetEntered = CountDownLatch(1)
+        val releaseChallengeResponses = CountDownLatch(1)
+        val solverCalls = AtomicInteger(0)
+        val loginGetCount = AtomicInteger(0)
+        val forumUrl = server.url("/forum/")
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
+                "/forum/logging.php?action=login" -> {
+                    val hasClearance = request.headers["Cookie"].orEmpty().contains("cf_clearance=fg_solved_cf")
+                    if (hasClearance) {
+                        gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_after_fg_solve"))
+                    } else {
+                        val idx = loginGetCount.incrementAndGet()
+                        if (idx == 1) {
+                            bgGetEntered.countDown()
+                        } else if (idx == 2) {
+                            fgGetEntered.countDown()
+                        }
+                        releaseChallengeResponses.await(5, TimeUnit.SECONDS)
+                        MockResponse.Builder()
+                            .code(403)
+                            .addHeader("cf-mitigated", "challenge")
+                            .body("challenge")
+                            .build()
+                    }
+                }
+
+                "/forum/logging.php?action=login&loginsubmit=yes&inajax=1" -> gbkXmlResponse(
+                    """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Alice]]></root>""",
+                    headers = listOf("Set-Cookie" to "cdb_auth=fg_recovered_auth; Path=/"),
+                )
+
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        val repo = createRepository(
+            solver = ChallengeSolver {
+                solverCalls.incrementAndGet()
+                cookieStore.saveFromResponse(
+                    forumUrl,
+                    listOf(Cookie.Builder().name("cf_clearance").value("fg_solved_cf").hostOnlyDomain(forumUrl.host).path("/").build()),
+                )
+                SolveResult.Cleared
+            },
+        )
+        val epoch = repo.sessionEpoch
+
+        try {
+            // Step 1: BackgroundSilent enters first and blocks on GET
+            val bgJob = async(Dispatchers.Default) {
+                repo.trySilentRelogin(failedEpoch = epoch, priority = AccessPriority.BackgroundSilent)
+            }
+            assertTrue("Background GET did not reach server", bgGetEntered.await(5, TimeUnit.SECONDS))
+
+            // Step 2: Foreground UserBlocking arrives while background flight is in-flight;
+            // it must NOT coalesce onto the background flight and must launch its own GET.
+            val fgJob = async(Dispatchers.Default) {
+                repo.trySilentRelogin(failedEpoch = epoch, priority = AccessPriority.UserBlocking)
+            }
+            assertTrue("Foreground UserBlocking must not coalesce onto BackgroundSilent flight", fgGetEntered.await(5, TimeUnit.SECONDS))
+
+            releaseChallengeResponses.countDown()
+
+            val bgResult = withTimeout(5.seconds) { bgJob.await() }
+            val fgResult = withTimeout(5.seconds) { fgJob.await() }
+
+            assertTrue("BackgroundSilent must abandon challenge, got $bgResult", bgResult is SilentReloginResult.Failed)
+            assertEquals(SilentReloginFailureReason.CHALLENGE_ABANDONED, (bgResult as SilentReloginResult.Failed).reason)
+            assertTrue("Foreground UserBlocking must solve challenge and recover, got $fgResult", fgResult is SilentReloginResult.Recovered)
+            assertEquals(1, solverCalls.get())
+            assertEquals(AuthState.SignedIn(account), repo.authState.value)
+        } finally {
+            releaseChallengeResponses.countDown()
+        }
+    }
+
+    @Test
+    fun b2_timing2_backgroundJoiningForegroundFlightAbandonsImmediatelyWhenChallengeStartsWithoutWaiting() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val fgGetEntered = CountDownLatch(1)
+        val releaseFgGet = CountDownLatch(1)
+        val solverEntered = CountDownLatch(1)
+        val releaseSolver = CompletableDeferred<SolveResult>()
+        val forumUrl = server.url("/forum/")
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
+                "/forum/logging.php?action=login" -> {
+                    if (request.headers["Cookie"].orEmpty().contains("cf_clearance=fg_manual_solved")) {
+                        gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_after_manual_solve"))
+                    } else {
+                        fgGetEntered.countDown()
+                        releaseFgGet.await(5, TimeUnit.SECONDS)
+                        MockResponse.Builder()
+                            .code(403)
+                            .addHeader("cf-mitigated", "challenge")
+                            .body("challenge")
+                            .build()
+                    }
+                }
+
+                "/forum/logging.php?action=login&loginsubmit=yes&inajax=1" -> gbkXmlResponse(
+                    """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Alice]]></root>""",
+                    headers = listOf("Set-Cookie" to "cdb_auth=fg_post_manual_auth; Path=/"),
+                )
+
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        val repo = createRepository(
+            solver = ChallengeSolver {
+                solverEntered.countDown()
+                val res = releaseSolver.await()
+                if (res == SolveResult.Cleared) {
+                    cookieStore.saveFromResponse(
+                        forumUrl,
+                        listOf(Cookie.Builder().name("cf_clearance").value("fg_manual_solved").hostOnlyDomain(forumUrl.host).path("/").build()),
+                    )
+                }
+                res
+            },
+        )
+        val epoch = repo.sessionEpoch
+
+        try {
+            // Step 1: Foreground UserBlocking starts GET (gateways are still Idle!)
+            val fgJob = async(Dispatchers.Default) {
+                repo.trySilentRelogin(failedEpoch = epoch, priority = AccessPriority.UserBlocking)
+            }
+            assertTrue("Foreground GET did not reach server", fgGetEntered.await(5, TimeUnit.SECONDS))
+            assertEquals(AuthState.Reauthenticating(account), repo.authState.value)
+
+            // Step 2: BackgroundSilent arrives while gateways are still Idle and awaits foreground flight
+            val bgJob = async(Dispatchers.Default) {
+                repo.trySilentRelogin(failedEpoch = epoch, priority = AccessPriority.BackgroundSilent)
+            }
+            // Yield briefly so bgJob enters awaitForegroundForBackground
+            Thread.sleep(50)
+
+            // Step 3: Foreground GET returns 403 -> solver starts and stalls (simulating 120s manual UI)
+            releaseFgGet.countDown()
+            assertTrue("Foreground solver did not start", solverEntered.await(5, TimeUnit.SECONDS))
+
+            // Background MUST abandon immediately while foreground solver is still blocked!
+            val bgResult = withTimeout(2.seconds) { bgJob.await() }
+            assertTrue("Expected BackgroundSilent to abandon immediately, got $bgResult", bgResult is SilentReloginResult.Failed)
+            assertEquals(SilentReloginFailureReason.CHALLENGE_ABANDONED, (bgResult as SilentReloginResult.Failed).reason)
+            assertFalse("Foreground job must still be waiting on solver", fgJob.isCompleted)
+            assertEquals(
+                "BackgroundSilent abandon must NOT overwrite foreground Reauthenticating state",
+                AuthState.Reauthenticating(account),
+                repo.authState.value,
+            )
+
+            // Step 4: Release foreground solver -> foreground finishes cleanly
+            releaseSolver.complete(SolveResult.Cleared)
+            val fgResult = withTimeout(5.seconds) { fgJob.await() }
+            assertTrue("Foreground must still recover after background abandoned, got $fgResult", fgResult is SilentReloginResult.Recovered)
+            assertEquals(AuthState.SignedIn(account), repo.authState.value)
+        } finally {
+            releaseFgGet.countDown()
+            releaseSolver.complete(SolveResult.Cancelled)
+        }
+    }
+
+    @Test
+    fun b2_timing3_backgroundChallengeAbandonNeverMutatesGlobalAuthState() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val solverStarted = CountDownLatch(1)
+        val releaseSolver = CompletableDeferred<SolveResult>()
+        val forumUrl = server.url("/forum/")
+        val primaryClient = createPrimaryClient()
+        val recoveryClient = createRecoveryClient(primaryClient)
+        val detector = ChallengeDetector()
+        val solver = ChallengeSolver {
+            solverStarted.countDown()
+            val res = releaseSolver.await()
+            if (res == SolveResult.Cleared) {
+                cookieStore.saveFromResponse(
+                    forumUrl,
+                    listOf(Cookie.Builder().name("cf_clearance").value("cf_t3").hostOnlyDomain(forumUrl.host).path("/").build()),
+                )
+            }
+            res
+        }
+        val primaryGateway = SiteAccessGateway(
+            client = primaryClient,
+            detector = detector,
+            solver = solver,
+            clock = { nowMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+        val recoveryGateway = SiteAccessGateway(
+            client = recoveryClient,
+            detector = detector,
+            solver = solver,
+            clock = { nowMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+        val repo = DefaultAuthRepository(
+            credentialsStore = credentialsStore,
+            siteCookieStore = cookieStore,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
+            settingsRepository = settingsRepository,
+            siteAccessGateway = primaryGateway,
+            recoveryGateway = recoveryGateway,
+            clock = { nowMs.get() },
+            scope = scope,
+        )
+
+        // Sub-case 3a: Idle SignedIn -> BackgroundSilent hits 403 -> authState stays SignedIn
+        server.enqueue(
+            MockResponse.Builder()
+                .code(403)
+                .addHeader("cf-mitigated", "challenge")
+                .body("challenge")
+                .build(),
+        )
+        val idleBg = repo.trySilentRelogin(failedEpoch = repo.sessionEpoch, priority = AccessPriority.BackgroundSilent)
+        assertEquals(SilentReloginFailureReason.CHALLENGE_ABANDONED, (idleBg as SilentReloginResult.Failed).reason)
+        assertEquals(AuthState.SignedIn(account), repo.authState.value)
+
+        // Sub-case 3b: Foreground is Reauthenticating (solving on recoveryGateway) -> BackgroundSilent
+        // pre-check abandons with 0 requests and MUST NOT clobber Reauthenticating to SessionExpired!
+        server.enqueue(
+            MockResponse.Builder()
+                .code(403)
+                .addHeader("cf-mitigated", "challenge")
+                .body("challenge")
+                .build(),
+        )
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_t3")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Alice]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=t3_ok; Path=/"),
+            ),
+        )
+
+        try {
+            val fgJob = async(Dispatchers.Default) {
+                repo.trySilentRelogin(failedEpoch = repo.sessionEpoch, priority = AccessPriority.UserBlocking)
+            }
+            assertTrue(solverStarted.await(5, TimeUnit.SECONDS))
+            assertEquals(AuthState.Reauthenticating(account), repo.authState.value)
+
+            val requestsBeforeBg = server.requestCount
+            val precheckBg = repo.trySilentRelogin(failedEpoch = repo.sessionEpoch, priority = AccessPriority.BackgroundSilent)
+            assertEquals(SilentReloginFailureReason.CHALLENGE_ABANDONED, (precheckBg as SilentReloginResult.Failed).reason)
+            assertEquals(requestsBeforeBg, server.requestCount)
+            assertEquals(
+                "BackgroundSilent pre-check abandon must keep foreground Reauthenticating intact",
+                AuthState.Reauthenticating(account),
+                repo.authState.value,
+            )
+
+            releaseSolver.complete(SolveResult.Cleared)
+            assertTrue(withTimeout(5.seconds) { fgJob.await() } is SilentReloginResult.Recovered)
+            assertEquals(AuthState.SignedIn(account), repo.authState.value)
+        } finally {
+            releaseSolver.complete(SolveResult.Cancelled)
+        }
+    }
+
+    @Test
+    fun s1_loginClearsExistingAuthCookiesBeforeFetchingFormSoWrongPasswordForSameUserIsRejected() = runBlocking {
+        val forumUrl = server.url("/forum/")
+        val validPassword = "CorrectPassword123"
+        val wrongPassword = "WrongPassword456"
+        val originalAccount = SavedAccount("10000", "HiUser", computeLegacyPasswordMd5(validPassword), lastLoginAt = 1_000L)
+        credentialsStore.upsert(originalAccount)
+        credentialsStore.setActive(originalAccount.uid)
+
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(
+                Cookie.Builder().name("cdb_auth").value("existing_hiuser_cookie").hostOnlyDomain(forumUrl.host).path("/").build(),
+                Cookie.Builder().name("cf_clearance").value("cf_s1_keep").hostOnlyDomain(forumUrl.host).path("/").build(),
+            ),
+        )
+        webViewCookieAccess.seedCookie(forumUrl, "cdb_auth=existing_hiuser_cookie; Path=/")
+
+        // Server returns AlreadyLoggedIn ONLY if cdb_auth is present; otherwise returns login form!
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
+                "/forum/logging.php?action=login" -> {
+                    if (request.headers["Cookie"].orEmpty().contains("cdb_auth=existing_hiuser_cookie")) {
+                        gbkHtmlResponse(LegacyTestSupport.loadSample("login/login_page.html"))
+                    } else {
+                        gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_s1_verify"))
+                    }
+                }
+
+                "/forum/logging.php?action=login&loginsubmit=yes&inajax=1" -> gbkXmlResponse(
+                    """<?xml version="1.0" encoding="gbk"?><root><![CDATA[登录失败，您还可以尝试 4 次]]></root>""",
+                )
+
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        val repo = createRepository()
+        val result = repo.login(username = "HiUser", passwordOrMd5 = wrongPassword)
+
+        assertTrue("Wrong password for same user must NOT bypass verification, got $result", result is LoginResult.InvalidCredentials)
+        assertEquals(
+            "Stored passwordMd5 must NOT be overwritten with wrong password",
+            originalAccount.passwordMd5,
+            credentialsStore.accountsSnapshot().single().passwordMd5,
+        )
+        assertTrue(cookieStore.loadForRequest(forumUrl).any { it.name == "cf_clearance" && it.value == "cf_s1_keep" })
+        assertFalse(webViewCookieAccess.storedRawHeaders(forumUrl).any { it.startsWith("cdb_auth=") })
+    }
+
+    @Test
+    fun probeB2b_logoutRacingLateResponseBeforeAppCookieSave_dropsStaleAuthCookiesKeepingCfClearance() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val responseHeldInTransport = CountDownLatch(1)
+        val allowTransportReturn = CountDownLatch(1)
+        val primaryClient = createPrimaryClient(
+            transportDelegate = okhttp3.Interceptor { chain ->
+                val req = chain.request()
+                val resp = chain.proceed(req)
+                if (req.url.encodedPath.endsWith("/forum/logging.php") && req.method == "POST") {
+                    responseHeldInTransport.countDown()
+                    allowTransportReturn.await(5, TimeUnit.SECONDS)
+                }
+                resp
+            },
+        )
+        val recoveryClient = createRecoveryClient(primaryClient)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.url.encodedPath.endsWith("/forum/logging.php") && request.method == "GET" ->
+                    gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_probe_b2b"))
+
+                request.url.encodedPath.endsWith("/forum/logging.php") && request.method == "POST" ->
+                    gbkXmlResponse(
+                        """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Alice]]></root>""",
+                        headers = listOf(
+                            "Set-Cookie" to "cdb_auth=late_race_auth; Path=/; HttpOnly",
+                            "Set-Cookie" to "cdb_sid=late_race_sid; Path=/",
+                            "Set-Cookie" to "cf_clearance=late_cf_keep; Path=/",
+                        ),
+                    )
+
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        val repo = createRepository(primaryClient = primaryClient, recoveryClient = recoveryClient)
+
+        try {
+            val reloginJob = async(Dispatchers.Default) {
+                repo.trySilentRelogin(failedEpoch = repo.sessionEpoch)
+            }
+            assertTrue("Relogin POST response was not held in transport", responseHeldInTransport.await(5, TimeUnit.SECONDS))
+
+            // User logs out BEFORE transport returns the 200+Set-Cookie up to AppCookieInterceptor.
+            withTimeout(5.seconds) { repo.logout() }
+            val reloginRes = withTimeout(5.seconds) { reloginJob.await() }
+            assertEquals(SilentReloginFailureReason.SESSION_INVALIDATED, (reloginRes as SilentReloginResult.Failed).reason)
+
+            // Now unblock transport so AppCookieInterceptor processes the late 200+Set-Cookie!
+            allowTransportReturn.countDown()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (
+                (recoveryClient.dispatcher.runningCallsCount() > 0 || recoveryClient.dispatcher.queuedCallsCount() > 0) &&
+                System.nanoTime() < deadline
+            ) {
+                Thread.sleep(10)
+            }
+            Thread.sleep(50)
+
+            assertTrue(credentialsStore.currentManuallyLoggedOut())
+            assertEquals(AuthState.SignedOut, repo.authState.value)
+            val snapshot = cookieStore.snapshot()
+            val leakedAuth = snapshot.filter { it.name == "cdb_auth" || it.name == "cdb_sid" }
+            assertTrue("Late relogin response must NOT leak auth cookies after logout: $leakedAuth", leakedAuth.isEmpty())
+            assertTrue(
+                "Non-auth cf_clearance cookie from response should still be preserved, got $snapshot",
+                snapshot.any { it.name == "cf_clearance" && it.value == "late_cf_keep" },
+            )
+        } finally {
+            allowTransportReturn.countDown()
+        }
+    }
+
+    @Test
+    fun vD2_switchAccountRacingLateOldReloginResponse_dropsStaleAuthCookiesPreservingNewAccountAndCfClearance() = runBlocking {
+        val accountA = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 2_000L)
+        val accountB = SavedAccount("10002", "Bob", computeLegacyPasswordMd5("pwB"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(accountA)
+        credentialsStore.upsert(accountB)
+        credentialsStore.setActive(accountA.uid)
+
+        val alicePostHeldInTransport = CountDownLatch(1)
+        val allowAliceTransportReturn = CountDownLatch(1)
+        val postCounter = AtomicInteger(0)
+
+        val primaryClient = createPrimaryClient(
+            transportDelegate = okhttp3.Interceptor { chain ->
+                val req = chain.request()
+                val resp = chain.proceed(req)
+                if (req.url.encodedPath.endsWith("/forum/logging.php") && req.method == "POST") {
+                    if (postCounter.incrementAndGet() == 1) {
+                        // Hold ONLY Alice's in-flight silent relogin POST response
+                        alicePostHeldInTransport.countDown()
+                        allowAliceTransportReturn.await(5, TimeUnit.SECONDS)
+                    }
+                }
+                resp
+            },
+        )
+        val recoveryClient = createRecoveryClient(primaryClient)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.url.encodedPath.endsWith("/forum/logging.php") && request.method == "GET" ->
+                    gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_switch_race"))
+
+                request.url.encodedPath.endsWith("/forum/logging.php") && request.method == "POST" -> {
+                    val fields = parseGbkForm(request.body?.utf8().orEmpty())
+                    if (fields["username"] == "Alice") {
+                        gbkXmlResponse(
+                            """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Alice]]></root>""",
+                            headers = listOf(
+                                "Set-Cookie" to "cdb_auth=stale_alice_late_auth; Path=/; HttpOnly",
+                                "Set-Cookie" to "cdb_sid=stale_alice_late_sid; Path=/",
+                                "Set-Cookie" to "cf_clearance=late_cf_keep_on_switch; Path=/",
+                            ),
+                        )
+                    } else {
+                        gbkXmlResponse(
+                            """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Bob]]></root>""",
+                            headers = listOf(
+                                "Set-Cookie" to "cdb_auth=fresh_bob_auth; Path=/; HttpOnly",
+                                "Set-Cookie" to "cdb_sid=fresh_bob_sid; Path=/",
+                            ),
+                        )
+                    }
+                }
+
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        val repo = createRepository(primaryClient = primaryClient, recoveryClient = recoveryClient)
+
+        try {
+            val staleReloginJob = async(Dispatchers.Default) {
+                repo.trySilentRelogin(failedEpoch = repo.sessionEpoch)
+            }
+            assertTrue("Alice relogin POST response was not held in transport", alicePostHeldInTransport.await(5, TimeUnit.SECONDS))
+
+            // Switch to Bob while Alice's late relogin response is still held before AppCookieInterceptor
+            val switchResult = withTimeout(5.seconds) { repo.switchAccount(accountB.uid) }
+            assertTrue("Expected switchAccount(Bob) to succeed, got $switchResult", switchResult is LoginResult.Success)
+            val reloginRes = withTimeout(5.seconds) { staleReloginJob.await() }
+            assertEquals(SilentReloginFailureReason.SESSION_INVALIDATED, (reloginRes as SilentReloginResult.Failed).reason)
+
+            // Release Alice's late 200+Set-Cookie into AppCookieInterceptor!
+            allowAliceTransportReturn.countDown()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (
+                (recoveryClient.dispatcher.runningCallsCount() > 0 || recoveryClient.dispatcher.queuedCallsCount() > 0) &&
+                System.nanoTime() < deadline
+            ) {
+                Thread.sleep(10)
+            }
+            Thread.sleep(50)
+
+            val snapshot = cookieStore.snapshot()
+            assertFalse("Stale Alice cdb_auth must be dropped", snapshot.any { it.value == "stale_alice_late_auth" })
+            assertFalse("Stale Alice cdb_sid must be dropped", snapshot.any { it.value == "stale_alice_late_sid" })
+            assertTrue("Bob's cdb_auth must remain intact, got $snapshot", snapshot.any { it.name == "cdb_auth" && it.value == "fresh_bob_auth" })
+            assertTrue("Bob's cdb_sid must remain intact, got $snapshot", snapshot.any { it.name == "cdb_sid" && it.value == "fresh_bob_sid" })
+            assertTrue(
+                "Non-auth cf_clearance should still be persisted, got $snapshot",
+                snapshot.any { it.name == "cf_clearance" && it.value == "late_cf_keep_on_switch" },
+            )
+            assertEquals(accountB.uid, repo.currentAccount.value?.uid)
+            assertEquals(AuthState.SignedIn((switchResult as LoginResult.Success).account), repo.authState.value)
+        } finally {
+            allowAliceTransportReturn.countDown()
+        }
+    }
+
+    @Test
+    fun s4_trySilentRelogin_backgroundSilentAbandonsWithZeroRequestsWhenRecoveryGatewayIsSolving() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val solverStarted = CountDownLatch(1)
+        val releaseSolver = CompletableDeferred<SolveResult>()
+        val primaryClient = createPrimaryClient()
+        val recoveryClient = createRecoveryClient(primaryClient)
+        val detector = ChallengeDetector()
+        val solver = ChallengeSolver {
+            solverStarted.countDown()
+            releaseSolver.await()
+        }
+        val primaryGateway = SiteAccessGateway(
+            client = primaryClient,
+            detector = detector,
+            solver = solver,
+            clock = { nowMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+        val recoveryGateway = SiteAccessGateway(
+            client = recoveryClient,
+            detector = detector,
+            solver = solver,
+            clock = { nowMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+        val repo = DefaultAuthRepository(
+            credentialsStore = credentialsStore,
+            siteCookieStore = cookieStore,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
+            settingsRepository = settingsRepository,
+            siteAccessGateway = primaryGateway,
+            recoveryGateway = recoveryGateway,
+            clock = { nowMs.get() },
+            scope = scope,
+        )
+
+        // Drive ONLY recoveryGateway (not primaryGateway) into Solving directly!
+        server.enqueue(
+            MockResponse.Builder()
+                .code(403)
+                .addHeader("cf-mitigated", "challenge")
+                .body("challenge")
+                .build(),
+        )
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedInPageHtml("10001", "Alice")))
+
+        val recoveryDirectJob = async(Dispatchers.Default) {
+            recoveryGateway.execute(
+                Request.Builder().url(server.url("/forum/index.php")).build(),
+                priority = AccessPriority.UserBlocking,
+            ).close()
+        }
+        assertTrue("Recovery gateway did not enter Solving", solverStarted.await(5, TimeUnit.SECONDS))
+
+        try {
+            val countBeforeBg = server.requestCount
+            val bgResult = repo.trySilentRelogin(
+                failedEpoch = repo.sessionEpoch,
+                priority = AccessPriority.BackgroundSilent,
+            )
+            assertEquals(SilentReloginFailureReason.CHALLENGE_ABANDONED, (bgResult as SilentReloginResult.Failed).reason)
+            assertEquals(
+                "BackgroundSilent must issue 0 requests when recoveryGateway is Solving",
+                countBeforeBg,
+                server.requestCount,
+            )
+            assertEquals(AuthState.SignedIn(account), repo.authState.value)
+        } finally {
+            releaseSolver.complete(SolveResult.Cleared)
+            withTimeout(5.seconds) { recoveryDirectJob.await() }
+        }
+    }
+
+    @Test
+    fun s4_clearAuthCookies_preservesCfBmCookieInStoreAndWebView() = runBlocking {
+        val forumUrl = "https://www.4d4y.com/forum/".toHttpUrl()
+        val expires = futureHttpDate(3_600L)
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+        settingsRepository.setForumServer("https://www.4d4y.com")
+
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(
+                Cookie.parse(forumUrl, "cdb_auth=drop_me; Domain=.4d4y.com; Path=/; Expires=$expires; Secure")!!,
+                Cookie.parse(forumUrl, "__cf_bm=keep_cf_bm_store; Domain=.4d4y.com; Path=/; Expires=$expires; Secure")!!,
+            ),
+        )
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "cdb_auth=drop_me_wv; Domain=.4d4y.com; Path=/; Expires=$expires; Secure",
+        )
+        webViewCookieAccess.seedCookie(
+            forumUrl,
+            "__cf_bm=keep_cf_bm_wv; Domain=.4d4y.com; Path=/; Expires=$expires; Secure",
+        )
+
+        val repo = createRepository()
+        repo.logout()
+
+        val storeCookies = cookieStore.loadForRequest(forumUrl)
+        assertFalse(storeCookies.any { it.name == "cdb_auth" })
+        assertTrue("__cf_bm must be preserved in SiteCookieStore", storeCookies.any { it.name == "__cf_bm" && it.value == "keep_cf_bm_store" })
+
+        val webViewHeaders = webViewCookieAccess.storedRawHeaders(forumUrl)
+        assertFalse(webViewHeaders.any { it.startsWith("cdb_auth=") })
+        assertTrue("__cf_bm must be preserved in WebView", webViewHeaders.any { it.startsWith("__cf_bm=keep_cf_bm_wv") })
+    }
+
+    @Test
+    fun s4_login_noSecurityQuestionIgnoresResidualSecurityAnswer() = runBlocking {
+        val repo = createRepository()
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_no_secq")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，HiUser]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=no_secq_token; Path=/"),
+            ),
+        )
+        server.enqueue(gbkHtmlResponse(LegacyTestSupport.loadSample("login/login_page.html")))
+
+        val result = repo.login(
+            username = "HiUser",
+            passwordOrMd5 = "SecretPass",
+            securityQuestionId = SavedAccount.NO_SECURITY_QUESTION,
+            securityAnswer = "residual_secret_answer",
+        )
+
+        assertTrue("Expected Success, got $result", result is LoginResult.Success)
+        val saved = (result as LoginResult.Success).account
+        assertEquals(SavedAccount.NO_SECURITY_QUESTION, saved.securityQuestionId)
+        assertEquals("Residual answer must not be stored when questionId is 0", "", saved.securityAnswer)
+
+        server.takeRequest() // GET form
+        val postReq = server.takeRequest()
+        val postedFields = parseGbkForm(postReq.body?.utf8().orEmpty())
+        assertEquals("0", postedFields["questionid"])
+        assertEquals("Residual answer must not be submitted when questionId is 0", "", postedFields["answer"])
+    }
+
+    @Test
     fun authModule_hasExpectedHiltBindingsForAuthRepositoryAndForumHttpClient() {
         assertTrue(AuthModule::class.java.isAnnotationPresent(Module::class.java))
 
@@ -1211,6 +2112,7 @@ internal class FakeCredentialsStore : CredentialsStore {
 
     fun currentActiveUid(): String? = state.value.activeUid
     fun currentManuallyLoggedOut(): Boolean = state.value.manuallyLoggedOut
+    fun accountsSnapshot(): List<SavedAccount> = state.value.accounts
 
     override suspend fun upsert(account: SavedAccount) {
         require(account.uid.isNotBlank()) { "Account uid must not be blank" }
@@ -1279,4 +2181,108 @@ internal class FakeSettingsRepository(
     override suspend fun setPaneSplitLandscape(split: PaneSplit) { _settings.update { it.copy(paneSplitLandscape = split) } }
     override suspend fun setSidebarCollapsedPortrait(collapsed: Boolean) { _settings.update { it.copy(sidebarCollapsedPortrait = collapsed) } }
     override suspend fun setSidebarCollapsedLandscape(collapsed: Boolean) { _settings.update { it.copy(sidebarCollapsedLandscape = collapsed) } }
+}
+
+private val TEST_HTTP_DATE_FORMATTER: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.US)
+        .withZone(ZoneOffset.UTC)
+
+internal fun futureHttpDate(secondsFromNow: Long): String =
+    TEST_HTTP_DATE_FORMATTER.format(Instant.ofEpochMilli(System.currentTimeMillis() + secondsFromNow * 1_000L))
+
+/**
+ * Realistic in-memory [WebViewCookieAccess] modeled after Chromium `CookieManager`:
+ * keyed by `(name, domain, path, hostOnly, partitioned)` so host-only expiration headers cannot
+ * delete domain-scoped cookies (`Domain=.4d4y.com`) and vice versa.
+ */
+internal class RealisticFakeWebViewCookieAccess : WebViewCookieAccess {
+    private data class ScopeKey(
+        val name: String,
+        val domain: String,
+        val path: String,
+        val hostOnly: Boolean,
+        val partitioned: Boolean,
+    )
+
+    private data class StoredCookie(
+        val cookie: Cookie,
+        val rawHeader: String,
+    )
+
+    private val lock = Any()
+    private val entries = LinkedHashMap<ScopeKey, StoredCookie>()
+
+    @Volatile
+    var getCookieInfoSupported: Boolean = true
+    val recordedThreads: MutableList<Thread> = CopyOnWriteArrayList()
+
+    @Volatile
+    var flushCount: Int = 0
+        private set
+
+    fun seedCookie(url: HttpUrl, setCookieHeader: String) = synchronized(lock) {
+        applySetCookieLocked(url, setCookieHeader)
+    }
+
+    fun storedRawHeaders(url: HttpUrl): List<String> = synchronized(lock) {
+        matchingEntriesLocked(url).map { it.rawHeader }
+    }
+
+    override fun isGetCookieInfoSupported(): Boolean {
+        recordedThreads.add(Thread.currentThread())
+        return getCookieInfoSupported
+    }
+
+    override fun getCookieInfo(url: String): List<String> {
+        recordedThreads.add(Thread.currentThread())
+        val parsed = url.toHttpUrl()
+        return synchronized(lock) { matchingEntriesLocked(parsed).map { it.rawHeader } }
+    }
+
+    override fun getCookie(url: String): String? {
+        recordedThreads.add(Thread.currentThread())
+        val parsed = url.toHttpUrl()
+        val matched = synchronized(lock) { matchingEntriesLocked(parsed) }
+        if (matched.isEmpty()) return null
+        return matched.joinToString("; ") { "${it.cookie.name}=${it.cookie.value}" }
+    }
+
+    override fun setCookie(url: String, value: String) {
+        recordedThreads.add(Thread.currentThread())
+        val parsed = url.toHttpUrl()
+        synchronized(lock) { applySetCookieLocked(parsed, value) }
+    }
+
+    override fun flush() {
+        recordedThreads.add(Thread.currentThread())
+        flushCount++
+    }
+
+    private fun applySetCookieLocked(url: HttpUrl, rawHeader: String) {
+        val cookie = Cookie.parse(url, rawHeader) ?: return
+        if (cookie.sameSite.equals("None", ignoreCase = true) && !cookie.secure) return
+        if (cookie.secure && !url.isHttps) return
+        val partitioned = rawHeader.split(';')
+            .drop(1)
+            .any { it.trim().substringBefore('=').trim().equals("partitioned", ignoreCase = true) }
+        val key = ScopeKey(
+            name = cookie.name,
+            domain = cookie.domain,
+            path = cookie.path,
+            hostOnly = cookie.hostOnly,
+            partitioned = partitioned,
+        )
+        val now = System.currentTimeMillis()
+        if (cookie.expiresAt <= now) {
+            entries.remove(key)
+        } else {
+            entries[key] = StoredCookie(cookie = cookie, rawHeader = rawHeader)
+        }
+    }
+
+    private fun matchingEntriesLocked(url: HttpUrl): List<StoredCookie> {
+        val now = System.currentTimeMillis()
+        entries.entries.removeAll { it.value.cookie.expiresAt <= now }
+        return entries.values.filter { it.cookie.matches(url) }
+    }
 }

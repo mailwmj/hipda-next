@@ -6,6 +6,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +27,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.jejer.hipda.data.account.CredentialsStore
 import net.jejer.hipda.data.account.SavedAccount
+import net.jejer.hipda.data.network.AuthCookieWriteGuard
 import net.jejer.hipda.data.network.ChallengeDetector
 import net.jejer.hipda.data.network.RecoveryHttpClient
 import net.jejer.hipda.data.network.access.AccessPriority
@@ -37,6 +40,8 @@ import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.cookie.SiteCookieStore
 import net.jejer.hipda.data.network.decodeBody
 import net.jejer.hipda.data.network.gbkFormBody
+import net.jejer.hipda.data.network.webview.WebViewCookieAccess
+import net.jejer.hipda.data.network.webview.WebViewCookieDispatcher
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.parser.auth.LoginFormParseResult
 import net.jejer.hipda.parser.auth.LoginParser
@@ -48,6 +53,14 @@ import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
+private object NoOpWebViewCookieAccess : WebViewCookieAccess {
+    override fun isGetCookieInfoSupported(): Boolean = false
+    override fun getCookieInfo(url: String): List<String> = emptyList()
+    override fun getCookie(url: String): String? = null
+    override fun setCookie(url: String, value: String) = Unit
+    override fun flush() = Unit
+}
+
 @Singleton
 class DefaultAuthRepository internal constructor(
     private val credentialsStore: CredentialsStore,
@@ -57,12 +70,16 @@ class DefaultAuthRepository internal constructor(
     private val recoveryGateway: SiteAccessGateway,
     private val clock: () -> Long,
     private val scope: CoroutineScope,
+    private val webViewCookieAccess: WebViewCookieAccess = NoOpWebViewCookieAccess,
+    private val cookieDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : AuthRepository {
 
     @Inject
     constructor(
         credentialsStore: CredentialsStore,
         siteCookieStore: SiteCookieStore,
+        webViewCookieAccess: WebViewCookieAccess,
+        @WebViewCookieDispatcher cookieDispatcher: CoroutineDispatcher,
         settingsRepository: SettingsRepository,
         siteAccessGateway: SiteAccessGateway,
         @RecoveryHttpClient recoveryHttpClient: OkHttpClient,
@@ -80,6 +97,8 @@ class DefaultAuthRepository internal constructor(
         ),
         clock = System::currentTimeMillis,
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        webViewCookieAccess = webViewCookieAccess,
+        cookieDispatcher = cookieDispatcher,
     )
 
     private data class PersistentSnapshot(
@@ -140,13 +159,16 @@ class DefaultAuthRepository internal constructor(
     }
 
     private val operationMutex = Mutex()
+    // Lock hierarchy: always acquire cookieWriteLock before stateLock (never reverse).
+    private val cookieWriteLock = Any()
     private val stateLock = Any()
 
     private var persistentSnapshot = PersistentSnapshot()
     private var runtimeOverlay: RuntimeOverlay = RuntimeOverlay.Normal
     private var authGeneration: Long = 0L
     private var explicitOperationCount: Int = 0
-    private var inFlightRelogin: ActiveRelogin? = null
+    private var inFlightForegroundRelogin: ActiveRelogin? = null
+    private var inFlightBackgroundRelogin: ActiveRelogin? = null
     private var rejectedCredentialKey: Pair<String, String>? = null
 
     @Volatile
@@ -187,6 +209,19 @@ class DefaultAuthRepository internal constructor(
         }
     }
 
+    /**
+     * Captures a per-request [AuthCookieWriteGuard] pinned to the current auth generation so
+     * in-flight forum requests completing after logout / account switch / active account removal
+     * cannot write stale authentication cookies back into [SiteCookieStore].
+     */
+    internal fun captureCookieWriteGuard(): AuthCookieWriteGuard {
+        val capturedGeneration = synchronized(stateLock) { authGeneration }
+        return createCookieWriteGuard(
+            expectedGeneration = capturedGeneration,
+            allowDuringManualLogout = false,
+        )
+    }
+
     override suspend fun login(
         username: String,
         passwordOrMd5: String,
@@ -209,9 +244,18 @@ class DefaultAuthRepository internal constructor(
         }
 
         return operationMutex.withLock {
-            runExplicitOperation {
+            runExplicitOperation { opGeneration ->
                 val forumServer = readForumServerOrNull()
                     ?: return@runExplicitOperation LoginResult.Failure("论坛服务器地址无效")
+
+                // S1: Clear existing forum auth cookies (store + WebView) before interactive login
+                // so a stale session for the same username cannot bypass password verification.
+                clearAuthCookiesForServer(forumServer)
+
+                val cookieGuard = createCookieWriteGuard(
+                    expectedGeneration = opGeneration,
+                    allowDuringManualLogout = true,
+                )
 
                 when (
                     val raw = executeLoginProtocol(
@@ -224,6 +268,7 @@ class DefaultAuthRepository internal constructor(
                         expectedUid = null,
                         priority = AccessPriority.UserExplicit,
                         requireSessionVerification = true,
+                        cookieWriteGuard = cookieGuard,
                     )
                 ) {
                     is RawLoginOutcome.LoggedIn -> {
@@ -286,12 +331,18 @@ class DefaultAuthRepository internal constructor(
             val targetAccount = initialSnapshot.accounts.firstOrNull { it.uid == targetUid }
                 ?: return@withLock LoginResult.Failure("未找到已保存的目标账号")
 
-            runExplicitOperation {
+            runExplicitOperation { opGeneration ->
                 val forumServer = readForumServerOrNull()
                     ?: return@runExplicitOperation LoginResult.Failure("论坛服务器地址无效")
 
-                // Always clear prior session cookies (preserving cf_clearance) before switching.
+                // Clear prior session cookies in both SiteCookieStore and WebView CookieManager
+                // (preserving cf_clearance) before switching accounts.
                 clearAuthCookiesForServer(forumServer)
+
+                val cookieGuard = createCookieWriteGuard(
+                    expectedGeneration = opGeneration,
+                    allowDuringManualLogout = true,
+                )
 
                 val raw = executeLoginProtocol(
                     gateway = siteAccessGateway,
@@ -303,6 +354,7 @@ class DefaultAuthRepository internal constructor(
                     expectedUid = targetAccount.uid,
                     priority = AccessPriority.UserExplicit,
                     requireSessionVerification = false,
+                    cookieWriteGuard = cookieGuard,
                 )
 
                 when (raw) {
@@ -354,15 +406,18 @@ class DefaultAuthRepository internal constructor(
 
     override suspend fun logout() {
         operationMutex.withLock {
-            runExplicitOperation {
+            runExplicitOperation { _ ->
                 credentialsStore.markManualLogout()
-                readForumServerOrNull()?.let { clearAuthCookiesForServer(it) }
                 val refreshed = readPersistentSnapshotFromStore()
-                synchronized(stateLock) {
-                    rejectedCredentialKey = null
-                    runtimeOverlay = RuntimeOverlay.Normal
-                    applyPersistentSnapshotLocked(refreshed)
+                synchronized(cookieWriteLock) {
+                    synchronized(stateLock) {
+                        authGeneration++
+                        rejectedCredentialKey = null
+                        runtimeOverlay = RuntimeOverlay.Normal
+                        applyPersistentSnapshotLocked(refreshed)
+                    }
                 }
+                readForumServerOrNull()?.let { clearAuthCookiesForServer(it) }
             }
         }
     }
@@ -375,7 +430,7 @@ class DefaultAuthRepository internal constructor(
             val beforeSnapshot = readPersistentSnapshotFromStore()
             val removingActive = beforeSnapshot.activeUid == targetUid
             if (removingActive) {
-                runExplicitOperation {
+                runExplicitOperation { _ ->
                     readForumServerOrNull()?.let { clearAuthCookiesForServer(it) }
                     credentialsStore.remove(targetUid)
                     val refreshed = readPersistentSnapshotFromStore()
@@ -388,9 +443,11 @@ class DefaultAuthRepository internal constructor(
                     }
                 }
             } else {
-                synchronized(stateLock) {
-                    explicitOperationCount++
-                    authGeneration++
+                synchronized(cookieWriteLock) {
+                    synchronized(stateLock) {
+                        explicitOperationCount++
+                        authGeneration++
+                    }
                 }
                 try {
                     credentialsStore.remove(targetUid)
@@ -419,6 +476,7 @@ class DefaultAuthRepository internal constructor(
 
         var shouldLaunch = false
         var immediateResult: SilentReloginResult? = null
+        var awaitForegroundFromBackground = false
         val targetFlight: ActiveRelogin? = synchronized(stateLock) {
             if (explicitOperationCount > 0 || authGeneration != genBeforeRead) {
                 immediateResult = SilentReloginResult.Failed(
@@ -445,8 +503,10 @@ class DefaultAuthRepository internal constructor(
             }
 
             if (rejectedCredentialKey == (activeAccount.uid to activeAccount.passwordMd5)) {
-                runtimeOverlay = RuntimeOverlay.SessionExpired(activeAccount.uid, "账号密码已变更或失效")
-                recomputeStateFlowsLocked()
+                if (inFlightForegroundRelogin == null && priority != AccessPriority.BackgroundSilent) {
+                    runtimeOverlay = RuntimeOverlay.SessionExpired(activeAccount.uid, "账号密码已变更或失效")
+                    recomputeStateFlowsLocked()
+                }
                 immediateResult = SilentReloginResult.Failed(
                     reason = SilentReloginFailureReason.INVALID_CREDENTIALS,
                     message = "账号密码已变更或失效",
@@ -454,36 +514,53 @@ class DefaultAuthRepository internal constructor(
                 return@synchronized null
             }
 
-            if (priority == AccessPriority.BackgroundSilent &&
-                (
-                    siteAccessGateway.challengeState.value !is ChallengeState.Idle ||
-                        recoveryGateway.challengeState.value !is ChallengeState.Idle
-                    )
-            ) {
-                runtimeOverlay = RuntimeOverlay.SessionExpired(activeAccount.uid, "后台请求遇安全验证已放弃")
-                recomputeStateFlowsLocked()
-                immediateResult = SilentReloginResult.Failed(
-                    reason = SilentReloginFailureReason.CHALLENGE_ABANDONED,
-                    message = "后台请求遇安全验证已放弃",
-                    cause = ChallengeAbandonedException(),
-                )
-                return@synchronized null
-            }
+            if (priority == AccessPriority.BackgroundSilent) {
+                // BackgroundSilent abandons immediately if any challenge or cooldown is active,
+                // WITHOUT mutating global authState (neither setting SessionExpired nor
+                // overwriting an in-flight foreground Reauthenticating state).
+                if (isAnyChallengeGatewayBlocked()) {
+                    immediateResult = backgroundChallengeAbandonedResult()
+                    return@synchronized null
+                }
 
-            val existing = inFlightRelogin
-            if (existing != null) {
-                existing
+                val existingForeground = inFlightForegroundRelogin
+                if (existingForeground != null) {
+                    awaitForegroundFromBackground = true
+                    existingForeground
+                } else {
+                    val existingBackground = inFlightBackgroundRelogin
+                    if (existingBackground != null) {
+                        existingBackground
+                    } else {
+                        val created = ActiveRelogin(
+                            generation = authGeneration,
+                            account = activeAccount,
+                            priority = AccessPriority.BackgroundSilent,
+                        )
+                        inFlightBackgroundRelogin = created
+                        shouldLaunch = true
+                        created
+                    }
+                }
             } else {
-                val created = ActiveRelogin(
-                    generation = authGeneration,
-                    account = activeAccount,
-                    priority = priority,
-                )
-                inFlightRelogin = created
-                runtimeOverlay = RuntimeOverlay.Reauthenticating(activeAccount.uid)
-                recomputeStateFlowsLocked()
-                shouldLaunch = true
-                created
+                // Foreground (UserBlocking / UserExplicit) NEVER coalesces onto an in-flight
+                // BackgroundSilent flight so a background challenge abandonment cannot short-circuit
+                // the foreground Cloudflare challenge solver path.
+                val existingForeground = inFlightForegroundRelogin
+                if (existingForeground != null) {
+                    existingForeground
+                } else {
+                    val created = ActiveRelogin(
+                        generation = authGeneration,
+                        account = activeAccount,
+                        priority = priority,
+                    )
+                    inFlightForegroundRelogin = created
+                    runtimeOverlay = RuntimeOverlay.Reauthenticating(activeAccount.uid)
+                    recomputeStateFlowsLocked()
+                    shouldLaunch = true
+                    created
+                }
             }
         }
 
@@ -495,28 +572,105 @@ class DefaultAuthRepository internal constructor(
         if (shouldLaunch) {
             launchSilentRelogin(flight)
         }
-        return flight.deferred.await()
+        return if (awaitForegroundFromBackground) {
+            awaitForegroundForBackground(flight)
+        } else {
+            flight.deferred.await()
+        }
     }
 
-    private suspend fun <T> runExplicitOperation(block: suspend () -> T): T {
-        val detached = synchronized(stateLock) {
-            explicitOperationCount++
-            authGeneration++
-            detachInFlightReloginLocked()
+    private fun createCookieWriteGuard(
+        expectedGeneration: Long,
+        allowDuringManualLogout: Boolean,
+    ): AuthCookieWriteGuard = AuthCookieWriteGuard { saveAction ->
+        synchronized(cookieWriteLock) {
+            val allowed = synchronized(stateLock) {
+                authGeneration == expectedGeneration &&
+                    (allowDuringManualLogout || !persistentSnapshot.manuallyLoggedOut)
+            }
+            saveAction(allowed)
+        }
+    }
+
+    private fun isAnyChallengeGatewayBlocked(): Boolean =
+        siteAccessGateway.challengeState.value !is ChallengeState.Idle ||
+            recoveryGateway.challengeState.value !is ChallengeState.Idle
+
+    private fun backgroundChallengeAbandonedResult(): SilentReloginResult.Failed =
+        SilentReloginResult.Failed(
+            reason = SilentReloginFailureReason.CHALLENGE_ABANDONED,
+            message = "后台请求遇安全验证已放弃",
+            cause = ChallengeAbandonedException(),
+        )
+
+    /**
+     * Awaits an in-flight foreground relogin on behalf of a [AccessPriority.BackgroundSilent] caller,
+     * immediately returning [SilentReloginFailureReason.CHALLENGE_ABANDONED] if either gateway enters
+     * [ChallengeState.Solving] or [ChallengeState.Cooldown], without cancelling the foreground
+     * flight or modifying global [authState].
+     */
+    private suspend fun awaitForegroundForBackground(flight: ActiveRelogin): SilentReloginResult =
+        coroutineScope {
+            if (isAnyChallengeGatewayBlocked()) {
+                return@coroutineScope backgroundChallengeAbandonedResult()
+            }
+            val outcome = CompletableDeferred<SilentReloginResult>()
+            val flightWatcher = launch {
+                val res = flight.deferred.await()
+                val mapped = if (
+                    res is SilentReloginResult.Failed &&
+                    (
+                        res.reason == SilentReloginFailureReason.CHALLENGE_INCOMPLETE ||
+                            res.reason == SilentReloginFailureReason.CHALLENGE_REJECTED
+                        )
+                ) {
+                    backgroundChallengeAbandonedResult()
+                } else {
+                    res
+                }
+                outcome.complete(mapped)
+            }
+            val challengeWatcher = launch {
+                combine(
+                    siteAccessGateway.challengeState,
+                    recoveryGateway.challengeState,
+                ) { primary, recovery ->
+                    primary !is ChallengeState.Idle || recovery !is ChallengeState.Idle
+                }.first { blocked -> blocked }
+                outcome.complete(backgroundChallengeAbandonedResult())
+            }
+            try {
+                outcome.await()
+            } finally {
+                flightWatcher.cancel()
+                challengeWatcher.cancel()
+            }
+        }
+
+    private suspend fun <T> runExplicitOperation(block: suspend (opGeneration: Long) -> T): T {
+        val (opGeneration, detachedFlights) = synchronized(cookieWriteLock) {
+            synchronized(stateLock) {
+                explicitOperationCount++
+                authGeneration++
+                authGeneration to detachAllInFlightReloginsLocked()
+            }
         }
         try {
-            if (detached != null) {
-                detached.deferred.complete(
-                    SilentReloginResult.Failed(
-                        reason = SilentReloginFailureReason.SESSION_INVALIDATED,
-                        message = "登录状态已变更",
-                    ),
+            if (detachedFlights.isNotEmpty()) {
+                val invalidated = SilentReloginResult.Failed(
+                    reason = SilentReloginFailureReason.SESSION_INVALIDATED,
+                    message = "登录状态已变更",
                 )
+                for (flight in detachedFlights) {
+                    flight.deferred.complete(invalidated)
+                }
                 withContext(NonCancellable) {
-                    detached.job?.cancelAndJoin()
+                    for (flight in detachedFlights) {
+                        flight.job?.cancelAndJoin()
+                    }
                 }
             }
-            return block()
+            return block(opGeneration)
         } finally {
             synchronized(stateLock) {
                 explicitOperationCount = (explicitOperationCount - 1).coerceAtLeast(0)
@@ -535,11 +689,19 @@ class DefaultAuthRepository internal constructor(
         }
     }
 
-    private fun detachInFlightReloginLocked(): ActiveRelogin? {
-        val old = inFlightRelogin ?: return null
-        inFlightRelogin = null
-        old.completed = true
-        return old
+    private fun detachAllInFlightReloginsLocked(): List<ActiveRelogin> {
+        val detached = ArrayList<ActiveRelogin>(2)
+        inFlightForegroundRelogin?.let { old ->
+            inFlightForegroundRelogin = null
+            old.completed = true
+            detached.add(old)
+        }
+        inFlightBackgroundRelogin?.let { old ->
+            inFlightBackgroundRelogin = null
+            old.completed = true
+            detached.add(old)
+        }
+        return detached
     }
 
     private fun launchSilentRelogin(flight: ActiveRelogin) {
@@ -582,6 +744,10 @@ class DefaultAuthRepository internal constructor(
                     message = "论坛服务器地址无效",
                 )
             } else {
+                val cookieGuard = createCookieWriteGuard(
+                    expectedGeneration = flight.generation,
+                    allowDuringManualLogout = false,
+                )
                 when (
                     val raw = executeLoginProtocol(
                         gateway = recoveryGateway,
@@ -593,6 +759,7 @@ class DefaultAuthRepository internal constructor(
                         expectedUid = flight.account.uid,
                         priority = flight.priority,
                         requireSessionVerification = false,
+                        cookieWriteGuard = cookieGuard,
                     )
                 ) {
                     is RawLoginOutcome.LoggedIn -> SilentReloginResult.Recovered(0L)
@@ -644,8 +811,11 @@ class DefaultAuthRepository internal constructor(
                 return
             }
             flight.completed = true
-            if (inFlightRelogin === flight) {
-                inFlightRelogin = null
+            if (inFlightForegroundRelogin === flight) {
+                inFlightForegroundRelogin = null
+            }
+            if (inFlightBackgroundRelogin === flight) {
+                inFlightBackgroundRelogin = null
             }
 
             val isCurrentSession =
@@ -663,21 +833,32 @@ class DefaultAuthRepository internal constructor(
                     is SilentReloginResult.Recovered -> {
                         currentSessionEpoch++
                         rejectedCredentialKey = null
-                        runtimeOverlay = RuntimeOverlay.Normal
-                        recomputeStateFlowsLocked()
+                        if (inFlightForegroundRelogin == null) {
+                            runtimeOverlay = RuntimeOverlay.Normal
+                            recomputeStateFlowsLocked()
+                        }
                         SilentReloginResult.Recovered(currentSessionEpoch)
                     }
 
                     is SilentReloginResult.Failed -> {
-                        if (rawOutcome.reason == SilentReloginFailureReason.INVALID_CREDENTIALS) {
-                            rejectedCredentialKey = flight.account.uid to flight.account.passwordMd5
+                        if (rawOutcome.reason == SilentReloginFailureReason.CHALLENGE_ABANDONED) {
+                            // B2: BackgroundSilent abandoning a Cloudflare challenge does NOT mean
+                            // credentials/session failed; never set SessionExpired or clobber an
+                            // in-flight foreground Reauthenticating state.
+                            rawOutcome
+                        } else {
+                            if (rawOutcome.reason == SilentReloginFailureReason.INVALID_CREDENTIALS) {
+                                rejectedCredentialKey = flight.account.uid to flight.account.passwordMd5
+                            }
+                            if (inFlightForegroundRelogin == null) {
+                                runtimeOverlay = RuntimeOverlay.SessionExpired(
+                                    uid = flight.account.uid,
+                                    reason = rawOutcome.message.ifBlank { null },
+                                )
+                                recomputeStateFlowsLocked()
+                            }
+                            rawOutcome
                         }
-                        runtimeOverlay = RuntimeOverlay.SessionExpired(
-                            uid = flight.account.uid,
-                            reason = rawOutcome.message.ifBlank { null },
-                        )
-                        recomputeStateFlowsLocked()
-                        rawOutcome
                     }
 
                     SilentReloginResult.Suppressed,
@@ -699,6 +880,7 @@ class DefaultAuthRepository internal constructor(
         expectedUid: String?,
         priority: AccessPriority,
         requireSessionVerification: Boolean,
+        cookieWriteGuard: AuthCookieWriteGuard,
     ): RawLoginOutcome {
         return try {
             val loginPageUrl = buildForumUrl(forumServer, LOGIN_PAGE_PATH)
@@ -709,6 +891,7 @@ class DefaultAuthRepository internal constructor(
                 expectedUsername = username,
                 expectedUid = expectedUid,
                 priority = priority,
+                cookieWriteGuard = cookieWriteGuard,
             )
 
             val formhash = when (formhashOrSession) {
@@ -737,6 +920,7 @@ class DefaultAuthRepository internal constructor(
             )
             val postRequest = Request.Builder()
                 .url(submitUrl)
+                .tag(AuthCookieWriteGuard::class.java, cookieWriteGuard)
                 .post(gbkFormBody(formFields))
                 .build()
 
@@ -746,9 +930,14 @@ class DefaultAuthRepository internal constructor(
                     if (!requireSessionVerification) {
                         RawLoginOutcome.LoggedIn(session = null, message = parsedSubmit.message)
                     } else {
+                        val verifyRequest = Request.Builder()
+                            .url(loginPageUrl)
+                            .tag(AuthCookieWriteGuard::class.java, cookieWriteGuard)
+                            .get()
+                            .build()
                         val verifyHtml = executeDecoded(
                             gateway = gateway,
-                            request = Request.Builder().url(loginPageUrl).get().build(),
+                            request = verifyRequest,
                             priority = priority,
                         )
                         val session = DiscuzCommonParser.parsePageMeta(verifyHtml).session
@@ -810,12 +999,18 @@ class DefaultAuthRepository internal constructor(
         expectedUsername: String,
         expectedUid: String?,
         priority: AccessPriority,
+        cookieWriteGuard: AuthCookieWriteGuard,
     ): FormFetchStep {
         var clearedStaleSession = false
         while (true) {
+            val request = Request.Builder()
+                .url(loginPageUrl)
+                .tag(AuthCookieWriteGuard::class.java, cookieWriteGuard)
+                .get()
+                .build()
             val html = executeDecoded(
                 gateway = gateway,
-                request = Request.Builder().url(loginPageUrl).get().build(),
+                request = request,
                 priority = priority,
             )
             when (val parsed = LoginParser.parseLoginPage(html)) {
@@ -863,24 +1058,185 @@ class DefaultAuthRepository internal constructor(
     private suspend fun clearAuthCookiesForServer(forumServer: String) {
         val forumUrl = runCatching { buildForumUrl(forumServer, "") }.getOrNull() ?: return
         val host = forumUrl.host.lowercase(Locale.ROOT)
-        val matchingCookies = siteCookieStore.snapshot().filter { it.matchesHost(host) }
-        if (matchingCookies.isEmpty()) return
+        val storeAuthCookieNames = LinkedHashSet<String>()
 
-        val hasPreservedCfCookie = matchingCookies.any { isPreservedCloudflareCookie(it.name) }
-        if (!hasPreservedCfCookie) {
-            siteCookieStore.clearForHost(host)
-            return
+        // Perform SiteCookieStore clearing under cookieWriteLock so it is strictly serialized with
+        // AppCookieInterceptor's AuthCookieWriteGuard check+save critical section, while never
+        // clearing concurrently persisted cf_clearance / __cf_bm cookies.
+        synchronized(cookieWriteLock) {
+            val matchingStoreCookies = siteCookieStore.snapshot().filter { it.matchesHost(host) }
+            val authStoreCookies = matchingStoreCookies.filterNot { isPreservedCloudflareCookie(it.name) }
+            authStoreCookies.mapTo(storeAuthCookieNames) { it.name }
+            if (authStoreCookies.isNotEmpty()) {
+                siteCookieStore.saveFromResponse(forumUrl, authStoreCookies.map(::buildExpiredStoreCookie))
+            }
         }
 
-        val expiredAuthCookies = matchingCookies
-            .filterNot { isPreservedCloudflareCookie(it.name) }
-            .map { cookie -> buildExpiredCookie(cookie) }
-        if (expiredAuthCookies.isNotEmpty()) {
-            siteCookieStore.saveFromResponse(forumUrl, expiredAuthCookies)
+        // B1: Also clear forum login cookies from Android WebView CookieManager (preserving
+        // cf_clearance / __cf_bm) so subsequent Cloudflare challenge syncs cannot resurrect an
+        // old account's 30-day cdb_auth cookie.
+        clearWebViewAuthCookies(forumUrl, host, storeAuthCookieNames)
+    }
+
+    private suspend fun clearWebViewAuthCookies(
+        forumUrl: HttpUrl,
+        canonicalHost: String,
+        extraAuthCookieNames: Set<String>,
+    ) {
+        val rootUrl = forumUrl.newBuilder().encodedPath("/").build()
+        val targetForumUrl = forumUrl.toString()
+        val targetRootUrl = rootUrl.toString()
+
+        withContext(cookieDispatcher) {
+            val expireHeaders = LinkedHashSet<String>()
+            if (webViewCookieAccess.isGetCookieInfoSupported()) {
+                val rawInfos = LinkedHashSet<String>()
+                rawInfos.addAll(webViewCookieAccess.getCookieInfo(targetForumUrl))
+                rawInfos.addAll(webViewCookieAccess.getCookieInfo(targetRootUrl))
+                for (raw in rawInfos) {
+                    val parsed = Cookie.parse(forumUrl, raw) ?: Cookie.parse(rootUrl, raw) ?: continue
+                    if (!parsed.matchesHost(canonicalHost)) continue
+                    if (isPreservedCloudflareCookie(parsed.name)) continue
+                    expireHeaders.add(
+                        buildWebViewExpirationHeader(
+                            cookieName = parsed.name,
+                            rawSetCookie = raw,
+                            fallbackPath = parsed.path,
+                        ),
+                    )
+                }
+            } else {
+                val observedNames = LinkedHashSet<String>()
+                observedNames.addAll(extractLegacyCookieNames(webViewCookieAccess.getCookie(targetForumUrl)))
+                observedNames.addAll(extractLegacyCookieNames(webViewCookieAccess.getCookie(targetRootUrl)))
+                observedNames.addAll(extraAuthCookieNames)
+                val targetNames = observedNames.filterNot(::isPreservedCloudflareCookie)
+                if (targetNames.isNotEmpty()) {
+                    val domains = buildLegacyScopeDomains(forumUrl)
+                    val secureVariants = if (forumUrl.isHttps) listOf(false, true) else listOf(false)
+                    for (name in targetNames) {
+                        for (domain in domains) {
+                            for (path in LEGACY_AUTH_COOKIE_PATHS) {
+                                for (secure in secureVariants) {
+                                    expireHeaders.add(
+                                        buildLegacyAuthExpirationHeader(
+                                            cookieName = name,
+                                            domain = domain,
+                                            path = path,
+                                            secure = secure,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (expireHeaders.isNotEmpty()) {
+                for (header in expireHeaders) {
+                    webViewCookieAccess.setCookie(targetForumUrl, header)
+                }
+                webViewCookieAccess.flush()
+            }
         }
     }
 
-    private fun buildExpiredCookie(cookie: Cookie): Cookie {
+    private fun extractLegacyCookieNames(rawHeader: String?): List<String> {
+        if (rawHeader.isNullOrBlank()) return emptyList()
+        return rawHeader.split(';').mapNotNull { segment ->
+            val eqIndex = segment.indexOf('=')
+            if (eqIndex <= 0) return@mapNotNull null
+            segment.substring(0, eqIndex).trim().ifEmpty { null }
+        }
+    }
+
+    private fun buildWebViewExpirationHeader(
+        cookieName: String,
+        rawSetCookie: String,
+        fallbackPath: String,
+    ): String {
+        var domain: String? = null
+        var path: String? = null
+        var secure = false
+        var httpOnly = false
+        var sameSite: String? = null
+        var partitioned = false
+
+        for (segment in rawSetCookie.split(';').drop(1)) {
+            val trimmed = segment.trim()
+            if (trimmed.isEmpty()) continue
+            val eqIndex = trimmed.indexOf('=')
+            val attrName = (if (eqIndex >= 0) trimmed.substring(0, eqIndex) else trimmed).trim()
+            val attrValue = if (eqIndex >= 0) trimmed.substring(eqIndex + 1).trim() else ""
+            when (attrName.lowercase(Locale.ROOT)) {
+                "domain" -> if (attrValue.isNotEmpty()) domain = attrValue
+                "path" -> if (attrValue.isNotEmpty()) path = attrValue
+                "secure" -> secure = true
+                "httponly" -> httpOnly = true
+                "samesite" -> if (attrValue.isNotEmpty()) sameSite = attrValue
+                "partitioned" -> partitioned = true
+            }
+        }
+
+        return buildString {
+            append(cookieName)
+            append("=; Max-Age=0; Expires=")
+            append(EPOCH_HTTP_DATE)
+            if (domain != null) {
+                append("; Domain=").append(domain)
+            }
+            append("; Path=").append(path ?: fallbackPath)
+            if (secure) append("; Secure")
+            if (httpOnly) append("; HttpOnly")
+            if (sameSite != null) {
+                append("; SameSite=").append(sameSite)
+            }
+            if (partitioned) append("; Partitioned")
+        }
+    }
+
+    private fun buildLegacyScopeDomains(url: HttpUrl): List<String?> {
+        val domains = LinkedHashSet<String?>()
+        domains.add(null) // host-only
+        if (!isIpAddress(url.host)) {
+            domains.add(url.host)
+            val topPrivateDomain = url.topPrivateDomain()
+            if (!topPrivateDomain.isNullOrBlank()) {
+                var current = url.host
+                while (current.contains('.') && !current.equals(topPrivateDomain, ignoreCase = true)) {
+                    current = current.substringAfter('.')
+                    domains.add(".$current")
+                }
+                if (url.host.equals(topPrivateDomain, ignoreCase = true)) {
+                    domains.add(".$topPrivateDomain")
+                }
+            } else if (url.host.count { it == '.' } >= 2) {
+                domains.add(".${url.host.substringAfter('.')}")
+            }
+        }
+        return domains.toList()
+    }
+
+    private fun buildLegacyAuthExpirationHeader(
+        cookieName: String,
+        domain: String?,
+        path: String,
+        secure: Boolean,
+    ): String = buildString {
+        append(cookieName)
+        append("=; Max-Age=0; Expires=")
+        append(EPOCH_HTTP_DATE)
+        if (domain != null) {
+            append("; Domain=").append(domain)
+        }
+        append("; Path=").append(path)
+        if (secure) {
+            append("; Secure")
+        }
+    }
+
+    private fun buildExpiredStoreCookie(cookie: Cookie): Cookie {
         val builder = Cookie.Builder()
             .name(cookie.name)
             .value("")
@@ -975,5 +1331,7 @@ class DefaultAuthRepository internal constructor(
         private const val COOKIE_TIME_SECONDS = "2592000"
         private const val COOKIE_CF_CLEARANCE = "cf_clearance"
         private const val COOKIE_CF_BM = "__cf_bm"
+        private const val EPOCH_HTTP_DATE = "Thu, 01 Jan 1970 00:00:00 GMT"
+        private val LEGACY_AUTH_COOKIE_PATHS: List<String> = listOf("/", "/forum", "/forum/")
     }
 }

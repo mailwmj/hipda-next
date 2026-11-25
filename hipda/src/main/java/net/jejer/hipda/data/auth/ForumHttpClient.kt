@@ -1,6 +1,7 @@
 package net.jejer.hipda.data.auth
 
 import kotlinx.coroutines.flow.first
+import net.jejer.hipda.data.network.AuthCookieWriteGuard
 import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.decodeBody
@@ -15,8 +16,9 @@ import okhttp3.Request
  *
  * Dynamically resolves `{forumServer}/forum/{relativePath}` from [SettingsRepository], executes
  * requests via [SiteAccessGateway], decodes bodies with [decodeBody], parses [DiscuzPageMeta] via
- * [DiscuzCommonParser], and when `requireAuth == true` and the page indicates an unauthenticated
- * session, triggers at most one single-flight silent re-login and retries the request once.
+ * [DiscuzCommonParser], and when `requireAuth == true` and [isUnauthenticated] returns `true`
+ * (by default `!response.meta.session.isLoggedIn`), triggers at most one single-flight silent
+ * re-login and retries the request once.
  */
 class ForumHttpClient(
     private val siteAccessGateway: SiteAccessGateway,
@@ -24,28 +26,44 @@ class ForumHttpClient(
     private val authRepository: AuthRepository,
 ) {
 
-    /** Performs a GET request to `{forumServer}/forum/{relativePath}`. */
+    /**
+     * Performs a GET request to `{forumServer}/forum/{relativePath}`.
+     *
+     * Callers hitting `inajax=1` XML endpoints without `#umenu` may pass a custom
+     * [isUnauthenticated] predicate while keeping `requireAuth = true` to reuse the single
+     * silent re-login + retry flow.
+     */
     suspend fun getHtml(
         relativePath: String,
         priority: AccessPriority = AccessPriority.UserBlocking,
         requireAuth: Boolean = false,
+        isUnauthenticated: (ForumHtmlResponse) -> Boolean = DEFAULT_UNAUTHENTICATED_PREDICATE,
     ): ForumHtmlResponse = executeWithAuthRetry(
         relativePath = relativePath,
         priority = priority,
         requireAuth = requireAuth,
+        isUnauthenticated = isUnauthenticated,
         buildRequest = { url -> Request.Builder().url(url).get().build() },
     )
 
-    /** Performs a GBK-encoded form POST request to `{forumServer}/forum/{relativePath}`. */
+    /**
+     * Performs a GBK-encoded form POST request to `{forumServer}/forum/{relativePath}`.
+     *
+     * Callers hitting `inajax=1` XML endpoints without `#umenu` may pass a custom
+     * [isUnauthenticated] predicate while keeping `requireAuth = true` to reuse the single
+     * silent re-login + replayable GBK form retry flow.
+     */
     suspend fun postGbkForm(
         relativePath: String,
         fields: List<Pair<String, String>>,
         priority: AccessPriority = AccessPriority.UserBlocking,
         requireAuth: Boolean = true,
+        isUnauthenticated: (ForumHtmlResponse) -> Boolean = DEFAULT_UNAUTHENTICATED_PREDICATE,
     ): ForumHtmlResponse = executeWithAuthRetry(
         relativePath = relativePath,
         priority = priority,
         requireAuth = requireAuth,
+        isUnauthenticated = isUnauthenticated,
         buildRequest = { url ->
             Request.Builder()
                 .url(url)
@@ -58,11 +76,12 @@ class ForumHttpClient(
         relativePath: String,
         priority: AccessPriority,
         requireAuth: Boolean,
+        isUnauthenticated: (ForumHtmlResponse) -> Boolean,
         buildRequest: (HttpUrl) -> Request,
     ): ForumHtmlResponse {
         val epochBeforeFirstAttempt = authRepository.sessionEpoch
         val firstResponse = executeSingleAttempt(relativePath, priority, buildRequest)
-        if (!requireAuth || firstResponse.meta.session.isLoggedIn) {
+        if (!requireAuth || !isUnauthenticated(firstResponse)) {
             return firstResponse
         }
 
@@ -74,7 +93,7 @@ class ForumHttpClient(
         ) {
             is SilentReloginResult.Recovered -> {
                 val retriedResponse = executeSingleAttempt(relativePath, priority, buildRequest)
-                if (retriedResponse.meta.session.isLoggedIn) {
+                if (!isUnauthenticated(retriedResponse)) {
                     retriedResponse
                 } else {
                     throw AuthRequiredException(
@@ -109,7 +128,15 @@ class ForumHttpClient(
     ): ForumHtmlResponse {
         val forumServer = settingsRepository.settings.first().forumServer
         val url = buildForumUrl(forumServer, relativePath)
-        val request = buildRequest(url)
+        val rawRequest = buildRequest(url)
+        val guard = (authRepository as? DefaultAuthRepository)?.captureCookieWriteGuard()
+        val request = if (guard != null) {
+            rawRequest.newBuilder()
+                .tag(AuthCookieWriteGuard::class.java, guard)
+                .build()
+        } else {
+            rawRequest
+        }
         siteAccessGateway.execute(request = request, priority = priority).use { response ->
             if (!response.isSuccessful) {
                 throw ForumHttpException(response.code, response.request.url.toString())
@@ -124,6 +151,12 @@ class ForumHttpClient(
                 html = html,
                 meta = meta,
             )
+        }
+    }
+
+    companion object {
+        val DEFAULT_UNAUTHENTICATED_PREDICATE: (ForumHtmlResponse) -> Boolean = { response ->
+            !response.meta.session.isLoggedIn
         }
     }
 }

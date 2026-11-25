@@ -2,12 +2,15 @@ package net.jejer.hipda.data.auth
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
@@ -47,6 +50,8 @@ class ForumHttpClientTest {
 
     private lateinit var nowMs: AtomicLong
     private lateinit var cookieStore: InMemorySiteCookieStore
+    private lateinit var webViewCookieAccess: RealisticFakeWebViewCookieAccess
+    private lateinit var cookieDispatcher: ExecutorCoroutineDispatcher
     private lateinit var credentialsStore: FakeCredentialsStore
     private lateinit var settingsRepository: FakeSettingsRepository
     private lateinit var server: MockWebServer
@@ -58,6 +63,10 @@ class ForumHttpClientTest {
         OkHttp.initialize(ApplicationProvider.getApplicationContext())
         nowMs = AtomicLong(1_700_000_000_000L)
         cookieStore = InMemorySiteCookieStore(clock = { nowMs.get() })
+        webViewCookieAccess = RealisticFakeWebViewCookieAccess()
+        cookieDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "test-forum-http-cookie").apply { isDaemon = true }
+        }.asCoroutineDispatcher()
         credentialsStore = FakeCredentialsStore()
         server = MockWebServer()
         server.start()
@@ -70,6 +79,7 @@ class ForumHttpClientTest {
     @After
     fun tearDown() {
         scope.cancel()
+        cookieDispatcher.close()
         clientsToClose.forEach { client ->
             client.dispatcher.cancelAll()
             client.dispatcher.executorService.shutdownNow()
@@ -81,12 +91,13 @@ class ForumHttpClientTest {
 
     private fun createStack(
         solver: ChallengeSolver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) },
+        transportDelegate: okhttp3.Interceptor? = null,
     ): Pair<DefaultAuthRepository, ForumHttpClient> {
         val primaryClient = HttpClientModule.provideOkHttpClient(
             siteCookieStore = cookieStore,
             userAgentProvider = UserAgentProvider { TEST_UA },
             transportInterceptor = TransportInterceptor(
-                delegateFactory = { null },
+                delegateFactory = { transportDelegate },
                 isMainThread = { false },
             ),
         ).also(clientsToClose::add)
@@ -117,6 +128,8 @@ class ForumHttpClientTest {
             recoveryGateway = recoveryGateway,
             clock = { nowMs.get() },
             scope = scope,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
         )
         val forumClient = ForumHttpClient(
             siteAccessGateway = primaryGateway,
@@ -397,6 +410,201 @@ class ForumHttpClientTest {
         assertEquals(200, response.statusCode)
         assertTrue(response.html.contains("发送成功"))
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun s2_postGbkForm_customIsUnauthenticatedPredicate_enablesSingleSilentReloginForAjaxXmlEndpoints() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("alice_pw"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val (_, forumClient) = createStack()
+        val pmHits = AtomicInteger(0)
+        val loginPostHits = AtomicInteger(0)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
+                "/forum/pm.php?action=send&pmsubmit=yes&inajax=1" -> {
+                    pmHits.incrementAndGet()
+                    if (request.headers["Cookie"].orEmpty().contains("cdb_auth=ajax_fresh_cookie")) {
+                        gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[<div class="summary">发送成功</div>]]></root>""")
+                    } else {
+                        gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，您还未登录，无法进行此操作]]></root>""")
+                    }
+                }
+
+                "/forum/logging.php?action=login" -> gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_ajax_relogin"))
+                "/forum/logging.php?action=login&loginsubmit=yes&inajax=1" -> {
+                    loginPostHits.incrementAndGet()
+                    gbkXmlResponse(
+                        """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Alice]]></root>""",
+                        headers = listOf("Set-Cookie" to "cdb_auth=ajax_fresh_cookie; Path=/"),
+                    )
+                }
+
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        val ajaxUnauthPredicate: (ForumHtmlResponse) -> Boolean = { resp ->
+            resp.html.contains("您还未登录") || resp.html.contains("无权进行当前操作")
+        }
+
+        val response = forumClient.postGbkForm(
+            relativePath = "pm.php?action=send&pmsubmit=yes&inajax=1",
+            fields = listOf("message" to "你好短消息"),
+            requireAuth = true,
+            isUnauthenticated = ajaxUnauthPredicate,
+        )
+
+        assertEquals(200, response.statusCode)
+        assertTrue(response.html.contains("发送成功"))
+        assertEquals("AJAX POST must be attempted twice (initial + 1 retry)", 2, pmHits.get())
+        assertEquals("Exactly 1 silent relogin POST expected", 1, loginPostHits.get())
+
+        // Also verify bounded retry: if retry STILL matches custom unauthenticated predicate, stop and throw
+        val stuckHits = AtomicInteger(0)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
+                "/forum/my.php?item=favorites&action=add&inajax=1&tid=9" -> {
+                    stuckHits.incrementAndGet()
+                    gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[您还未登录]]></root>""")
+                }
+
+                "/forum/logging.php?action=login" -> gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_ajax_stuck"))
+                "/forum/logging.php?action=login&loginsubmit=yes&inajax=1" -> gbkXmlResponse(
+                    """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Alice]]></root>""",
+                )
+
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        try {
+            forumClient.getHtml(
+                relativePath = "my.php?item=favorites&action=add&inajax=1&tid=9",
+                requireAuth = true,
+                isUnauthenticated = ajaxUnauthPredicate,
+            )
+            fail("Expected AuthRequiredException when custom predicate still matches after 1 retry")
+        } catch (e: AuthRequiredException) {
+            assertEquals(AuthRequiredReason.SESSION_STILL_UNAUTHENTICATED, e.reason)
+        }
+        assertEquals(2, stuckHits.get())
+    }
+
+    @Test
+    fun s4_getHtml_backgroundSilentPriorityIsForwardedToTrySilentRelogin() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("alice_pw"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val solverCalls = AtomicInteger(0)
+        val (authRepo, forumClient) = createStack(
+            solver = ChallengeSolver {
+                solverCalls.incrementAndGet()
+                SolveResult.Cleared
+            },
+        )
+
+        // Primary GET returns logged-out HTML; silent relogin GET hits Cloudflare 403 challenge.
+        // Because priority is BackgroundSilent, ForumHttpClient MUST forward BackgroundSilent to
+        // trySilentRelogin so ChallengeSolver is NOT invoked and global authState stays SignedIn.
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedOutPageHtml("需要登录")))
+        server.enqueue(
+            MockResponse.Builder()
+                .code(403)
+                .addHeader("cf-mitigated", "challenge")
+                .body("challenge")
+                .build(),
+        )
+
+        try {
+            forumClient.getHtml(
+                relativePath = "notice.php",
+                priority = AccessPriority.BackgroundSilent,
+                requireAuth = true,
+            )
+            fail("Expected AuthRequiredException when BackgroundSilent relogin abandons challenge")
+        } catch (e: AuthRequiredException) {
+            assertEquals(AuthRequiredReason.RELOGIN_FAILED, e.reason)
+            val failed = e.reloginResult as SilentReloginResult.Failed
+            assertEquals(SilentReloginFailureReason.CHALLENGE_ABANDONED, failed.reason)
+        }
+
+        assertEquals("BackgroundSilent must NEVER invoke ChallengeSolver during silent relogin", 0, solverCalls.get())
+        assertEquals(AuthState.SignedIn(account), authRepo.authState.value)
+    }
+
+    @Test
+    fun s4_getHtml_forumServerEndingWithForumPathDoesNotDuplicateForumSegment() = runBlocking {
+        val (_, forumClient) = createStack()
+        val baseUrl = server.url("").toString().trimEnd('/')
+
+        settingsRepository.setForumServer("$baseUrl/forum")
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedInPageHtml("10000", "HiUser")))
+        val respNoSlash = forumClient.getHtml("index.php", requireAuth = false)
+        assertTrue(respNoSlash.url.endsWith("/forum/index.php"))
+        assertFalse(respNoSlash.url.contains("/forum/forum/"))
+        assertEquals("/forum/index.php", server.takeRequest().target)
+
+        settingsRepository.setForumServer("$baseUrl/forum/")
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedInPageHtml("10000", "HiUser")))
+        val respWithSlash = forumClient.getHtml("/notice.php", requireAuth = false)
+        assertTrue(respWithSlash.url.endsWith("/forum/notice.php"))
+        assertFalse(respWithSlash.url.contains("/forum/forum/"))
+        assertEquals("/forum/notice.php", server.takeRequest().target)
+    }
+
+    @Test
+    fun vD2_inFlightForumRequestCompletingAfterLogout_dropsLateAuthCookiesKeepingCfClearance() = runBlocking {
+        val account = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("alice_pw"), lastLoginAt = 1_000L)
+        credentialsStore.upsert(account)
+        credentialsStore.setActive(account.uid)
+
+        val heldInTransport = java.util.concurrent.CountDownLatch(1)
+        val releaseTransport = java.util.concurrent.CountDownLatch(1)
+        val (authRepo, forumClient) = createStack(
+            transportDelegate = okhttp3.Interceptor { chain ->
+                val resp = chain.proceed(chain.request())
+                heldInTransport.countDown()
+                releaseTransport.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                resp
+            },
+        )
+
+        server.enqueue(
+            gbkHtmlResponse(
+                html = AuthTestFixtures.loggedInPageHtml("10001", "Alice", "正在浏览"),
+                headers = listOf(
+                    "Set-Cookie" to "cdb_auth=in_flight_forum_auth; Path=/",
+                    "Set-Cookie" to "cdb_sid=in_flight_forum_sid; Path=/",
+                    "Set-Cookie" to "cf_clearance=in_flight_cf_keep; Path=/",
+                ),
+            ),
+        )
+
+        try {
+            val requestJob = async(Dispatchers.Default) {
+                forumClient.getHtml("forumdisplay.php?fid=2", requireAuth = false)
+            }
+            assertTrue(heldInTransport.await(5, java.util.concurrent.TimeUnit.SECONDS))
+
+            // Logout while the regular forum request is still in-flight before AppCookieInterceptor saves cookies
+            authRepo.logout()
+            releaseTransport.countDown()
+            withTimeout(5.seconds) { requestJob.await() }
+
+            val snapshot = cookieStore.snapshot()
+            assertFalse("In-flight request must NOT write cdb_auth after logout", snapshot.any { it.name == "cdb_auth" })
+            assertFalse("In-flight request must NOT write cdb_sid after logout", snapshot.any { it.name == "cdb_sid" })
+            assertTrue(
+                "Non-auth cf_clearance should still be saved",
+                snapshot.any { it.name == "cf_clearance" && it.value == "in_flight_cf_keep" },
+            )
+        } finally {
+            releaseTransport.countDown()
+        }
     }
 
     @Test
