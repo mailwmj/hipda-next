@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,7 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -41,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,11 +63,17 @@ import net.jejer.hipda.R
 import net.jejer.hipda.debug.sampleexport.SampleExportActivity
 import net.jejer.hipda.ui.designsystem.glass.GlassDegradationReason
 import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
+import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberGlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
+import net.jejer.hipda.ui.designsystem.motion.hiExpandVertically
+import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
+import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
+import net.jejer.hipda.ui.designsystem.motion.hiShrinkVertically
 import net.jejer.hipda.ui.shell.HiAdaptiveShell
 import net.jejer.hipda.ui.shell.ShellDestination
 
@@ -84,6 +91,7 @@ class PreviewActivity : ComponentActivity() {
 @Composable
 internal fun PreviewRootContent() {
     var state by remember { mutableStateOf(ThemeSpecimenState()) }
+    var glassStyle by remember { mutableStateOf(HiGlassStyle.Navigation) }
     var showShellDemo by rememberSaveable { mutableStateOf(false) }
     HiTheme(
         themeMode = state.themeMode,
@@ -91,10 +99,16 @@ internal fun PreviewRootContent() {
         seed = state.seed,
         fontSizeStep = state.fontSizeStep,
         lineHeightPreset = state.lineHeightPreset,
+        glassStyle = glassStyle,
     ) {
         if (showShellDemo) {
             ShellPreviewScreen(
                 onBack = { showShellDemo = false },
+                themeMode = state.themeMode,
+                pureBlack = state.pureBlack,
+                onThemeChange = { mode, black -> state = state.copy(themeMode = mode, pureBlack = black) },
+                glassStyle = glassStyle,
+                onGlassStyleChange = { glassStyle = it },
             )
         } else {
             ThemeSpecimenScreen(
@@ -596,13 +610,11 @@ private fun GlassSpecimenSection(
             }
         }
         Text(
-            text = stringResource(
-                if (effectiveGlassState.blurEnabled) {
-                    R.string.preview_glass_status_blur
-                } else {
-                    R.string.preview_glass_status_degraded
-                },
-            ),
+            text = if (effectiveGlassState.blurEnabled) {
+                stringResource(R.string.preview_glass_status_blur, HiTheme.glass.blurRadius.value.toInt())
+            } else {
+                stringResource(R.string.preview_glass_status_degraded)
+            },
             style = MaterialTheme.typography.bodySmall,
             color = cs.onSurfaceVariant,
         )
@@ -674,6 +686,7 @@ private fun GlassSpecimenSection(
                             state = glassState,
                             shape = HiShapeTokens.Full,
                             floating = true,
+                            style = HiGlassStyle.Toolbar,
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -721,8 +734,12 @@ private fun GlassSpecimenSection(
                                     R.string.preview_nav_search,
                                     R.string.preview_nav_mine,
                                 ).forEachIndexed { idx, labelRes ->
-                                    val bg = if (idx == 0) cs.secondaryContainer else Color.Transparent
-                                    val fg = if (idx == 0) cs.onSecondaryContainer else cs.onSurfaceVariant
+                                    val bg = if (idx == 0) {
+                                        cs.primary.copy(alpha = HiTheme.glass.indicatorAlpha.coerceIn(0f, 1f))
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                    val fg = if (idx == 0) cs.primary else cs.onSurfaceVariant
                                     Box(
                                         modifier = Modifier
                                             .clip(HiShapeTokens.Full)
@@ -775,104 +792,155 @@ private fun SpecimenCard(
 fun ShellPreviewScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    themeMode: HiThemeMode = HiTheme.state.themeMode,
+    pureBlack: Boolean = HiTheme.state.pureBlack,
+    onThemeChange: ((HiThemeMode, Boolean) -> Unit)? = null,
+    glassStyle: HiGlassStyle? = null,
+    onGlassStyleChange: ((HiGlassStyle) -> Unit)? = null,
 ) {
     var selected by rememberSaveable { mutableStateOf(ShellDestination.Forum) }
+    var tuningExpanded by rememberSaveable { mutableStateOf(false) }
+    var localGlassStyle by remember { mutableStateOf(HiGlassStyle.Navigation) }
+    val activeGlassStyle = glassStyle ?: localGlassStyle
+    val updateGlassStyle: (HiGlassStyle) -> Unit = onGlassStyleChange ?: { localGlassStyle = it }
     val cs = MaterialTheme.colorScheme
-    HiAdaptiveShell(
-        selected = selected,
-        onSelect = { selected = it },
-        modifier = modifier,
-    ) { destination, contentPadding ->
-        val items = remember(destination) {
-            val prefix = when (destination) {
-                ShellDestination.Forum -> "Discovery · 帖子示例"
-                ShellDestination.Messages -> "消息列表 · 对话与提醒示例"
-                ShellDestination.Search -> "搜索结果 · 标题与正文匹配示例"
-                ShellDestination.Mine -> "我的空间 · 收藏与历史条目示例"
-            }
-            List(40) { index -> "$prefix #${index + 1}" }
-        }
-        Column(modifier = Modifier.fillMaxSize()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(cs.surfaceContainer)
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(destination.labelRes),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = cs.onSurface,
-                )
-                TextButton(onClick = onBack, shape = HiShapeTokens.Small) {
-                    Text(text = "返回样张")
+
+    CompositionLocalProvider(LocalHiGlassStyle provides activeGlassStyle) {
+        HiAdaptiveShell(
+            selected = selected,
+            onSelect = { selected = it },
+            modifier = modifier,
+        ) { destination, contentPadding ->
+            val items = remember(destination) {
+                val prefix = when (destination) {
+                    ShellDestination.Forum -> "Discovery · 帖子示例"
+                    ShellDestination.Messages -> "消息列表 · 对话与提醒示例"
+                    ShellDestination.Search -> "搜索结果 · 标题与正文匹配示例"
+                    ShellDestination.Mine -> "我的空间 · 收藏与历史条目示例"
                 }
+                List(40) { index -> "$prefix #${index + 1}" }
             }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    top = 12.dp,
-                    end = 16.dp,
-                    bottom = 12.dp + contentPadding.calculateBottomPadding(),
-                ),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                items(items) { rowTitle ->
-                    val hash = rowTitle.hashCode() and 0x7fffffff
-                    val accentBg = when (hash % 3) {
-                        0 -> cs.primaryContainer
-                        1 -> cs.tertiaryContainer
-                        else -> cs.secondaryContainer
-                    }
-                    val accentFg = when (hash % 3) {
-                        0 -> cs.onPrimaryContainer
-                        1 -> cs.onTertiaryContainer
-                        else -> cs.onSecondaryContainer
-                    }
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cs.surfaceContainer)
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(destination.labelRes),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = cs.onSurface,
+                    )
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(HiShapeTokens.Medium)
-                            .background(cs.surfaceContainerLow)
-                            .padding(14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(HiShapeTokens.Full)
-                                .background(accentBg),
-                            contentAlignment = Alignment.Center,
+                        FilledTonalButton(
+                            onClick = { tuningExpanded = !tuningExpanded },
+                            shape = HiShapeTokens.Small,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         ) {
                             Text(
-                                text = stringResource(destination.labelRes).take(1),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = accentFg,
+                                text = stringResource(
+                                    if (tuningExpanded) {
+                                        R.string.preview_glass_tune_close
+                                    } else {
+                                        R.string.preview_glass_tune_open
+                                    },
+                                ),
+                                style = MaterialTheme.typography.labelMedium,
                             )
                         }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                text = rowTitle,
-                                style = HiTheme.typography.threadTitle,
-                                color = cs.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = "向下滚动可观察底部毛玻璃导航胶囊对内容色彩与层次的实时折射效果。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                        TextButton(onClick = onBack, shape = HiShapeTokens.Small) {
+                            Text(text = "返回样张")
+                        }
+                    }
+                }
+                AnimatedVisibility(
+                    visible = tuningExpanded,
+                    enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(),
+                    exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut(),
+                ) {
+                    GlassTuningPanel(
+                        style = activeGlassStyle,
+                        onStyleChange = updateGlassStyle,
+                        themeMode = themeMode,
+                        pureBlack = pureBlack,
+                        onThemeChange = onThemeChange,
+                    )
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        top = 12.dp,
+                        end = 16.dp,
+                        bottom = 12.dp + contentPadding.calculateBottomPadding(),
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    val swatchColors = listOf(
+                        Color(0xFFE53935),
+                        Color(0xFFFB8C00),
+                        Color(0xFF00ACC1),
+                        Color(0xFF43A047),
+                        Color(0xFF5E35B1),
+                        Color(0xFFD81B60),
+                    )
+                    items.forEachIndexed { index, rowTitle ->
+                        if (index % 4 == 0) {
+                            item(key = "color_backdrop_${index / 4}") {
+                                GlassColorBackdropBanner(variant = index / 4)
+                            }
+                        }
+                        item(key = "row_$index") {
+                            val accentBg = swatchColors[index % swatchColors.size]
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(HiShapeTokens.Medium)
+                                    .background(cs.surfaceContainerLow)
+                                    .padding(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(HiShapeTokens.Full)
+                                        .background(accentBg),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = stringResource(destination.labelRes).take(1),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = Color.White,
+                                    )
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = rowTitle,
+                                        style = HiTheme.typography.threadTitle,
+                                        color = cs.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = "高对比正文与饱和色块穿插滚动，便于检视模糊清晰度、透色质感与字迹可读性。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = cs.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
