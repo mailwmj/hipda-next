@@ -16,19 +16,18 @@ internal class InMemorySiteCookieStore(
 
     private data class Key(val name: String, val domain: String, val path: String)
 
+    private val lock = Any()
     private val cookies = LinkedHashMap<Key, Cookie>()
 
-    @Synchronized
-    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+    override fun loadForRequest(url: HttpUrl): List<Cookie> = synchronized(lock) {
         val now = clock()
         cookies.entries.removeAll { it.value.expiresAt <= now }
-        return cookies.values
+        cookies.values
             .filter { it.matches(url) }
             .sortedByDescending { it.path.length }
     }
 
-    @Synchronized
-    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) = synchronized(lock) {
         val now = clock()
         this.cookies.entries.removeAll { it.value.expiresAt <= now }
         for (cookie in cookies) {
@@ -41,23 +40,22 @@ internal class InMemorySiteCookieStore(
         }
     }
 
-    @Synchronized
     override suspend fun clear() {
-        cookies.clear()
+        synchronized(lock) { cookies.clear() }
     }
 
-    @Synchronized
     override suspend fun clearForHost(host: String) {
         val normalized = host.trim().trim('.').lowercase(Locale.ROOT)
-        cookies.entries.removeAll { (_, cookie) ->
-            cookie.domain == normalized || (!cookie.hostOnly && normalized.endsWith(".${cookie.domain}"))
+        synchronized(lock) {
+            cookies.entries.removeAll { (_, cookie) ->
+                cookie.domain == normalized || (!cookie.hostOnly && normalized.endsWith(".${cookie.domain}"))
+            }
         }
     }
 
-    @Synchronized
-    override fun snapshot(): List<Cookie> {
+    override fun snapshot(): List<Cookie> = synchronized(lock) {
         val now = clock()
         cookies.entries.removeAll { it.value.expiresAt <= now }
-        return cookies.values.toList()
+        cookies.values.toList()
     }
 }
