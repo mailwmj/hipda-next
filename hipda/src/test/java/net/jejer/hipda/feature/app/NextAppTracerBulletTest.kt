@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -41,6 +42,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntSize
@@ -185,27 +187,25 @@ class NextAppTracerBulletTest {
         assertEquals("R-D4 S1：必须传入显式非 null sortByPostTime", false, harness.threadListRepo.lastQuery?.sortByPostTime)
         composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
 
-        val forumListState = harness.hostViewModel.forumListStateFor(ForumListSource.Forum(2))
-        composeRule.runOnIdle { forumListState.requestScrollToItem(index = 6, scrollOffset = 42) }
-        composeRule.waitForIdle()
-        val forumIndexBefore = forumListState.firstVisibleItemIndex
-        val forumOffsetBefore = forumListState.firstVisibleItemScrollOffset
-        assertTrue("列表应滚至非首项，实际 index=$forumIndexBefore", forumIndexBefore > 0)
-
-        val targetTid = "1007"
-        composeRule.onNodeWithText("测试帖子标题 $targetTid").performClick()
+        // 通过真实列表滚动至非首项，记录可见标题与顶部像素坐标
+        scrollFirstVerticalListBy(900f)
+        val forumScrollPosBefore = readFirstVerticalScrollValue()
+        assertTrue("列表应滚至非首项，实际 scrollValue=$forumScrollPosBefore", forumScrollPosBefore > 0f)
+        val targetTid = "1008"
+        composeRule.onAllNodesWithText("测试帖子标题 $targetTid").onFirst().assertIsDisplayed().performClick()
         composeRule.waitForIdle()
 
+        // 单栏进入帖子详情二级页：底部导航胶囊应退场（R-E0 S4 / §3.1 L38）
+        composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertDoesNotExist()
         assertEquals("首次进帖应发出 1 次详情请求", 1, harness.threadDetailRepo.loadPageCalls.get())
         assertEquals("应通过真实工厂路径恰好创建 1 个 ThreadDetailViewModel", 1, harness.createdDetailVms.size)
         val detailVmBefore = harness.createdDetailVms.single()
 
-        val detailListState = harness.hostViewModel.threadListStateFor(targetTid)
-        composeRule.runOnIdle { detailListState.requestScrollToItem(index = 8, scrollOffset = 56) }
-        composeRule.waitForIdle()
-        val detailIndexBefore = detailListState.firstVisibleItemIndex
-        val detailOffsetBefore = detailListState.firstVisibleItemScrollOffset
-        assertTrue("详情应滚至非首项，实际 index=$detailIndexBefore", detailIndexBefore > 0)
+        scrollFirstVerticalListBy(1200f)
+        val detailScrollPosBefore = readFirstVerticalScrollValue()
+        assertTrue("详情应滚至非首项，实际 scrollValue=$detailScrollPosBefore", detailScrollPosBefore > 0f)
+        val visibleFloorText = findFirstVisibleFloorText(targetTid)
+        val visibleFloorTopBefore = composeRule.onNodeWithText(visibleFloorText).fetchSemanticsNode().boundsInRoot.top
 
         val listCallsSnapshot = harness.threadListRepo.refreshCalls.get()
         val detailCallsSnapshot = harness.threadDetailRepo.loadPageCalls.get()
@@ -222,21 +222,33 @@ class NextAppTracerBulletTest {
             harness.hostViewModel.viewModelStoreOwnerForThread(targetTid, harness.vmFactory),
         )["thread:$targetTid", ThreadDetailViewModel::class.java]
         assertSame("411→749dp 必须是同一个 ThreadDetailViewModel 实例", detailVmBefore, detailVmAt749)
-        assertEquals("411→749dp 列表首项索引不变", forumIndexBefore, forumListState.firstVisibleItemIndex)
-        assertEquals("411→749dp 列表像素偏移不变", forumOffsetBefore, forumListState.firstVisibleItemScrollOffset)
-        assertEquals("411→749dp 详情首项索引不变", detailIndexBefore, detailListState.firstVisibleItemIndex)
-        assertEquals("411→749dp 详情像素偏移不变", detailOffsetBefore, detailListState.firstVisibleItemScrollOffset)
+        composeRule.onAllNodesWithText("测试帖子标题 $targetTid").onFirst().assertIsDisplayed()
+        composeRule.onNodeWithText(visibleFloorText).assertIsDisplayed()
+        assertEquals(
+            "411→749dp 详情顶部像素坐标应保持不变",
+            visibleFloorTopBefore,
+            composeRule.onNodeWithText(visibleFloorText).fetchSemanticsNode().boundsInRoot.top,
+            2f,
+        )
 
-        // 749dp → 411dp（合上回单栏）
+        // 749dp → 411dp（合上回单栏：仍处于帖子详情二级页，侧栏消失、底胶囊退场、详情阅读位与实例无损保活）
         windowSizeState.value = DpSize(411.dp, 891.dp)
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+        composeRule.onNodeWithTag(HiShellTestTags.NavigationSidebar).assertDoesNotExist()
+        composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("返回").assertIsDisplayed()
         assertEquals("749→411dp 列表请求增量必须为 0", listCallsSnapshot, harness.threadListRepo.refreshCalls.get())
         assertEquals("749→411dp 详情请求增量必须为 0", detailCallsSnapshot, harness.threadDetailRepo.loadPageCalls.get())
         assertEquals("749→411dp 不得重新创建 ThreadDetailViewModel", 1, harness.createdDetailVms.size)
-        assertEquals("749→411dp 详情首项索引不变", detailIndexBefore, detailListState.firstVisibleItemIndex)
-        assertEquals("749→411dp 详情像素偏移不变", detailOffsetBefore, detailListState.firstVisibleItemScrollOffset)
+        assertEquals("749→411dp 详情滚动位不变", detailScrollPosBefore, readFirstVerticalScrollValue(), 1f)
+
+        // 退出详情返回单栏列表：底胶囊恢复且列表滚动位不变、0 额外请求
+        composeRule.onNodeWithContentDescription("返回").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+        assertEquals("返回列表请求增量为 0", listCallsSnapshot, harness.threadListRepo.refreshCalls.get())
+        assertEquals("返回列表滚动位不变", forumScrollPosBefore, readFirstVerticalScrollValue(), 1f)
     }
 
     /**
@@ -284,7 +296,7 @@ class NextAppTracerBulletTest {
                                 onSelectSource = {},
                                 onOpenThread = { selectedThreadState.value = it },
                                 onOpenLogin = {},
-                                listState = harness.hostViewModel.forumListStateFor(ForumListSource.Forum(2)),
+                                listState = rememberLazyListState(),
                                 contentPadding = padding,
                                 viewModel = harness.forumViewModel,
                             )
@@ -298,7 +310,7 @@ class NextAppTracerBulletTest {
                                 chromeSpec = chromeSpec,
                                 onBack = { selectedThreadState.value = null },
                                 onOpenLogin = {},
-                                listState = harness.hostViewModel.threadListStateFor(args.tid),
+                                listState = rememberLazyListState(),
                                 contentPadding = padding,
                             )
                         },
@@ -359,18 +371,15 @@ class NextAppTracerBulletTest {
         composeRule.setContent { harness.RenderRoot() }
         composeRule.waitForIdle()
 
-        val forumListState = harness.hostViewModel.forumListStateFor(ForumListSource.Forum(2))
-        composeRule.runOnIdle { forumListState.requestScrollToItem(index = 9, scrollOffset = 48) }
-        composeRule.waitForIdle()
-
-        val indexBefore = forumListState.firstVisibleItemIndex
-        val offsetBefore = forumListState.firstVisibleItemScrollOffset
+        scrollFirstVerticalListBy(1200f)
+        val scrollBefore = readFirstVerticalScrollValue()
         val callsBefore = harness.threadListRepo.refreshCalls.get()
-        assertTrue("列表应处于非首项位置，实际 index=$indexBefore", indexBefore > 0)
+        assertTrue("列表应处于非首项位置，实际 scroll=$scrollBefore", scrollBefore > 0f)
 
-        composeRule.onNodeWithText("测试帖子标题 1010").performClick()
+        composeRule.onNodeWithText("测试帖子标题 1010").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithContentDescription("返回").assertIsDisplayed()
+        composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertDoesNotExist()
 
         var cleared1010 = false
         harness.createdDetailVms.single().addCloseable(Closeable { cleared1010 = true })
@@ -380,8 +389,8 @@ class NextAppTracerBulletTest {
 
         assertTrue("返回列表后已关闭帖子的 Store 应立即 clear()", cleared1010)
         assertEquals("返回列表后请求增量必须为 0", callsBefore, harness.threadListRepo.refreshCalls.get())
-        assertEquals("返回列表后首项索引不变", indexBefore, forumListState.firstVisibleItemIndex)
-        assertEquals("返回列表后像素偏移不变", offsetBefore, forumListState.firstVisibleItemScrollOffset)
+        composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+        assertEquals("返回列表后滚动位置不变", scrollBefore, readFirstVerticalScrollValue(), 1f)
     }
 
     /**
@@ -670,9 +679,10 @@ class NextAppTracerBulletTest {
         bodyNodeBefore.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layoutsBefore)
         assertEquals("默认字号 STEP_3 正文应为 16sp", 16.sp, layoutsBefore.first().layoutInput.style.fontSize)
 
-        val detailState = harness.hostViewModel.threadListStateFor("1001")
-        composeRule.runOnIdle { detailState.requestScrollToItem(index = 7, scrollOffset = 34) }
-        composeRule.waitForIdle()
+        scrollFirstVerticalListBy(1100f)
+        val detailScrollBefore = readFirstVerticalScrollValue()
+        assertTrue("切主题前详情应处于非首项位置，实际 scroll=$detailScrollBefore", detailScrollBefore > 0f)
+        val visibleFloorText = findFirstVisibleFloorText("1001")
 
         val vmBefore = harness.createdDetailVms.single()
         val listCallsBefore = harness.threadListRepo.refreshCalls.get()
@@ -687,13 +697,12 @@ class NextAppTracerBulletTest {
         assertTrue("NextAppRoot 真实 HiTheme 纯黑模式应实时生效", observedPureBlack)
         assertEquals("NextAppRoot 真实 HiTheme 第 5 档字号应实时生效", HiFontSizeStep.STEP_5, observedFontStep)
 
-        val bodyNodeAfter = composeRule.onNodeWithText("帖子 1001 第 8 楼正文内容，用于验证滚动位置与实例保活。").fetchSemanticsNode()
+        val bodyNodeAfter = composeRule.onNodeWithText(visibleFloorText).fetchSemanticsNode()
         val layoutsAfter = mutableListOf<TextLayoutResult>()
         bodyNodeAfter.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layoutsAfter)
         assertEquals("切换第 5 档字号后真实正文排版应更新为 18sp", 18.sp, layoutsAfter.first().layoutInput.style.fontSize)
 
-        assertEquals("切主题不应丢失详情首项索引", 7, detailState.firstVisibleItemIndex)
-        assertEquals("切主题不应丢失详情像素偏移", 34, detailState.firstVisibleItemScrollOffset)
+        assertEquals("切主题不应丢失详情滚动位置", detailScrollBefore, readFirstVerticalScrollValue(), 2f)
         assertEquals("切主题列表请求增量为 0", listCallsBefore, harness.threadListRepo.refreshCalls.get())
         assertEquals("切主题详情请求增量为 0", detailCallsBefore, harness.threadDetailRepo.loadPageCalls.get())
         assertEquals("切主题不得重建 ThreadDetailViewModel", 1, harness.createdDetailVms.size)
@@ -818,6 +827,34 @@ class NextAppTracerBulletTest {
                 )
             }
         }
+    }
+
+    private fun scrollFirstVerticalListBy(deltaY: Float) {
+        val scrollMatcher = SemanticsMatcher("hasVerticalScrollAxisRange") {
+            SemanticsProperties.VerticalScrollAxisRange in it.config
+        }
+        composeRule.onAllNodes(scrollMatcher, useUnmergedTree = true).onFirst()
+            .performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, deltaY) }
+        composeRule.waitForIdle()
+    }
+
+    private fun readFirstVerticalScrollValue(): Float {
+        val scrollMatcher = SemanticsMatcher("hasVerticalScrollAxisRange") {
+            SemanticsProperties.VerticalScrollAxisRange in it.config
+        }
+        return composeRule.onAllNodes(scrollMatcher, useUnmergedTree = true).onFirst()
+            .fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+    }
+
+    private fun findFirstVisibleFloorText(tid: String): String {
+        val prefix = "帖子 $tid 第 "
+        return composeRule.onAllNodes(
+            SemanticsMatcher("floorBody") { node ->
+                node.config.contains(SemanticsProperties.Text) &&
+                    node.config[SemanticsProperties.Text].any { it.text.startsWith(prefix) }
+            },
+            useUnmergedTree = true,
+        ).fetchSemanticsNodes().first().config[SemanticsProperties.Text].first { it.text.startsWith(prefix) }.text
     }
 
     private fun countLayerBackdrops(root: LayoutInfo): Int {
