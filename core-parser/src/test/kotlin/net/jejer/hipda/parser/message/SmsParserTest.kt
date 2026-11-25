@@ -166,4 +166,27 @@ class SmsParserTest {
             SmsParser.parseSmsSendResult(failedEmptyRoot),
         )
     }
+
+    @Test
+    fun parseSmsSendResult_trimsWhitespaceAndParsesBodyFragmentWrappedHtml() {
+        val paddedAndWrappedXml = """
+            <?xml version="1.0" encoding="gbk"?>
+            <root><![CDATA[
+              <div class="alert_error">  发送过于频繁，请稍候 &amp;#128512;  </div>
+              <style>.alert_error{color:red}</style>
+              <script type="text/javascript">alert('ignored')</script>
+            ]]></root>
+        """.trimIndent()
+        assertEquals(
+            SmsSendResult.Failed("发送过于频繁，请稍候 😀"),
+            SmsParser.parseSmsSendResult(paddedAndWrappedXml),
+        )
+
+        val whitespaceOnlyXml = """<?xml version="1.0" encoding="gbk"?><root><![CDATA[   
+           <script>x()</script> ]]></root>"""
+        assertEquals(
+            SmsSendResult.Failed("短消息发送失败."),
+            SmsParser.parseSmsSendResult(whitespaceOnlyXml),
+        )
+    }
 }

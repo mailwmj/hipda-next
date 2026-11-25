@@ -157,7 +157,10 @@ object NotifyParser {
 
     private fun parseSystemInfo(root: Element): NotifyItem {
         val firstAnchor = root.firstMatch("a")
-        val tid = firstAnchor?.attr("href")?.let { DiscuzUrlHelper.extractQueryParam(it, "tid") }
+        val tid = firstAnchor?.attr("href")?.let { href ->
+            DiscuzUrlHelper.extractQueryParam(href, "tid")
+                ?: DiscuzUrlHelper.extractQueryParam(href, "ptid")
+        }
         val isNew = root.select("img").any {
             it.attr("src").contains(DiscuzUrlHelper.NEW_PM_IMAGE_MARKER)
         }
