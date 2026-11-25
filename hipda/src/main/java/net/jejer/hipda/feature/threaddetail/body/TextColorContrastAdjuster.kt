@@ -160,23 +160,18 @@ object TextColorContrastAdjuster {
     private fun quantizeSrgb(c: Float): Float = (c.coerceIn(0f, 1f) * 255f).roundToInt() / 255f
 
     private val NAMED_CSS_COLORS: Map<String, Long> = mapOf(
-        "aqua" to 0xFF00FFFFL, "beige" to 0xFFF5F5DCL, "black" to 0xFF000000L, "blue" to 0xFF0000FFL,
-        "brown" to 0xFFA52A2AL, "chocolate" to 0xFFD2691EL, "coral" to 0xFFFF7F50L, "crimson" to 0xFFDC143CL,
+        "aqua" to 0xFF00FFFFL, "black" to 0xFF000000L, "blue" to 0xFF0000FFL, "brown" to 0xFFA52A2AL,
         "cyan" to 0xFF00FFFFL, "darkblue" to 0xFF00008BL, "darkgray" to 0xFFA9A9A9L, "darkgreen" to 0xFF006400L,
         "darkgrey" to 0xFFA9A9A9L, "darkorange" to 0xFFFF8C00L, "darkorchid" to 0xFF9932CCL, "darkred" to 0xFF8B0000L,
         "darkslateblue" to 0xFF483D8BL, "darkslategray" to 0xFF2F4F4FL, "deepskyblue" to 0xFF00BFFFL, "dimgray" to 0xFF696969L,
-        "dimgrey" to 0xFF696969L, "firebrick" to 0xFFB22222L, "forestgreen" to 0xFF228B22L, "fuchsia" to 0xFFFF00FFL,
-        "gold" to 0xFFFFD700L, "gray" to 0xFF808080L, "green" to 0xFF008000L, "grey" to 0xFF808080L,
-        "indigo" to 0xFF4B0082L, "ivory" to 0xFFFFFFF0L, "khaki" to 0xFFF0E68CL, "lavender" to 0xFFE6E6FAL,
-        "lemonchiffon" to 0xFFFFFACDL, "lightblue" to 0xFFADD8E6L, "lightgray" to 0xFFD3D3D3L, "lightgrey" to 0xFFD3D3D3L,
-        "lime" to 0xFF00FF00L, "magenta" to 0xFFFF00FFL, "maroon" to 0xFF800000L, "mediumturquoise" to 0xFF48D1CCL,
-        "navy" to 0xFF000080L, "olive" to 0xFF808000L, "orange" to 0xFFFFA500L, "orchid" to 0xFFDA70D6L,
-        "palegreen" to 0xFF98FB98L, "paleturquoise" to 0xFFAFEEEEL, "peru" to 0xFFCD853FL, "pink" to 0xFFFFC0CBL,
-        "plum" to 0xFFDDA0DDL, "purple" to 0xFF800080L, "red" to 0xFFFF0000L, "royalblue" to 0xFF4169E1L,
-        "salmon" to 0xFFFA8072L, "sandybrown" to 0xFFF4A460L, "seagreen" to 0xFF2E8B57L, "sienna" to 0xFFA0522DL,
-        "silver" to 0xFFC0C0C0L, "skyblue" to 0xFF87CEEBL, "slategray" to 0xFF708090L, "slategrey" to 0xFF708090L,
-        "steelblue" to 0xFF4682B4L, "tan" to 0xFFD2B48CL, "teal" to 0xFF008080L, "tomato" to 0xFFFF6347L,
-        "turquoise" to 0xFF40E0D0L, "violet" to 0xFFEE82EEL, "wheat" to 0xFFF5DEB3L, "white" to 0xFFFFFFFFL,
-        "yellow" to 0xFFFFFF00L, "yellowgreen" to 0xFF9ACD32L,
+        "fuchsia" to 0xFFFF00FFL, "gold" to 0xFFFFD700L, "gray" to 0xFF808080L, "green" to 0xFF008000L,
+        "grey" to 0xFF808080L, "indigo" to 0xFF4B0082L, "khaki" to 0xFFF0E68CL, "lemonchiffon" to 0xFFFFFACDL,
+        "lightblue" to 0xFFADD8E6L, "lightgray" to 0xFFD3D3D3L, "lime" to 0xFF00FF00L, "magenta" to 0xFFFF00FFL,
+        "maroon" to 0xFF800000L, "mediumturquoise" to 0xFF48D1CCL, "navy" to 0xFF000080L, "olive" to 0xFF808000L,
+        "orange" to 0xFFFFA500L, "palegreen" to 0xFF98FB98L, "pink" to 0xFFFFC0CBL, "plum" to 0xFFDDA0DDL,
+        "purple" to 0xFF800080L, "red" to 0xFFFF0000L, "royalblue" to 0xFF4169E1L, "sandybrown" to 0xFFF4A460L,
+        "seagreen" to 0xFF2E8B57L, "sienna" to 0xFFA0522DL, "silver" to 0xFFC0C0C0L, "slategray" to 0xFF708090L,
+        "teal" to 0xFF008080L, "wheat" to 0xFFF5DEB3L, "white" to 0xFFFFFFFFL, "yellow" to 0xFFFFFF00L,
+        "yellowgreen" to 0xFF9ACD32L,
     )
 }

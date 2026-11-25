@@ -37,9 +37,7 @@ internal fun FilterCapsuleBar(
     modifier: Modifier = Modifier,
 ) {
     val active = filter !is ThreadDetailFilterUi.All
-    var lastActiveFilter by remember { mutableStateOf<ThreadDetailFilterUi?>(null) }
-    if (active) lastActiveFilter = filter
-
+    val display = remember { mutableStateOf<ThreadDetailFilterUi?>(null) }.apply { if (active) value = filter }.value
     AnimatedVisibility(
         visible = active,
         modifier = modifier.fillMaxWidth(),
@@ -47,25 +45,20 @@ internal fun FilterCapsuleBar(
         exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut(),
         label = "FilterCapsuleBar",
     ) {
-        val display = lastActiveFilter ?: return@AnimatedVisibility
         val label = when (display) {
-            is ThreadDetailFilterUi.AuthorOnly -> stringResource(R.string.thread_detail_filter_author_only)
+            is ThreadDetailFilterUi.AuthorOnly -> stringResource(R.string.thread_detail_action_author_only)
             is ThreadDetailFilterUi.UserOnly -> stringResource(R.string.thread_detail_filter_user_only, display.username)
-            ThreadDetailFilterUi.All -> return@AnimatedVisibility
+            else -> return@AnimatedVisibility
         }
         val cs = MaterialTheme.colorScheme
         val closeInteraction = remember { MutableInteractionSource() }
-
         HiCappedFontScale {
             Box(Modifier.fillMaxWidth().heightIn(min = FilterCapsuleBarHeight).padding(horizontal = 16.dp, vertical = 4.dp), Alignment.CenterStart) {
                 Surface(shape = HiShapeTokens.Full, color = cs.secondaryContainer, contentColor = cs.onSecondaryContainer) {
                     Row(Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(label, style = MaterialTheme.typography.labelLarge, color = cs.onSecondaryContainer, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .hiPressScale(closeInteraction)
-                                .clip(HiShapeTokens.Full)
+                            modifier = Modifier.size(48.dp).hiPressScale(closeInteraction).clip(HiShapeTokens.Full)
                                 .clickable(closeInteraction, LocalIndication.current, role = Role.Button, onClick = onClearFilter),
                             contentAlignment = Alignment.Center,
                         ) {

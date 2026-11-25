@@ -21,6 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
@@ -80,8 +82,11 @@ internal fun ThreadDetailTopBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .drawBehind {
-                        val coverAlpha = (1f - glassRevealState.value).coerceIn(0f, 1f)
-                        if (coverAlpha > 0.001f) drawRect(surfaceColor.copy(alpha = coverAlpha))
+                        val reveal = glassRevealState.value.coerceIn(0f, 1f)
+                        if (reveal < 0.999f) drawRect(surfaceColor.copy(alpha = 1f - reveal))
+                        if (reveal > 0.001f) HiGlassTokens.TopBarActionButtonBorderWidth.toPx().let { h ->
+                            drawRect(dividerColor.copy(alpha = dividerColor.alpha * reveal), Offset(0f, size.height - h), Size(size.width, h))
+                        }
                     }
                     .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top)),
             ) {
@@ -116,14 +121,6 @@ internal fun ThreadDetailTopBar(
                         onClick = onToggleAuthorOnly,
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .height(HiGlassTokens.TopBarActionButtonBorderWidth)
-                        .graphicsLayer { alpha = glassRevealState.value }
-                        .background(dividerColor),
-                )
             }
         }
     }

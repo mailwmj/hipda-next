@@ -8,9 +8,11 @@ import javax.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import net.jejer.hipda.data.account.SavedAccount
-import net.jejer.hipda.data.auth.*
-import net.jejer.hipda.data.network.access.*
+import net.jejer.hipda.data.auth.AuthRepository
+import net.jejer.hipda.data.auth.AuthState
+import net.jejer.hipda.data.network.access.AccessPriority
+import net.jejer.hipda.data.network.access.ChallengeState
+import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.threaddetail.*
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.common.UiError
@@ -50,7 +52,6 @@ data class ThreadDetailUiState(
     val challengeFailure: ChallengeFailureKind? = null,
     val challengeState: ChallengeState = ChallengeState.Idle,
     val pendingScroll: PendingScrollTarget? = null,
-    val contentRevision: Int = 0,
 )
 
 private data class FilterReturnAnchor(val page: Int, val postId: String?, val scrollOffset: Int)
@@ -72,7 +73,6 @@ private data class DetailMetaState(
     val pendingScroll: PendingScrollTarget? = null,
     val expectedFloorCount: Int? = null,
     val expectedFirstPostId: String? = null,
-    val contentRevision: Int = 0,
 )
 
 /**
@@ -80,16 +80,19 @@ private data class DetailMetaState(
  * 并保留与 `E0` 一致的 2 参次构造函数）。
  */
 @HiltViewModel
-class ThreadDetailViewModel @Inject constructor(
+class ThreadDetailViewModel(
     private val threadDetailRepository: ThreadDetailRepository,
     private val siteAccessGateway: SiteAccessGateway,
-    private val authRepository: AuthRepository,
 ) : ViewModel() {
 
+    @Inject
     constructor(
         threadDetailRepository: ThreadDetailRepository,
         siteAccessGateway: SiteAccessGateway,
-    ) : this(threadDetailRepository, siteAccessGateway, UnboundAuthRepository)
+        authRepository: AuthRepository,
+    ) : this(threadDetailRepository, siteAccessGateway) {
+        observeAuthRecovery(authRepository)
+    }
 
     private var boundTid: String? = null
     private var loadJob: Job? = null
@@ -123,13 +126,8 @@ class ThreadDetailViewModel @Inject constructor(
             challengeFailure = m.challengeFailure,
             challengeState = challenge,
             pendingScroll = if (synced) m.pendingScroll else null,
-            contentRevision = m.contentRevision,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), ThreadDetailUiState())
-
-    init {
-        observeAuthRecovery()
-    }
 
     fun bindArgs(args: ThreadNavArgs) {
         if (boundTid == args.tid) return
@@ -147,16 +145,16 @@ class ThreadDetailViewModel @Inject constructor(
     }
 
     fun loadPage(page: Int, priority: AccessPriority = AccessPriority.UserBlocking) =
-        loadInternal(page, metaState.value.filter, priority, scrollToTop = true, bumpRevision = true)
+        loadInternal(page, metaState.value.filter, priority, scrollToTop = true)
 
     fun previousPage() {
         val cur = metaState.value
-        if (cur.page > 1) loadInternal(cur.page - 1, cur.filter, AccessPriority.UserBlocking, scrollToTop = true, bumpRevision = true)
+        if (cur.page > 1) loadInternal(cur.page - 1, cur.filter, AccessPriority.UserBlocking, scrollToTop = true)
     }
 
     fun nextPage() {
         val cur = metaState.value
-        if (cur.page < cur.lastPage) loadInternal(cur.page + 1, cur.filter, AccessPriority.UserBlocking, scrollToTop = true, bumpRevision = true)
+        if (cur.page < cur.lastPage) loadInternal(cur.page + 1, cur.filter, AccessPriority.UserBlocking, scrollToTop = true)
     }
 
     fun retry(priority: AccessPriority = AccessPriority.UserBlocking) =
@@ -169,15 +167,10 @@ class ThreadDetailViewModel @Inject constructor(
             clearFilter()
             return
         }
-        saveAnchorIfUnfiltered(cur, anchorPostId, anchorScrollOffset)
-        loadInternal(1, ThreadDetailFilterUi.AuthorOnly(cur.threadAuthorId), AccessPriority.UserBlocking, scrollToTop = true, bumpRevision = true)
-    }
-
-    fun filterByUser(uid: String, username: String, anchorPostId: String? = null, anchorScrollOffset: Int = 0) {
-        val cur = metaState.value
-        if (cur.tid.isBlank() || uid.isBlank()) return
-        saveAnchorIfUnfiltered(cur, anchorPostId, anchorScrollOffset)
-        loadInternal(1, ThreadDetailFilterUi.UserOnly(uid, username), AccessPriority.UserBlocking, scrollToTop = true, bumpRevision = true)
+        if (cur.filter is ThreadDetailFilterUi.All) {
+            preFilterAnchor = FilterReturnAnchor(cur.page, anchorPostId ?: rawFloors.value.firstOrNull()?.postId, anchorScrollOffset.coerceAtLeast(0))
+        }
+        loadInternal(1, ThreadDetailFilterUi.AuthorOnly(cur.threadAuthorId), AccessPriority.UserBlocking, scrollToTop = true)
     }
 
     fun clearFilter() {
@@ -191,7 +184,6 @@ class ThreadDetailViewModel @Inject constructor(
             priority = AccessPriority.UserBlocking,
             scrollToTop = anchor == null,
             restoreAnchor = anchor,
-            bumpRevision = true,
         )
     }
 
@@ -199,37 +191,31 @@ class ThreadDetailViewModel @Inject constructor(
         metaState.update { if (it.pendingScroll?.id == tokenId) it.copy(pendingScroll = null) else it }
     }
 
-    private fun saveAnchorIfUnfiltered(cur: DetailMetaState, anchorPostId: String?, anchorScrollOffset: Int) {
-        if (cur.filter is ThreadDetailFilterUi.All) {
-            preFilterAnchor = FilterReturnAnchor(cur.page, anchorPostId ?: rawFloors.value.firstOrNull()?.postId, anchorScrollOffset.coerceAtLeast(0))
-        }
-    }
-
-    private fun observeAuthRecovery() {
-        var prevAccount = authRepository.currentAccount.value
-        var prevState = authRepository.authState.value
-        var prevEpoch = authRepository.sessionEpoch
-        fun handleSnapshot() {
-            val account = authRepository.currentAccount.value
-            val state = authRepository.authState.value
-            val epoch = authRepository.sessionEpoch
-            val accountActivated = account != null &&
-                (account.uid != prevAccount?.uid || account.lastLoginAt != prevAccount?.lastLoginAt) &&
-                state !is AuthState.SessionExpired && state !is AuthState.Reauthenticating
-            val signedInTransition = state is AuthState.SignedIn && prevState !is AuthState.SignedIn
-            val epochAdvanced = account != null && epoch != prevEpoch &&
-                state !is AuthState.SignedOut && state !is AuthState.SessionExpired
-            prevAccount = account; prevState = state; prevEpoch = epoch
-            if (accountActivated || signedInTransition || epochAdvanced) {
-                authVersion += 1L
-                val cur = metaState.value
-                if (cur.tid.isNotBlank() && cur.isAuthRequired && !cur.isLoading) {
-                    loadInternal(cur.requestedPage, cur.filter, AccessPriority.UserBlocking)
+    private fun observeAuthRecovery(auth: AuthRepository) {
+        var prevAccount = auth.currentAccount.value
+        var prevState = auth.authState.value
+        var prevEpoch = auth.sessionEpoch
+        viewModelScope.launch {
+            combine(auth.currentAccount, auth.authState) { account, state -> account to state }
+                .drop(1)
+                .collect { (account, state) ->
+                    val epoch = auth.sessionEpoch
+                    val accountActivated = account != null &&
+                        (account.uid != prevAccount?.uid || account.lastLoginAt != prevAccount?.lastLoginAt) &&
+                        state !is AuthState.SessionExpired && state !is AuthState.Reauthenticating
+                    val signedInTransition = state is AuthState.SignedIn && prevState !is AuthState.SignedIn
+                    val epochAdvanced = account != null && epoch != prevEpoch &&
+                        state !is AuthState.SignedOut && state !is AuthState.SessionExpired
+                    prevAccount = account; prevState = state; prevEpoch = epoch
+                    if (accountActivated || signedInTransition || epochAdvanced) {
+                        authVersion += 1L
+                        val cur = metaState.value
+                        if (cur.tid.isNotBlank() && cur.isAuthRequired && !cur.isLoading) {
+                            loadInternal(cur.requestedPage, cur.filter, AccessPriority.UserBlocking)
+                        }
+                    }
                 }
-            }
         }
-        viewModelScope.launch { authRepository.currentAccount.drop(1).collect { handleSnapshot() } }
-        viewModelScope.launch { authRepository.authState.drop(1).collect { handleSnapshot() } }
     }
 
     private fun loadInternal(
@@ -238,7 +224,6 @@ class ThreadDetailViewModel @Inject constructor(
         priority: AccessPriority,
         scrollToTop: Boolean = false,
         restoreAnchor: FilterReturnAnchor? = null,
-        bumpRevision: Boolean = false,
         authRetryAttempted: Boolean = false,
     ) {
         val cur = metaState.value
@@ -277,13 +262,12 @@ class ThreadDetailViewModel @Inject constructor(
                             pendingScroll = scrollTarget,
                             expectedFloorCount = floors.size,
                             expectedFirstPostId = floors.firstOrNull()?.postId,
-                            contentRevision = if (bumpRevision) it.contentRevision + 1 else it.contentRevision,
                         )
                     }
                 }
                 is ThreadDetailError -> {
                     if (res is ThreadDetailError.AuthRequired && !authRetryAttempted && authVersion != startedAuthVersion) {
-                        loadInternal(targetPage, filter, priority, scrollToTop, restoreAnchor, bumpRevision, authRetryAttempted = true)
+                        loadInternal(targetPage, filter, priority, scrollToTop, restoreAnchor, authRetryAttempted = true)
                         return@launch
                     }
                     rawFloors.value = emptyList()
@@ -301,16 +285,4 @@ class ThreadDetailViewModel @Inject constructor(
             }
         }
     }
-}
-
-private object UnboundAuthRepository : AuthRepository {
-    override val currentAccount: StateFlow<SavedAccount?> = MutableStateFlow(null)
-    override val savedAccounts: StateFlow<List<SavedAccount>> = MutableStateFlow(emptyList())
-    override val authState: StateFlow<AuthState> = MutableStateFlow(AuthState.SignedOut)
-    override val sessionEpoch: Long = 0L
-    override suspend fun login(username: String, passwordOrMd5: String, securityQuestionId: Int, securityAnswer: String) = LoginResult.Failure("unbound")
-    override suspend fun switchAccount(uid: String) = LoginResult.Failure("unbound")
-    override suspend fun logout() = Unit
-    override suspend fun removeAccount(uid: String) = Unit
-    override suspend fun trySilentRelogin(failedEpoch: Long, priority: AccessPriority) = SilentReloginResult.NotLoggedIn
 }

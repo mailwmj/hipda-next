@@ -1,8 +1,7 @@
 package net.jejer.hipda.feature.threaddetail.body
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.text.appendInlineContent
@@ -13,10 +12,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -32,10 +29,43 @@ import net.jejer.hipda.parser.threaddetail.InlineSpan
 import net.jejer.hipda.parser.threaddetail.TextFormat
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 private const val SMALL_FONT_SCALE: Float = 0.85f
 private const val EMOJI_INLINE_SCALE: Float = 1.4f
 private const val SMALL_IMAGE_INLINE_SCALE: Float = 0.9f
+private val MAILTO_ADDRESS_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$")
+
+/**
+ * 帖子正文链接与附件 URL 的严格 scheme 白名单纯函数（渲染层与点击层共用）。
+ *
+ * 仅放行：`http` / `https`（需经 `HttpUrl` 解析且含非空 host）以及经校验的 `mailto:`（仅允许合法纯邮箱地址，不含查询参数或注入字符）。
+ * 其余一律返回 `null`（含 `javascript:`、`intent:`、`file:`、`content:`、`data:`、无 scheme、大小写变体、前导空白及控制字符）。
+ */
+fun sanitizePostUrl(rawUrl: String?): String? {
+    if (rawUrl.isNullOrEmpty()) return null
+    if (rawUrl.first().isWhitespace() || rawUrl.last().isWhitespace()) return null
+    if (rawUrl.any { it.isISOControl() }) return null
+    if (rawUrl.startsWith("mailto:", ignoreCase = true)) {
+        val address = rawUrl.substring(7)
+        return if (isValidMailtoAddress(address)) "mailto:$address" else null
+    }
+    if (!rawUrl.startsWith("http://", ignoreCase = true) && !rawUrl.startsWith("https://", ignoreCase = true)) {
+        return null
+    }
+    val parsed = rawUrl.toHttpUrlOrNull() ?: return null
+    if ((parsed.scheme != "http" && parsed.scheme != "https") || parsed.host.isBlank()) return null
+    return parsed.toString()
+}
+
+private fun isValidMailtoAddress(address: String): Boolean {
+    if (address.isEmpty() || address.contains("..")) return false
+    val at = address.indexOf('@')
+    if (at <= 0 || at != address.lastIndexOf('@')) return false
+    val local = address.substring(0, at)
+    if (local.startsWith('.') || local.endsWith('.')) return false
+    return MAILTO_ADDRESS_REGEX.matches(address)
+}
 
 @Immutable
 internal data class BuiltPostTextBlock(
@@ -66,25 +96,34 @@ internal fun buildPostTextBlock(
                     withStyle(span.format.toSpanStyle(smallFontSize, backgroundColor, defaultTextColor)) { append(span.text) }
                 }
                 is InlineSpan.Link -> {
-                    val style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline, fontSize = if (span.isSmallFont) smallFontSize else TextUnit.Unspecified)
-                    val annotation = LinkAnnotation.Url(span.url, TextLinkStyles(style = style), onLinkClick?.let { cb -> LinkInteractionListener { cb(span.url) } })
-                    withLink(annotation) { append(span.label) }
+                    val safeUrl = sanitizePostUrl(span.url)
+                    if (safeUrl == null) {
+                        if (span.isSmallFont) withStyle(SpanStyle(fontSize = smallFontSize)) { append(span.label) } else append(span.label)
+                    } else {
+                        val style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline, fontSize = if (span.isSmallFont) smallFontSize else TextUnit.Unspecified)
+                        val annotation = LinkAnnotation.Url(safeUrl, TextLinkStyles(style = style), LinkInteractionListener { onLinkClick?.invoke(safeUrl) })
+                        withLink(annotation) { append(span.label) }
+                    }
                 }
                 is InlineSpan.Email -> {
-                    val mailUrl = "mailto:${span.email}"
-                    val annotation = LinkAnnotation.Url(mailUrl, TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)), onLinkClick?.let { cb -> LinkInteractionListener { cb(mailUrl) } })
-                    withLink(annotation) { append(span.email) }
+                    val safeMailto = sanitizePostUrl("mailto:${span.email}")
+                    if (safeMailto == null) {
+                        append(span.email)
+                    } else {
+                        val annotation = LinkAnnotation.Url(safeMailto, TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)), LinkInteractionListener { onLinkClick?.invoke(safeMailto) })
+                        withLink(annotation) { append(span.email) }
+                    }
                 }
                 is InlineSpan.Emoji -> when (val resolved = resolveForumEmoji(span.normalizedKey, darkTheme)) {
                     is ResolvedForumEmoji.Drawable -> {
-                        val id = emojiInlineId(span.normalizedKey)
+                        val id = "emoji:${span.normalizedKey}"
                         inlineSpecs.putIfAbsent(id, InlineDrawableSpec(resolved.drawableResId, resolved.code ?: span.normalizedKey, EMOJI_INLINE_SCALE))
                         appendInlineContent(id, resolved.code ?: "[${span.normalizedKey}]")
                     }
                     is ResolvedForumEmoji.FallbackText -> withStyle(SpanStyle(color = fallbackMutedColor)) { append(resolved.text) }
                 }
                 is InlineSpan.SmallImage -> resolveSmallImageDrawable(span.key)?.let { resId ->
-                    val id = smallImageInlineId(span.key)
+                    val id = "small_img:${span.key}"
                     inlineSpecs.putIfAbsent(id, InlineDrawableSpec(resId, span.key, SMALL_IMAGE_INLINE_SCALE))
                     appendInlineContent(id, "[${span.key}]")
                 }
@@ -121,7 +160,11 @@ fun PostBodyRenderer(
     if (blocks.isEmpty()) return
     val uriHandler = LocalUriHandler.current
     val resolvedLinkHandler: (String) -> Unit = remember(onLinkClick, uriHandler) {
-        onLinkClick ?: { url -> runCatching { uriHandler.openUri(url) }; Unit }
+        { rawUrl ->
+            sanitizePostUrl(rawUrl)?.let { safeUrl ->
+                if (onLinkClick != null) onLinkClick(safeUrl) else runCatching { uriHandler.openUri(safeUrl) }
+            }
+        }
     }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -143,8 +186,8 @@ private fun PostTextBlockView(spans: List<InlineSpan>, onLinkClick: (String) -> 
     val cs = MaterialTheme.colorScheme
     val darkTheme = HiTheme.state.darkTheme
     val bodyStyle = HiTheme.typography.postBody
-    val built = remember(spans, bodyStyle.fontSize, cs.surface, cs.onSurface, cs.primary, cs.onSurfaceVariant, darkTheme, onLinkClick) {
-        buildPostTextBlock(spans, bodyStyle.fontSize, cs.surface, cs.onSurface, cs.primary, cs.onSurfaceVariant, darkTheme, onLinkClick)
+    val built = remember(spans, bodyStyle.fontSize, cs.background, cs.onSurface, cs.primary, cs.onSurfaceVariant, darkTheme, onLinkClick) {
+        buildPostTextBlock(spans, bodyStyle.fontSize, cs.background, cs.onSurface, cs.primary, cs.onSurfaceVariant, darkTheme, onLinkClick)
     }
     if (built.annotatedString.isEmpty()) return
     val inlineContent = remember(built.inlineSpecs, bodyStyle.fontSize) { buildInlineTextContentMap(built.inlineSpecs, bodyStyle.fontSize) }
@@ -181,21 +224,21 @@ private fun PostGoToFloorBlockView(goTo: ContentBlock.GoToFloor) {
 @Composable
 private fun PostAttachmentBlockView(attachment: ContentBlock.Attachment, onOpenUrl: (String) -> Unit) {
     val cs = MaterialTheme.colorScheme
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 48.dp)
-            .clip(HiShapeTokens.Small)
-            .background(cs.surfaceContainerLow)
-            .border(0.5.dp, cs.outlineVariant, HiShapeTokens.Small)
-            .clickable(role = Role.Button) { onOpenUrl(attachment.url) }
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(attachment.title, style = MaterialTheme.typography.labelLarge, color = cs.primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        attachment.description?.trim()?.takeIf { it.isNotEmpty() }?.let { desc ->
-            Text(desc, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    val safeUrl = remember(attachment.url) { sanitizePostUrl(attachment.url) }
+    val content: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(attachment.title, style = MaterialTheme.typography.labelLarge, color = if (safeUrl != null) cs.primary else cs.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            attachment.description?.trim()?.takeIf { it.isNotEmpty() }?.let { desc ->
+                Text(desc, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
         }
+    }
+    val mod = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+    val border = BorderStroke(0.5.dp, cs.outlineVariant)
+    if (safeUrl != null) {
+        Surface(onClick = { onOpenUrl(safeUrl) }, modifier = mod, shape = HiShapeTokens.Small, color = cs.surfaceContainerLow, border = border, content = content)
+    } else {
+        Surface(modifier = mod, shape = HiShapeTokens.Small, color = cs.surfaceContainerLow, border = border, content = content)
     }
 }
 

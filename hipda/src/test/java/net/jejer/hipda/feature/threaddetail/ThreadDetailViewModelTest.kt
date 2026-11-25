@@ -341,18 +341,38 @@ class ThreadDetailViewModelTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
 
-        // 5. 预留 UserOnly 过滤胶囊展示“只看 {用户名} ×”及过滤结果为空展示“没有符合条件的楼层”+“看全部”
+        // 5. 过滤结果为空展示“没有符合条件的楼层”+“看全部”，点击后恢复全帖
         detailRepo.returnEmptyForFilter = true
-        composeRule.runOnIdle { vm.filterByUser(uid = "999", username = "路人甲") }
+        composeRule.onNodeWithContentDescription("只看楼主").performClick()
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithText("只看 路人甲").assertIsDisplayed()
         composeRule.onNodeWithText("没有符合条件的楼层").assertIsDisplayed()
         composeRule.onNodeWithText("看全部").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
 
         assertEquals(ThreadDetailFilterUi.All, vm.uiState.value.filter)
         composeRule.onNodeWithText("测试帖子第 1 页第 1 楼内容").assertIsDisplayed()
+    }
+
+    @Test
+    fun filterCapsuleBar_supportsReservedUserOnlyStateForWave3E2c() {
+        var cleared = false
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                FilterCapsuleBar(
+                    filter = ThreadDetailFilterUi.UserOnly(uid = "999", username = "路人甲"),
+                    onClearFilter = { cleared = true },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("只看 路人甲").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("退出只看")
+            .assertIsDisplayed()
+            .assertWidthIsAtLeast(48.dp)
+            .assertHeightIsAtLeast(48.dp)
+            .performClick()
+        assertTrue(cleared)
     }
 
     @Test

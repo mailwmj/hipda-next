@@ -114,15 +114,26 @@ class TextColorContrastAdjusterTest {
         val lightBg = Color.White
         val oledBg = Color.Black
 
-        // 白底黄字应压暗为可读深黄/橄榄色（红绿通道高于蓝通道），不漂移为灰/蓝
-        val yellowOnLight = TextColorContrastAdjuster.adjustForBackground(Color(0xFFFFFF00), lightBg)
-        assertTrue(wcagContrastRatio(yellowOnLight, lightBg) >= 4.5f)
-        assertTrue("白底黄字校准后应保持黄绿色相，实际 $yellowOnLight", yellowOnLight.red > yellowOnLight.blue && yellowOnLight.green > yellowOnLight.blue)
+        // 白底红字（原对比度约 4.0:1）应做最小必要压暗：ratio ∈ [4.5, 5.5] 且保持鲜明红色通道优势，不得过度压成近黑
+        val redOnLight = TextColorContrastAdjuster.adjustForBackground(Color(0xFFFF0000), lightBg)
+        val redRatio = wcagContrastRatio(redOnLight, lightBg)
+        assertTrue("白底红字校准后对比度应在 4.5..5.5 避免过度压暗，实际 $redRatio ($redOnLight)", redRatio in 4.5f..5.5f)
+        val redChannelGap = redOnLight.red - maxOf(redOnLight.green, redOnLight.blue)
+        assertTrue("白底红字主副通道差应 ≥ 0.25，实际 $redChannelGap ($redOnLight)", redChannelGap >= 0.25f)
 
-        // 纯黑底深蓝字应提亮为可读亮蓝（蓝通道高于红绿通道），不漂移为纯灰
+        // 白底黄字应压暗为可读深黄/橄榄色（ratio ∈ [4.5, 5.5]，红绿通道显著高于蓝通道），不漂移为灰/蓝
+        val yellowOnLight = TextColorContrastAdjuster.adjustForBackground(Color(0xFFFFFF00), lightBg)
+        val yellowRatio = wcagContrastRatio(yellowOnLight, lightBg)
+        assertTrue("白底黄字校准后对比度应在 4.5..5.5 避免过度压暗，实际 $yellowRatio ($yellowOnLight)", yellowRatio in 4.5f..5.5f)
+        val yellowChannelGap = minOf(yellowOnLight.red, yellowOnLight.green) - yellowOnLight.blue
+        assertTrue("白底黄字主副通道差应 ≥ 0.25，实际 $yellowChannelGap ($yellowOnLight)", yellowChannelGap >= 0.25f)
+
+        // 纯黑底深蓝字应提亮为可读亮蓝（ratio ∈ [4.5, 5.5]，蓝通道显著高于红绿通道），不漂移为纯灰/白
         val navyOnOled = TextColorContrastAdjuster.adjustForBackground(Color(0xFF000080), oledBg)
-        assertTrue(wcagContrastRatio(navyOnOled, oledBg) >= 4.5f)
-        assertTrue("黑底深蓝字校准后应保持蓝色色相，实际 $navyOnOled", navyOnOled.blue > navyOnOled.red && navyOnOled.blue > navyOnOled.green)
+        val navyRatio = wcagContrastRatio(navyOnOled, oledBg)
+        assertTrue("黑底深蓝校准后对比度应在 4.5..5.5 避免过度漂白，实际 $navyRatio ($navyOnOled)", navyRatio in 4.5f..5.5f)
+        val navyChannelGap = navyOnOled.blue - maxOf(navyOnOled.red, navyOnOled.green)
+        assertTrue("黑底深蓝主副通道差应 ≥ 0.25，实际 $navyChannelGap ($navyOnOled)", navyChannelGap >= 0.25f)
     }
 
     @Test

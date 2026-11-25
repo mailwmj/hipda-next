@@ -3,7 +3,6 @@
     <!-- 帖子详情顶栏与只看过滤文案（逐字取自 docs/design/copy.md，0 豁免） -->
     <string name="thread_detail_action_author_only">只看楼主</string>
     <string name="thread_detail_action_view_all">看全部</string>
-    <string name="thread_detail_filter_author_only">只看楼主</string>
     <string name="thread_detail_filter_user_only">只看 %1$s</string>
     <string name="thread_detail_filter_exit">退出只看</string>
 

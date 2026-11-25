@@ -16,9 +16,6 @@ import net.jejer.hipda.R
 import net.jejer.hipda.emoji.EmojiMap
 import net.jejer.hipda.parser.threaddetail.ThreadDetailParser
 
-internal const val EMOJI_INLINE_ID_PREFIX: String = "emoji:"
-internal const val SMALL_IMAGE_INLINE_ID_PREFIX: String = "small_img:"
-
 /** 论坛表情解析结果（闭合 `C1b#2`：直接将 `InlineSpan.Emoji.normalizedKey` 映射至 `EmojiMap`）。 */
 @Immutable
 sealed interface ResolvedForumEmoji {
@@ -46,10 +43,6 @@ fun resolveForumEmoji(normalizedKey: String, darkTheme: Boolean): ResolvedForumE
 @DrawableRes
 fun resolveSmallImageDrawable(key: String): Int? =
     if (key == ThreadDetailParser.SMALL_IMAGE_WIN_KEY) R.drawable.win else null
-
-internal fun emojiInlineId(normalizedKey: String): String = "$EMOJI_INLINE_ID_PREFIX$normalizedKey"
-
-internal fun smallImageInlineId(key: String): String = "$SMALL_IMAGE_INLINE_ID_PREFIX$key"
 
 internal fun buildInlineTextContentMap(
     specs: Map<String, InlineDrawableSpec>,

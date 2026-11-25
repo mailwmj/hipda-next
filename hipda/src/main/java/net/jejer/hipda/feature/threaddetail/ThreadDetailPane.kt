@@ -1,7 +1,6 @@
 package net.jejer.hipda.feature.threaddetail
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -14,7 +13,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -25,10 +23,8 @@ import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
-import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
-import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 import net.jejer.hipda.ui.designsystem.state.*
@@ -55,19 +51,6 @@ fun ThreadDetailPane(
     val detailGlassState = rememberHiGlassState()
     val isScrolledState = remember(listState) {
         derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
-    }
-    val isReducedMotion = HiTheme.isReducedMotion
-    val contentAlpha = remember { Animatable(1f) }
-    val initialRevision = remember { uiState.contentRevision }
-
-    LaunchedEffect(uiState.contentRevision) {
-        if (uiState.contentRevision == initialRevision) return@LaunchedEffect
-        if (isReducedMotion) {
-            contentAlpha.snapTo(1f)
-        } else {
-            contentAlpha.snapTo(0f)
-            contentAlpha.animateTo(1f, animationSpec = HiMotion.effectsDefault())
-        }
     }
 
     val pendingScroll = uiState.pendingScroll
@@ -123,11 +106,7 @@ fun ThreadDetailPane(
                         }
                         DetailBodySlot.CONTENT -> LazyColumn(
                             state = listState,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .hiGlassSource(detailGlassState)
-                                .background(cs.background)
-                                .graphicsLayer { alpha = contentAlpha.value },
+                            modifier = Modifier.fillMaxSize().hiGlassSource(detailGlassState).background(cs.background),
                             contentPadding = PaddingValues(top = topClearance, bottom = if (uiState.lastPage > 1) 8.dp else contentPadding.calculateBottomPadding() + 8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
