@@ -16,9 +16,9 @@
 ## 2. 并发与工作目录
 - 每张卡一个 worktree：`git worktree add ../hipda-next.wt/<卡号> -b card/<卡号>-<简名> origin/main`。一个目录同时只有一个写入者；只读的审查、调研可以并行。
 - 编译以 GitHub Actions 为准：推送分支 → `gh run watch <id> --interval 60` → 失败时 `gh run view --log-failed`。不用默认间隔（3 秒），不写循环轮询：多个代理同时轮询会在一小时内耗尽 GitHub API 的 5000 次额度。遇到 `API rate limit exceeded` 时，用 `gh api rate_limit` 查重置时间，等到重置后再查，不要当成 CI 失败。
-- 先本地、后 CI：代理改完先在本地跑本卡相关的测试（按下一条的方式），本地变绿后才推送或 `gh workflow run`；CI 只作最终证据，不拿 CI 调试半成品（失败的运行会给负责人发邮件）。本机 SDK 路径见 `lesson.md`。
+- 先本地、后 CI（本地测试策略）：实现者本地只跑本卡相关的测试（用 `--tests <包或类>` 指定），外加 `CopyTerminologyScanTest`、`MotionTokenScanTest` 与 `:hipda:assembleDebug`（按下一条方式 `flock` 串行，本机 SDK 路径见 `lesson.md`），本地变绿后才推送或 `gh workflow run`；不拿 CI 调试半成品（失败的运行会给负责人发邮件）。全量 `testDebugUnitTest` 与 Roborazzi `verify` 以 GitHub Actions CI 为准（仓库是公开的，Actions 不计费）。
 - 本地编译必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
-- 同时运行的代理（含只读）最多 8 个；本地编译仍按上一条串行。
+- 实现者并发上限为 **5**（同时运行的代理含只读审查/验证最多 8 个）；本地编译仍按上一条 `flock` 串行。
 
 ## 3. 模型路由
 | 工作类型 | 首选 | 备选 | 思考级别 |
@@ -40,7 +40,13 @@
 - 敏感区（轻量卡也要审查）：`okhttp/`、`async/LoginHelper.java`、`utils/HiParser*`、`bean/HiSettingsHelper.java`、`db/`、`async/PostHelper.java`、`job/PostJob.java`、Cloudflare 验证相关代码。
 
 ## 5. 卡片约定
-- 流程强度与拆卡按 team-lead skill 的复杂度分级（planning.md），不按行数。本项目补充：探针验证由 Hydrogen 做，用于复杂档卡与界面卡（视觉复验）；每张卡固定开销实测约 45 分钟（起会话、读背景、CI、审查），生产代码不足约 120 行的卡与相邻卡合并。
+- 风险分级与审查强度（不砍审查，靠并行与分级提速）：
+  - **高风险卡走 `R + V`**：涉及手势、滚动锚定、玻璃拓扑、编辑器/键盘联动、跨卡共享滚动或状态的卡，以及安全相关卡（`R` 由 Carbon 独立审查，`V` 由 Hydrogen 独立探针与视觉复验）。
+  - **普通列表/表单页只走 `R`**：`R` 需顺带目视检查卡内新增的截图（验证排版、对比度、截断、深浅色），不再单独派 `V`。
+  - **修复轮里的建议级小改动**：只做 `OPS` fixcheck（由负责人助理核对，结论写到 `_reports/<卡号>-fixcheck.md`）。
+  - **阻断项修复**：只回原审查方；只有阻断项落在 `V` 的领域（逐帧、合并场景、视觉）时，才回 `V` 复验。
+  - 拆卡按复杂度与判定方式（不按行数）；每张卡固定开销实测约 45 分钟，生产代码不足约 120 行的卡与相邻卡合并。
+- R、V 卡使用通用模板：通用审查清单与独立验证清单统一写在 `/home/mir/Documents/hipda-next.wt/_cards/_review_common.md` 和 `_verify_common.md`；每张具体 `R-*.md`、`V-*.md` 卡只写对象、sha、CI 与本卡重点（不超过 10 行）。
 - 拆卡对照（第三批）：A3a/A3b 拆得对（判定方式不同 + Cronet 未知）；A4a/A4b 拆错（检测器只供网关使用、判定方式相同、不解锁并行）；A5a/A5b 拆得对（A5a 可并行，WebView 部分只能真机判定）。
 - 卡号按阶段编：`M0-1`、`M0-2`……；分支 `card/<卡号>-<简名>`。
 - 提交用 Conventional Commits，类型用英文，描述可以写中文。
@@ -53,7 +59,7 @@
 - 界面字符串放在 `res/values/strings_<功能>.xml`。
 - 界面卡另加：优先用 Compose 标准组件，手写 `Layout`/`Modifier.Node`/状态机要说明理由；生产代码不含只为测试存在的代码；超过估计行数 1.5 倍先自查简化。（第三批三张 C 卡都写到估计的 2–3 倍，见 lesson.md）
 - 代理最后一条回复不超过 600 字，结论在前；详细证据写到 `/home/mir/Documents/hipda-next.wt/_reports/<卡号>.md`。
-- 修改轮的小改动由负责人助理（Neon 新会话或 OPS 会话，不是实现者本人）对照审查项核对，结论写到 `_reports/<卡号>-fixcheck.md`；大段重写或修阻断项仍由原审查者复核。
+- 修改轮按上文风险分级执行：建议级小改动由负责人助理（OPS）核对，结论写到 `_reports/<卡号>-fixcheck.md`；阻断项修复或大段重写只回原审查方（仅当阻断项落在 V 的逐帧、合并场景、视觉领域时才回 V 复验）。
 - 卡片与报告的工作副本在 `/home/mir/Documents/hipda-next.wt/_cards`、`_reports`（代理按绝对路径读写）；每张卡合并后由负责人助理把对应卡片、审查/验证卡和报告同步到仓库 `docs/agents/cards/`、`docs/agents/reports/` 存档。
 
 ## 6. 决策记录
