@@ -880,7 +880,7 @@ class SiteAccessGatewayTest {
 
         val solveCalls = AtomicInteger(0)
         val firstSolveStarted = CompletableDeferred<Unit>()
-        val firstSolveCancelled = AtomicBoolean(false)
+        val firstSolveCancelled = CompletableDeferred<Unit>()
         val gateway = createGateway(
             solver = ChallengeSolver { triggerUrl ->
                 val attempt = solveCalls.incrementAndGet()
@@ -889,7 +889,7 @@ class SiteAccessGatewayTest {
                     try {
                         CompletableDeferred<SolveResult>().await()
                     } catch (e: CancellationException) {
-                        firstSolveCancelled.set(true)
+                        firstSolveCancelled.complete(Unit)
                         throw e
                     }
                 } else {
@@ -934,7 +934,11 @@ class SiteAccessGatewayTest {
         }
         assertEquals("recovered-explicit", body)
         assertEquals(2, solveCalls.get())
-        assertTrue("Stuck first solve must be cancelled when superseded by UserExplicit", firstSolveCancelled.get())
+        withContext(Dispatchers.Default) {
+            withTimeout(2.seconds) {
+                firstSolveCancelled.await()
+            }
+        }
         assertEquals(ChallengeState.Idle, gateway.challengeState.value)
     }
 
@@ -1036,7 +1040,7 @@ class SiteAccessGatewayTest {
 
         val solveCalls = AtomicInteger(0)
         val firstSolveStarted = CompletableDeferred<Unit>()
-        val stuckSolveCancelled = AtomicBoolean(false)
+        val stuckSolveCancelled = CompletableDeferred<Unit>()
         val gateway = createGateway(
             solveTimeout = 300.milliseconds,
             solver = ChallengeSolver { triggerUrl ->
@@ -1046,7 +1050,7 @@ class SiteAccessGatewayTest {
                     try {
                         CompletableDeferred<SolveResult>().await()
                     } catch (e: CancellationException) {
-                        if (attempt == 1) stuckSolveCancelled.set(true)
+                        if (attempt == 1) stuckSolveCancelled.complete(Unit)
                         throw e
                     }
                 } else {
@@ -1069,9 +1073,9 @@ class SiteAccessGatewayTest {
         withContext(Dispatchers.Default) {
             withTimeout(5.seconds) {
                 gateway.challengeState.first { it is ChallengeState.Idle }
+                stuckSolveCancelled.await()
             }
         }
-        assertTrue("Stuck solver coroutine must be cancelled on solveTimeout", stuckSolveCancelled.get())
         assertEquals(1, solveCalls.get())
 
         // Rounds 2 & 3: waiting callers receive ChallengeIncompleteException(TimeoutException); 3rd round enters 30s cooldown.
