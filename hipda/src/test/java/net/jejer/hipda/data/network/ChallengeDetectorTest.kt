@@ -1,13 +1,24 @@
 package net.jejer.hipda.data.network
 
+import java.io.IOException
 import java.nio.charset.Charset
 import javax.inject.Inject
 import javax.inject.Singleton
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
+import okio.BufferedSource
+import okio.Source
+import okio.Timeout
+import okio.buffer
 import org.junit.AfterClass
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -143,7 +154,7 @@ class ChallengeDetectorTest {
                     name = "hit_503_noHeader_challengePlatformHPath",
                     statusCode = 503,
                     headers = listOf("Content-Type" to "text/html"),
-                    bodyBytes = """<html><script src="/cdn-cgi/challenge-platform/h/b/scripts/jsd"></script></html>"""
+                    bodyBytes = """<html><script src="/cdn-cgi/challenge-platform/h/b/scripts/alpha/invisible.js"></script></html>"""
                         .toByteArray(Charsets.UTF_8),
                     expected = ChallengeSignal.Challenge(statusCode = 503, byHeader = false),
                 ),
@@ -393,10 +404,220 @@ class ChallengeDetectorTest {
         }
 
         @Test
+        fun inspect_neverCallsPeekBody_forNonFallbackResponses() {
+            val detector = ChallengeDetector()
+            val htmlMediaType = "text/html; charset=UTF-8".toMediaType()
+            val jsonMediaType = "application/json; charset=UTF-8".toMediaType()
+
+            val cases = listOf(
+                Triple(
+                    buildSyntheticResponse(
+                        code = 200,
+                        headers = listOf("Content-Type" to "text/html; charset=UTF-8"),
+                        body = throwingProbeBody(htmlMediaType),
+                    ),
+                    ChallengeSignal.None,
+                    "200 HTML",
+                ),
+                Triple(
+                    buildSyntheticResponse(
+                        code = 429,
+                        headers = listOf("Content-Type" to "text/html; charset=UTF-8"),
+                        body = throwingProbeBody(htmlMediaType),
+                    ),
+                    ChallengeSignal.None,
+                    "429 without cf-mitigated",
+                ),
+                Triple(
+                    buildSyntheticResponse(
+                        code = 403,
+                        headers = listOf(
+                            "cf-mitigated" to "challenge",
+                            "Content-Type" to "text/html; charset=UTF-8",
+                        ),
+                        body = throwingProbeBody(htmlMediaType),
+                    ),
+                    ChallengeSignal.Challenge(statusCode = 403, byHeader = true),
+                    "403 with cf-mitigated: challenge",
+                ),
+                Triple(
+                    buildSyntheticResponse(
+                        code = 403,
+                        headers = listOf(
+                            "cf-mitigated" to "block",
+                            "Content-Type" to "text/html; charset=UTF-8",
+                        ),
+                        body = throwingProbeBody(htmlMediaType),
+                    ),
+                    ChallengeSignal.None,
+                    "403 with cf-mitigated: block",
+                ),
+                Triple(
+                    buildSyntheticResponse(
+                        code = 403,
+                        headers = listOf("Content-Type" to "application/json; charset=UTF-8"),
+                        body = throwingProbeBody(jsonMediaType),
+                    ),
+                    ChallengeSignal.None,
+                    "403 with application/json header",
+                ),
+            )
+
+            for ((response, expected, label) in cases) {
+                assertEquals(label, expected, detector.inspect(response))
+            }
+        }
+
+        @Test
+        fun inspect_exact16KbPeekBoundary_hitsAtLimitAndMissesWhenCrossingByOneByte() {
+            val marker = "_cf_chl_opt"
+            val limit = ChallengeDetector.DEFAULT_PEEK_LIMIT_BYTES.toInt()
+            val exactHitBytes = ("a".repeat(limit - marker.length) + marker + "TAIL").toByteArray(Charsets.UTF_8)
+            val crossByOneBytes = ("a".repeat(limit - marker.length + 1) + marker + "TAIL").toByteArray(Charsets.UTF_8)
+
+            val server = MockWebServer()
+            server.start()
+            val client = OkHttpClient.Builder().followRedirects(false).build()
+            val detector = ChallengeDetector()
+            try {
+                server.enqueue(
+                    MockResponse.Builder()
+                        .code(403)
+                        .addHeader("Content-Type", "text/html; charset=UTF-8")
+                        .body(Buffer().write(exactHitBytes))
+                        .build(),
+                )
+                server.enqueue(
+                    MockResponse.Builder()
+                        .code(403)
+                        .addHeader("Content-Type", "text/html; charset=UTF-8")
+                        .body(Buffer().write(crossByOneBytes))
+                        .build(),
+                )
+
+                client.newCall(Request.Builder().url(server.url("/exact-hit")).build()).execute().use { resp ->
+                    assertEquals(
+                        ChallengeSignal.Challenge(statusCode = 403, byHeader = false),
+                        detector.inspect(resp),
+                    )
+                    assertArrayEquals(exactHitBytes, resp.body.bytes())
+                }
+                client.newCall(Request.Builder().url(server.url("/cross-by-one")).build()).execute().use { resp ->
+                    assertEquals(ChallengeSignal.None, detector.inspect(resp))
+                    assertArrayEquals(crossByOneBytes, resp.body.bytes())
+                }
+            } finally {
+                client.dispatcher.executorService.shutdown()
+                client.connectionPool.evictAll()
+                server.close()
+            }
+        }
+
+        @Test
+        fun inspect_gbkAdjacentMarkerAndFallbackBodyContentTypeWithoutHeader() {
+            val gbk = Charset.forName("GBK")
+            val gbkBodyBytes = "<html><body>安全校验中文_cf_chl_opt校验继续</body></html>".toByteArray(gbk)
+            val detector = ChallengeDetector()
+
+            // 403 without cf-mitigated + Content-Type: text/html; charset=GBK + GBK text adjacent to _cf_chl_opt
+            val server = MockWebServer()
+            server.start()
+            val client = OkHttpClient.Builder().followRedirects(false).build()
+            try {
+                server.enqueue(
+                    MockResponse.Builder()
+                        .code(403)
+                        .addHeader("Content-Type", "text/html; charset=GBK")
+                        .body(Buffer().write(gbkBodyBytes))
+                        .build(),
+                )
+                client.newCall(Request.Builder().url(server.url("/gbk-challenge")).build()).execute().use { resp ->
+                    assertEquals(
+                        ChallengeSignal.Challenge(statusCode = 403, byHeader = false),
+                        detector.inspect(resp),
+                    )
+                    assertArrayEquals(gbkBodyBytes, resp.body.bytes())
+                }
+            } finally {
+                client.dispatcher.executorService.shutdown()
+                client.connectionPool.evictAll()
+                server.close()
+            }
+
+            // No Content-Type header, but ResponseBody.contentType() is non-null HTML -> hits body fallback
+            val htmlBodyNoHeader = buildSyntheticResponse(
+                code = 403,
+                headers = emptyList(),
+                body = gbkBodyBytes.toResponseBody("text/html; charset=GBK".toMediaType()),
+            )
+            assertEquals(
+                ChallengeSignal.Challenge(statusCode = 403, byHeader = false),
+                detector.inspect(htmlBodyNoHeader),
+            )
+
+            // No Content-Type header, but ResponseBody.contentType() is non-null JSON -> skips peekBody
+            val jsonBodyNoHeader = buildSyntheticResponse(
+                code = 403,
+                headers = emptyList(),
+                body = throwingProbeBody("application/json; charset=UTF-8".toMediaType()),
+            )
+            assertEquals(ChallengeSignal.None, detector.inspect(jsonBodyNoHeader))
+        }
+
+        @Test
+        fun inspect_returnsNone_whenPeekBodySourceThrowsIOException() {
+            val detector = ChallengeDetector()
+            val ioFailingBody = object : ResponseBody() {
+                override fun contentType(): MediaType = "text/html; charset=UTF-8".toMediaType()
+                override fun contentLength(): Long = -1L
+                override fun source(): BufferedSource = object : Source {
+                    override fun read(sink: Buffer, byteCount: Long): Long {
+                        throw IOException("simulated peek read failure")
+                    }
+
+                    override fun timeout(): Timeout = Timeout.NONE
+                    override fun close() {}
+                }.buffer()
+            }
+            val response = buildSyntheticResponse(
+                code = 403,
+                headers = listOf("Content-Type" to "text/html; charset=UTF-8"),
+                body = ioFailingBody,
+            )
+
+            assertEquals(ChallengeSignal.None, detector.inspect(response))
+        }
+
+        @Test
         fun hiltAnnotationsAreConfiguredForInjection() {
             assertTrue(ChallengeDetector::class.java.isAnnotationPresent(Singleton::class.java))
             val noArgConstructor = ChallengeDetector::class.java.getDeclaredConstructor()
             assertTrue(noArgConstructor.isAnnotationPresent(Inject::class.java))
+        }
+
+        private fun buildSyntheticResponse(
+            code: Int,
+            headers: List<Pair<String, String>>,
+            body: ResponseBody,
+        ): Response = Response.Builder()
+            .request(Request.Builder().url("https://www.4d4y.com/forum/test").build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(code)
+            .message("Test")
+            .apply {
+                for ((name, value) in headers) {
+                    addHeader(name, value)
+                }
+            }
+            .body(body)
+            .build()
+
+        private fun throwingProbeBody(mediaType: MediaType?): ResponseBody = object : ResponseBody() {
+            override fun contentType(): MediaType? = mediaType
+            override fun contentLength(): Long = -1L
+            override fun source(): BufferedSource {
+                throw AssertionError("peekBody must not read ResponseBody for this response")
+            }
         }
     }
 }
