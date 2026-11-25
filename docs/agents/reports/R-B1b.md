@@ -199,3 +199,44 @@
 - **无新增写操作**：全模块仍仅 `SampleExportEngine.kt:208` 一处 `.get()` 请求与 `SampleLoginWebView.kt:115` 登录页加载。
 - **无新增泄漏路径**：`pendingIdentityRawHtmlById` 仅驻留内存并在失败、隐私跳过或重跑时同步清理，未通过完整身份脱敏与 `SampleLeakScanner` 零泄漏门禁的内容绝不落盘或进入 zip。
 - **无越界改动**：`src/main/` 与共享配置文件零触碰。
+
+---
+
+## B1c 审查（脱敏补丁与真机样本清洗 @ `37df441a4f5b9271241d65dca6576d18e49bcb43`）
+
+- **判定**：**APPROVE**
+- **审查对象**：`origin/card/B1c-uid-scrub` @ `37df441a4f5b9271241d65dca6576d18e49bcb43`（基于 `main` @ `65233b6`）
+- **代码增量**：`git diff 65233b6..37df441 -- core-parser hipda/src/debug hipda/src/test/java`（8 个代码/测试文件：`HtmlSanitizer.kt`、`SampleLeakScanner.kt`、`SanitizeSelectors.kt`、`SanitizeModels.kt`、`HtmlSanitizerTest.kt`、`SamplesAreSanitizedTest.kt`、`SampleExportEngine.kt` 2 行、`SampleExportEngineTest.kt`；另提交清洗后的 17 个样本文件于 `hipda/src/test/resources/samples/`）
+- **CI 核验**：[GitHub Actions Run `45596129517`](https://github.com/mailwmj/hipda-next/actions/runs/45596129517) — `SUCCESS`（`headSha` 匹配，全仓 `567/567` 单测、`assembleRelease`、`lintDebug`、Roborazzi 全绿）
+- **隐私零残留独立复核**：对照 `origin/samples/b1b` 第 121 行运行时读取的 6 位本人 UID，在 `37df441` 全树所有文本文件（含 17 个样本、测试、源码）及提交说明中做独立记号与子串双重检索，命中数均为 **0 处**；对比 `origin/samples/b1b` 17 个样本文件，仅 `user_info/user_profile.html` 第 121 行（`newbuddyid=10000`）与 `manifest.json` 第 94 行（`byteSize`）发生预期变更，其余 15 个 HTML 样本逐字节一致；仓库内无一次性清洗脚本残留。
+
+### 重点逐项审查
+
+#### 1. 本人 UID 独立数字记号替换/检测的正则边界与编码覆盖
+- **核心正则（`SanitizeSelectors.kt:32, 159-168`）**：
+  - 对长度 `≥ 4`（`MIN_STANDALONE_SELF_UID_LENGTH = 4`，真实 HiPDA 常规 UID 范围）构造 `Regex("(?<!\\d)(?:$alternation)(?!\\d)")`，以**前后非 ASCII 数字**作为边界；
+  - 对长度 `< 4` 的极早期短 UID，走扩展后的语境规则（`UID_QUERY_PARAM_REGEX`、`UID_INPUT_NAMES`、`data-uid`、`SCRIPT_UID_ASSIGN/PROP/CALL_REGEX`、`TEXT_UID_LABEL_REGEX`、`AVATAR_PATH_REGEX`，已补齐 `(?:new_?)?buddy_?id` 与 `userid`），避免误伤 `fid=2`、`page=2`、`size="2"`。
+- **各位置与编码形态核查**：
+  - **URL 参数、属性、JS、注释、文本、XML CDATA**：`HtmlSanitizer` 在 `transformUrlAttribute`（`L456`）、`sanitizeElementAttributes`（`L436-444`）、`transformText`（覆盖 `<script>` `DataNode`、注释 `Comment`、普通文本，`L483`）、`sanitizeProtectedText`（论坛动作链接文本与统计标签，`L396`）、跳楼链接（`L356-360`）及 XML `CDataNode` 均执行 `replaceStandaloneSelfUids`；`SampleLeakScanner.scanString`（`L189-203, L453-493`）对属性、脚本、注释、文本与 CDATA 做完全对称扫描。（注：`class` 与 `id` 属性按 B1a 结构契约跳过不改写，已核验真机样本 `id`/`class` 不含本人 UID。）
+  - **HTML 实体**：属性值与文本节点中的命名/十进制/十六进制实体（如 `&amp;`、`&#61;`、`&#x3d;` 乃至数字本身的 `&#52;...`）在 `Jsoup.parse` 阶段已解码为明文字符再进入脱敏与扫描；`<script>` / 注释内未解码的 `&amp;`、`&#61;` 末尾均为 `;`（非 `\d`），同样正常命中。
+  - **URL 编码形式（如 `%3D` 后接 UID）**：因边界采用 `(?<!\d)...(?!\d)` 而非 `\b` 或 `(?<![0-9A-Za-z_])`，`=`（`%3D`/`%3d`）、`:`（`%3A`）、`/`（`%2F`）、`?`（`%3F`）、`;`（`%3B`）编码末尾均为十六进制字母 `[A-Fa-f]`（非 `\d`），后续 `%26`（`&`）首字符为 `%`（非 `\d`），故 `newbuddyid%3D424242%26...` 能被准确替换与检测，**不漏**。
+  - **边界死角提示（非阻断建议 B1c-S1）**：仅当 UID 紧跟在末位为十进制数字 `0–9` 的百分号编码字节之后（如空格 `%20`、双引号 `%22`、`#` `%23`、单引号 `%27`，形如 `%22424242%22`）时，`(?<!\d)` 会把 `%22` 末位的 `2` 视作前导数字而跳过；后续若涉及 URL 编码 JSON/片段，可将左边界收紧为 `(?<!(?<!%[0-9A-Fa-f])\d)` 并补一条 `%3D424242%26` 单测锁死。
+  - **更长数字反例**：`94242420`、`1424242`、`4242429`、`1424242888` 前后存在数字，替换器零误伤、扫描器零误报（`HtmlSanitizerTest.kt:659-697`）。
+
+#### 2. `selfUid` 为空 / 非数字时的行为判断（fail-closed vs 安全跳过）
+- **审查判断**：**必须在“真机导出管线层” fail-closed，而在“`:core-parser` 离线工具层”对空值安全跳过（对非空非法值宜 fail-closed）**；当前实现符合这一分层原则：
+  1. **真机导出管线（`SampleExportEngine`）已严格 fail-closed**：`SampleHtmlExtractors` 仅提取正整数纯数字 `uid`（`isPositiveUid`），若 `uid` 为空或非数字，`Identity.isComplete()` 为 `false`，`SampleExportEngine.kt:243-255` 直接将条目标为 `Failed("未提取到完整登录身份，拒绝放行")`，拒绝写入 `verifiedHtmlById` 与 `.zip`；仅在拿到合法纯数字 `identity.uid` 后才调用 `leakScanner(cleaned, identity.uid)`（`SampleExportEngine.kt:287`）。
+  2. **离线库层（`HtmlSanitizer` / `SampleLeakScanner`）对 `null`/空串/`"0"`/`"10000"` 安全跳过是正确且必要的**：因隐私红线禁止在仓库存放真实 UID，CI 中的 `SamplesAreSanitizedTest` 只能以 `selfUid = null` 调用 `scanDirectories`（依靠页面内 `#umenu`/`discuz_uid` 自提取 + 新增的 `scanSelfProfileActionBar` 操作栏一致性校验兜底），未登录样本亦合法无 `uid`；若离线层对空 `selfUid` fail-closed 将导致离线回归测试无法运行。
+  3. **可加固小点（非阻断建议 B1c-S2）**：在 `SampleLeakScanner.buildSelfUidScanContext`（`SampleLeakScanner.kt:248`）中，若调用方显式传入了**非空白但非纯数字**的 `selfUid`（例如调用方 bug 误传 `"uid=424242"` 或 `"abc"`），当前因 `isReplaceableUid` 为 `false` 会静默跳过；建议对 `trimmed.isNotEmpty() && !trimmed.all(Char::isDigit)` 直接记录一条 `Leak(LeakType.SELF_UID, "传入的 selfUid 格式非法")` 实现防御式 fail-closed。
+
+#### 3. `SELF_UID` 泄漏明细零回显核查
+- 逐行核对 `SampleLeakScanner.kt` 全部 9 处 `Leak(LeakType.SELF_UID, ...)` 构造（`L189, L277, L455, L461, L468, L473, L479, L484, L489`）：`detail` 仅输出位置标识（`attr[...]`、`script`、`comment`、`text`）或查询参数键名 `m.groupValues[2]`（如 `newbuddyid=`），**无任何一处拼接原始 UID 值**；`HtmlSanitizerTest.kt:603` 与 `SampleExportEngineTest.kt:332` 均已断言错误信息不含 UID。
+
+#### 4. 既有脱敏规则兼容性核查
+- `UID_QUERY_PARAM_REGEX` / `SCRIPT_UID_ASSIGN_REGEX` / `SCRIPT_UID_PROP_REGEX` 扩展 `(?:new_?)?buddy_?id` 全部采用非捕获组 `(?:...)`，未偏移任何既有捕获组下标；
+- `isReplaceableUid` 排除 `PLACEHOLDER_UID`（`10000`）与全 `'0'` 掩码，不干扰 `formhash`/敏感令牌全零掩码、IPv4 `127.0.0.1`、头像占位路径及 `attachment.php?aid=` Base64 载荷（`[0-9|]` 的 Base64 编码数学上最多连续出现 1 位十进制数字，绝不可能与 `≥ 4` 位 UID 碰撞）；
+- `HtmlSanitizer.collectSelfIdentities`（`L207-213`）新增从 `<script>` `discuz_uid` 提取本人 UID，补强了无 `#umenu` 单页自脱敏能力；全量既有测试与 15 个未受影响真机样本逐字节幂等通过，未改坏任何原有脱敏规则。
+
+### 非阻断建议（供后续触及 `:core-parser` 脱敏器时顺手补强）
+- **B1c-S1（[`SanitizeSelectors.kt:167`](file:///home/mir/Documents/hipda-next.wt/B1c/core-parser/src/main/kotlin/net/jejer/hipda/parser/sanitize/SanitizeSelectors.kt#L167)）**：可将独立数字左边界由 `(?<!\d)` 微调为 `(?<!(?<!%[0-9A-Fa-f])\d)` 以兼顾 `%20`/`%22`/`%23`/`%27` 紧邻 UID 的极端 URL 编码场景，并在 `HtmlSanitizerTest` 补充 `newbuddyid%3D424242%26...` 用例。
+- **B1c-S2（[`SampleLeakScanner.kt:248`](file:///home/mir/Documents/hipda-next.wt/B1c/core-parser/src/main/kotlin/net/jejer/hipda/parser/sanitize/SampleLeakScanner.kt#L248)）**：当显式传入的 `selfUid` 非空白且不全为数字时，直接产出一条格式非法 `Leak(LeakType.SELF_UID, ...)` 而非静默忽略。
