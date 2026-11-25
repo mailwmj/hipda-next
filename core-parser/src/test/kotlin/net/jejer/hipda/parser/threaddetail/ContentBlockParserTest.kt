@@ -113,7 +113,7 @@ class ContentBlockParserTest {
             <div class="quote">
               <blockquote>
                 <font size="2"><font color="#999999">Alice 发表于 2026-11-20 09:00</font>
-                  <a href="https://www.4d4y.com/forum/redirect.php?goto=findpost&amp;pid=55001&amp;ptid=22001">跳转</a>
+                  <a href="https://www.4d4y.com/forum/redirect.php?goto=findpost&amp;pid=55001&amp;ptid=22001">跳转</a>[/img][/url]
                 </font>
                 <br>可见引用&amp;#128076;
                 <span style="display: none">隐藏水印内容</span>
@@ -135,8 +135,9 @@ class ContentBlockParserTest {
         val quote = blocks[0] as ContentBlock.Quote
         assertEquals("22001", quote.targetTid)
         assertEquals("55001", quote.targetPid)
-        assertTrue(quote.authorAndTime.startsWith("Alice 发表于 2026-11-20 09:00"))
+        assertEquals("Alice 发表于 2026-11-20 09:00", quote.authorAndTime)
         assertEquals("Alice", quote.author)
+        assertEquals("2026-11-20 09:00", quote.time)
         assertEquals("可见引用\uD83D\uDC4C", quote.contentText)
         assertFalse(quote.contentHtml.contains("隐藏水印内容"))
         assertFalse(quote.contentHtml.contains("另一隐藏段"))
@@ -319,5 +320,156 @@ class ContentBlockParserTest {
         assertTrue(spans.count { it == InlineSpan.LineBreak } >= 2)
         val youkuLink = spans.filterIsInstance<InlineSpan.Link>().single()
         assertEquals("http://v.youku.com/v_show/id_XNzIyMTUxMzEy.html", youkuLink.url)
+    }
+
+    @Test
+    fun relativeLinks_preserveRelativePathsWhenForumBaseUrlIsNullAndResolveWhenProvided() {
+        val html = """
+            <a href="/">首页</a>
+            <a href="/forum/viewthread.php?tid=1">根路径帖子</a>
+            <a href="search.php?srchtxt=hi">搜索</a>
+            <a href="pm.php?filter=privatepm">短消息</a>
+            <a href="my.php?item=favorites">收藏</a>
+            <a href="viewthread.php?tid=2">相对帖子</a>
+            <a href="www.test.org/path">裸外链</a>
+            <a href="example.com/search.php">外站脚本</a>
+        """.trimIndent()
+
+        // forumBaseUrl == null：站内相对链接保持相对路径，绝不误加 https:// 前缀；外链仍补全 https://
+        val relativeLinks = (parseBody(html, forumBaseUrl = null).single() as ContentBlock.Text)
+            .spans
+            .filterIsInstance<InlineSpan.Link>()
+            .associate { it.label to it.url }
+
+        assertEquals("/", relativeLinks["首页"])
+        assertEquals("/forum/viewthread.php?tid=1", relativeLinks["根路径帖子"])
+        assertEquals("search.php?srchtxt=hi", relativeLinks["搜索"])
+        assertEquals("pm.php?filter=privatepm", relativeLinks["短消息"])
+        assertEquals("my.php?item=favorites", relativeLinks["收藏"])
+        assertEquals("viewthread.php?tid=2", relativeLinks["相对帖子"])
+        assertEquals("https://www.test.org/path", relativeLinks["裸外链"])
+        assertEquals("https://example.com/search.php", relativeLinks["外站脚本"])
+
+        // 提供 forumBaseUrl 时按 origin / forumBaseUrl 正确补全绝对地址
+        val resolvedLinks = (parseBody(html, forumBaseUrl = "https://www.4d4y.com/forum/").single() as ContentBlock.Text)
+            .spans
+            .filterIsInstance<InlineSpan.Link>()
+            .associate { it.label to it.url }
+
+        assertEquals("https://www.4d4y.com/", resolvedLinks["首页"])
+        assertEquals("https://www.4d4y.com/forum/viewthread.php?tid=1", resolvedLinks["根路径帖子"])
+        assertEquals("https://www.4d4y.com/forum/search.php?srchtxt=hi", resolvedLinks["搜索"])
+        assertEquals("https://www.4d4y.com/forum/pm.php?filter=privatepm", resolvedLinks["短消息"])
+        assertEquals("https://www.4d4y.com/forum/my.php?item=favorites", resolvedLinks["收藏"])
+        assertEquals("https://www.4d4y.com/forum/viewthread.php?tid=2", resolvedLinks["相对帖子"])
+        assertEquals("https://www.test.org/path", resolvedLinks["裸外链"])
+        assertEquals("https://example.com/search.php", resolvedLinks["外站脚本"])
+    }
+
+    @Test
+    fun inlineWhitespace_preservesSingleSpaceBetweenInlineElementsWithoutBlockEdgeSpaces() {
+        // 1. "文字 <a>链接</a> <b>粗</b>" 不粘连且无块首尾空格
+        val combo1 = parseBody("""   文字 <a href="https://a.com">链接</a> <b>粗</b>   """)
+        assertEquals(
+            listOf(
+                ContentBlock.Text(
+                    listOf(
+                        InlineSpan.Plain("文字 "),
+                        InlineSpan.Link(label = "链接", url = "https://a.com", isSmallFont = false),
+                        InlineSpan.Plain(" "),
+                        InlineSpan.Plain("粗", TextFormat(bold = true)),
+                    ),
+                ),
+            ),
+            combo1,
+        )
+
+        // 2. 紧邻双 <a> 与 <b>/<i> 间多空白折叠为单个空格
+        val combo2 = parseBody("""  <a href="https://a.com">A</a>   <a href="https://b.com">B</a>  """)
+        assertEquals(
+            listOf(
+                ContentBlock.Text(
+                    listOf(
+                        InlineSpan.Link("A", "https://a.com"),
+                        InlineSpan.Plain(" "),
+                        InlineSpan.Link("B", "https://b.com"),
+                    ),
+                ),
+            ),
+            combo2,
+        )
+
+        val combo3 = parseBody("  <b>A</b>   \n\t   <i>B</i>  ")
+        assertEquals(
+            listOf(
+                ContentBlock.Text(
+                    listOf(
+                        InlineSpan.Plain("A", TextFormat(bold = true)),
+                        InlineSpan.Plain(" "),
+                        InlineSpan.Plain("B", TextFormat(italic = true)),
+                    ),
+                ),
+            ),
+            combo3,
+        )
+
+        // 3. 紧邻纯文本双 URL 保留空格，且 <br> 与块级图片前后不产生多余空格
+        val combo4 = parseBody(
+            """
+              https://a.com https://b.com
+              <br>
+              第二行
+              <img src="https://cdn.example.invalid/pic.jpg" />
+              图后文本
+            """.trimIndent(),
+        )
+        assertEquals(3, combo4.size)
+        assertEquals(
+            ContentBlock.Text(
+                listOf(
+                    InlineSpan.Link("https://a.com", "https://a.com"),
+                    InlineSpan.Plain(" "),
+                    InlineSpan.Link("https://b.com", "https://b.com"),
+                    InlineSpan.LineBreak,
+                    InlineSpan.Plain("第二行"),
+                ),
+            ),
+            combo4[0],
+        )
+        assertEquals(ContentBlock.Image("https://cdn.example.invalid/pic.jpg", null, 0L), combo4[1])
+        assertEquals(ContentBlock.Text(listOf(InlineSpan.Plain("图后文本"))), combo4[2])
+    }
+
+    @Test
+    fun interleavedBlocks_preserveTextImageTextOrderAndTableCellSpacing() {
+        // 1. 文本 -> 图片 -> 文本 -> 引用 -> 文本 精确交错块序（守卫 addBlock 前 flushPendingText）
+        val interleaved = parseBody(
+            """图前正文<img src="https://cdn.example.invalid/mid.jpg" />图后正文<div class="quote"><blockquote><font size="2">Bob 发表于 10:00</font>引用正文</blockquote></div>引后正文""",
+        )
+        assertEquals(5, interleaved.size)
+        assertEquals(ContentBlock.Text(listOf(InlineSpan.Plain("图前正文"))), interleaved[0])
+        assertEquals(ContentBlock.Image("https://cdn.example.invalid/mid.jpg", null, 0L), interleaved[1])
+        assertEquals(ContentBlock.Text(listOf(InlineSpan.Plain("图后正文"))), interleaved[2])
+        val quote = interleaved[3] as ContentBlock.Quote
+        assertEquals("Bob 发表于 10:00", quote.authorAndTime)
+        assertEquals("引用正文", quote.contentText)
+        assertEquals(ContentBlock.Text(listOf(InlineSpan.Plain("引后正文"))), interleaved[4])
+
+        // 2. 表格无源码空白时，<td> 之间保留单空格分隔且行首无多余空格
+        val tableBlocks = parseBody(
+            """<table><tbody><tr><td>格1</td><td>格2</td></tr><tr><td>格3</td></tr></tbody></table>""",
+        )
+        assertEquals(
+            listOf(
+                ContentBlock.Text(
+                    listOf(
+                        InlineSpan.Plain("格1 格2"),
+                        InlineSpan.LineBreak,
+                        InlineSpan.Plain("格3"),
+                    ),
+                ),
+            ),
+            tableBlocks,
+        )
     }
 }

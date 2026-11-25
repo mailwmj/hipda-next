@@ -86,6 +86,27 @@ class ThreadDetailParserTest {
     }
 
     @Test
+    fun parse_realSampleThreadP1Floor49Quote_stripsAnchorAndBrokenBbcodeSuffixFromAuthorAndTime() {
+        val doc = SampleFixtures.parseSampleDocument("thread_detail/thread_p1.html")
+        val beforeHtml = doc.outerHtml()
+
+        val page = ThreadDetailParser.parse(doc, tid = "2602293")
+
+        assertEquals(beforeHtml, doc.outerHtml())
+        val floor49 = page.findFloorByPostId("53529463")
+        assertNotNull(floor49)
+        assertEquals(49, floor49!!.floor)
+        val quote = floor49.blocks.filterIsInstance<ContentBlock.Quote>().single()
+        assertEquals("2602293", quote.targetTid)
+        assertEquals("53529418", quote.targetPid)
+        assertEquals("p84102 发表于 21:17", quote.authorAndTime)
+        assertEquals("p84102", quote.author)
+        assertEquals("21:17", quote.time)
+        assertFalse(quote.time!!.contains("[img]"))
+        assertFalse(quote.time!!.contains("back.gif"))
+    }
+
+    @Test
     fun parse_realSampleThreadP2_decodesDoubleEscapedEmojiAndEstimatesPostsPerPage() {
         val doc = SampleFixtures.parseSampleDocument("thread_detail/thread_p2.html")
         val beforeHtml = doc.outerHtml()

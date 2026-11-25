@@ -94,6 +94,20 @@ class ThreadDetailParserEquivalenceTest {
             assertFloorEquivalent(legacy.all[i], newPage.floors[i], contextLabel = "thread_p1[$i]")
         }
 
+        // S5：1 楼真机图文混排顺序（Text -> Image -> Text）与旧版一致
+        val floor1Kinds = newPage.floors[0].blocks.map { it::class.simpleName }
+        assertEquals(listOf("Text", "Image", "Text"), floor1Kinds)
+
+        // S2：第 49 楼（post_53529463）旧版将 font[size=2] 内回跳 <a> 与破损 BBCode 拼进 time；新版净化为纯时间 "21:17"
+        val legacyFloor49Quote = legacy.getPostInPage("53529463").contents
+            .let { c -> (0 until c.size).map { c.get(it) }.filterIsInstance<ContentQuote>().single() }
+        val newFloor49Quote = newPage.findFloorByPostId("53529463")!!
+            .blocks.filterIsInstance<ContentBlock.Quote>().single()
+        assertTrue(legacyFloor49Quote.time.contains("back.gif"))
+        assertEquals("p84102 发表于 21:17", newFloor49Quote.authorAndTime)
+        assertEquals("p84102", newFloor49Quote.author)
+        assertEquals("21:17", newFloor49Quote.time)
+
         // 核验样本中全部表情 normalizedKey 均可直接命中 :emoji EmojiMap
         val smileyKeys = collectSmileyKeys(newPage.floors)
         assertEquals(setOf("default_lol", "coolmonkey_01", "grapeman_08", "grapeman_18"), smileyKeys)
@@ -348,14 +362,24 @@ class ThreadDetailParserEquivalenceTest {
             assertEquals("$contextLabel img[$i].fileSize", oldImgs[i].fileSize, newImgs[i].fileSizeBytes)
         }
 
-        // 2. 引用块逐一核对 authorAndTime / targetTid / targetPid / contentHtml 清洗一致
+        // 2. 引用块逐一核对 author / targetTid / targetPid / contentHtml 清洗一致，并校验 S2 净化语义
         val oldQuotes = oldBlocks.filterIsInstance<ContentQuote>()
         val newQuotes = newFloor.blocks.filterIsInstance<ContentBlock.Quote>()
         assertEquals("$contextLabel quote count", oldQuotes.size, newQuotes.size)
         for (i in oldQuotes.indices) {
             assertEquals("$contextLabel quote[$i].targetTid", oldQuotes[i].tid.ifEmpty { null }, newQuotes[i].targetTid)
             assertEquals("$contextLabel quote[$i].targetPid", oldQuotes[i].postId.ifEmpty { null }, newQuotes[i].targetPid)
-            assertEquals("$contextLabel quote[$i].content", oldQuotes[i].content, newQuotes[i].contentHtml + newQuotes[i].authorAndTime)
+            assertEquals("$contextLabel quote[$i].author", oldQuotes[i].author, newQuotes[i].author)
+            // S2 修复：新版从 font[size=2] 剔除 <a> 与残余回跳 BBCode 尾缀，因此新 contentHtml + authorAndTime 为旧 content 前缀；
+            // 当旧版 time 无回跳残留时完全相等
+            val newCombined = newQuotes[i].contentHtml + newQuotes[i].authorAndTime
+            assertTrue(
+                "$contextLabel quote[$i].content expected legacy '${oldQuotes[i].content}' to start with '$newCombined'",
+                oldQuotes[i].content.startsWith(newCombined),
+            )
+            if (oldQuotes[i].content == newCombined) {
+                assertEquals("$contextLabel quote[$i].time", oldQuotes[i].time, newQuotes[i].time)
+            }
         }
 
         // 3. 跳楼标记逐一核对 label / targetTid / targetPid / floor / author

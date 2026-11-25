@@ -47,6 +47,12 @@ object ThreadDetailParser {
     private val SAFE_CSS_ID_REGEX = Regex("""^[A-Za-z0-9_-]+$""")
     private val QUOTED_ARG_REGEX = Regex("""'([^']+)'""")
 
+    /** 清理引用块 `font[size=2]` 移除回跳 `<a>` 后可能残余的历史破损 BBCode/回跳图标尾缀。 */
+    private val QUOTE_META_TRAILING_BBCODE_REGEX = Regex(
+        """(?:\s*(?:\[/?(?:img|url)(?:=[^\]]*)?\]|https?://\S*images/common/back\.gif))+\s*$""",
+        RegexOption.IGNORE_CASE,
+    )
+
     /** 与旧 `Utils.clean` 保持一致的引用块 HTML 白名单。 */
     private val QUOTE_SAFELIST: Safelist = Safelist()
         .addTags("a", "br", "p", "b", "i", "strike", "strong", "u", "font")
@@ -692,7 +698,7 @@ object ThreadDetailParser {
                 inheritedFormat
             }
             "td", "th" -> {
-                builder.addPlainText(" ", TextFormat.PLAIN)
+                builder.markInlineSpace(TextFormat.PLAIN)
                 inheritedFormat
             }
             "script", "#data" -> {
@@ -745,12 +751,18 @@ object ThreadDetailParser {
         val raw = textNode.text()
         if (raw.isEmpty()) return
         val decoded = DiscuzTextDecoder.decodeDoubleEscapedEntities(raw)
+        if (decoded.trim().isEmpty()) {
+            builder.markInlineSpace(format)
+            return
+        }
 
         var lastPos = 0
         for (match in URL_REGEX.findAll(decoded)) {
             val prefix = decoded.substring(lastPos, match.range.first)
             if (prefix.trim().isNotEmpty()) {
                 builder.addPlainText(prefix, format)
+            } else if (prefix.isNotEmpty()) {
+                builder.markInlineSpace(format)
             }
             val token = match.value
             if (token.contains("@") && !token.contains("/")) {
@@ -775,6 +787,8 @@ object ThreadDetailParser {
             val tail = decoded.substring(lastPos)
             if (tail.trim().isNotEmpty()) {
                 builder.addPlainText(tail, format)
+            } else if (tail.isNotEmpty()) {
+                builder.markInlineSpace(format)
             }
         }
     }
@@ -906,9 +920,13 @@ object ThreadDetailParser {
         }
 
         val metaFont = cloned.firstMatch("font[size=2]")
-        val authorAndTime = metaFont?.text()
-            ?.let { DiscuzTextDecoder.decodeDoubleEscapedEntities(it) }
-            .orEmpty()
+        val authorAndTime = if (metaFont != null) {
+            metaFont.select("a").remove()
+            val rawMeta = DiscuzTextDecoder.decodeDoubleEscapedEntities(metaFont.text())
+            QUOTE_META_TRAILING_BBCODE_REGEX.replace(rawMeta, "").trim()
+        } else {
+            ""
+        }
         metaFont?.remove()
 
         cloned.select("[style*=display][style*=none]").remove()
@@ -1110,10 +1128,24 @@ object ThreadDetailParser {
         if (url.isEmpty() || url.contains("://") || url.startsWith("data:", ignoreCase = true)) {
             return url
         }
+        if (url.startsWith("//")) {
+            return "https:$url"
+        }
         val base = forumBaseUrl?.trim().orEmpty()
         if (base.isEmpty()) return url
+        if (url.startsWith("/")) {
+            val origin = extractOrigin(base)
+            if (origin != null) return origin + url
+        }
         val normalizedBase = if (base.endsWith("/")) base else "$base/"
         return normalizedBase + url.trimStart('/')
+    }
+
+    private fun extractOrigin(baseUrl: String): String? {
+        val schemeIdx = baseUrl.indexOf("://")
+        if (schemeIdx == -1) return null
+        val authorityEnd = baseUrl.indexOf('/', schemeIdx + 3)
+        return if (authorityEnd == -1) baseUrl else baseUrl.substring(0, authorityEnd)
     }
 
     private fun normalizeLinkUrl(
@@ -1130,20 +1162,27 @@ object ThreadDetailParser {
         if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("javascript:")) {
             return url
         }
-        if (forumBaseUrl != null && isRelativeForumScriptUrl(lower)) {
+        if (lower.startsWith("//")) {
+            return "https:$url"
+        }
+        if (isRelativeSiteUrl(lower)) {
             return resolveForumUrl(url, forumBaseUrl)
         }
         return "https://$url"
     }
 
-    private fun isRelativeForumScriptUrl(lowerUrl: String): Boolean =
-        lowerUrl.startsWith("viewthread.php") ||
-            lowerUrl.startsWith("forumdisplay.php") ||
-            lowerUrl.startsWith("space.php") ||
-            lowerUrl.startsWith("redirect.php") ||
-            lowerUrl.startsWith("gotopost.php") ||
-            lowerUrl.startsWith("attachment.php") ||
-            lowerUrl.startsWith("misc.php")
+    private fun isRelativeSiteUrl(lowerUrl: String): Boolean {
+        if (lowerUrl.startsWith("/") ||
+            lowerUrl.startsWith("./") ||
+            lowerUrl.startsWith("../") ||
+            lowerUrl.startsWith("?") ||
+            lowerUrl.startsWith("#")
+        ) {
+            return true
+        }
+        val pathBeforeQuery = lowerUrl.substringBefore('?').substringBefore('#')
+        return !pathBeforeQuery.contains('/') && pathBeforeQuery.endsWith(".php")
+    }
 
     // endregion
 
@@ -1152,26 +1191,43 @@ object ThreadDetailParser {
     private class BlockListBuilder {
         private val blocks = ArrayList<ContentBlock>()
         private val pendingSpans = ArrayList<InlineSpan>()
+        private var pendingSpaceFormat: TextFormat? = null
 
-        fun addPlainText(text: String, format: TextFormat) {
-            if (text.isEmpty()) return
-            val last = pendingSpans.lastOrNull()
-            if (last is InlineSpan.Plain && last.format == format) {
-                pendingSpans[pendingSpans.lastIndex] = last.copy(text = last.text + text)
-            } else {
-                pendingSpans.add(InlineSpan.Plain(text = text, format = format))
+        fun markInlineSpace(format: TextFormat = TextFormat.PLAIN) {
+            if (pendingSpaceFormat == null &&
+                hasMeaningfulSpan(pendingSpans) &&
+                pendingSpans.lastOrNull() != InlineSpan.LineBreak
+            ) {
+                pendingSpaceFormat = format
             }
         }
 
+        fun addPlainText(text: String, format: TextFormat) {
+            if (text.isEmpty()) return
+            val atLineStart = pendingSpans.isEmpty() || pendingSpans.lastOrNull() == InlineSpan.LineBreak
+            val normalizedText = if (atLineStart) text.trimStart(' ') else text
+            if (normalizedText.isEmpty()) {
+                markInlineSpace(format)
+                return
+            }
+            flushPendingSpaceIfNeeded(incomingStartsWithSpace = normalizedText.first().isInlineSpace())
+            appendPlainTextRaw(normalizedText, format)
+        }
+
         fun addSpan(span: InlineSpan) {
+            flushPendingSpaceIfNeeded(incomingStartsWithSpace = false)
             pendingSpans.add(span)
         }
 
         fun addLineBreak() {
+            pendingSpaceFormat = null
+            trimTrailingAsciiSpaceFromLastPlain()
             pendingSpans.add(InlineSpan.LineBreak)
         }
 
         fun addLineBreakIfPendingContent() {
+            pendingSpaceFormat = null
+            trimTrailingAsciiSpaceFromLastPlain()
             if (hasMeaningfulSpan(pendingSpans) && pendingSpans.lastOrNull() != InlineSpan.LineBreak) {
                 pendingSpans.add(InlineSpan.LineBreak)
             }
@@ -1187,7 +1243,41 @@ object ThreadDetailParser {
             return blocks
         }
 
+        private fun flushPendingSpaceIfNeeded(incomingStartsWithSpace: Boolean) {
+            val spaceFormat = pendingSpaceFormat ?: return
+            pendingSpaceFormat = null
+            if (incomingStartsWithSpace || lastSpanEndsWithSpace()) {
+                return
+            }
+            appendPlainTextRaw(" ", spaceFormat)
+        }
+
+        private fun lastSpanEndsWithSpace(): Boolean {
+            val last = pendingSpans.lastOrNull()
+            return last is InlineSpan.Plain && last.text.isNotEmpty() && last.text.last().isInlineSpace()
+        }
+
+        private fun appendPlainTextRaw(text: String, format: TextFormat) {
+            val last = pendingSpans.lastOrNull()
+            if (last is InlineSpan.Plain && last.format == format) {
+                pendingSpans[pendingSpans.lastIndex] = last.copy(text = last.text + text)
+            } else {
+                pendingSpans.add(InlineSpan.Plain(text = text, format = format))
+            }
+        }
+
+        private fun trimTrailingAsciiSpaceFromLastPlain() {
+            val last = pendingSpans.lastOrNull() as? InlineSpan.Plain ?: return
+            val trimmed = last.text.trimEnd(' ')
+            if (trimmed.isEmpty()) {
+                pendingSpans.removeAt(pendingSpans.lastIndex)
+            } else if (trimmed.length != last.text.length) {
+                pendingSpans[pendingSpans.lastIndex] = last.copy(text = trimmed)
+            }
+        }
+
         private fun flushPendingText() {
+            pendingSpaceFormat = null
             if (pendingSpans.isEmpty()) return
             if (!hasMeaningfulSpan(pendingSpans)) {
                 pendingSpans.clear()
@@ -1202,10 +1292,30 @@ object ThreadDetailParser {
                 end--
             }
             if (start < end) {
-                blocks.add(ContentBlock.Text(pendingSpans.subList(start, end).toList()))
+                val sliced = pendingSpans.subList(start, end).toMutableList()
+                val first = sliced.firstOrNull()
+                if (first is InlineSpan.Plain) {
+                    val trimmedFirst = first.text.trimStart(' ')
+                    if (trimmedFirst.length != first.text.length) {
+                        sliced[0] = first.copy(text = trimmedFirst)
+                    }
+                }
+                val last = sliced.lastOrNull()
+                if (last is InlineSpan.Plain) {
+                    val trimmedLast = last.text.trimEnd(' ')
+                    if (trimmedLast.length != last.text.length) {
+                        sliced[sliced.lastIndex] = last.copy(text = trimmedLast)
+                    }
+                }
+                val nonEmpty = sliced.filterNot { it is InlineSpan.Plain && it.text.isEmpty() }
+                if (nonEmpty.isNotEmpty()) {
+                    blocks.add(ContentBlock.Text(nonEmpty))
+                }
             }
             pendingSpans.clear()
         }
+
+        private fun Char.isInlineSpace(): Boolean = this == ' ' || this == '\u00a0' || isWhitespace()
 
         private fun hasMeaningfulSpan(spans: List<InlineSpan>): Boolean = spans.any { span ->
             when (span) {
