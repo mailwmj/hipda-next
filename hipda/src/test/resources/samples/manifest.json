@@ -1,0 +1,137 @@
+{
+    "schemaVersion": 1,
+    "exportedAtEpochMs": 1795601330336,
+    "sanitized": true,
+    "zeroLeaksVerified": true,
+    "includePersonalHistory": true,
+    "entries": [
+        {
+            "id": "THREAD_LIST_P1_LASTPOST",
+            "relativePath": "thread_list/forum_2_p1_lastpost.html",
+            "pageType": "THREAD_LIST",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 86362
+        },
+        {
+            "id": "THREAD_LIST_P2_LASTPOST",
+            "relativePath": "thread_list/forum_2_p2_lastpost.html",
+            "pageType": "THREAD_LIST",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 87469
+        },
+        {
+            "id": "THREAD_LIST_P1_DATELINE",
+            "relativePath": "thread_list/forum_2_p1_dateline.html",
+            "pageType": "THREAD_LIST",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 86807
+        },
+        {
+            "id": "THREAD_DETAIL_P1",
+            "relativePath": "thread_detail/thread_p1.html",
+            "pageType": "THREAD_DETAIL",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 235597
+        },
+        {
+            "id": "THREAD_DETAIL_P2",
+            "relativePath": "thread_detail/thread_p2.html",
+            "pageType": "THREAD_DETAIL",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 222625
+        },
+        {
+            "id": "THREAD_DETAIL_AUTHOR_ONLY",
+            "relativePath": "thread_detail/thread_author_only.html",
+            "pageType": "THREAD_DETAIL",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 92640
+        },
+        {
+            "id": "SMS_LIST",
+            "relativePath": "sms/sms_list.html",
+            "pageType": "SMS_LIST",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 53303
+        },
+        {
+            "id": "SMS_DETAIL",
+            "relativePath": "sms/sms_detail.html",
+            "pageType": "SMS_DETAIL",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 17234
+        },
+        {
+            "id": "NOTIFY_LIST",
+            "relativePath": "notify/notify_list.html",
+            "pageType": "NOTIFY",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 7619
+        },
+        {
+            "id": "SEARCH_RESULT",
+            "relativePath": "search/search_result.html",
+            "pageType": "SEARCH",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 84031
+        },
+        {
+            "id": "USER_PROFILE",
+            "relativePath": "user_info/user_profile.html",
+            "pageType": "USER_INFO",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 17297
+        },
+        {
+            "id": "MY_THREADS",
+            "relativePath": "simple_list/my_threads.html",
+            "pageType": "SIMPLE_LIST",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 59411
+        },
+        {
+            "id": "MY_POSTS",
+            "relativePath": "simple_list/my_posts.html",
+            "pageType": "SIMPLE_LIST",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 67039
+        },
+        {
+            "id": "MY_FAVORITES",
+            "relativePath": "simple_list/my_favorites.html",
+            "pageType": "SIMPLE_LIST",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 55619
+        },
+        {
+            "id": "POST_FORM_NEWTHREAD",
+            "relativePath": "post_form/newthread_fid2.html",
+            "pageType": "POST_FORM",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 30087
+        },
+        {
+            "id": "LOGIN_PAGE",
+            "relativePath": "login/login_page.html",
+            "pageType": "LOGIN",
+            "status": "success",
+            "leakCount": 0,
+            "byteSize": 5998
+        }
+    ]
+}

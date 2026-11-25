@@ -300,6 +300,51 @@ class SampleExportEngineTest {
         assertTrue(SampleLeakScanner.scanDirectory(unzippedDir.toPath()).isEmpty())
     }
 
+    @Test
+    fun leakGate_passesSelfUidToScannerAndRejectsLeakedStandaloneUid() = runBlocking {
+        server.dispatcher = createForumDispatcher()
+
+        val engine = SampleExportEngine(
+            siteAccessGateway = gateway,
+            exportDir = exportDir,
+            baseUrl = server.url("/forum/"),
+            sanitizer = { html, pageType, identity ->
+                val cleaned = HtmlSanitizer.sanitize(html, pageType, identity)
+                if (pageType == PageType.USER_INFO) {
+                    // Simulate a sanitizer bug leaving self UID in an unrecognized query param after #umenu/discuz_uid are already masked
+                    cleaned.replace("</body>", """<a href="my.php?item=buddylist&amp;newbuddyid=${identity.uid}&amp;buddysubmit=yes">加为好友</a></body>""")
+                } else {
+                    cleaned
+                }
+            },
+        )
+
+        val result = engine.runAll(includePersonalHistory = true)
+
+        val profileItem = result.items.single { it.spec.id == SampleEntryId.USER_PROFILE }
+        assertTrue("Entry leaking standalone self UID must fail: $profileItem", profileItem.status is SampleExportStatus.Failed)
+        val failedStatus = profileItem.status as SampleExportStatus.Failed
+        assertTrue(
+            "Failure reason/detail must mention SELF_UID: $failedStatus",
+            failedStatus.reason.contains(LeakType.SELF_UID.name) ||
+                failedStatus.detail.orEmpty().contains(LeakType.SELF_UID.name),
+        )
+        assertFalse(
+            "Failure reason/detail must never expose real UID",
+            failedStatus.reason.contains("54321") || failedStatus.detail.orEmpty().contains("54321"),
+        )
+
+        val zipFile = requireNotNull(result.zipFile)
+        val unzippedDir = tempFolder.newFolder("unzipped_self_uid_gate")
+        val extractedPaths = unzipTo(zipFile, unzippedDir)
+        assertFalse(
+            "Leaked user_info/user_profile.html must NOT enter zip",
+            extractedPaths.contains("user_info/user_profile.html"),
+        )
+        assertEquals(15 + 1, extractedPaths.size)
+        assertTrue(SampleLeakScanner.scanDirectory(unzippedDir.toPath(), selfUid = "54321").isEmpty())
+    }
+
     // (c) Single-item failure does not block others; single-item retry succeeds and updates zip
     @Test
     fun singleItemFailureAndRetry_completesOthersThenRetriesFailedItemIntoUpdatedZip() = runBlocking {
