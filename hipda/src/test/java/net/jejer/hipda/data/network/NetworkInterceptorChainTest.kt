@@ -2,12 +2,15 @@ package net.jejer.hipda.data.network
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import java.io.IOException
 import java.net.InetAddress
 import java.net.ProtocolException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import okhttp3.Call
 import okhttp3.Cookie
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -61,6 +64,10 @@ class NetworkInterceptorChainTest {
         client = HttpClientModule.provideOkHttpClient(
             siteCookieStore = cookieStore,
             userAgentProvider = userAgentProvider,
+            transportInterceptor = TransportInterceptor(
+                delegateFactory = { null },
+                isMainThread = { false },
+            ),
         )
     }
 
@@ -232,28 +239,7 @@ class NetworkInterceptorChainTest {
     // (b) Per-hop cookie saving on 302 and loading on next hop
     @Test
     fun redirect302SetCookie_savedAndSentOnSameHostNextHop() {
-        withServer { server ->
-            server.enqueue(
-                MockResponse.Builder()
-                    .code(302)
-                    .addHeader("Location", "/b")
-                    .addHeader("Set-Cookie", "s=1; Path=/")
-                    .build(),
-            )
-            server.enqueue(MockResponse.Builder().code(200).body("logged-in").build())
-
-            val request = Request.Builder().url(server.url("/a")).build()
-            client.newCall(request).execute().use { response ->
-                assertEquals(200, response.code)
-                assertEquals("logged-in", response.body.string())
-            }
-
-            val reqA = server.takeRequest()
-            assertNull(reqA.headers["Cookie"])
-
-            val reqB = server.takeRequest()
-            assertEquals("s=1", reqB.headers["Cookie"])
-        }
+        runSharedRedirectAndCookieScenario(client, cookieStore, TEST_UA)
     }
 
     @Test
@@ -267,7 +253,7 @@ class NetworkInterceptorChainTest {
             client.newCall(
                 Request.Builder().url(url).header("Cookie", "stale=1").build(),
             ).execute().use { assertEquals(200, it.code) }
-            assertNull(server.takeRequest().headers["Cookie"])
+            assertEquals(emptyList<String>(), server.takeRequest().headers.values("Cookie"))
 
             // 2. Store populated -> existing Cookie header overwritten with joined pairs
             cookieStore.saveFromResponse(
@@ -280,7 +266,7 @@ class NetworkInterceptorChainTest {
             client.newCall(
                 Request.Builder().url(url).header("Cookie", "caller=ignored").build(),
             ).execute().use { assertEquals(200, it.code) }
-            assertEquals("a=1; b=2", server.takeRequest().headers["Cookie"])
+            assertEquals(listOf("a=1; b=2"), server.takeRequest().headers.values("Cookie"))
         }
     }
 
@@ -355,12 +341,12 @@ class NetworkInterceptorChainTest {
             val reqA = serverA.takeRequest()
             assertEquals("Bearer top-secret", reqA.headers["Authorization"])
             assertEquals("Basic cHJveHk=", reqA.headers["Proxy-Authorization"])
-            assertEquals("auth_a=secretA", reqA.headers["Cookie"])
+            assertEquals(listOf("auth_a=secretA"), reqA.headers.values("Cookie"))
 
             val reqB = serverB.takeRequest()
             assertNull(reqB.headers["Authorization"])
             assertNull(reqB.headers["Proxy-Authorization"])
-            assertNull(reqB.headers["Cookie"])
+            assertEquals(emptyList<String>(), reqB.headers.values("Cookie"))
         } finally {
             serverA.close()
             serverB.close()
@@ -395,8 +381,8 @@ class NetworkInterceptorChainTest {
 
             client.newCall(Request.Builder().url(urlA).build()).execute().use { assertEquals(200, it.code) }
 
-            assertEquals("hostA=1", serverA.takeRequest().headers["Cookie"])
-            assertEquals("hostB=2", serverB.takeRequest().headers["Cookie"])
+            assertEquals(listOf("hostA=1"), serverA.takeRequest().headers.values("Cookie"))
+            assertEquals(listOf("hostB=2"), serverB.takeRequest().headers.values("Cookie"))
         } finally {
             serverA.close()
             serverB.close()
@@ -560,6 +546,10 @@ class NetworkInterceptorChainTest {
         val dynamicClient = HttpClientModule.provideOkHttpClient(
             siteCookieStore = cookieStore,
             userAgentProvider = UserAgentProvider { "$TEST_UA/hop-${uaVersion.incrementAndGet()}" },
+            transportInterceptor = TransportInterceptor(
+                delegateFactory = { null },
+                isMainThread = { false },
+            ),
         )
 
         withServer { server ->
@@ -575,12 +565,12 @@ class NetworkInterceptorChainTest {
             dynamicClient.newCall(request).execute().use { assertEquals(200, it.code) }
 
             val reqA = server.takeRequest()
-            assertEquals("$TEST_UA/hop-1", reqA.headers["User-Agent"])
+            assertEquals(listOf("$TEST_UA/hop-1"), reqA.headers.values("User-Agent"))
             assertEquals("application/json", reqA.headers["Accept"])
             assertEquals(BrowserHeaderInterceptor.DEFAULT_ACCEPT_LANGUAGE, reqA.headers["Accept-Language"])
 
             val reqB = server.takeRequest()
-            assertEquals("$TEST_UA/hop-2", reqB.headers["User-Agent"])
+            assertEquals(listOf("$TEST_UA/hop-2"), reqB.headers.values("User-Agent"))
             assertEquals("application/json", reqB.headers["Accept"])
             assertEquals(BrowserHeaderInterceptor.DEFAULT_ACCEPT_LANGUAGE, reqB.headers["Accept-Language"])
         }
@@ -596,7 +586,7 @@ class NetworkInterceptorChainTest {
                 assertEquals(200, it.code)
             }
             val defaultReq = server.takeRequest()
-            assertEquals(TEST_UA, defaultReq.headers["User-Agent"])
+            assertEquals(listOf(TEST_UA), defaultReq.headers.values("User-Agent"))
             assertEquals(BrowserHeaderInterceptor.DEFAULT_ACCEPT, defaultReq.headers["Accept"])
             assertEquals(BrowserHeaderInterceptor.DEFAULT_ACCEPT_LANGUAGE, defaultReq.headers["Accept-Language"])
 
@@ -614,12 +604,13 @@ class NetworkInterceptorChainTest {
 
     // (g) Interceptor chain ordering
     @Test
-    fun clientInterceptors_orderedAsManualRedirectThenBrowserHeaderThenAppCookie() {
+    fun clientInterceptors_orderedAsManualRedirectThenBrowserHeaderThenAppCookieThenTransport() {
         val interceptors = client.interceptors
-        assertEquals(3, interceptors.size)
+        assertEquals(4, interceptors.size)
         assertTrue(interceptors[0] is ManualRedirectInterceptor)
         assertTrue(interceptors[1] is BrowserHeaderInterceptor)
         assertTrue(interceptors[2] is AppCookieInterceptor)
+        assertTrue(interceptors[3] is TransportInterceptor)
         assertNotNull(DefaultUserAgentProvider().userAgent().takeIf { it.contains("Mobile Safari") })
     }
 
@@ -671,6 +662,75 @@ class NetworkInterceptorChainTest {
         )
     }
 
+    @Test
+    fun canceledCallBeforeSecondHop_stopsClosesFirstResponseAndThrowsIOException() {
+        val firstClosed = AtomicBoolean(false)
+        val hopCount = AtomicInteger(0)
+        val callRef = AtomicReference<Call>()
+
+        val testClient = clientWithTerminalInterceptor(ManualRedirectInterceptor()) { req ->
+            val currentHop = hopCount.incrementAndGet()
+            if (currentHop == 1) {
+                callRef.get().cancel()
+                val trackingBody = object : ResponseBody() {
+                    override fun contentType() = null
+                    override fun contentLength() = 4L
+                    override fun source(): BufferedSource =
+                        object : ForwardingSource(Buffer().writeUtf8("body")) {
+                            override fun close() {
+                                firstClosed.set(true)
+                                super.close()
+                            }
+                        }.buffer()
+                }
+                Response.Builder()
+                    .request(req)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(302)
+                    .message("Found")
+                    .addHeader("Location", "/b")
+                    .body(trackingBody)
+                    .build()
+            } else {
+                Response.Builder()
+                    .request(req)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("unreachable".toResponseBody())
+                    .build()
+            }
+        }
+
+        val call = testClient.newCall(Request.Builder().url("https://example.test/a").build())
+        callRef.set(call)
+
+        val ex = assertThrows(IOException::class.java) {
+            call.execute().close()
+        }
+        assertEquals("Canceled", ex.message)
+        assertEquals("Second hop must not execute after cancellation", 1, hopCount.get())
+        assertTrue("First redirect response must be closed on cancellation", firstClosed.get())
+    }
+
+    @Test
+    fun inMemorySiteCookieStore_rejectsCrossHostCookieLikeDataStore() {
+        val evilCookie = Cookie.Builder()
+            .name("hijack")
+            .value("1")
+            .domain("4d4y.com")
+            .path("/")
+            .build()
+        cookieStore.saveFromResponse("https://other.example/path".toHttpUrl(), listOf(evilCookie))
+        assertTrue(cookieStore.loadForRequest("https://4d4y.com/forum/".toHttpUrl()).isEmpty())
+
+        cookieStore.saveFromResponse("https://www.4d4y.com/forum/".toHttpUrl(), listOf(evilCookie))
+        assertEquals(
+            listOf("hijack" to "1"),
+            cookieStore.loadForRequest("https://4d4y.com/forum/".toHttpUrl()).map { it.name to it.value },
+        )
+    }
+
     private fun withServer(block: (MockWebServer) -> Unit) {
         val server = MockWebServer()
         server.start()
@@ -695,5 +755,54 @@ class NetworkInterceptorChainTest {
 
     private companion object {
         const val TEST_UA = "Mozilla/5.0 (Linux; Android 14; Test) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36"
+    }
+}
+
+/**
+ * Shared redirect + per-hop cookie scenario reused by [NetworkInterceptorChainTest] and
+ * [TransportInterceptorTest] to verify unavailable-transport fallback matches A3a behavior.
+ */
+internal fun runSharedRedirectAndCookieScenario(
+    client: OkHttpClient,
+    cookieStore: InMemorySiteCookieStore,
+    expectedUserAgent: String,
+) {
+    val server = MockWebServer()
+    server.start()
+    try {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(302)
+                .addHeader("Location", "/b")
+                .addHeader("Set-Cookie", "s=1; Path=/")
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().code(200).body("logged-in").build())
+
+        val request = Request.Builder()
+            .url(server.url("/a"))
+            .post("k=v".toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+            .build()
+        client.newCall(request).execute().use { response ->
+            assertEquals(200, response.code)
+            assertEquals("logged-in", response.body.string())
+        }
+
+        val reqA = server.takeRequest()
+        assertEquals("POST", reqA.method)
+        assertEquals(emptyList<String>(), reqA.headers.values("Cookie"))
+        assertEquals(listOf(expectedUserAgent), reqA.headers.values("User-Agent"))
+
+        val reqB = server.takeRequest()
+        assertEquals("GET", reqB.method)
+        assertEquals("/b", reqB.url.encodedPath)
+        assertEquals(listOf("s=1"), reqB.headers.values("Cookie"))
+        assertEquals(listOf(expectedUserAgent), reqB.headers.values("User-Agent"))
+        assertEquals(
+            listOf("s" to "1"),
+            cookieStore.loadForRequest(server.url("/b")).map { it.name to it.value },
+        )
+    } finally {
+        server.close()
     }
 }

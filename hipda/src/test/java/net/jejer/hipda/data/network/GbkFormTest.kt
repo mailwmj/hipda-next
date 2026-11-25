@@ -105,6 +105,7 @@ class GbkFormTest {
             val client = HttpClientModule.provideOkHttpClient(
                 siteCookieStore = InMemorySiteCookieStore(),
                 userAgentProvider = DefaultUserAgentProvider(),
+                transportInterceptor = TransportInterceptor(delegateFactory = { null }),
             )
             val request = Request.Builder()
                 .url(server.url("/forum/post.php?action=reply"))

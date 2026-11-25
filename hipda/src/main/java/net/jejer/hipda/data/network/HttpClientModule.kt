@@ -1,8 +1,10 @@
 package net.jejer.hipda.data.network
 
+import android.content.Context
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
@@ -19,9 +21,16 @@ object HttpClientModule {
 
     @Provides
     @Singleton
+    fun provideTransportInterceptor(
+        @ApplicationContext context: Context,
+    ): TransportInterceptor = TransportInterceptor.create(context)
+
+    @Provides
+    @Singleton
     fun provideOkHttpClient(
         siteCookieStore: SiteCookieStore,
         userAgentProvider: UserAgentProvider,
+        transportInterceptor: TransportInterceptor,
     ): OkHttpClient =
         OkHttpClient.Builder()
             .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -32,5 +41,6 @@ object HttpClientModule {
             .addInterceptor(ManualRedirectInterceptor())
             .addInterceptor(BrowserHeaderInterceptor(userAgentProvider))
             .addInterceptor(AppCookieInterceptor(siteCookieStore))
+            .addInterceptor(transportInterceptor)
             .build()
 }
