@@ -98,15 +98,17 @@ class TinkAeadProvider @VisibleForTesting internal constructor(
         val secondError = try {
             return keysetBackend.buildAead(normalizedKeysetName)
         } catch (e: Exception) {
-            if (!isRecoverableKeysetError(e)) throw e
-            e.addSuppressed(firstError)
+            if (e !== firstError) {
+                e.addSuppressed(firstError)
+            }
+            if (!isMasterKeyRecoveryError(e)) throw e
             e
         }
 
-        // Stage 2: Rebuilding under the existing master key still failed (e.g. the Android
-        // Keystore alias itself was permanently invalidated). Delete the stale master key
-        // alias, clear the keyset entry, and perform one final rebuild. If that still fails,
-        // fail closed — never degrade to plaintext.
+        // Stage 2: Rebuilding under the existing master key still failed with a Keystore/crypto
+        // error (e.g. the Android Keystore alias itself was permanently invalidated). Delete the
+        // stale master key alias, clear the keyset entry, and perform one final rebuild. If that
+        // still fails, fail closed — never degrade to plaintext.
         try {
             keysetBackend.deleteMasterKeyAlias()
             keysetBackend.clearKeysetEntry(normalizedKeysetName)
@@ -130,6 +132,9 @@ class TinkAeadProvider @VisibleForTesting internal constructor(
             error is IllegalArgumentException ||
             error is ClassCastException ||
             error is ProviderException
+
+    private fun isMasterKeyRecoveryError(error: Throwable): Boolean =
+        error is GeneralSecurityException || error is ProviderException
 
     private class LazyAeadSerializer<T>(
         private val wrappedSerializer: Serializer<T>,
