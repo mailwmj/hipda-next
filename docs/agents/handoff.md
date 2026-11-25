@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-25 12:15 +07）
+# 负责人交接说明（2026-11-25 14:20 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -17,14 +17,15 @@
   - C4b 导航随滚动与键盘隐藏、内容留白、按压缩放（R-C4b APPROVE + V-C4b PASS `@6e92adc`，C4b-fix1 核对 PASS `@6396593`）→ `4229253`
   - A5a WebView UA 统一与 Cookie 桥（R-A5a 阻断“清除 cf_clearance 未覆盖域变体”修复后复核 APPROVE `@3c9e3b3`）→ `4d90818`
   - A4b 站点访问网关与独立恢复 Dispatcher（V-A4b 阻断“solver 挂起致网关卡死”修复后复验 PASS `@137376a`）→ `0247458`
+  - A5b 透明 ChallengeActivity 与后台自动过盾（R-A5b 两阻断 + V-A5b 4 探针 FAIL 经修复轮 1 闭合，复审复验 PASS `@449cf13`）→ `b8c3975`
+  - A6 可见验证面板与原地等待/冷却提示（R-A6 APPROVE、V-A6 PASS；收尾轮将 `ChallengeSolveStateMachine` 并入 `WebViewChallengeSolver` 并经 R-A5b 复审 `@f0e0a15`）→ `8999d94`
 - 卡片全文在 `/home/mir/Documents/hipda-next.wt/_cards/<卡号>.md`（含 `-fix1` 修改轮与 `R-`/`V-` 审查验证卡），详细报告在 `_reports/`，通用条款在 `_cards/_common.md`。
 
 ## 2. 进行中
 
 | 卡号 | 分支 / worktree | 会话 | 状态 |
 |---|---|---|---|
-| A5b 透明 ChallengeActivity 与后台自动过盾 | `card/A5b-challenge-host` / `../hipda-next.wt/A5b` | 实现 `03e0ce89` | 实现中（基于 `0247458`；完成后 Carbon 审查 + Hydrogen 探针验证） |
-| A6 可见验证面板与原地等待/冷却提示 | `card/A6-challenge-panel` / `../hipda-next.wt/A6` | 待派发 | 卡片已起草（`_cards/A6.md`），待 A5b 合并后确认签名与基线派发 |
+| B1b debug 样本导出工具页 | `card/B1b-sample-export` / `../hipda-next.wt/B1b` | 实现 `38bab35a` | 实现中（基于 `8999d94`；审查卡 `_cards/R-B1b.md` 已起草，本卡不需要 V 卡） |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 助理 `1b4eb15f` | 常驻复用中 |
 
 - M4 外壳阶段验收（C1–C5b 全部已合并）待用户真机核验真实模糊与帧率。
@@ -32,7 +33,7 @@
 - 本机有 Android SDK（mise 安装，见 lesson.md），可本地录制 Roborazzi 基线。
 
 ## 3. 后续主干路径
-- A 线：`A5b → A6（遗留已写入 _cards/A6.md）→ B1b`。**B1b 完成后找用户**：登录、确认抓到版块页（M1 验收）、按清单导出脱敏样本，随后解锁 B2–B9 与 D2/D4–D9。
+- A 线：`A1–A6` 已全部合入 `main`；当前推进 `B1b`。**B1b 完成后找用户**：登录、确认抓到版块页（M1 验收）、按清单导出脱敏样本，随后解锁 B2–B9 与 D2/D4–D9。
 - C 线：C1–C5b 已全部合入 `main`，M4 外壳阶段验收待用户真机（核验真实模糊与帧率）。
 - 第三批建议（未落实，后续卡带上）：R-C5b 复核建议 `HiPressFeedbackNode.onDetach` 复位 `anim`、`displayedCount`/`displayedChar` 改普通引用；V-C4a 浅色毛玻璃在强对比文字上的真实模糊观感待 M4 真机校准。
 
@@ -42,7 +43,11 @@
 
 - **→ C4a（已写入卡片）**：R-C1 R2 — `HiTypography.kt` 删除样式级 `capFontScale`/`cappedForChrome`（统一使用子树级 `HiCappedFontScale`）、删除未改动的 M3 默认 `label*` 槽位、删除 M0-2 占位 `ComposeFoundationPreview.kt` 及其单测 `ComposeFoundationPreviewTest.kt`（一并清掉 `createComposeRule` v1→v2 弃用警告）。
 - **→ A3a（已写入卡片）/ A4**：A2 备注 — OkHttp 5 Android 的 `Cookie.parse` 解析带 `Domain=` 的 Cookie 会通过 `AssetManager` 读 `PublicSuffixDatabase.list`，单测需用 Robolectric 并在 `@Before` 调 `OkHttp.initialize(ApplicationProvider.getApplicationContext())`。
-- **→ B1b**：R-B1a 建议 8 — 给用户的导出清单里必须明确提示：“我的帖子 / 我的回复 / 收藏”含真实 `tid`/`pid` 可在论坛反查发帖人，建议挑选公开普通帖或使用测试号导出。
+- **→ B1b（已写入卡片）**：R-B1a 建议 8 — 给用户的导出清单里必须明确提示：“我的帖子 / 我的回复 / 收藏”含真实 `tid`/`pid` 可在论坛反查发帖人，建议挑选公开普通帖或使用测试号导出。
+- **→ E 线接入验证提示与面板**：
+  - R-A6 S3：E 线接入时为 `ChallengeStatusView` 补齐未满 2s 时的原加载指示插槽；验证面板的 `HiTheme` 接入用户主题配置。
+  - R-A6 S4：复用 `ChallengeState.effectiveAt`，并将 `HiLoadingSpinner` 公开去重。
+  - V-A6：340dp 窄屏 + 2x 字号下验证面板副行过长时做省略处理，避免挤占内容区。
 - **→ B7 / B8 / B9**：
   - A1 S4（**重要**）：Discuz! 7.2 很可能把 6 位十进制实体（`&#128512;` 等补充平面 Emoji）二次转义为 `&amp;#128512;`（旧版在 jsoup `.text()`/`.attr()` 之后仍须调 `EmojiParser.parseToUnicode`，见 `HiParserThreadList.java:88`、`HiParserThreadDetail.java:89`、`PostFragment.java:701-705`、`TextViewWithEmoticon.java:112`）。新解析器与 E2a 渲染必须做第二次实体解码并用真实样本验证（需真机确认）。
   - B1a 备注：jsoup 1.24.1 的 `selectFirst`/`first`/`last` 含 `@org.jspecify.annotations.Nullable`，Kotlin 2.4 泛型推断会报错；`:core-parser` 内继续用 `select(selector).firstOrNull()` 规避（或以后加 `compileOnly("org.jspecify:jspecify")`）。
