@@ -9,7 +9,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 
 /** 导航胶囊、导航轨与底部工具条文字的最大系统缩放倍数（product-design.md §4.1）。 */
@@ -149,27 +148,6 @@ fun hiTypographyTokens(
         materialTypography = typography,
     )
 }
-
-/**
- * 纯函数版本：将单个 [TextStyle] 在给定系统字体缩放下的有效放大倍数限制在 [maxFontScale] 以内。
- * 当系统缩放不超过上限时原样返回。
- */
-fun TextStyle.capFontScale(
-    currentFontScale: Float,
-    maxFontScale: Float = HI_CHROME_MAX_FONT_SCALE,
-): TextStyle {
-    if (currentFontScale <= maxFontScale || maxFontScale <= 0f) return this
-    val factor = maxFontScale / currentFontScale
-    return copy(
-        fontSize = if (fontSize.isSpecified && fontSize.isSp) (fontSize.value * factor).sp else fontSize,
-        lineHeight = if (lineHeight.isSpecified && lineHeight.isSp) (lineHeight.value * factor).sp else lineHeight,
-    )
-}
-
-/** Composable 扩展：将导航栏或工具条内单个 [TextStyle] 的系统字体放大限制在 1.25 倍以内。 */
-@Composable
-fun TextStyle.cappedForChrome(maxFontScale: Float = HI_CHROME_MAX_FONT_SCALE): TextStyle =
-    capFontScale(currentFontScale = LocalDensity.current.fontScale, maxFontScale = maxFontScale)
 
 /** 将整个导航胶囊、导航轨或底部工具条子树内的字体缩放上限钳制到 [maxFontScale]（默认 1.25 倍）。 */
 @Composable
