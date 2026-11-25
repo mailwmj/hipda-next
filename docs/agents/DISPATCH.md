@@ -54,6 +54,7 @@
 - 界面卡另加：优先用 Compose 标准组件，手写 `Layout`/`Modifier.Node`/状态机要说明理由；生产代码不含只为测试存在的代码；超过估计行数 1.5 倍先自查简化。（第三批三张 C 卡都写到估计的 2–3 倍，见 lesson.md）
 - 代理最后一条回复不超过 600 字，结论在前；详细证据写到 `/home/mir/Documents/hipda-next.wt/_reports/<卡号>.md`。
 - 修改轮的小改动由负责人助理（Neon 新会话或 OPS 会话，不是实现者本人）对照审查项核对，结论写到 `_reports/<卡号>-fixcheck.md`；大段重写或修阻断项仍由原审查者复核。
+- 卡片与报告的工作副本在 `/home/mir/Documents/hipda-next.wt/_cards`、`_reports`（代理按绝对路径读写）；每张卡合并后由负责人助理把对应卡片、审查/验证卡和报告同步到仓库 `docs/agents/cards/`、`docs/agents/reports/` 存档。
 
 ## 6. 决策记录
 - 用户的决定记在 `docs/agents/decisions.md`。
