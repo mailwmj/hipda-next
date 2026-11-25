@@ -237,8 +237,8 @@ class DefaultSmsRepository internal constructor(
             when (val parsed = SmsParser.parseSmsSendResult(postResponse.html)) {
                 SmsSendResult.Success -> {
                     val sentAt = nowMs()
-                    val currentUid = authRepository.currentAccount.value?.uid
                     synchronized(cooldownLock) {
+                        val currentUid = authRepository.currentAccount.value?.uid
                         if (activeUidAtStart == null || currentUid == activeUidAtStart) {
                             cooldownOwnerUid = currentUid
                             _cooldownUntilMs.value = sentAt + SMS_COOLDOWN_MS
@@ -367,8 +367,8 @@ class DefaultSmsRepository internal constructor(
             "尚未登录",
             "请先登录",
             "您需要先登录",
-            "无权进行当前操作",
         )
+        private const val LOGGED_IN_NOPERM_MARKER = "您已经登录"
 
         internal fun computeRemainingCooldownSeconds(nowMs: Long, cooldownUntilMs: Long): Int {
             val remainingMs = cooldownUntilMs - nowMs
@@ -380,8 +380,10 @@ class DefaultSmsRepository internal constructor(
          * Custom `isUnauthenticated` predicate for `pm.php?action=send...&inajax=1` XML responses.
          *
          * Returns `false` immediately for [SmsSendResult.Success] so user message bodies echoed
-         * inside `div.summary` can never falsely trigger a duplicate send; returns `true` only on
-         * explicit Discuz! unauthenticated XML errors or unexpected logged-out HTML fallbacks.
+         * inside `div.summary` can never falsely trigger a duplicate send, and returns `false` for
+         * logged-in group-restricted `NOPERM` errors (`您已经登录` / bare `无权进行当前操作`).
+         * Returns `true` only on explicit Discuz! unauthenticated XML errors or unexpected
+         * logged-out HTML fallbacks.
          */
         internal fun isSmsAjaxUnauthenticated(response: ForumHtmlResponse): Boolean {
             val parsed = SmsParser.parseSmsSendResult(response.html)
@@ -396,6 +398,9 @@ class DefaultSmsRepository internal constructor(
                 return true
             }
             val errorText = (parsed as SmsSendResult.Failed).message
+            if (errorText.contains(LOGGED_IN_NOPERM_MARKER)) {
+                return false
+            }
             return UNAUTH_AJAX_MARKERS.any { marker -> errorText.contains(marker) }
         }
     }

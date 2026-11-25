@@ -5,12 +5,14 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.core.app.ApplicationProvider
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -744,6 +746,192 @@ class NotifyRepositoryTest {
         // New notification arrives on server (3 -> 4) -> delta 1 appears immediately
         stack.notifyRepo.updateFromPageMeta(PromptCounts(thread = 4))
         assertEquals(1, stack.notifyRepo.notifyUnreadCount.value)
+    }
+
+    @Test
+    fun rD7S2_updateFromPageMetaZero_clearsPersistedSuppressedWatermarkPreventingPostRestartSuppression() = runBlocking {
+        val sharedFile = File(tempFolder.newFolder(), "notify_read_state.preferences_pb")
+        val scope1 = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val stack1 = createStack(storeFile = sharedFile, repoScope = scope1)
+            withTimeout(3.seconds) { stack1.authRepo.currentAccount.first { it?.uid == "10000" } }
+
+            // Mark all read before loading notice.php -> persists suppressedServerNotifyCount = 3
+            stack1.notifyRepo.updateFromPageMeta(PromptCounts(thread = 3))
+            stack1.notifyRepo.markAllNotificationsRead()
+            assertEquals(3, stack1.readStateStore.getState("10000").suppressedServerNotifyCount)
+
+            // Server header drops to 0 via another page load -> must also clear persisted watermark to 0
+            stack1.notifyRepo.updateFromPageMeta(PromptCounts(thread = 0))
+            withTimeout(3.seconds) {
+                stack1.readStateStore.observeState("10000").first { it.suppressedServerNotifyCount == 0 }
+            }
+            assertEquals(0, stack1.readStateStore.getState("10000").suppressedServerNotifyCount)
+        } finally {
+            scope1.cancel()
+            scope1.coroutineContext[Job]?.join()
+        }
+
+        // Restart process on the same DataStore file -> 3 new notifications must NOT be suppressed to 0
+        val scope2 = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val stack2 = createStack(storeFile = sharedFile, repoScope = scope2)
+            withTimeout(3.seconds) { stack2.authRepo.currentAccount.first { it?.uid == "10000" } }
+            assertEquals(0, stack2.readStateStore.getState("10000").suppressedServerNotifyCount)
+
+            stack2.notifyRepo.updateFromPageMeta(PromptCounts(thread = 3))
+            assertEquals(
+                "Fresh 3 notifications after restart must not be suppressed by stale watermark",
+                3,
+                stack2.notifyRepo.notifyUnreadCount.value,
+            )
+        } finally {
+            scope2.cancel()
+            scope2.coroutineContext[Job]?.join()
+        }
+    }
+
+    @Test
+    fun rD7S3_pollUnreadCounts_guardsAlertErrorAndHandlesDataStoreWriteIoExceptionInPollAndGetNotifications() = runBlocking {
+        // 1. pollUnreadCounts must intercept !hasContainer && alert_error instead of zeroing counts
+        val stack = createStack()
+        stack.notifyRepo.updateSmsUnreadState(setOf("20001"))
+        stack.notifyRepo.updateFromPageMeta(PromptCounts(thread = 4))
+        assertEquals(1, stack.notifyRepo.smsUnreadCount.value)
+        assertEquals(4, stack.notifyRepo.notifyUnreadCount.value)
+
+        val alertErrorHtml = """
+            <!DOCTYPE html>
+            <html><head><meta http-equiv="Content-Type" content="text/html; charset=gbk" /></head><body>
+              <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+              <div class="alert_error">论坛临时维护，请稍后再试</div>
+            </body></html>
+        """.trimIndent()
+        server.enqueue(gbkHtmlResponse(alertErrorHtml))
+
+        val errorPoll = stack.notifyRepo.pollUnreadCounts(AccessPriority.BackgroundSilent)
+        assertTrue("Expected Failed on alert_error without container, got $errorPoll", errorPoll is NotificationPollResult.Failed)
+        assertEquals("论坛临时维护，请稍后再试", (errorPoll as NotificationPollResult.Failed).message)
+        assertEquals("Alert error must not wipe existing smsUnreadCount", 1, stack.notifyRepo.smsUnreadCount.value)
+        assertEquals("Alert error must not wipe existing notifyUnreadCount", 4, stack.notifyRepo.notifyUnreadCount.value)
+
+        // 2. DataStore write IOException must NOT escape pollUnreadCounts or getNotifications
+        val throwingDataStore = object : DataStore<Preferences> {
+            override val data = kotlinx.coroutines.flow.flowOf(emptyPreferences())
+            override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences {
+                throw IOException("ENOSPC: No space left on device")
+            }
+        }
+        val ioFailingStore = NotifyReadStateStore(throwingDataStore)
+        val ioFailingRepo = DefaultNotifyRepository(
+            forumHttpClient = stack.forumClient,
+            settingsRepository = settingsRepository,
+            authRepository = stack.authRepo,
+            readStateStore = ioFailingStore,
+            nowMs = { virtualClockMs.get() },
+            scope = scope,
+        )
+        // Set suppressedServerNotifyCount > 0 in memory so pollUnreadCounts(notifyTotal=0) attempts disk clear
+        ioFailingRepo.updateFromPageMeta(PromptCounts(thread = 2))
+        ioFailingRepo.markAllNotificationsRead()
+
+        val zeroPromptHtml = """
+            <!DOCTYPE html>
+            <html><head><meta http-equiv="Content-Type" content="text/html; charset=gbk" /></head><body>
+              <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+              <div class="promptcontent">
+                <a id="prompt_systempm">系统消息 (0)</a>
+                <a id="prompt_friend">好友消息 (0)</a>
+                <a id="prompt_threads">帖子消息 (0)</a>
+              </div>
+              <p class="nodata">暂无数据</p>
+            </body></html>
+        """.trimIndent()
+        server.enqueue(gbkHtmlResponse(zeroPromptHtml))
+        val pollRes = ioFailingRepo.pollUnreadCounts(AccessPriority.BackgroundSilent)
+        assertTrue("Disk-full IOException must not escape pollUnreadCounts, got $pollRes", pollRes is NotificationPollResult.Success)
+
+        // getNotifications write IOException also falls back gracefully instead of throwing
+        server.enqueue(gbkHtmlResponse(syntheticNotifyFeedHtml(includeNewMarkers = true)))
+        val feedRes = ioFailingRepo.getNotifications()
+        assertTrue("Disk-full IOException must not escape getNotifications, got $feedRes", feedRes is MessageResult.Success)
+        assertEquals(5, (feedRes as MessageResult.Success).data.entries.size)
+    }
+
+    @Test
+    fun rD7S4b_coldStartHydration_restoresNotifyUnreadCountAndSuppressedWatermarkBeforeGetNotifications() = runBlocking {
+        // Part A: Cold start restores persisted localUnreadKeys -> notifyUnreadCount == 4 before getNotifications()
+        val unreadFile = File(tempFolder.newFolder(), "notify_read_state_unread.preferences_pb")
+        val scopeA1 = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val stackA1 = createStack(storeFile = unreadFile, repoScope = scopeA1)
+            server.enqueue(gbkHtmlResponse(syntheticNotifyFeedHtml(includeNewMarkers = true)))
+            val loaded = (stackA1.notifyRepo.getNotifications() as MessageResult.Success).data
+            stackA1.notifyRepo.markNotificationRead(loaded.entries.first().key)
+            assertEquals(4, stackA1.notifyRepo.notifyUnreadCount.value)
+        } finally {
+            scopeA1.cancel()
+            scopeA1.coroutineContext[Job]?.join()
+        }
+
+        val scopeA2 = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val stackA2 = createStack(storeFile = unreadFile, repoScope = scopeA2)
+            // Do NOT call getNotifications(): cold-start hydrateAccount must restore notifyUnreadCount == 4
+            withTimeout(3.seconds) {
+                stackA2.notifyRepo.notifyUnreadCount.first { it == 4 }
+            }
+            assertEquals(4, stackA2.notifyRepo.notifyUnreadCount.value)
+        } finally {
+            scopeA2.cancel()
+            scopeA2.coroutineContext[Job]?.join()
+        }
+
+        // Part B: Cold start restores persisted suppressedServerNotifyCount == 3 before getNotifications()
+        val suppressedFile = File(tempFolder.newFolder(), "notify_read_state_suppressed.preferences_pb")
+        val scopeB1 = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val stackB1 = createStack(storeFile = suppressedFile, repoScope = scopeB1)
+            withTimeout(3.seconds) { stackB1.authRepo.currentAccount.first { it?.uid == "10000" } }
+            stackB1.notifyRepo.updateFromPageMeta(PromptCounts(thread = 3))
+            stackB1.notifyRepo.markAllNotificationsRead()
+            assertEquals(3, stackB1.readStateStore.getState("10000").suppressedServerNotifyCount)
+        } finally {
+            scopeB1.cancel()
+            scopeB1.coroutineContext[Job]?.join()
+        }
+
+        val scopeB2 = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val stackB2 = createStack(storeFile = suppressedFile, repoScope = scopeB2)
+            withTimeout(3.seconds) { stackB2.authRepo.currentAccount.first { it?.uid == "10000" } }
+            // Wait until cold-start hydration finishes by probing via pollUnreadCounts (which calls ensureAccountSynchronized -> hydrateAccount)
+            val stalePromptPollHtml = """
+                <!DOCTYPE html>
+                <html><head><meta http-equiv="Content-Type" content="text/html; charset=gbk" /></head><body>
+                  <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+                  <div class="promptcontent">
+                    <a id="prompt_systempm">系统消息 (0)</a>
+                    <a id="prompt_friend">好友消息 (0)</a>
+                    <a id="prompt_threads">帖子消息 (3)</a>
+                  </div>
+                  <p class="nodata">暂无数据</p>
+                </body></html>
+            """.trimIndent()
+            server.enqueue(gbkHtmlResponse(stalePromptPollHtml))
+            val pollResult = stackB2.notifyRepo.pollUnreadCounts(AccessPriority.BackgroundSilent)
+            assertTrue(pollResult is NotificationPollResult.Success)
+            assertEquals(
+                "Hydrated suppressedServerNotifyCount=3 must suppress stale server count 3 without calling getNotifications()",
+                0,
+                (pollResult as NotificationPollResult.Success).snapshot.notifyUnreadCount,
+            )
+            stackB2.notifyRepo.updateFromPageMeta(PromptCounts(thread = 4))
+            assertEquals(1, stackB2.notifyRepo.notifyUnreadCount.value)
+        } finally {
+            scopeB2.cancel()
+            scopeB2.coroutineContext[Job]?.join()
+        }
     }
 
     @Test
