@@ -1,19 +1,21 @@
 # 真机操作清单
 
-适用版本：`main` @ `d45b6a2`（含 C4c 三栏外壳、G1 毛玻璃调参与 debug 调参面板）。M1 与 M4 已于 2026-11-25 验收通过，第一、二节留作记录。
+适用版本：`main` @ `5ce63dc`（含 C4c 三栏外壳、G2 液态玻璃 Kyant backdrop 与调参面板）。M1 与 M4 已于 2026-11-25 验收通过，第一、二节留作记录。
 
 ## 0. 取安装包
 
 debug 包在 CI 产物里（私有仓库，需登录 GitHub）：
 
-- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45608688264> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
-- 命令行：`gh run download 45608688264 -R mailwmj/hipda-next -n debug-apk`
+- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45631455644> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
+- 命令行：`gh run download 45631455644 -R mailwmj/hipda-next -n debug-apk`
 
 安装：`adb install -r hipda-debug.apk`。包名 `net.jejer.hipda.next`，可与旧版并存。
 
 > 2026-11-25 第一次实测因 UA 含 `Android` 拿到手机版模板而全部失败，已由 A5c 修复。请先卸载旧的 debug 包（或直接覆盖安装），重新登录后再抓取；遇到 Cloudflare 验证时留意能否在 WebView 里正常通过。
 
-## 当前待办：毛玻璃调参（约 5 分钟）
+## 当前待办：液态玻璃预览（可选，约 5 分钟）
+
+> 这一版只有底部胶囊是液态玻璃（Android 13+ 有折射）。顶栏与回复面板两档要等 C4d 合入，最终参数届时一起定；现在先看折射效果和帧率感受，有意见可先反馈。
 
 1. 安装上面的新包（覆盖安装即可）。
 2. 打开「**HiPDA 预览**」→「**外壳**」→ 打开「**调参**」面板。
