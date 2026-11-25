@@ -1,6 +1,8 @@
 package net.jejer.hipda.ui.designsystem.glass
 
 import android.app.Application
+import android.app.UiModeManager
+import android.content.ContentResolver
 import android.content.Intent
 import android.os.Build
 import android.os.Looper
@@ -12,6 +14,13 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
@@ -25,6 +34,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowUIModeManager
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34])
@@ -273,5 +284,149 @@ class GlassEnvironmentTest {
         fakeSource.update { it.copy(isPowerSaveMode = false) }
         composeRule.waitForIdle()
         composeRule.assertAllGlassSurfacesBlurActive(true)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun stateIn_defaultWhileSubscribed_releasesUpstreamListenerWhenNoCollectors() = runTest {
+        var activeSubscriptions = 0
+        val baseSignals = GlassEnvironmentSignals(
+            sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            isPowerSaveMode = false,
+            isReduceTransparencyEnabled = false,
+            isHighContrastTextEnabled = false,
+        )
+        val trackedSource = object : GlassEnvironmentSignalSource {
+            override fun currentSignals(): GlassEnvironmentSignals = baseSignals
+            override fun observeSignals(): Flow<GlassEnvironmentSignals> = callbackFlow {
+                activeSubscriptions += 1
+                trySend(baseSignals)
+                awaitClose { activeSubscriptions -= 1 }
+            }
+        }
+
+        val stateFlow = GlassEnvironment(trackedSource).stateIn(backgroundScope)
+        runCurrent()
+        assertEquals("Should not subscribe upstream without active collectors", 0, activeSubscriptions)
+
+        val collector = launch { stateFlow.collect {} }
+        runCurrent()
+        assertEquals("Should subscribe upstream once a collector attaches", 1, activeSubscriptions)
+
+        collector.cancel()
+        runCurrent()
+        assertEquals("Should keep upstream alive during 5s stop timeout", 1, activeSubscriptions)
+
+        advanceTimeBy(5_001L)
+        runCurrent()
+        assertEquals("Should release upstream listener after 5s with no collectors", 0, activeSubscriptions)
+    }
+
+    @Test
+    fun androidSignalSource_settingsSecurityException_fallsBackToFalseWithoutCrash() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val restrictedReader = object : SettingsIntReader {
+            override fun getGlobalInt(resolver: ContentResolver, key: String, default: Int): Int =
+                throw SecurityException("Global setting $key not readable")
+
+            override fun getSystemInt(resolver: ContentResolver, key: String, default: Int): Int =
+                throw SecurityException("System setting $key not readable")
+
+            override fun getSecureInt(resolver: ContentResolver, key: String, default: Int): Int =
+                throw SecurityException("Secure setting $key not readable")
+        }
+
+        val env = GlassEnvironment(
+            AndroidGlassEnvironmentSignalSource(
+                context = context,
+                sdkIntProvider = { Build.VERSION_CODES.UPSIDE_DOWN_CAKE },
+                settingsReader = restrictedReader,
+            ),
+        )
+        val state = env.currentState()
+        assertTrue(state.blurEnabled)
+        assertTrue(state.reasons.isEmpty())
+    }
+
+    @Test
+    fun androidSignalSource_contentObserver_emitsOnGlobalAndSecureSettingsChanges() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val resolver = context.contentResolver
+        val blurUri = Settings.Global.getUriFor(AndroidGlassEnvironmentSignalSource.SETTING_DISABLE_WINDOW_BLURS)
+        val highContrastUri = Settings.Secure.getUriFor(
+            AndroidGlassEnvironmentSignalSource.SETTING_HIGH_TEXT_CONTRAST_ENABLED,
+        )
+
+        val env = GlassEnvironment(AndroidGlassEnvironmentSignalSource(context))
+        try {
+            env.observeState().test {
+                assertTrue(awaitItem().blurEnabled)
+
+                Settings.Global.putInt(resolver, AndroidGlassEnvironmentSignalSource.SETTING_DISABLE_WINDOW_BLURS, 1)
+                resolver.notifyChange(blurUri, null)
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                val reduceTransparency = awaitItem()
+                assertFalse(reduceTransparency.blurEnabled)
+                assertEquals(setOf(GlassDegradationReason.REDUCE_TRANSPARENCY), reduceTransparency.reasons)
+
+                Settings.Global.putInt(resolver, AndroidGlassEnvironmentSignalSource.SETTING_DISABLE_WINDOW_BLURS, 0)
+                resolver.notifyChange(blurUri, null)
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertTrue(awaitItem().blurEnabled)
+
+                Settings.Secure.putInt(
+                    resolver,
+                    AndroidGlassEnvironmentSignalSource.SETTING_HIGH_TEXT_CONTRAST_ENABLED,
+                    1,
+                )
+                resolver.notifyChange(highContrastUri, null)
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                val highContrast = awaitItem()
+                assertFalse(highContrast.blurEnabled)
+                assertEquals(setOf(GlassDegradationReason.HIGH_CONTRAST_TEXT), highContrast.reasons)
+
+                cancelAndIgnoreRemainingEvents()
+            }
+        } finally {
+            Settings.Global.putInt(resolver, AndroidGlassEnvironmentSignalSource.SETTING_DISABLE_WINDOW_BLURS, 0)
+            Settings.Secure.putInt(
+                resolver,
+                AndroidGlassEnvironmentSignalSource.SETTING_HIGH_TEXT_CONTRAST_ENABLED,
+                0,
+            )
+        }
+    }
+
+    @Test
+    fun androidSignalSource_api34UiModeContrastListener_updatesObserveState() = runTest {
+        // Robolectric 4.18.1 shadows UiModeManager.setContrast + ContrastChangeListener (API 34+),
+        // whereas ShadowAccessibilityManager does not yet shadow API 36 isHighContrastTextEnabled.
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val uiModeManager = context.getSystemService(UiModeManager::class.java)
+        val shadowUiMode = Shadow.extract<ShadowUIModeManager>(uiModeManager)
+        shadowUiMode.setContrast(0.0f)
+
+        val env = GlassEnvironment(AndroidGlassEnvironmentSignalSource(context))
+        try {
+            env.observeState().test {
+                assertTrue(awaitItem().blurEnabled)
+
+                shadowUiMode.setContrast(0.5f)
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                val mediumContrast = awaitItem()
+                assertFalse(mediumContrast.blurEnabled)
+                assertEquals(setOf(GlassDegradationReason.HIGH_CONTRAST_TEXT), mediumContrast.reasons)
+
+                shadowUiMode.setContrast(0.0f)
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                val recovered = awaitItem()
+                assertTrue(recovered.blurEnabled)
+                assertTrue(recovered.reasons.isEmpty())
+
+                cancelAndIgnoreRemainingEvents()
+            }
+        } finally {
+            shadowUiMode.setContrast(0.0f)
+        }
     }
 }

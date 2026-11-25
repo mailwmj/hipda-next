@@ -2,6 +2,7 @@ package net.jejer.hipda.ui.designsystem.glass
 
 import android.app.UiModeManager
 import android.content.BroadcastReceiver
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -101,8 +102,24 @@ class GlassEnvironment @Inject constructor(
     fun observeState(): Flow<GlassEnvironmentState> =
         signalSource.observeSignals().map { it.toEnvironmentState() }.distinctUntilChanged()
 
-    fun stateIn(scope: CoroutineScope): StateFlow<GlassEnvironmentState> =
-        observeState().stateIn(scope, SharingStarted.Eagerly, currentState())
+    fun stateIn(
+        scope: CoroutineScope,
+        started: SharingStarted = SharingStarted.WhileSubscribed(5_000),
+    ): StateFlow<GlassEnvironmentState> =
+        observeState().stateIn(scope, started, currentState())
+}
+
+internal interface SettingsIntReader {
+    fun getGlobalInt(resolver: ContentResolver, key: String, default: Int): Int =
+        Settings.Global.getInt(resolver, key, default)
+    fun getSystemInt(resolver: ContentResolver, key: String, default: Int): Int =
+        Settings.System.getInt(resolver, key, default)
+    fun getSecureInt(resolver: ContentResolver, key: String, default: Int): Int =
+        Settings.Secure.getInt(resolver, key, default)
+
+    companion object {
+        val Default: SettingsIntReader = object : SettingsIntReader {}
+    }
 }
 
 /**
@@ -121,10 +138,15 @@ class GlassEnvironment @Inject constructor(
 class AndroidGlassEnvironmentSignalSource internal constructor(
     context: Context,
     private val sdkIntProvider: () -> Int,
+    private val settingsReader: SettingsIntReader = SettingsIntReader.Default,
 ) : GlassEnvironmentSignalSource {
 
     @Inject
-    constructor(@ApplicationContext context: Context) : this(context, { Build.VERSION.SDK_INT })
+    constructor(@ApplicationContext context: Context) : this(
+        context = context,
+        sdkIntProvider = { Build.VERSION.SDK_INT },
+        settingsReader = SettingsIntReader.Default,
+    )
 
     private val appContext: Context = context.applicationContext
 
@@ -191,9 +213,9 @@ class AndroidGlassEnvironmentSignalSource internal constructor(
 
     private fun readReduceTransparency(): Boolean {
         val r = appContext.contentResolver
-        return safeSettingFlag { Settings.Global.getInt(r, SETTING_DISABLE_WINDOW_BLURS, 0) } ||
-            safeSettingFlag { Settings.Global.getInt(r, SETTING_REDUCE_TRANSPARENCY, 0) } ||
-            safeSettingFlag { Settings.System.getInt(r, SETTING_REDUCE_TRANSPARENCY, 0) }
+        return safeSettingFlag { settingsReader.getGlobalInt(r, SETTING_DISABLE_WINDOW_BLURS, 0) } ||
+            safeSettingFlag { settingsReader.getGlobalInt(r, SETTING_REDUCE_TRANSPARENCY, 0) } ||
+            safeSettingFlag { settingsReader.getSystemInt(r, SETTING_REDUCE_TRANSPARENCY, 0) }
     }
 
     private fun readHighContrastText(): Boolean {
@@ -206,7 +228,9 @@ class AndroidGlassEnvironmentSignalSource internal constructor(
             val um = appContext.getSystemService(UiModeManager::class.java)
             if (um != null && Api34ContrastBridge.isHighContrast(um)) return true
         }
-        return safeSettingFlag { Settings.Secure.getInt(appContext.contentResolver, SETTING_HIGH_TEXT_CONTRAST_ENABLED, 0) }
+        return safeSettingFlag {
+            settingsReader.getSecureInt(appContext.contentResolver, SETTING_HIGH_TEXT_CONTRAST_ENABLED, 0)
+        }
     }
 
     private inline fun safeSettingFlag(read: () -> Int): Boolean =

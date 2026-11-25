@@ -10,7 +10,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-private const val SPECIMEN_PHONE_411_QUALIFIER = "w411dp-h1260dp-xhdpi"
+private const val SPECIMEN_PHONE_411_QUALIFIER = "w411dp-h1800dp-xhdpi"
+private const val SPECIMEN_EXPANDED_900_QUALIFIER = "w900dp-h1120dp-xhdpi"
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -75,7 +76,7 @@ class HiThemeScreenshotTest {
     )
 
     @Test
-    @Config(qualifiers = HiScreenshotTestSupport.Qualifiers.EXPANDED_900)
+    @Config(qualifiers = SPECIMEN_EXPANDED_900_QUALIFIER)
     fun specimen_w900_light_step3() = captureSpecimen(
         name = "theme_specimen_w900_light_step3",
         themeMode = HiThemeMode.LIGHT,
@@ -84,7 +85,7 @@ class HiThemeScreenshotTest {
     )
 
     @Test
-    @Config(qualifiers = HiScreenshotTestSupport.Qualifiers.EXPANDED_900)
+    @Config(qualifiers = SPECIMEN_EXPANDED_900_QUALIFIER)
     fun specimen_w900_light_step5() = captureSpecimen(
         name = "theme_specimen_w900_light_step5",
         themeMode = HiThemeMode.LIGHT,
@@ -93,7 +94,7 @@ class HiThemeScreenshotTest {
     )
 
     @Test
-    @Config(qualifiers = HiScreenshotTestSupport.Qualifiers.EXPANDED_900)
+    @Config(qualifiers = SPECIMEN_EXPANDED_900_QUALIFIER)
     fun specimen_w900_dark_step3() = captureSpecimen(
         name = "theme_specimen_w900_dark_step3",
         themeMode = HiThemeMode.DARK,
@@ -102,7 +103,7 @@ class HiThemeScreenshotTest {
     )
 
     @Test
-    @Config(qualifiers = HiScreenshotTestSupport.Qualifiers.EXPANDED_900)
+    @Config(qualifiers = SPECIMEN_EXPANDED_900_QUALIFIER)
     fun specimen_w900_dark_step5() = captureSpecimen(
         name = "theme_specimen_w900_dark_step5",
         themeMode = HiThemeMode.DARK,
@@ -111,7 +112,7 @@ class HiThemeScreenshotTest {
     )
 
     @Test
-    @Config(qualifiers = HiScreenshotTestSupport.Qualifiers.EXPANDED_900)
+    @Config(qualifiers = SPECIMEN_EXPANDED_900_QUALIFIER)
     fun specimen_w900_pureBlack_step3() = captureSpecimen(
         name = "theme_specimen_w900_pure_black_step3",
         themeMode = HiThemeMode.DARK,
@@ -120,7 +121,7 @@ class HiThemeScreenshotTest {
     )
 
     @Test
-    @Config(qualifiers = HiScreenshotTestSupport.Qualifiers.EXPANDED_900)
+    @Config(qualifiers = SPECIMEN_EXPANDED_900_QUALIFIER)
     fun specimen_w900_pureBlack_step5() = captureSpecimen(
         name = "theme_specimen_w900_pure_black_step5",
         themeMode = HiThemeMode.DARK,

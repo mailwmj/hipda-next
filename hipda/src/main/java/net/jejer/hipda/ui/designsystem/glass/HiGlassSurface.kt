@@ -1,5 +1,6 @@
 package net.jejer.hipda.ui.designsystem.glass
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -125,6 +126,9 @@ fun resolveHiGlassStyleSpec(
 
 /**
  * 毛玻璃表面组件，仅用于主导航（底部胶囊、导航轨）与帖子详情底部工具条（同屏最多 2 块）。
+ *
+ * 激活态挂载 Haze 2.x 实时模糊；降级态不挂载 `hazeBlur`，直接绘制 94% 不透明纯色背景与细描边，
+ * 使底层 `HazeSourceNode` 在省电或降级模式下释放离屏 `GraphicsLayer`、不再每帧录制背景。
  */
 @Composable
 fun HiGlassSurface(
@@ -143,17 +147,22 @@ fun HiGlassSurface(
     val styleSpec = remember(colorScheme, darkTheme, blurEnabled, floating) {
         resolveHiGlassStyleSpec(colorScheme, darkTheme, blurEnabled, floating)
     }
-    val hazeStyle = remember(styleSpec) {
-        HazeBlurStyle {
-            blurEnabled(styleSpec.blurEnabled)
-            blurRadius(styleSpec.blurRadius)
-            noiseFactor(HiGlassTokens.NoiseFactor)
-            backgroundColor(styleSpec.surfaceColor)
-            colorEffects(listOf(HazeColorEffect.tint(styleSpec.activeTintColor)))
-            fallbackColorEffect(HazeColorEffect.tint(styleSpec.degradedSurfaceColor))
+    val surfaceModifier = if (styleSpec.blurEnabled) {
+        val hazeStyle = remember(styleSpec) {
+            HazeBlurStyle {
+                blurEnabled(true)
+                blurRadius(styleSpec.blurRadius)
+                noiseFactor(HiGlassTokens.NoiseFactor)
+                backgroundColor(styleSpec.surfaceColor)
+                colorEffects(listOf(HazeColorEffect.tint(styleSpec.activeTintColor)))
+                fallbackColorEffect(HazeColorEffect.tint(styleSpec.degradedSurfaceColor))
+            }
         }
+        val hazeInput = remember(state) { HazeInput.Sources(state.hazeState) }
+        Modifier.hazeBlur(input = hazeInput, style = hazeStyle)
+    } else {
+        Modifier.background(styleSpec.degradedSurfaceColor)
     }
-    val hazeInput = remember(state) { HazeInput.Sources(state.hazeState) }
 
     Box(
         modifier = modifier
@@ -173,7 +182,7 @@ fun HiGlassSurface(
                 } else Modifier,
             )
             .clip(shape)
-            .hazeBlur(input = hazeInput, style = hazeStyle)
+            .then(surfaceModifier)
             .border(width = styleSpec.borderWidth, color = styleSpec.borderColor, shape = shape),
         contentAlignment = contentAlignment,
     ) {

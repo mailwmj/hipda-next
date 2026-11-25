@@ -1,9 +1,15 @@
 package net.jejer.hipda.ui.designsystem.glass
 
 import android.app.Application
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -159,5 +165,48 @@ class HiGlassSurfaceTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun degradedMode_detachesHazeBlurAndReleasesSourceDemand() {
+        var envState by mutableStateOf(GlassEnvironmentState.BlurEnabled)
+        var capturedGlassState: HiGlassState? = null
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = envState) {
+                    val glassState = rememberHiGlassState()
+                    capturedGlassState = glassState
+                    Box(modifier = Modifier.size(200.dp, 120.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .hiGlassSource(glassState)
+                                .background(Color.Cyan),
+                        )
+                        HiGlassSurface(
+                            state = glassState,
+                            modifier = Modifier.size(160.dp, 64.dp),
+                        ) {
+                            Text("导航胶囊")
+                        }
+                    }
+                }
+            }
+        }
+
+        val hazeState = requireNotNull(capturedGlassState).hazeState
+        val demandGetter = hazeState.javaClass.methods.first { it.name.startsWith("getHasSourceDemand") }
+        assertTrue("Active blur should demand haze source", demandGetter.invoke(hazeState) as Boolean)
+        composeRule.assertAllGlassSurfacesBlurActive(true)
+
+        envState = GlassEnvironmentState(setOf(GlassDegradationReason.POWER_SAVE_MODE))
+        composeRule.waitForIdle()
+        assertEquals(
+            "Degraded mode must detach hazeBlur so HazeSourceNode releases offscreen layer",
+            false,
+            demandGetter.invoke(hazeState) as Boolean,
+        )
+        composeRule.assertAllGlassSurfacesBlurActive(false)
     }
 }
