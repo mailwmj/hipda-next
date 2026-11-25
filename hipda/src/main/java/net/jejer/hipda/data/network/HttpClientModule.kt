@@ -6,6 +6,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
+import net.jejer.hipda.data.network.cookie.SiteCookieStore
 import okhttp3.OkHttpClient
 
 @Module
@@ -18,12 +19,18 @@ object HttpClientModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient =
+    fun provideOkHttpClient(
+        siteCookieStore: SiteCookieStore,
+        userAgentProvider: UserAgentProvider,
+    ): OkHttpClient =
         OkHttpClient.Builder()
             .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .writeTimeout(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .followRedirects(false)
             .followSslRedirects(false)
+            .addInterceptor(ManualRedirectInterceptor())
+            .addInterceptor(BrowserHeaderInterceptor(userAgentProvider))
+            .addInterceptor(AppCookieInterceptor(siteCookieStore))
             .build()
 }

@@ -102,7 +102,10 @@ class GbkFormTest {
                     .build(),
             )
 
-            val client = HttpClientModule.provideOkHttpClient()
+            val client = HttpClientModule.provideOkHttpClient(
+                siteCookieStore = InMemorySiteCookieStore(),
+                userAgentProvider = DefaultUserAgentProvider(),
+            )
             val request = Request.Builder()
                 .url(server.url("/forum/post.php?action=reply"))
                 .post(gbkFormBody(listOf("message" to "中 文&=+😀")))
