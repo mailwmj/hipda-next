@@ -233,7 +233,6 @@ internal class MultiPaneTestHarness(
     fun RenderRoot(
         glassEnvironment: GlassEnvironmentState = GlassEnvironmentState.RefractionAndBlur,
         loginOverlayRenderer: LoginOverlayRenderer? = null,
-        secondaryListContent: (@Composable (ShellSidebarEntry, Boolean, (() -> Unit)?, PaddingValues, LazyListState, (ThreadNavArgs) -> Unit) -> Unit)? = null,
     ) {
         ProvideGlassEnvironment(state = glassEnvironment) {
             CompositionLocalProvider(LocalViewModelStoreOwner provides parentOwner) {
@@ -245,7 +244,6 @@ internal class MultiPaneTestHarness(
                     loginOverlayRenderer = loginOverlayRenderer,
                     hostViewModel = hostViewModel,
                     forumViewModel = forumViewModel,
-                    secondaryListContent = secondaryListContent,
                 )
             }
         }

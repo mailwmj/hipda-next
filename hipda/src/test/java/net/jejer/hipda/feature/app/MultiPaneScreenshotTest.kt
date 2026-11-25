@@ -1,13 +1,17 @@
 package net.jejer.hipda.feature.app
 
 import android.app.Application
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.flowOf
 import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
 import net.jejer.hipda.feature.common.ThreadNavArgs
@@ -16,6 +20,7 @@ import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
 import net.jejer.hipda.ui.shell.HiShellTestTags
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,9 +31,10 @@ import org.robolectric.annotation.GraphicsMode
 private const val QUALIFIER_HINGE_FALLBACK_701_841 = "w701dp-h841dp-xhdpi"
 
 /**
- * M5 E3 多栏核心 Roborazzi 截图基线（前缀 `multipane_`，共 18 张）：
+ * M5 E3 多栏核心 Roborazzi 截图基线（前缀 `multipane_`，共 21 张）：
  * - 6 宽 × 浅/深真实列表 + 详情协同（12 张）：`411×891`、`559×749`、`640×1024`、`749×559`（Fold8 `64|274|411`）、`933×696`、`1280×800`；
- * - 特殊态（3 张）：`749×559` 240dp 浮层侧栏展开、`933×696` 左栏主动收起 64dp、`933×696` 全屏阅读态；
+ * - 特殊态（6 张）：`749×559` 240dp 浮层侧栏展开、`933×696` 左栏主动收起 64dp、`933×696` 全屏阅读态、
+ *   `749×559` 空右栏占位、`933×696` 拖拽分隔线吸附均衡档、`411×891` 单栏二级页退场胶囊；
  * - `FoldingFeature` 铰链三态（3 张）：`749×559` 展平三栏、`749×559` 半折铰链双栏（左纯色顶栏 + 左紧凑胶囊 + 右详情）、`701×841` 铰链退单栏。
  */
 @RunWith(RobolectricTestRunner::class)
@@ -118,6 +124,31 @@ class MultiPaneScreenshotTest {
         enterFullScreen = true,
     )
 
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun multipane_w749_h559_empty_detail_light() = captureMultiPane(
+        name = "multipane_w749_h559_empty_detail_light",
+        themeMode = ThemeMode.LIGHT,
+        openThread = false,
+    )
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.EXPANDED_933_696)
+    fun multipane_w933_h696_balanced_split_light() = captureMultiPane(
+        name = "multipane_w933_h696_balanced_split_light",
+        themeMode = ThemeMode.LIGHT,
+        openThread = true,
+        dragDividerToBalanced = true,
+    )
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun multipane_w411_h891_detail_pill_hidden_light() = captureMultiPane(
+        name = "multipane_w411_h891_detail_pill_hidden_light",
+        themeMode = ThemeMode.LIGHT,
+        openThread = true,
+    )
+
     // ---- FoldingFeature 三态：展平三栏 / 铰链双栏 / 铰链退单栏（3 张） ----
 
     @Test
@@ -154,6 +185,7 @@ class MultiPaneScreenshotTest {
         sidebarCollapsedLandscape: Boolean = false,
         openModalDrawer: Boolean = false,
         enterFullScreen: Boolean = false,
+        dragDividerToBalanced: Boolean = false,
     ) {
         val harness = MultiPaneTestHarness(
             initialSettings = AppSettings(
@@ -186,6 +218,19 @@ class MultiPaneScreenshotTest {
         if (enterFullScreen) {
             composeRule.onNodeWithContentDescription("全屏阅读").performClick()
             composeRule.waitForIdle()
+        }
+        if (dragDividerToBalanced) {
+            val stepPx = with(composeRule.density) { 24.dp.toPx() }
+            composeRule.onNodeWithTag(HiShellTestTags.PaneDivider).performTouchInput {
+                down(center)
+                repeat(5) {
+                    moveBy(Offset(stepPx, 0f))
+                    advanceEventTime(16L)
+                }
+                up()
+            }
+            composeRule.waitForIdle()
+            assertEquals(PaneSplit.BALANCED, harness.settingsRepo.settingsFlow.value.paneSplitLandscape)
         }
 
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)

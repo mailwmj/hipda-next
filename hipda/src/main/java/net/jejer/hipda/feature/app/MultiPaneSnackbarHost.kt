@@ -12,6 +12,10 @@ import androidx.compose.material3.SnackbarVisuals
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
@@ -95,7 +99,7 @@ fun calculateSnackbarRegion(
     }
 }
 
-/** 多栏分区对齐 Snackbar 宿主：复用 [HiSnackbarHost] 并按 [SnackbarRegionBounds] 严格约束分区宽度。 */
+/** 多栏分区对齐 Snackbar 宿主：复用 [HiSnackbarHost]，并缓存最近非空分区使退场动画期间绝不跨分隔线/铰链跳变（R-E3 S1）。 */
 @Composable
 fun MultiPaneSnackbarHost(
     hostState: SnackbarHostState,
@@ -107,7 +111,11 @@ fun MultiPaneSnackbarHost(
     navBarsBottomDp: Dp,
     modifier: Modifier = Modifier,
 ) {
-    val target = (hostState.currentSnackbarData?.visuals as? PaneSnackbarVisuals)?.target ?: PaneSnackbarTarget.ContentArea
+    val currentVisuals = hostState.currentSnackbarData?.visuals as? PaneSnackbarVisuals
+    var cachedTarget by remember { mutableStateOf(PaneSnackbarTarget.ContentArea) }
+    if (currentVisuals != null) cachedTarget = currentVisuals.target
+    val target = currentVisuals?.target ?: cachedTarget
+
     val region = calculateSnackbarRegion(paneLayout, effectiveMiddleWidthDp, isFullScreen, target, bottomPillVisible, bottomPillClearanceDp, navBarsBottomDp)
     Box(modifier = modifier.fillMaxSize()) {
         Box(

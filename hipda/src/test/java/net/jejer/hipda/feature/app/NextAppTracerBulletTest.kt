@@ -276,13 +276,14 @@ class NextAppTracerBulletTest {
                 HiTheme {
                     val size = windowSizeState.value
                     val layout = calculateShellPaneLayout(size.width.value, size.height.value)
-                    BasicMultiPaneContainer(
+                    MultiPaneReadingContainer(
                         paneLayout = layout,
-                        selectedThread = selectedThreadState.value,
+                        appState = NextAppState(selectedThread = selectedThreadState.value),
                         hostViewModel = harness.hostViewModel,
                         contentPadding = PaddingValues(0.dp),
-                        onCloseThread = { selectedThreadState.value = null },
-                        forumContent = { chromeSpec, padding ->
+                        persistedPaneSplit = PaneSplit.DEFAULT,
+                        onPaneSplitChange = {},
+                        forumContent = { chromeSpec, padding, _ ->
                             val token = remember { Any() }
                             latestForumToken = token
                             val savedCounter = rememberSaveable { mutableIntStateOf(0) }
@@ -301,7 +302,7 @@ class NextAppTracerBulletTest {
                                 viewModel = harness.forumViewModel,
                             )
                         },
-                        detailContent = { args, chromeSpec, padding ->
+                        detailContent = { args, chromeSpec, padding, _, _ ->
                             val token = remember(args.tid) { Any() }
                             latestDetailToken = token
                             DisposableEffect(args.tid) { onDispose { detailDisposedCount += 1 } }

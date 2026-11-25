@@ -31,13 +31,17 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +84,8 @@ import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellPaneLayout
 import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
+import net.jejer.hipda.ui.shell.mapDestinationToSidebarEntry
+import net.jejer.hipda.ui.shell.toShellDestination
 
 @Immutable
 private sealed interface RightPaneSlot {
@@ -87,23 +93,73 @@ private sealed interface RightPaneSlot {
     val slotKey: Any
     data object Empty : RightPaneSlot { override val depth = 0; override val slotKey = "empty" }
     data class Thread(val args: ThreadNavArgs) : RightPaneSlot { override val depth = 0; override val slotKey = "thread:${args.tid}" }
-    data class Settings(val group: SettingsGroup) : RightPaneSlot { override val depth = 0; override val slotKey = "settings:${group.name}" }
+    data object Settings : RightPaneSlot { override val depth = 0; override val slotKey = "settings" }
     data class MineSubList(val entry: ShellSidebarEntry) : RightPaneSlot { override val depth = 0; override val slotKey = "mine:${sidebarSaveableKey(entry)}" }
     data class Drilldown(val entry: DetailDrilldownEntry, override val depth: Int) : RightPaneSlot {
         override val slotKey: Any = when (entry) {
             is DetailDrilldownEntry.UserProfile -> "drill:$depth:u:${entry.uid}"
-            is DetailDrilldownEntry.LinkedThread -> "drill:$depth:t:${entry.args.tid}"
         }
     }
 }
 
 /**
+ * 提升到 `HiAdaptiveShell` `AnimatedContent` 之外的槽位与可保存状态宿主（R-E3 B2）：
+ * 跨一级目的地共享同一 `SaveableStateHolder` 与 `detailMovables`，确保切页不丢列表/详情滚动位，
+ * 且同帖跨目的地移交时直接迁移唯一 `movableContentOf` 实例、绝不产生重复 `SaveableStateProvider` key。
+ */
+@Stable
+class MultiPaneSlotHolder internal constructor(
+    internal val hostViewModel: NextAppHostViewModel,
+    internal val saveableStateHolder: SaveableStateHolder,
+) {
+    internal var detailRenderer: @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, LazyListState, () -> Unit) -> Unit = { _, _, _, _, _ -> }
+    internal var activeThreadTids: Set<String> = emptySet()
+    internal val detailMovables = LinkedHashMap<String, @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, () -> Unit) -> Unit>()
+
+    internal fun detailMovableFor(tid: String) = detailMovables.getOrPut(tid) {
+        movableContentOf { args: ThreadNavArgs, chromeSpec: DetailChromeSpec, padding: PaddingValues, onBack: () -> Unit ->
+            val factory = rememberThreadViewModelProviderFactory()
+            val parentOwner = LocalViewModelStoreOwner.current
+            val extras = remember(parentOwner) {
+                (parentOwner as? HasDefaultViewModelProviderFactory)?.defaultViewModelCreationExtras ?: CreationExtras.Empty
+            }
+            key(args.tid) {
+                DisposableEffect(args.tid) {
+                    hostViewModel.onThreadMounted(args.tid)
+                    onDispose {
+                        hostViewModel.onThreadDisposed(args.tid)
+                        if (args.tid !in activeThreadTids) {
+                            detailMovables.remove(args.tid)
+                        }
+                    }
+                }
+                saveableStateHolder.SaveableStateProvider(key = detailSaveableKey(args.tid)) {
+                    val scopedOwner = remember(hostViewModel, args.tid, factory, extras) {
+                        hostViewModel.viewModelStoreOwnerForThread(args.tid, factory, extras)
+                    }
+                    val listState = rememberLazyListState()
+                    CompositionLocalProvider(LocalViewModelStoreOwner provides scopedOwner) {
+                        detailRenderer(args, chromeSpec, padding, listState, onBack)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun rememberMultiPaneSlotHolder(hostViewModel: NextAppHostViewModel): MultiPaneSlotHolder {
+    val saveableStateHolder = rememberSaveableStateHolder()
+    return remember(hostViewModel, saveableStateHolder) { MultiPaneSlotHolder(hostViewModel, saveableStateHolder) }
+}
+
+/**
  * M5 完整多栏阅读引擎（单栏 / 图标轨单栏 / 紧凑与完整三栏 / 物理铰链双栏 / 全屏阅读）：
- * - 三栏中右分隔线采用 Compose 标准 `AnchoredDraggable` + `HiMotion.spatialSnap()`，空右栏锚点集严格不含 `0dp`；
- * - 详情顶栏 `全屏阅读 / 显示列表` 经 `DetailChromeSpec.fullScreenState` 联动隐藏/恢复左中栏并释放中栏玻璃源；
- * - 中栏独立 `middleGlassState` + 右栏 `detailGlassState` 严格兄弟隔离，铰链双栏强制 `useGlassTopBar = false` 守 3 区域上限；
- * - `movableContentOf` + 按 `ForumListSource` / `tid` 键控的 `SaveableStateHolder` + `rememberLazyListState()`，
- *   实现跨形态 0 重建、切 `tid` 无键局部态彻底隔离与进程回收滚动位恢复。
+ * - 三栏中右分隔线由父容器 `Box` 横向门控手势驱动标准 `AnchoredDraggableState` + `HiMotion.spatialSnap()`，
+ *   不遮挡中栏右上「更多」/右栏左上「返回」及列表竖滑（R-E3 B1），空右栏锚点集严格不含 `0dp`（B4-E3 ①）；
+ * - 消费外层提升的 [slotHolder] 并按分支快照 [destination] 渲染，跨一级目的地保留全部 `LazyListState`
+ *   且切页过渡期间同页与同玻璃源绝不双份挂载（R-E3 B2）；
+ * - 详情顶栏 `全屏阅读 / 显示列表` 联动隐藏左中栏并释放中栏玻璃源；铰链双栏强制 `useGlassTopBar = false` 守 3 区域上限。
  */
 @Composable
 fun MultiPaneReadingContainer(
@@ -114,39 +170,43 @@ fun MultiPaneReadingContainer(
     persistedPaneSplit: PaneSplit,
     onPaneSplitChange: (PaneSplit) -> Unit,
     modifier: Modifier = Modifier,
+    destination: ShellDestination = appState.selectedDestination,
+    slotHolder: MultiPaneSlotHolder = rememberMultiPaneSlotHolder(hostViewModel),
     shellGlassState: HiGlassState? = null,
     onMiddlePaneWidthChanged: (Dp) -> Unit = {},
     forumContent: @Composable (ForumChromeSpec, PaddingValues, LazyListState) -> Unit,
     detailContent: @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, LazyListState, () -> Unit) -> Unit,
     secondaryListContent: @Composable (ShellSidebarEntry, Boolean, (() -> Unit)?, PaddingValues, LazyListState) -> Unit = { _, _, _, _, _ -> },
     mineMenuContent: @Composable (PaddingValues) -> Unit = {},
-    settingsDetailContent: @Composable (SettingsGroup, PaddingValues) -> Unit = { _, _ -> },
+    settingsDetailContent: @Composable (PaddingValues) -> Unit = {},
     userProfileContent: @Composable (DetailDrilldownEntry.UserProfile, Boolean, () -> Unit, PaddingValues) -> Unit = { _, _, _, _ -> },
 ) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val reducedMotion = HiTheme.isReducedMotion
-    val saveableStateHolder = rememberSaveableStateHolder()
     val middleGlassState = rememberHiGlassState()
+    val isActiveDestination = destination == appState.selectedDestination
+    val saveableStateHolder = slotHolder.saveableStateHolder
 
     val currentForumContent by rememberUpdatedState(forumContent)
-    val currentDetailContent by rememberUpdatedState(detailContent)
     val currentSecondaryList by rememberUpdatedState(secondaryListContent)
     val currentMineMenu by rememberUpdatedState(mineMenuContent)
     val currentSettingsDetail by rememberUpdatedState(settingsDetailContent)
     val currentUserProfile by rememberUpdatedState(userProfileContent)
     val latestOnSplitChange by rememberUpdatedState(onPaneSplitChange)
-    val latestActiveThreadTids by rememberUpdatedState(appState.activeThreadTids())
-
-    val detailMovables = remember(hostViewModel, saveableStateHolder) {
-        LinkedHashMap<String, @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, () -> Unit) -> Unit>()
+    if (isActiveDestination) {
+        slotHolder.detailRenderer = detailContent
+        slotHolder.activeThreadTids = appState.activeThreadTids()
     }
+
     val secondaryMovables = remember(saveableStateHolder) {
         LinkedHashMap<String, @Composable (ShellSidebarEntry, Boolean, (() -> Unit)?, PaddingValues) -> Unit>()
     }
 
-    LaunchedEffect(paneLayout.hasDetailPane, appState.hasDetailContent) {
-        if (!paneLayout.hasDetailPane || !appState.hasDetailContent) hostViewModel.exitFullScreenReading()
+    LaunchedEffect(isActiveDestination, paneLayout.hasDetailPane, appState.hasDetailContent) {
+        if (isActiveDestination && (!paneLayout.hasDetailPane || !appState.hasDetailContent)) {
+            hostViewModel.exitFullScreenReading()
+        }
     }
 
     val forumMovable = remember(saveableStateHolder) {
@@ -165,67 +225,63 @@ fun MultiPaneReadingContainer(
         }
     }
 
-    fun detailMovableFor(tid: String) = detailMovables.getOrPut(tid) {
-        movableContentOf { args: ThreadNavArgs, chromeSpec: DetailChromeSpec, padding: PaddingValues, onBack: () -> Unit ->
-            val factory = rememberThreadViewModelProviderFactory()
-            val parentOwner = LocalViewModelStoreOwner.current
-            val extras = remember(parentOwner) {
-                (parentOwner as? HasDefaultViewModelProviderFactory)?.defaultViewModelCreationExtras ?: CreationExtras.Empty
-            }
-            key(args.tid) {
-                DisposableEffect(args.tid) {
-                    hostViewModel.onThreadMounted(args.tid)
-                    onDispose {
-                        hostViewModel.onThreadDisposed(args.tid)
-                        if (args.tid !in latestActiveThreadTids) {
-                            saveableStateHolder.removeState(detailSaveableKey(args.tid))
-                            detailMovables.remove(args.tid)
-                        }
-                    }
-                }
-                saveableStateHolder.SaveableStateProvider(key = detailSaveableKey(args.tid)) {
-                    val scopedOwner = remember(hostViewModel, args.tid, factory, extras) {
-                        hostViewModel.viewModelStoreOwnerForThread(args.tid, factory, extras)
-                    }
-                    val listState = rememberLazyListState()
-                    CompositionLocalProvider(LocalViewModelStoreOwner provides scopedOwner) {
-                        currentDetailContent(args, chromeSpec, padding, listState, onBack)
-                    }
-                }
-            }
-        }
-    }
+    fun detailMovableFor(tid: String) = slotHolder.detailMovableFor(tid)
 
     val backAction = resolveMultiPaneBackAction(appState, paneLayout.layoutMode)
-    BackHandler(enabled = backAction != MultiPaneBackAction.PassToSystem) {
+    BackHandler(enabled = isActiveDestination && backAction != MultiPaneBackAction.PassToSystem) {
         hostViewModel.handleBack(paneLayout.layoutMode)
+    }
+
+    // 退场分支按自身 destination 快照解析条目，避免跨目的地过渡期间双份渲染目标页（R-E3 B2）
+    val branchSidebarEntry = if (appState.selectedSidebarEntry.toShellDestination() == destination) {
+        appState.selectedSidebarEntry
+    } else {
+        mapDestinationToSidebarEntry(
+            destination = destination,
+            activeForumFid = (appState.activeForumSource as? ForumListSource.Forum)?.fid,
+            activeMessageEntry = appState.activeMessageEntry,
+            activeMineSubPage = appState.activeMineSubPage,
+            lastVisitedMineEntry = appState.lastVisitedMineEntry,
+        )
+    }
+    val branchAppState = if (isActiveDestination) {
+        appState
+    } else {
+        appState.copy(
+            selectedDestination = destination,
+            selectedSidebarEntry = branchSidebarEntry,
+            selectedThread = null,
+            detailDrilldownStack = emptyList(),
+            isFullScreenReading = false,
+        )
     }
 
     val navBarsBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val detailPanePadding = remember(paneLayout.layoutMode, contentPadding, navBarsBottom) {
         if (paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) PaddingValues(bottom = navBarsBottom) else contentPadding
     }
-    val forumChromeSpec = remember(paneLayout.isSidebar, paneLayout.layoutMode, shellGlassState, middleGlassState) {
+    val forumChromeSpec = remember(isActiveDestination, paneLayout.isSidebar, paneLayout.layoutMode, shellGlassState, middleGlassState) {
         when {
+            !isActiveDestination -> ForumChromeSpec(!paneLayout.isSidebar, useGlassTopBar = false, externalGlassState = null)
             paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane -> ForumChromeSpec(true, useGlassTopBar = false, externalGlassState = shellGlassState)
             paneLayout.isSidebar -> ForumChromeSpec(false, useGlassTopBar = true, externalGlassState = middleGlassState)
             else -> ForumChromeSpec(true, useGlassTopBar = true, externalGlassState = shellGlassState)
         }
     }
-    val fullScreenToggle = remember(paneLayout.hasDetailPane, appState.isFullScreenReading, hostViewModel) {
-        if (paneLayout.hasDetailPane) FullScreenToggle(appState.isFullScreenReading, hostViewModel::toggleFullScreenReading) else null
+    val fullScreenToggle = remember(paneLayout.hasDetailPane, branchAppState.isFullScreenReading, hostViewModel) {
+        if (paneLayout.hasDetailPane) FullScreenToggle(branchAppState.isFullScreenReading, hostViewModel::toggleFullScreenReading) else null
     }
     val rootDetailChrome = remember(paneLayout.hasDetailPane, fullScreenToggle) { DetailChromeSpec(!paneLayout.hasDetailPane, fullScreenToggle) }
-    val drilldownDetailChrome = remember(fullScreenToggle) { DetailChromeSpec(true, fullScreenToggle) }
 
     val listPaneTitle = stringResource(R.string.shell_pane_list_title)
     val detailPaneTitle = stringResource(R.string.shell_pane_detail_title)
     val slideOffsetPx = with(density) { 24.dp.roundToPx() }
-    val listGlassModifier = if (shellGlassState != null) Modifier.hiGlassSource(shellGlassState) else Modifier
+    val listGlassModifier = if (isActiveDestination && shellGlassState != null) Modifier.hiGlassSource(shellGlassState) else Modifier
 
     @Composable
     fun RenderRightSlot(slot: RightPaneSlot, padding: PaddingValues) {
-        val emptyText = when (appState.selectedSidebarEntry) {
+        val currentSlot by rememberUpdatedState(slot)
+        val emptyText = when (branchSidebarEntry) {
             ShellSidebarEntry.Sms -> stringResource(R.string.shell_empty_select_sms)
             ShellSidebarEntry.Notify -> stringResource(R.string.shell_empty_select_notify)
             else -> stringResource(R.string.shell_empty_select_thread)
@@ -250,11 +306,17 @@ fun MultiPaneReadingContainer(
             when (target) {
                 RightPaneSlot.Empty -> Box(Modifier.fillMaxSize(), Alignment.Center) { HiEmptyState(emptyText) }
                 is RightPaneSlot.Thread -> detailMovableFor(target.args.tid)(target.args, rootDetailChrome, padding) { hostViewModel.handleBack(paneLayout.layoutMode) }
-                is RightPaneSlot.Settings -> currentSettingsDetail(target.group, padding)
-                is RightPaneSlot.MineSubList -> secondaryMovableFor(target.entry)(target.entry, false, null, padding)
+                RightPaneSlot.Settings -> currentSettingsDetail(padding)
+                is RightPaneSlot.MineSubList -> {
+                    // 铰链双栏右栏副列表晋升至左栏时，退场槽即时让出 secondaryMovableFor 唯一持有权，避免同帧双占 SaveableStateProvider key（V-E3 F1）
+                    if (target == currentSlot) {
+                        secondaryMovableFor(target.entry)(target.entry, false, null, padding)
+                    } else {
+                        Box(Modifier.fillMaxSize())
+                    }
+                }
                 is RightPaneSlot.Drilldown -> when (val e = target.entry) {
                     is DetailDrilldownEntry.UserProfile -> currentUserProfile(e, true, hostViewModel::popDetailDrilldown, padding)
-                    is DetailDrilldownEntry.LinkedThread -> detailMovableFor(e.args.tid)(e.args, drilldownDetailChrome, padding, hostViewModel::popDetailDrilldown)
                 }
             }
         }
@@ -262,7 +324,7 @@ fun MultiPaneReadingContainer(
 
     // 三栏（≥ 680dp）
     if (paneLayout.isThreePane) {
-        val anchorsDp = remember(paneLayout, appState.hasDetailContent) { resolvePaneSplitAnchors(paneLayout, appState.hasDetailContent) }
+        val anchorsDp = remember(paneLayout, branchAppState.hasDetailContent) { resolvePaneSplitAnchors(paneLayout, branchAppState.hasDetailContent) }
         val availableSplits = remember(anchorsDp) { anchorsDp.keys.toList() }
         val effectiveSplit = remember(persistedPaneSplit, anchorsDp) { resolveEffectivePaneSplit(persistedPaneSplit, anchorsDp) }
         val draggableAnchors = remember(anchorsDp, density) {
@@ -271,6 +333,9 @@ fun MultiPaneReadingContainer(
         val dragState = remember { AnchoredDraggableState(initialValue = effectiveSplit, anchors = draggableAnchors) }
         val currentAnchorsDp by rememberUpdatedState(anchorsDp)
         val currentEffectiveSplit by rememberUpdatedState(effectiveSplit)
+        var isDividerDragged by remember { mutableStateOf(false) }
+        var isDividerFocused by remember { mutableStateOf(false) }
+        var hadDetailContent by remember { mutableStateOf(branchAppState.hasDetailContent) }
 
         SideEffect {
             if (dragState.anchors != draggableAnchors) {
@@ -278,11 +343,20 @@ fun MultiPaneReadingContainer(
                 dragState.updateAnchors(draggableAnchors, newTarget = target)
             }
         }
+        // R-E3 S2：空右栏回退 DEFAULT 后若打开帖子，将持久化档位对齐至当前可见 DEFAULT，防止后续旋转意外收起列表
+        LaunchedEffect(isActiveDestination, branchAppState.hasDetailContent) {
+            val enteredDetail = !hadDetailContent && branchAppState.hasDetailContent
+            hadDetailContent = branchAppState.hasDetailContent
+            if (isActiveDestination && enteredDetail && persistedPaneSplit == PaneSplit.COLLAPSED && dragState.settledValue == PaneSplit.DEFAULT) {
+                latestOnSplitChange(PaneSplit.DEFAULT)
+            }
+        }
         LaunchedEffect(persistedPaneSplit) {
             val target = resolveEffectivePaneSplit(persistedPaneSplit, currentAnchorsDp)
             if (dragState.settledValue != target && !dragState.isAnimationRunning) dragState.snapTo(target)
         }
-        LaunchedEffect(dragState) {
+        LaunchedEffect(dragState, isActiveDestination) {
+            if (!isActiveDestination) return@LaunchedEffect
             snapshotFlow { dragState.settledValue }.distinctUntilChanged().collect { settled ->
                 if (settled != currentEffectiveSplit) latestOnSplitChange(settled)
             }
@@ -291,41 +365,63 @@ fun MultiPaneReadingContainer(
         val defaultPx = with(density) { paneLayout.middlePaneWidthDp.dp.toPx() }
         val minPx = draggableAnchors.minPosition().let { if (it.isNaN()) defaultPx else it }
         val maxPx = draggableAnchors.maxPosition().let { if (it.isNaN()) defaultPx else it }
-        val currentMiddlePx = if (appState.isFullScreenReading) 0f else dragState.offset.let { if (it.isNaN()) defaultPx else it }.coerceIn(minPx, maxPx)
+        val currentMiddlePx = if (branchAppState.isFullScreenReading) 0f else dragState.offset.let { if (it.isNaN()) defaultPx else it }.coerceIn(minPx, maxPx)
         val currentMiddleDp = with(density) { currentMiddlePx.toDp() }
-        SideEffect { onMiddlePaneWidthChanged(currentMiddleDp) }
+        if (isActiveDestination) SideEffect { onMiddlePaneWidthChanged(currentMiddleDp) }
 
         val rightSlot: RightPaneSlot = when {
-            appState.detailDrilldownStack.isNotEmpty() -> RightPaneSlot.Drilldown(appState.detailDrilldownStack.last(), appState.detailDrilldownStack.size)
-            appState.selectedThread != null -> RightPaneSlot.Thread(appState.selectedThread)
-            appState.selectedSidebarEntry == ShellSidebarEntry.Settings -> RightPaneSlot.Settings(appState.selectedSettingsGroup)
+            branchAppState.detailDrilldownStack.isNotEmpty() -> RightPaneSlot.Drilldown(branchAppState.detailDrilldownStack.last(), branchAppState.detailDrilldownStack.size)
+            branchAppState.selectedThread != null -> RightPaneSlot.Thread(branchAppState.selectedThread)
+            branchSidebarEntry == ShellSidebarEntry.Settings -> RightPaneSlot.Settings
             else -> RightPaneSlot.Empty
         }
 
-        Box(modifier = modifier.fillMaxSize()) {
+        val contentPx = with(density) { paneLayout.contentWidthDp.dp.toPx() }
+        val latestMiddlePx by rememberUpdatedState(currentMiddlePx)
+        val latestContentPx by rememberUpdatedState(contentPx)
+
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .paneDividerDrag(
+                    dragState = dragState,
+                    scope = scope,
+                    enabled = isActiveDestination && !branchAppState.isFullScreenReading && availableSplits.isNotEmpty(),
+                    reducedMotion = reducedMotion,
+                    getDividerX = { latestMiddlePx },
+                    getContentWidthPx = { latestContentPx },
+                    onDraggingChanged = { isDividerDragged = it },
+                    onSettled = { latestOnSplitChange(it) },
+                ),
+        ) {
             Row(modifier = Modifier.fillMaxSize()) {
-                if (!appState.isFullScreenReading && currentMiddlePx > 0.5f) {
+                if (!branchAppState.isFullScreenReading && currentMiddlePx > 0.5f) {
                     Box(Modifier.width(currentMiddleDp).fillMaxHeight().semantics { isTraversalGroup = true; paneTitle = listPaneTitle }) {
-                        if (appState.selectedDestination == ShellDestination.Forum) {
-                            forumMovable(appState.activeForumSource, forumChromeSpec, contentPadding)
+                        if (destination == ShellDestination.Forum) {
+                            forumMovable(branchAppState.activeForumSource, forumChromeSpec, contentPadding)
                         } else {
-                            secondaryMovableFor(appState.selectedSidebarEntry)(appState.selectedSidebarEntry, false, null, contentPadding)
+                            secondaryMovableFor(branchSidebarEntry)(branchSidebarEntry, false, null, contentPadding)
                         }
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxHeight().semantics { isTraversalGroup = true; paneTitle = detailPaneTitle }) {
-                    RenderRightSlot(rightSlot, detailPanePadding)
+                    if (isActiveDestination) RenderRightSlot(rightSlot, detailPanePadding)
                 }
             }
-            if (!appState.isFullScreenReading) {
-                val contentPx = with(density) { paneLayout.contentWidthDp.dp.toPx() }
+            if (!branchAppState.isFullScreenReading) {
                 val handleW = with(density) { PANE_DIVIDER_HIT_WIDTH.toPx() }
                 val handleOffsetPx = (currentMiddlePx - handleW / 2f).coerceIn(0f, (contentPx - handleW).coerceAtLeast(0f)).roundToInt()
                 val lineOffsetPx = (currentMiddlePx - handleOffsetPx).coerceIn(0f, (handleW - 1f).coerceAtLeast(0f)).roundToInt()
+                PaneDividerLine(
+                    active = isDividerDragged || isDividerFocused,
+                    modifier = Modifier.align(Alignment.CenterStart).offset { IntOffset(currentMiddlePx.roundToInt(), 0) },
+                )
                 PaneDividerHandle(
                     dragState = dragState,
                     availableSplits = availableSplits,
+                    isDragged = isDividerDragged,
                     visualLineOffsetPx = lineOffsetPx,
+                    onFocusedChanged = { isDividerFocused = it },
                     onSelectSplit = { target ->
                         scope.launch {
                             if (reducedMotion) dragState.snapTo(target) else dragState.animateTo(target, HiMotion.spatialSnap())
@@ -341,21 +437,21 @@ fun MultiPaneReadingContainer(
 
     // 物理铰链双栏（isSeparating == true && leftW ≥ 280dp && rightW ≥ 360dp）
     if (paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) {
-        val roles = resolveHingeTwoPaneRoles(appState)
+        val roles = resolveHingeTwoPaneRoles(branchAppState)
         val hingeGapDp = paneLayout.hingeBoundsDp?.let { (it.right - it.left).coerceAtLeast(0f).dp } ?: 0.dp
-        SideEffect { onMiddlePaneWidthChanged(if (appState.isFullScreenReading) 0.dp else paneLayout.middlePaneWidthDp.dp) }
+        if (isActiveDestination) SideEffect { onMiddlePaneWidthChanged(if (branchAppState.isFullScreenReading) 0.dp else paneLayout.middlePaneWidthDp.dp) }
 
         val rightSlot: RightPaneSlot = when (roles.right) {
-            HingeRightPaneRole.DetailDrilldown -> RightPaneSlot.Drilldown(appState.detailDrilldownStack.last(), appState.detailDrilldownStack.size)
-            HingeRightPaneRole.ThreadDetail -> appState.selectedThread?.let(RightPaneSlot::Thread) ?: RightPaneSlot.Empty
+            HingeRightPaneRole.DetailDrilldown -> RightPaneSlot.Drilldown(branchAppState.detailDrilldownStack.last(), branchAppState.detailDrilldownStack.size)
+            HingeRightPaneRole.ThreadDetail -> branchAppState.selectedThread?.let(RightPaneSlot::Thread) ?: RightPaneSlot.Empty
             HingeRightPaneRole.MineSubList -> roles.mineSubEntry?.let(RightPaneSlot::MineSubList) ?: RightPaneSlot.Empty
-            HingeRightPaneRole.SettingsDetail -> RightPaneSlot.Settings(appState.selectedSettingsGroup)
+            HingeRightPaneRole.SettingsDetail -> RightPaneSlot.Settings
             HingeRightPaneRole.EmptyPlaceholder -> RightPaneSlot.Empty
         }
 
         Box(modifier = modifier.fillMaxSize()) {
             Row(modifier = Modifier.fillMaxSize()) {
-                if (!appState.isFullScreenReading) {
+                if (!branchAppState.isFullScreenReading) {
                     val nonForumGlass = if (roles.left == HingeLeftPaneRole.Forum) Modifier else listGlassModifier
                     Box(
                         modifier = Modifier
@@ -365,12 +461,12 @@ fun MultiPaneReadingContainer(
                             .semantics { isTraversalGroup = true; paneTitle = listPaneTitle },
                     ) {
                         when (roles.left) {
-                            HingeLeftPaneRole.Forum -> forumMovable(appState.activeForumSource, forumChromeSpec, contentPadding)
-                            HingeLeftPaneRole.Messages -> secondaryMovableFor(appState.activeMessageEntry)(appState.activeMessageEntry, false, null, contentPadding)
+                            HingeLeftPaneRole.Forum -> forumMovable(branchAppState.activeForumSource, forumChromeSpec, contentPadding)
+                            HingeLeftPaneRole.Messages -> secondaryMovableFor(branchAppState.activeMessageEntry)(branchAppState.activeMessageEntry, false, null, contentPadding)
                             HingeLeftPaneRole.Search -> secondaryMovableFor(ShellSidebarEntry.Search)(ShellSidebarEntry.Search, false, null, contentPadding)
                             HingeLeftPaneRole.MineMenu -> currentMineMenu(contentPadding)
                             HingeLeftPaneRole.PromotedMineSubList -> {
-                                val promoted = roles.mineSubEntry ?: appState.selectedSidebarEntry
+                                val promoted = roles.mineSubEntry ?: branchSidebarEntry
                                 secondaryMovableFor(promoted)(promoted, true, { hostViewModel.returnToMineMenu(true) }, contentPadding)
                             }
                             HingeLeftPaneRole.SettingsGroups -> secondaryMovableFor(ShellSidebarEntry.Settings)(
@@ -381,10 +477,10 @@ fun MultiPaneReadingContainer(
                     if (hingeGapDp > 0.dp) Spacer(Modifier.width(hingeGapDp).fillMaxHeight())
                 }
                 Box(Modifier.weight(1f).fillMaxHeight().semantics { isTraversalGroup = true; paneTitle = detailPaneTitle }) {
-                    RenderRightSlot(rightSlot, detailPanePadding)
+                    if (isActiveDestination) RenderRightSlot(rightSlot, detailPanePadding)
                 }
             }
-            if (!appState.isFullScreenReading && hingeGapDp == 0.dp) {
+            if (!branchAppState.isFullScreenReading && hingeGapDp == 0.dp) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
@@ -399,23 +495,22 @@ fun MultiPaneReadingContainer(
     }
 
     // 单栏（< 600dp、矮屏、铰链退单栏）与 2 栏图标轨单栏（600–679dp）
-    SideEffect { onMiddlePaneWidthChanged(paneLayout.middlePaneWidthDp.dp) }
-    val showDetail = appState.detailDrilldownStack.isNotEmpty() || appState.selectedThread != null
-    val nonForumSingleGlass = if (!showDetail && appState.selectedDestination != ShellDestination.Forum) listGlassModifier else Modifier
+    if (isActiveDestination) SideEffect { onMiddlePaneWidthChanged(paneLayout.middlePaneWidthDp.dp) }
+    val showDetail = branchAppState.detailDrilldownStack.isNotEmpty() || branchAppState.selectedThread != null
+    val nonForumSingleGlass = if (!showDetail && destination != ShellDestination.Forum) listGlassModifier else Modifier
     Box(modifier = modifier.fillMaxSize().then(nonForumSingleGlass)) {
         when {
-            appState.detailDrilldownStack.isNotEmpty() -> when (val e = appState.detailDrilldownStack.last()) {
+            branchAppState.detailDrilldownStack.isNotEmpty() -> when (val e = branchAppState.detailDrilldownStack.last()) {
                 is DetailDrilldownEntry.UserProfile -> currentUserProfile(e, true, hostViewModel::popDetailDrilldown, detailPanePadding)
-                is DetailDrilldownEntry.LinkedThread -> detailMovableFor(e.args.tid)(e.args, drilldownDetailChrome, detailPanePadding, hostViewModel::popDetailDrilldown)
             }
-            appState.selectedThread != null -> detailMovableFor(appState.selectedThread.tid)(appState.selectedThread, rootDetailChrome, detailPanePadding) {
+            branchAppState.selectedThread != null -> detailMovableFor(branchAppState.selectedThread.tid)(branchAppState.selectedThread, rootDetailChrome, detailPanePadding) {
                 hostViewModel.handleBack(paneLayout.layoutMode)
             }
-            appState.selectedDestination == ShellDestination.Forum -> forumMovable(appState.activeForumSource, forumChromeSpec, contentPadding)
-            appState.selectedDestination == ShellDestination.Messages -> secondaryMovableFor(appState.activeMessageEntry)(appState.activeMessageEntry, false, null, contentPadding)
-            appState.selectedDestination == ShellDestination.Search -> secondaryMovableFor(ShellSidebarEntry.Search)(ShellSidebarEntry.Search, false, null, contentPadding)
-            appState.selectedDestination == ShellDestination.Mine -> {
-                val sub = if (paneLayout.isSidebar) appState.selectedSidebarEntry else appState.activeMineSubPage
+            destination == ShellDestination.Forum -> forumMovable(branchAppState.activeForumSource, forumChromeSpec, contentPadding)
+            destination == ShellDestination.Messages -> secondaryMovableFor(branchAppState.activeMessageEntry)(branchAppState.activeMessageEntry, false, null, contentPadding)
+            destination == ShellDestination.Search -> secondaryMovableFor(ShellSidebarEntry.Search)(ShellSidebarEntry.Search, false, null, contentPadding)
+            destination == ShellDestination.Mine -> {
+                val sub = if (paneLayout.isSidebar) branchSidebarEntry else branchAppState.activeMineSubPage
                 if (sub != null) {
                     val onBack = if (!paneLayout.isSidebar) ({ hostViewModel.returnToMineMenu(false) }) else null
                     secondaryMovableFor(sub)(sub, !paneLayout.isSidebar, onBack, contentPadding)

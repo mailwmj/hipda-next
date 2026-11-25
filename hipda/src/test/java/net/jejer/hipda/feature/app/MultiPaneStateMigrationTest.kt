@@ -1,6 +1,8 @@
 package net.jejer.hipda.feature.app
 
 import android.app.Application
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -23,15 +25,16 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.DpSize
@@ -44,10 +47,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
+import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
+import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
+import net.jejer.hipda.ui.shell.HiAdaptiveShell
 import net.jejer.hipda.ui.shell.HiShellTestTags
+import net.jejer.hipda.ui.shell.HiSidebarState
+import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import net.jejer.hipda.ui.shell.calculateShellPaneLayout
@@ -62,8 +73,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * E3 验收项 2（B4-E3 ② 非论坛入口 `History` / `Notify` 展平三栏 ↔ 半折铰链双栏无损晋升与回退、全宽迁移 0 额外请求）
- * 与验收项 3（R-E0 R2-S3 切 `tid` 无键局部态隔离 + R-E0 S4 `StateRestorationTester` 进程回收双 `LazyListState` 恢复）。
+ * E3 验收项 2（B4-E3 ② 非论坛入口展平↔半折无损迁移、全宽迁移 0 请求）、验收项 3（R-E0 R2-S3/S4）
+ * 与 R-E3 B2（跨一级目的地保留列表/详情滚动位与 0 额外请求、切页过渡期无双份页面/双份玻璃采样源）。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34])
@@ -117,9 +128,120 @@ class MultiPaneStateMigrationTest {
     }
 
     /**
-     * 闭合 R-BATCH5 B4-E3 ②：从 `History` 与 `Notify` 两个非论坛入口选帖后，
-     * 展平三栏（`isSeparating=false`）↔ 半折铰链双栏（`isSeparating=true`）↔ 按返回键：
-     * 左栏严格承接原来源子列表（绝不跳回论坛），帖子 VM/滚动位零丢失，返回准确回退至「我的菜单 | 浏览历史」或「提醒占位」。
+     * 闭合 R-E3 B2（单栏 + 三栏）：从论坛滚到中段 → 切到搜索、我的、消息 → 再切回论坛，
+     * 断言列表滚动位与详情滚动位均完整保留，且论坛列表请求增量为 0。
+     */
+    @Test
+    @Config(qualifiers = "w749dp-h891dp-xhdpi")
+    fun b2_forumScrollSwitchToSearchMineMessagesAndBack_preservesListAndDetailScrollWithZeroExtraRequests() {
+        val harness = MultiPaneTestHarness()
+        val windowSize = mutableStateOf(DpSize(411.dp, 891.dp))
+
+        composeRule.setContent {
+            MultiPaneResizableWindowHost(windowSize.value) { harness.RenderRoot() }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 单栏 411dp：论坛滚到中段 → 切搜索 → 切我的 → 切消息 → 切回论坛，列表位置不丢、0 额外请求
+        scrollFirstListBy(950f)
+        val singleScrollBefore = readFirstListScroll()
+        assertTrue("单栏论坛应滚离顶部，实际=$singleScrollBefore", singleScrollBefore > 0f)
+        val listCallsAfterInitial = harness.threadListRepo.refreshCalls.get()
+
+        listOf(ShellDestination.Search, ShellDestination.Mine, ShellDestination.Messages, ShellDestination.Forum).forEach { dest ->
+            composeRule.onNodeWithTag(HiShellTestTags.navItem(dest)).performClick()
+            composeRule.waitForIdle()
+        }
+        assertEquals("单栏跨目的地来回切论坛请求增量必须为 0", listCallsAfterInitial, harness.threadListRepo.refreshCalls.get())
+        assertEquals("单栏切回论坛后列表滚动位不得归零", singleScrollBefore, readFirstListScroll(), 2f)
+
+        // 2. 三栏 749dp：论坛保持中段滚动并打开 1008 滚到中段 → 切搜索 → 切浏览历史 → 切提醒 → 切回论坛，列表位置与详情位置不丢
+        windowSize.value = DpSize(749.dp, 559.dp)
+        composeRule.waitForIdle()
+        val threePaneListBefore = readListScrollInPane("列表")
+        assertTrue("三栏论坛应保留非零滚动位，实际=$threePaneListBefore", threePaneListBefore > 0f)
+
+        composeRule.onNodeWithText("测试帖子标题 1008").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        scrollListInPane("正文", 1000f)
+        val detailScrollBefore = readListScrollInPane("正文")
+        assertTrue("详情应滚离顶部，实际=$detailScrollBefore", detailScrollBefore > 0f)
+
+        listOf(
+            ShellSidebarEntry.Search,
+            ShellSidebarEntry.History,
+            ShellSidebarEntry.Notify,
+            ShellSidebarEntry.Forum(2),
+        ).forEach { entry ->
+            composeRule.runOnIdle { harness.hostViewModel.selectSidebarEntry(entry) }
+            composeRule.waitForIdle()
+        }
+
+        assertEquals("三栏跨目的地切回论坛请求增量必须为 0", listCallsAfterInitial, harness.threadListRepo.refreshCalls.get())
+        assertEquals("三栏切回论坛后列表滚动位不得丢失", threePaneListBefore, readListScrollInPane("列表"), 2f)
+
+        // 重新打开同一帖子 1008：SaveableStateHolder 保留其详情滚动位置不归零
+        composeRule.onNodeWithText("测试帖子标题 1008").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        assertEquals("切回论坛重开 1008 后详情滚动位应保留", detailScrollBefore, readListScrollInPane("正文"), 2f)
+    }
+
+    /**
+     * 闭合 R-E3 B2（过渡帧单实例与玻璃唯一性）：三栏下 `Search → Forum` 与 `Forum → Search` 交叉淡入淡出每一帧，
+     * 严禁双份挂载 `ForumPane` 或双份 `middleGlassState` `LayerBackdrop` / `HiGlassMarker`。
+     */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun b2_destinationCrossfade_neverMountsDuplicateForumPaneOrDuplicateGlassSource() {
+        val harness = MultiPaneTestHarness()
+        composeRule.setContent { harness.RenderRoot() }
+        composeRule.waitForIdle()
+
+        // 先稳态切至搜索页
+        composeRule.runOnIdle { harness.hostViewModel.selectSidebarEntry(ShellSidebarEntry.Search) }
+        composeRule.waitForIdle()
+
+        fun assertTransitionFramesClean(target: ShellSidebarEntry) {
+            composeRule.mainClock.autoAdvance = false
+            try {
+                composeRule.runOnIdle { harness.hostViewModel.selectSidebarEntry(target) }
+                repeat(16) { frame ->
+                    composeRule.mainClock.advanceTimeByFrame()
+                    val forumTitles = composeRule.onAllNodesWithText("Discovery").fetchSemanticsNodes()
+                    assertTrue(
+                        "R-E3 B2：切至 $target 第 $frame 帧严禁同时挂载两份 ForumPane，实际=${forumTitles.size}",
+                        forumTitles.size <= 1,
+                    )
+                    val glassMarkers = composeRule.onAllNodes(
+                        SemanticsMatcher.expectValue(HiGlassMarker, true),
+                        useUnmergedTree = true,
+                    ).fetchSemanticsNodes()
+                    assertTrue(
+                        "R-E3 B2：切至 $target 第 $frame 帧玻璃区域不得双份挂载（≤ 1），实际=${glassMarkers.size}",
+                        glassMarkers.size <= 1,
+                    )
+                    val audit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+                    assertTrue(
+                        "R-E3 B2：切至 $target 第 $frame 帧 LayerBackdrop 采样源不得双份挂载（≤ 1），实际=${audit.layerBackdropCount}",
+                        audit.layerBackdropCount <= 1,
+                    )
+                    assertEquals(0, audit.nestedLayerBackdropCount)
+                }
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            composeRule.waitForIdle()
+        }
+
+        // Search -> Forum 过渡逐帧验收
+        assertTransitionFramesClean(ShellSidebarEntry.Forum(2))
+        // Forum -> Search 过渡逐帧验收
+        assertTransitionFramesClean(ShellSidebarEntry.Search)
+    }
+
+    /**
+     * 闭合 R-BATCH5 B4-E3 ②：通过 `MultiPaneReadingContainer` 真实公开 `secondaryListContent` 槽位验证
+     * `History` 与 `Notify` 入口选帖后，展平三栏 ↔ 半折铰链双栏 ↔ 按返回键的无损晋升与回退。
      */
     @Test
     @Config(qualifiers = "w749dp-h559dp-xhdpi")
@@ -131,34 +253,85 @@ class MultiPaneStateMigrationTest {
         withWindowLayoutFlow(layoutFlow) {
             val harness = MultiPaneTestHarness()
             composeRule.setContent {
-                harness.RenderRoot(
-                    secondaryListContent = { entry, showBack, onBack, padding, listState, onOpenThread ->
-                        val headerTitle = when (entry) {
-                            ShellSidebarEntry.History -> "浏览历史列表"
-                            ShellSidebarEntry.Notify -> "提醒消息列表"
-                            else -> "其它入口:${entry::class.simpleName}"
-                        }
-                        val sampleTid = if (entry == ShellSidebarEntry.History) "7001" else "8001"
-                        Column(Modifier.fillMaxSize().padding(padding)) {
-                            Text(headerTitle)
-                            if (showBack && onBack != null) {
-                                Button(onClick = onBack) { Text("返回我的菜单") }
+                HiTheme {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        CompositionLocalProvider(LocalViewModelStoreOwner provides harness.parentOwner) {
+                            val appState by harness.hostViewModel.state.collectAsStateWithLifecycle()
+                            val slotHolder = rememberMultiPaneSlotHolder(harness.hostViewModel)
+                            HiAdaptiveShell(
+                                selected = appState.selectedDestination,
+                                onSelect = harness.hostViewModel::selectDestination,
+                                sidebarState = HiSidebarState(selectedEntry = appState.selectedSidebarEntry),
+                                onSelectSidebarEntry = harness.hostViewModel::selectSidebarEntry,
+                                hasDetailContent = appState.hasDetailContent,
+                                managesGlassSource = { true },
+                            ) { destination, contentPadding ->
+                                MultiPaneReadingContainer(
+                                    paneLayout = paneLayout,
+                                    appState = appState,
+                                    hostViewModel = harness.hostViewModel,
+                                    contentPadding = contentPadding,
+                                    persistedPaneSplit = PaneSplit.DEFAULT,
+                                    onPaneSplitChange = {},
+                                    destination = destination,
+                                    slotHolder = slotHolder,
+                                    shellGlassState = shellGlassState,
+                                    forumContent = { chromeSpec, padding, listState ->
+                                        ForumPane(
+                                            source = appState.activeForumSource,
+                                            chromeSpec = chromeSpec,
+                                            selectedTid = appState.selectedThread?.tid,
+                                            onSelectSource = harness.hostViewModel::selectForumSource,
+                                            onOpenThread = harness.hostViewModel::openThread,
+                                            onOpenLogin = {},
+                                            listState = listState,
+                                            contentPadding = padding,
+                                            shellContentScope = this,
+                                            viewModel = harness.forumViewModel,
+                                        )
+                                    },
+                                    detailContent = { args, chromeSpec, padding, listState, onBack ->
+                                        ThreadDetailPane(
+                                            args = args,
+                                            chromeSpec = chromeSpec,
+                                            onBack = onBack,
+                                            onOpenLogin = {},
+                                            listState = listState,
+                                            contentPadding = padding,
+                                        )
+                                    },
+                                    secondaryListContent = { entry, showBack, onBack, padding, listState ->
+                                        val headerTitle = when (entry) {
+                                            ShellSidebarEntry.History -> "浏览历史列表"
+                                            ShellSidebarEntry.Notify -> "提醒消息列表"
+                                            else -> "其它入口:${entry::class.simpleName}"
+                                        }
+                                        val sampleTid = if (entry == ShellSidebarEntry.History) "7001" else "8001"
+                                        Column(Modifier.fillMaxSize().padding(padding)) {
+                                            Text(headerTitle)
+                                            if (showBack && onBack != null) {
+                                                Button(onClick = onBack) { Text("返回我的菜单") }
+                                            }
+                                            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                                                items((1..15).toList()) { idx ->
+                                                    val tid = if (idx == 1) sampleTid else "${sampleTid}_$idx"
+                                                    Text(
+                                                        text = "$headerTitle 条目 $tid",
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable { harness.hostViewModel.openThread(ThreadNavArgs(tid, "来自$headerTitle 的帖子 $tid", 2)) }
+                                                            .padding(12.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    },
+                                    mineMenuContent = { padding -> Column(Modifier.fillMaxSize().padding(padding)) { Text("我的") } },
+                                )
                             }
-                            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                                items((1..15).toList()) { idx ->
-                                    val tid = if (idx == 1) sampleTid else "${sampleTid}_$idx"
-                                    Text(
-                                        text = "$headerTitle 条目 $tid",
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { onOpenThread(ThreadNavArgs(tid, "来自$headerTitle 的帖子 $tid", 2)) }
-                                            .padding(12.dp),
-                                    )
-                                }
-                            }
                         }
-                    },
-                )
+                    }
+                }
             }
             composeRule.waitForIdle()
 
@@ -171,7 +344,6 @@ class MultiPaneStateMigrationTest {
             val histVm = harness.createdDetailVms.last()
             val detailCallsBeforeFold = harness.threadDetailRepo.loadPageCalls.get()
 
-            // 展平三栏 → 半折铰链双栏
             layoutFlow.value = hingeLayout
             composeRule.waitForIdle()
 
@@ -181,19 +353,16 @@ class MultiPaneStateMigrationTest {
             composeRule.onNode(hasText("测试帖子标题 7001") and hasAnyAncestor(paneMatcher("正文"))).assertIsDisplayed()
             assertEquals("半折迁移不得重拉详情", detailCallsBeforeFold, harness.threadDetailRepo.loadPageCalls.get())
             assertSame(
-                "半折迁移必须保活同一 ThreadDetailViewModel",
                 histVm,
                 ViewModelProvider(harness.hostViewModel.viewModelStoreOwnerForThread("7001", harness.vmFactory))["thread:7001", ThreadDetailViewModel::class.java],
             )
             assertEquals("半折迁移绝不得跳回论坛", ShellSidebarEntry.History, harness.hostViewModel.state.value.selectedSidebarEntry)
 
-            // 半折铰链双栏按返回：退回「左：我的菜单 | 右：浏览历史」
             composeRule.runOnIdle { assertTrue(harness.hostViewModel.handleBack(ShellPaneLayoutMode.HingeTwoPane)) }
             composeRule.waitForIdle()
             composeRule.onNode(hasText("我的") and hasAnyAncestor(paneMatcher("列表"))).assertIsDisplayed()
             composeRule.onNode(hasText("浏览历史列表") and hasAnyAncestor(paneMatcher("正文"))).assertIsDisplayed()
 
-            // 再次展平回三栏：左栏高亮浏览历史、中栏承接浏览历史、右栏安静占位
             layoutFlow.value = flatLayout
             composeRule.waitForIdle()
             composeRule.onNodeWithTag(HiShellTestTags.NavigationSidebar).assertIsDisplayed()
@@ -218,7 +387,6 @@ class MultiPaneStateMigrationTest {
                 ViewModelProvider(harness.hostViewModel.viewModelStoreOwnerForThread("8001", harness.vmFactory))["thread:8001", ThreadDetailViewModel::class.java],
             )
 
-            // Notify 铰链双栏按返回：左栏仍留「提醒」，右栏显示提醒专属占位
             composeRule.runOnIdle { assertTrue(harness.hostViewModel.handleBack(ShellPaneLayoutMode.HingeTwoPane)) }
             composeRule.waitForIdle()
             composeRule.onNode(hasText("提醒消息列表") and hasAnyAncestor(paneMatcher("列表"))).assertIsDisplayed()
@@ -226,10 +394,6 @@ class MultiPaneStateMigrationTest {
         }
     }
 
-    /**
-     * 闭合 R-E0 R2-S3 反例 A：三栏下切换 `tidA → tidB` 时，详情槽内未显式按 `tid` 加键的
-     * `remember` 与 `rememberSaveable` 局部状态必须彻底隔离重置，杜绝跨帖串状态。
-     */
     @Test
     @Config(qualifiers = "w749dp-h559dp-xhdpi")
     fun rE0S3_threePaneSwitchTidAToTidB_isolatesUnkeyedRememberAndRememberSaveableLocalState() {
@@ -249,7 +413,6 @@ class MultiPaneStateMigrationTest {
                     onPaneSplitChange = {},
                     forumContent = { _, _, _ -> Text("列表") },
                     detailContent = { args, _, _, _, _ ->
-                        // 故意不给 remember / rememberSaveable 传 tid key，验证容器 key(args.tid)+SaveableStateProvider 隔离
                         var unkeyedMem by remember { mutableIntStateOf(0) }
                         var unkeyedSaveable by rememberSaveable { mutableIntStateOf(0) }
                         Column {
@@ -271,17 +434,12 @@ class MultiPaneStateMigrationTest {
         }
         composeRule.onNodeWithText("mem=3,save=3").assertIsDisplayed()
 
-        // 切至 tidB = 1002：无键局部态必须全部归零，绝不可把 3 串到 1002
         composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("1002", "帖子B", 2)) }
         composeRule.waitForIdle()
         composeRule.onNodeWithText("当前帖:1002").assertIsDisplayed()
         composeRule.onNodeWithText("mem=0,save=0").assertIsDisplayed()
     }
 
-    /**
-     * 闭合 R-E0 S4：通过 `StateRestorationTester` 模拟进程被杀重建（全新 `NextAppHostViewModel` 实例），
-     * 验证活跃版块、已打开帖子及论坛/详情两份 `LazyListState` 的滚动偏移均无损恢复。
-     */
     @Test
     @Config(qualifiers = "w749dp-h559dp-xhdpi")
     fun rE0S4_stateRestorationTester_processDeathRestoresForumThreadAndBothLazyListStates() {
@@ -297,7 +455,6 @@ class MultiPaneStateMigrationTest {
         val createdHostVms = mutableListOf<NextAppHostViewModel>()
 
         restorationTester.setContent {
-            // 每次进程重建都创建全新 NextAppHostViewModel 与父 ViewModelStoreOwner（内存状态完全清空）
             val hostVm = remember { NextAppHostViewModel(settingsRepo).also(createdHostVms::add) }
             val forumVm = remember { ForumViewModel(listRepo, searchRepo, settingsRepo, authRepo, gateway) }
             val factory = remember(hostVm, forumVm) {
@@ -305,7 +462,7 @@ class MultiPaneStateMigrationTest {
                     @Suppress("UNCHECKED_CAST")
                     override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = when {
                         modelClass.isAssignableFrom(NextAppHostViewModel::class.java) -> hostVm as T
-                        modelClass.isAssignableFrom(net.jejer.hipda.feature.forum.ForumViewModel::class.java) -> forumVm as T
+                        modelClass.isAssignableFrom(ForumViewModel::class.java) -> forumVm as T
                         modelClass.isAssignableFrom(ThreadDetailViewModel::class.java) -> ThreadDetailViewModel(detailRepo, gateway) as T
                         else -> throw IllegalArgumentException("Unexpected VM: $modelClass")
                     }
@@ -330,7 +487,6 @@ class MultiPaneStateMigrationTest {
         }
         composeRule.waitForIdle()
 
-        // 切至版块 fid=6，滚动论坛列表并打开帖子 6008，再滚动详情列表
         composeRule.onNodeWithTag(HiShellTestTags.sidebarEntry(ShellSidebarEntry.Forum(6))).performClick()
         composeRule.waitForIdle()
         scrollListInPane("列表", 800f)
@@ -345,7 +501,6 @@ class MultiPaneStateMigrationTest {
 
         assertEquals(1, createdHostVms.size)
 
-        // 模拟进程被杀与重建
         restorationTester.emulateSavedInstanceStateRestore()
         composeRule.waitForIdle()
 
@@ -357,10 +512,179 @@ class MultiPaneStateMigrationTest {
 
         val forumScrollAfter = readListScrollInPane("列表")
         val detailScrollAfter = readListScrollInPane("正文")
-        assertTrue("进程恢复后论坛列表滚动位不得归零，before=$forumScrollBefore after=$forumScrollAfter", forumScrollAfter > 0f)
-        assertTrue("进程恢复后帖子详情滚动位不得归零，before=$detailScrollBefore after=$detailScrollAfter", detailScrollAfter > 0f)
+        assertTrue("进程恢复后论坛列表滚动位不得归零", forumScrollAfter > 0f)
+        assertTrue("进程恢复后帖子详情滚动位不得归零", detailScrollAfter > 0f)
         assertEquals("论坛列表滚动位应近似无损恢复", forumScrollBefore, forumScrollAfter, 2f)
         assertEquals("帖子详情滚动位应近似无损恢复", detailScrollBefore, detailScrollAfter, 2f)
+    }
+
+    /**
+     * 闭合 V-E3 F1（阻断回归）：物理铰链双栏处于 `MineMenu | MineSubList(History)` 时，
+     * 滚动 `History` 副列表并点击条目使其晋升至左栏、再按真实系统返回键退回右栏、再点一次二次晋升，
+     * 全程在真实过渡动画帧内严禁触发 `Key sidebar:History was used multiple times` 崩溃，且副列表滚动位无损保留。
+     */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun f1_hingeTwoPane_mineSubListHistory_tapToPromoteAndBackToDemote_noCrashAndPreservesScrollState() {
+        val harness = MultiPaneTestHarness()
+        val hingeInfo = verticalHingeLayoutInfo(leftDp = 371f, rightDp = 378f, heightDp = 559f, density = 2f, isSeparating = true)
+        val layoutFlow = MutableStateFlow(WindowLayoutInfo(emptyList()))
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        withWindowLayoutFlow(layoutFlow) {
+            composeRule.setContent {
+                backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+                HiTheme {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        CompositionLocalProvider(LocalViewModelStoreOwner provides harness.parentOwner) {
+                            val appState by harness.hostViewModel.state.collectAsStateWithLifecycle()
+                            val slotHolder = rememberMultiPaneSlotHolder(harness.hostViewModel)
+                            HiAdaptiveShell(
+                                selected = appState.selectedDestination,
+                                onSelect = harness.hostViewModel::selectDestination,
+                                sidebarState = HiSidebarState(selectedEntry = appState.selectedSidebarEntry),
+                                onSelectSidebarEntry = harness.hostViewModel::selectSidebarEntry,
+                                hasDetailContent = appState.hasDetailContent,
+                                managesGlassSource = { true },
+                            ) { destination, contentPadding ->
+                                MultiPaneReadingContainer(
+                                    paneLayout = paneLayout,
+                                    appState = appState,
+                                    hostViewModel = harness.hostViewModel,
+                                    contentPadding = contentPadding,
+                                    persistedPaneSplit = PaneSplit.DEFAULT,
+                                    onPaneSplitChange = {},
+                                    destination = destination,
+                                    slotHolder = slotHolder,
+                                    shellGlassState = shellGlassState,
+                                    forumContent = { chromeSpec, padding, listState ->
+                                        ForumPane(
+                                            source = appState.activeForumSource,
+                                            chromeSpec = chromeSpec,
+                                            selectedTid = appState.selectedThread?.tid,
+                                            onSelectSource = harness.hostViewModel::selectForumSource,
+                                            onOpenThread = harness.hostViewModel::openThread,
+                                            onOpenLogin = {},
+                                            listState = listState,
+                                            contentPadding = padding,
+                                            shellContentScope = this,
+                                            viewModel = harness.forumViewModel,
+                                        )
+                                    },
+                                    detailContent = { args, chromeSpec, padding, listState, onBack ->
+                                        ThreadDetailPane(
+                                            args = args,
+                                            chromeSpec = chromeSpec,
+                                            onBack = onBack,
+                                            onOpenLogin = {},
+                                            listState = listState,
+                                            contentPadding = padding,
+                                        )
+                                    },
+                                    secondaryListContent = { entry, showBack, onBack, padding, listState ->
+                                        Column(Modifier.fillMaxSize().padding(padding)) {
+                                            if (showBack && onBack != null) {
+                                                Button(onClick = onBack) { Text("返回我的") }
+                                            }
+                                            Text("副列表:${entry::class.simpleName}")
+                                            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                                                items((1..30).toList()) { idx ->
+                                                    val tid = "${9100 + idx}"
+                                                    Text(
+                                                        text = "历史条目 $tid",
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable { harness.hostViewModel.openThread(ThreadNavArgs(tid, "历史帖 $tid", 2)) }
+                                                            .padding(vertical = 12.dp, horizontal = 16.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    },
+                                    mineMenuContent = { padding ->
+                                        Column(Modifier.fillMaxSize().padding(padding)) { Text("我的菜单") }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            composeRule.waitForIdle()
+            val dispatcher = requireNotNull(backDispatcher)
+
+            // 1. 展平三栏进 History 选帖 → 半折晋升 → 返回退回 Left:MineMenu | Right:MineSubList(History)
+            composeRule.runOnIdle {
+                harness.hostViewModel.selectSidebarEntry(ShellSidebarEntry.History)
+                harness.hostViewModel.openThread(ThreadNavArgs("9101", "历史帖 9101", 2))
+            }
+            composeRule.waitForIdle()
+            layoutFlow.value = hingeInfo
+            composeRule.waitForIdle()
+            composeRule.runOnIdle { dispatcher.onBackPressed() }
+            composeRule.waitForIdle()
+
+            assertTrue(
+                "应处于左栏 MineMenu",
+                composeRule.onAllNodes(hasAnyAncestor(paneMatcher("列表")) and hasText("我的菜单")).fetchSemanticsNodes().isNotEmpty(),
+            )
+            assertTrue(
+                "应处于右栏 MineSubList(History)",
+                composeRule.onAllNodes(hasAnyAncestor(paneMatcher("正文")) and hasText("副列表:History")).fetchSemanticsNodes().isNotEmpty(),
+            )
+
+            // 2. 在右栏 MineSubList(History) 滚到中段，记录滚动位后点击条目晋升至左栏（复现原 V-E3 F1 崩溃路径）
+            scrollListInPane("正文", 420f)
+            val scrollBeforePromote = readListScrollInPane("正文")
+            assertTrue("History 副列表应滚离顶部，实际=$scrollBeforePromote", scrollBeforePromote > 0f)
+
+            composeRule.mainClock.autoAdvance = false
+            try {
+                composeRule.onNodeWithText("历史条目 9110").assertIsDisplayed().performClick()
+                repeat(16) { composeRule.mainClock.advanceTimeByFrame() }
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            composeRule.waitForIdle()
+
+            assertTrue(
+                "V-E3 F1：点条目后 History 必须无崩溃晋升至左栏",
+                composeRule.onAllNodes(hasAnyAncestor(paneMatcher("列表")) and hasText("副列表:History")).fetchSemanticsNodes().isNotEmpty(),
+            )
+            composeRule.onNodeWithText("测试帖子标题 9110").assertIsDisplayed()
+            val scrollAfterPromote = readListScrollInPane("列表")
+            assertEquals("V-E3 F1：晋升左栏后 History 滚动位必须完整保留", scrollBeforePromote, scrollAfterPromote, 2f)
+
+            // 3. 真实系统返回键退回 Left:MineMenu | Right:MineSubList(History)，同样无崩溃且保留滚动位
+            composeRule.mainClock.autoAdvance = false
+            try {
+                composeRule.runOnIdle { dispatcher.onBackPressed() }
+                repeat(16) { composeRule.mainClock.advanceTimeByFrame() }
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            composeRule.waitForIdle()
+
+            assertTrue(
+                "回退后左栏应恢复 我的菜单",
+                composeRule.onAllNodes(hasAnyAncestor(paneMatcher("列表")) and hasText("我的菜单")).fetchSemanticsNodes().isNotEmpty(),
+            )
+            assertTrue(
+                "回退后右栏应恢复 History 副列表",
+                composeRule.onAllNodes(hasAnyAncestor(paneMatcher("正文")) and hasText("副列表:History")).fetchSemanticsNodes().isNotEmpty(),
+            )
+            val scrollAfterDemote = readListScrollInPane("正文")
+            assertEquals("V-E3 F1：回退右栏后 History 滚动位必须完整保留", scrollBeforePromote, scrollAfterDemote, 2f)
+
+            // 4. 再次点击另一条目二次晋升，验证多次往返稳定无崩溃
+            composeRule.onNodeWithText("历史条目 9111").assertIsDisplayed().performClick()
+            composeRule.waitForIdle()
+            assertTrue(
+                "二次晋升左栏应展示 History",
+                composeRule.onAllNodes(hasAnyAncestor(paneMatcher("列表")) and hasText("副列表:History")).fetchSemanticsNodes().isNotEmpty(),
+            )
+            composeRule.onNodeWithText("测试帖子标题 9111").assertIsDisplayed()
+        }
     }
 
     private fun scrollFirstListBy(deltaY: Float) {

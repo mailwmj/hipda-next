@@ -1,7 +1,6 @@
 package net.jejer.hipda.feature.app
 
 import androidx.lifecycle.HasDefaultViewModelProviderFactory
-import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
@@ -34,20 +33,17 @@ class ThreadScopedViewModelStoreOwner(
     override val defaultViewModelCreationExtras: CreationExtras = CreationExtras.Empty,
 ) : ViewModelStoreOwner, HasDefaultViewModelProviderFactory
 
-/** Activity 级宿主 ViewModel：托管按 `tid` 隔离的 [ViewModelStore]、单一导航状态源 [NextAppState]、5 级返回栈与分栏偏好持久化。 */
+/** Activity 级宿主 ViewModel：托管按 `tid` 隔离的 [ViewModelStore]、单一导航状态源 [NextAppState]、5 级返回栈与 `SettingsRepository` 分栏偏好持久化。 */
 @HiltViewModel
 class NextAppHostViewModel private constructor(
-    private val savedStateHandle: SavedStateHandle,
     private val settingsRepository: SettingsRepository?,
-    @Suppress("UNUSED_PARAMETER") hasRepository: Boolean,
+    @Suppress("UNUSED_PARAMETER") marker: Unit,
 ) : ViewModel() {
 
     @Inject
-    constructor(savedStateHandle: SavedStateHandle, settingsRepository: SettingsRepository) :
-        this(savedStateHandle, settingsRepository, true)
+    constructor(settingsRepository: SettingsRepository) : this(settingsRepository, Unit)
 
-    constructor() : this(SavedStateHandle(), null, false)
-    constructor(settingsRepository: SettingsRepository) : this(SavedStateHandle(), settingsRepository, true)
+    constructor() : this(null, Unit)
 
     private val threadStores = LinkedHashMap<String, ViewModelStore>()
     private val mountedThreadCounts = HashMap<String, Int>()
@@ -168,36 +164,6 @@ class NextAppHostViewModel private constructor(
         }
     }
 
-    fun selectMessageEntry(entry: ShellSidebarEntry) {
-        if (entry != ShellSidebarEntry.Sms && entry != ShellSidebarEntry.Notify) return
-        hasMutatedState = true
-        updateReleasingStaleThreads { cur ->
-            val changed = cur.activeMessageEntry != entry || cur.selectedDestination != ShellDestination.Messages
-            cur.copy(
-                selectedDestination = ShellDestination.Messages,
-                selectedSidebarEntry = entry,
-                activeMessageEntry = entry,
-                activeMineSubPage = null,
-                hingeShowingMineMenu = false,
-            ).clearDetailIf(changed)
-        }
-    }
-
-    fun openMineSubPage(entry: ShellSidebarEntry) {
-        if (!entry.isMineGroupChild && entry != ShellSidebarEntry.Settings) return
-        hasMutatedState = true
-        updateReleasingStaleThreads { cur ->
-            val changed = cur.selectedSidebarEntry != entry || cur.activeMineSubPage != entry
-            cur.copy(
-                selectedDestination = ShellDestination.Mine,
-                selectedSidebarEntry = entry,
-                lastVisitedMineEntry = entry,
-                activeMineSubPage = entry,
-                hingeShowingMineMenu = false,
-            ).clearDetailIf(changed)
-        }
-    }
-
     fun returnToMineMenu(keepSubListInRightPane: Boolean = false) {
         hasMutatedState = true
         updateReleasingStaleThreads { cur ->
@@ -206,21 +172,6 @@ class NextAppHostViewModel private constructor(
                 activeMineSubPage = if (keepSubListInRightPane && cur.selectedSidebarEntry.isMineGroupChild) cur.selectedSidebarEntry else null,
                 hingeShowingMineMenu = true,
             ).clearDetailIf(true)
-        }
-    }
-
-    fun selectSettingsGroup(group: SettingsGroup) {
-        hasMutatedState = true
-        updateReleasingStaleThreads { cur ->
-            cur.copy(
-                selectedDestination = ShellDestination.Mine,
-                selectedSidebarEntry = ShellSidebarEntry.Settings,
-                lastVisitedMineEntry = ShellSidebarEntry.Settings,
-                activeMineSubPage = ShellSidebarEntry.Settings,
-                hingeShowingMineMenu = false,
-                selectedSettingsGroup = group,
-                detailDrilldownStack = emptyList(),
-            )
         }
     }
 
@@ -240,11 +191,6 @@ class NextAppHostViewModel private constructor(
     fun pushUserProfile(uid: String, username: String) {
         hasMutatedState = true
         _state.update { it.copy(detailDrilldownStack = it.detailDrilldownStack + DetailDrilldownEntry.UserProfile(uid, username)) }
-    }
-
-    fun pushLinkedThread(args: ThreadNavArgs) {
-        hasMutatedState = true
-        _state.update { it.copy(detailDrilldownStack = it.detailDrilldownStack + DetailDrilldownEntry.LinkedThread(args)) }
     }
 
     fun popDetailDrilldown() {
@@ -287,7 +233,6 @@ class NextAppHostViewModel private constructor(
     }
 
     fun persistPaneSplit(isLandscape: Boolean, split: PaneSplit) {
-        savedStateHandle[if (isLandscape) KEY_SPLIT_LAND else KEY_SPLIT_PORT] = split.name
         val repo = settingsRepository ?: return
         viewModelScope.launch {
             if (isLandscape) repo.setPaneSplitLandscape(split) else repo.setPaneSplitPortrait(split)
@@ -315,11 +260,6 @@ class NextAppHostViewModel private constructor(
 
     override fun onCleared() {
         threadStores.values.toList().also { threadStores.clear() }.forEach(ViewModelStore::clear)
-    }
-
-    private companion object {
-        const val KEY_SPLIT_PORT = "pane_split_portrait"
-        const val KEY_SPLIT_LAND = "pane_split_landscape"
     }
 }
 

@@ -347,4 +347,54 @@ class MultiPaneGlassBudgetTest {
         val leftBounds = composeRule.onNodeWithText("左栏已删除").fetchSemanticsNode().boundsInRoot
         assertTrue("铰链双栏 ContentArea Snackbar 必须完全在铰链左侧 (≤ 371dp)", with(density) { leftBounds.right.toDp().value } <= 371f)
     }
+
+    /** 闭合 R-E3 S1：右栏 DetailPane Snackbar 退场动画期间（currentSnackbarData 已置空）仍缓存右栏区域，绝不跨分隔线跳变。 */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun s1_multiPaneSnackbarHost_detailPaneDismissExitAnimation_staysStrictlyInsideRightPane() {
+        val hostState = SnackbarHostState()
+        val controller = MultiPaneSnackbarController(hostState)
+        val threePane = calculateShellPaneLayout(749f, 559f, hasDetailContent = true)
+        lateinit var scope: CoroutineScope
+
+        composeRule.setContent {
+            scope = rememberCoroutineScope()
+            HiTheme {
+                MultiPaneSnackbarHost(
+                    hostState = hostState,
+                    paneLayout = threePane,
+                    effectiveMiddleWidthDp = 274.dp,
+                    isFullScreen = false,
+                    bottomPillVisible = false,
+                    bottomPillClearanceDp = 0.dp,
+                    navBarsBottomDp = 0.dp,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        val density = composeRule.density
+
+        composeRule.runOnIdle { scope.launch { controller.show("右栏已收藏", PaneSnackbarTarget.DetailPane) } }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("右栏已收藏").assertIsDisplayed()
+
+        composeRule.mainClock.autoAdvance = false
+        try {
+            composeRule.runOnIdle { hostState.currentSnackbarData?.dismiss() }
+            repeat(12) { frame ->
+                composeRule.mainClock.advanceTimeByFrame()
+                val nodes = composeRule.onAllNodes(SemanticsMatcher("snackText") { node ->
+                    node.config.contains(SemanticsProperties.Text) &&
+                        node.config[SemanticsProperties.Text].any { it.text == "右栏已收藏" }
+                }).fetchSemanticsNodes()
+                nodes.forEach { node ->
+                    val leftDp = with(density) { node.boundsInRoot.left.toDp().value }
+                    assertTrue("R-E3 S1：退场第 $frame 帧 DetailPane Snackbar 左缘 ${leftDp}dp 不得跳越分隔线 338dp", leftDp >= 338f)
+                }
+            }
+        } finally {
+            composeRule.mainClock.autoAdvance = true
+        }
+        composeRule.waitForIdle()
+    }
 }
