@@ -181,6 +181,7 @@ dependencies {
     implementation(libs.cronet.okhttp)
     implementation(libs.play.services.cronet)
     implementation(libs.androidx.browser)
+    implementation(libs.androidx.webkit)
     implementation(libs.jsoup)
 
     // Images

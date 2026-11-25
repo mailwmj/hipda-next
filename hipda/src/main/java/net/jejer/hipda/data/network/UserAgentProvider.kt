@@ -6,6 +6,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Inject
 import javax.inject.Singleton
+import net.jejer.hipda.data.network.webview.WebViewUserAgentProvider
 
 /** Provides the User-Agent header value shared across the application network layer. */
 fun interface UserAgentProvider {
@@ -24,12 +25,12 @@ class DefaultUserAgentProvider @Inject constructor() : UserAgentProvider {
     }
 }
 
-/** Isolated Hilt module so A5 can replace the [UserAgentProvider] binding independently. */
+/** Isolated Hilt module binding [UserAgentProvider] to the normalized system WebView UA. */
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class UserAgentModule {
 
     @Binds
     @Singleton
-    abstract fun bindUserAgentProvider(impl: DefaultUserAgentProvider): UserAgentProvider
+    abstract fun bindUserAgentProvider(impl: WebViewUserAgentProvider): UserAgentProvider
 }
