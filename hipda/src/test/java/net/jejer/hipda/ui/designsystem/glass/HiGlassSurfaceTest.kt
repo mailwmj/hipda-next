@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -26,7 +27,9 @@ import net.jejer.hipda.ui.designsystem.hiColorSchemeFromSeed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Rule
@@ -70,15 +73,58 @@ class HiGlassSurfaceTest {
         assertTrue(HiGlassStyle.Navigation.vibrancyEnabled)
         assertEquals(0.12f, HiGlassStyle.Navigation.indicatorAlpha, 0.0001f)
 
+        assertEquals(14.dp, HiGlassStyle.TopBar.blurRadius)
+        assertNull(HiGlassStyle.TopBar.darkBlurRadius)
+        assertEquals(0.66f, HiGlassStyle.TopBar.lightTintAlpha, 0.0001f)
+        assertEquals(0.70f, HiGlassStyle.TopBar.darkTintAlpha, 0.0001f)
+        assertTrue(HiGlassStyle.TopBar.lightTintAlpha in 0.64f..0.72f)
+        assertTrue(HiGlassStyle.TopBar.darkTintAlpha in 0.68f..0.76f)
+        assertEquals(1.06f, HiGlassStyle.TopBar.saturation, 0.0001f)
+        assertEquals(8.dp, HiGlassStyle.TopBar.refractionHeight)
+        assertEquals(16.dp, HiGlassStyle.TopBar.refractionAmount)
+        assertFalse(HiGlassStyle.TopBar.depthEffect)
+        assertFalse(HiGlassStyle.TopBar.chromaticAberration)
+        assertTrue(HiGlassStyle.TopBar.vibrancyEnabled)
+
         assertEquals(16.dp, HiGlassStyle.Toolbar.blurRadius)
-        assertEquals(0.60f, HiGlassStyle.Toolbar.lightTintAlpha, 0.0001f)
+        assertEquals(0.64f, HiGlassStyle.Toolbar.lightTintAlpha, 0.0001f)
         assertEquals(0.68f, HiGlassStyle.Toolbar.darkTintAlpha, 0.0001f)
+        assertTrue(HiGlassStyle.Toolbar.lightTintAlpha in 0.62f..0.72f)
+        assertTrue(HiGlassStyle.Toolbar.darkTintAlpha in 0.68f..0.76f)
         assertEquals(1.08f, HiGlassStyle.Toolbar.saturation, 0.0001f)
         assertEquals(12.dp, HiGlassStyle.Toolbar.refractionHeight)
         assertEquals(24.dp, HiGlassStyle.Toolbar.refractionAmount)
         assertFalse(HiGlassStyle.Toolbar.depthEffect)
         assertFalse(HiGlassStyle.Toolbar.chromaticAberration)
         assertTrue(HiGlassStyle.Toolbar.vibrancyEnabled)
+
+        assertEquals(18.dp, HiGlassStyle.Sheet.blurRadius)
+        assertEquals(12.dp, HiGlassStyle.Sheet.darkBlurRadius)
+        assertEquals(0.76f, HiGlassStyle.Sheet.lightTintAlpha, 0.0001f)
+        assertEquals(0.74f, HiGlassStyle.Sheet.darkTintAlpha, 0.0001f)
+        assertTrue(HiGlassStyle.Sheet.lightTintAlpha in 0.72f..0.80f)
+        assertTrue(HiGlassStyle.Sheet.darkTintAlpha in 0.70f..0.78f)
+        assertEquals(1.0f, HiGlassStyle.Sheet.saturation, 0.0001f)
+        assertEquals(10.dp, HiGlassStyle.Sheet.refractionHeight)
+        assertEquals(18.dp, HiGlassStyle.Sheet.refractionAmount)
+        assertEquals(1.dp, HiGlassStyle.Sheet.borderWidth)
+        assertEquals(0.35f, HiGlassTokens.SheetScrimAlpha, 0.0001f)
+        assertTrue(HiGlassTokens.SheetScrimAlpha in 0.32f..0.38f)
+        assertTrue(HiGlassStyle.Sheet.vibrancyEnabled)
+
+        // 叠加层峰值 alpha 令牌区间校验（§5 L230–232, L271–274）
+        assertTrue(HiGlassTokens.TabHighlighterContainerLightMaxAlpha <= 0.55f)
+        assertTrue(HiGlassTokens.TabHighlighterContainerDarkMaxAlpha <= 0.45f)
+        assertTrue(HiGlassTokens.TabHighlighterPrimaryLightMaxAlpha <= 0.22f)
+        assertTrue(HiGlassTokens.TabHighlighterPrimaryDarkMaxAlpha <= 0.24f)
+        assertTrue(HiGlassTokens.ProgressFillContainerLightMaxAlpha <= 0.50f)
+        assertTrue(HiGlassTokens.ProgressFillContainerDarkMaxAlpha <= 0.45f)
+        assertTrue(HiGlassTokens.ProgressFillPrimaryLightMaxAlpha <= 0.22f)
+        assertTrue(HiGlassTokens.ProgressFillPrimaryDarkMaxAlpha <= 0.24f)
+        assertTrue(HiGlassTokens.TopBarActionButtonLightAlpha in 0.55f..0.65f)
+        assertTrue(HiGlassTokens.TopBarActionButtonDarkAlpha in 0.60f..0.70f)
+        assertEquals(0.5.dp, HiGlassTokens.TopBarActionButtonBorderWidth)
+        assertEquals(1.5f, HiGlassTokens.VibrancySaturationFactor, 0.0001f)
     }
 
     @Test
@@ -176,6 +222,27 @@ class HiGlassSurfaceTest {
         assertEquals(lightScheme.outlineVariant, lightDegraded.borderColor)
         assertTrue(lightDegraded.borderHighlightColors.isEmpty())
         assertEquals(Color.Transparent, lightDegraded.borderOutlineColor)
+
+        // Sheet 档位亮/暗独立模糊半径（18dp / 12dp）与 1dp 描边
+        val lightSheet = resolveHiGlassStyleSpec(
+            colorScheme = lightScheme,
+            darkTheme = false,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
+            style = HiGlassStyle.Sheet,
+        )
+        assertEquals(18.dp, lightSheet.blurRadius)
+        assertEquals(1.dp, lightSheet.borderWidth)
+        assertEquals(lightScheme.surfaceContainerLowest.copy(alpha = 0.76f), lightSheet.activeTintColor)
+
+        val darkSheet = resolveHiGlassStyleSpec(
+            colorScheme = darkScheme,
+            darkTheme = true,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
+            style = HiGlassStyle.Sheet,
+        )
+        assertEquals(12.dp, darkSheet.blurRadius)
+        assertEquals(1.dp, darkSheet.borderWidth)
+        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.74f), darkSheet.activeTintColor)
     }
 
     @Test
@@ -201,8 +268,31 @@ class HiGlassSurfaceTest {
         assertFalse(navRefraction.chromaticAberration)
         assertTrue(navRefraction.vibrancyEnabled)
         assertEquals(1.18f, navRefraction.saturation, 0.0001f)
+        assertEquals(1.5f * 1.18f, navRefraction.effectiveSaturation, 0.0001f)
         assertEquals(navSpec.activeTintColor, navRefraction.tintColor)
         assertEquals(navSpec.degradedSurfaceColor, navRefraction.fallbackColor)
+
+        // 1b) TopBar 与 Sheet 合并单层有效饱和度（Sheet 复用 VibrantColorFilter 单例 1.5x）
+        val topBarConfig = resolveHiGlassStyleSpec(
+            colorScheme = lightScheme,
+            darkTheme = false,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
+            style = HiGlassStyle.TopBar,
+        ).toBackdropConfig()
+        assertEquals(14.dp, topBarConfig.blurRadius)
+        assertEquals(8.dp, topBarConfig.refractionHeight)
+        assertEquals(16.dp, topBarConfig.refractionAmount)
+        assertEquals(1.5f * 1.06f, topBarConfig.effectiveSaturation, 0.0001f)
+
+        val darkSheetConfig = resolveHiGlassStyleSpec(
+            colorScheme = darkScheme,
+            darkTheme = true,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
+            style = HiGlassStyle.Sheet,
+        ).toBackdropConfig()
+        assertEquals(12.dp, darkSheetConfig.blurRadius)
+        assertEquals(1.0f, darkSheetConfig.saturation, 0.0001f)
+        assertEquals(1.5f, darkSheetConfig.effectiveSaturation, 0.0001f)
 
         // 2) API 33+ 自定义景深与色散开关（工具条档）
         val customToolbarSpec = resolveHiGlassStyleSpec(
@@ -479,40 +569,49 @@ class HiGlassSurfaceTest {
 
     @Test
     fun degradedSurface_meetsWcag4_5ContrastAcrossAll20PresetsAndWorstCaseBackdrops() {
+        val allPresets = listOf(
+            "Navigation" to HiGlassStyle.Navigation,
+            "TopBar" to HiGlassStyle.TopBar,
+            "Toolbar" to HiGlassStyle.Toolbar,
+            "Sheet" to HiGlassStyle.Sheet,
+        )
         HiColorPresets.ALL.forEach { preset ->
             listOf(
                 Triple("light", hiColorSchemeFromSeed(preset.color, darkTheme = false), false),
                 Triple("dark", hiColorSchemeFromSeed(preset.color, darkTheme = true, pureBlack = false), true),
                 Triple("pureBlack", hiColorSchemeFromSeed(preset.color, darkTheme = true, pureBlack = true), true),
             ).forEach { (mode, scheme, darkTheme) ->
-                val spec = resolveHiGlassStyleSpec(
-                    colorScheme = scheme,
-                    darkTheme = darkTheme,
-                    renderTier = GlassRenderTier.SOLID_DEGRADED,
-                )
                 val worstBackdrop = if (darkTheme) Color.White else Color.Black
-                listOf("bg" to scheme.background, "worstBackdrop" to worstBackdrop).forEach { (bgName, backdrop) ->
-                    assertWcagContrastAtLeast(
-                        minRatio = 4.5f,
-                        surface = spec.degradedSurfaceColor,
-                        foreground = scheme.onSurface,
-                        backdrop = backdrop,
-                        label = "${preset.id}/$mode/$bgName onSurface",
+                allPresets.forEach { (styleName, style) ->
+                    val spec = resolveHiGlassStyleSpec(
+                        colorScheme = scheme,
+                        darkTheme = darkTheme,
+                        renderTier = GlassRenderTier.SOLID_DEGRADED,
+                        style = style,
                     )
-                    assertWcagContrastAtLeast(
-                        minRatio = 4.5f,
-                        surface = spec.degradedSurfaceColor,
-                        foreground = scheme.onSurfaceVariant,
-                        backdrop = backdrop,
-                        label = "${preset.id}/$mode/$bgName onSurfaceVariant",
-                    )
-                    assertWcagContrastAtLeast(
-                        minRatio = 4.5f,
-                        surface = spec.degradedSurfaceColor,
-                        foreground = scheme.primary,
-                        backdrop = backdrop,
-                        label = "${preset.id}/$mode/$bgName primary",
-                    )
+                    listOf("bg" to scheme.background, "worstBackdrop" to worstBackdrop).forEach { (bgName, backdrop) ->
+                        assertWcagContrastAtLeast(
+                            minRatio = 4.5f,
+                            surface = spec.degradedSurfaceColor,
+                            foreground = scheme.onSurface,
+                            backdrop = backdrop,
+                            label = "${preset.id}/$mode/$styleName/$bgName onSurface",
+                        )
+                        assertWcagContrastAtLeast(
+                            minRatio = 4.5f,
+                            surface = spec.degradedSurfaceColor,
+                            foreground = scheme.onSurfaceVariant,
+                            backdrop = backdrop,
+                            label = "${preset.id}/$mode/$styleName/$bgName onSurfaceVariant",
+                        )
+                        assertWcagContrastAtLeast(
+                            minRatio = 4.5f,
+                            surface = spec.degradedSurfaceColor,
+                            foreground = scheme.primary,
+                            backdrop = backdrop,
+                            label = "${preset.id}/$mode/$styleName/$bgName primary",
+                        )
+                    }
                 }
             }
         }
@@ -597,9 +696,17 @@ class HiGlassSurfaceTest {
                                 state = glassState,
                                 modifier = Modifier.size(200.dp, 48.dp),
                                 shape = RectangleShape,
-                                style = HiGlassStyle.Toolbar.copy(depthEffect = true),
+                                style = HiGlassStyle.TopBar,
                             ) {
                                 Text("矩形顶栏折射")
+                            }
+                            HiGlassSurface(
+                                state = glassState,
+                                modifier = Modifier.size(200.dp, 48.dp),
+                                shape = HiShapeTokens.Large,
+                                style = HiGlassStyle.Sheet,
+                            ) {
+                                Text("快速回复面板")
                             }
                             HiGlassSurface(
                                 state = glassState,
@@ -617,5 +724,75 @@ class HiGlassSurfaceTest {
         composeRule.waitForIdle()
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
         composeRule.assertAllGlassSurfacesBlurActive(true)
+    }
+
+    /**
+     * 闭合 R-G2 S1：父组件无关重组（例如切 Tab 导致 contentColor/label 变化）时，
+     * `HiGlassSurface` 必须复用同一缓存的 `DrawBackdropElement` 实例（避免新建 `ShapeProvider` 触发 `invalidateDrawCache`）；
+     * 仅当 `style` / `backdropConfig` 真实变更时才重建。
+     */
+    @Test
+    fun drawBackdropModifier_isCachedAcrossUnrelatedRecompositionAndUpdatesOnStyleChange() {
+        var contentColor by mutableStateOf(Color.Black)
+        var style by mutableStateOf(HiGlassStyle.Navigation)
+        var labelIndex by mutableIntStateOf(0)
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    val glassState = rememberHiGlassState()
+                    Box(modifier = Modifier.size(240.dp, 120.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .hiGlassSource(glassState)
+                                .background(Color.Cyan),
+                        )
+                        HiGlassSurface(
+                            state = glassState,
+                            modifier = Modifier.size(200.dp, 64.dp),
+                            style = style,
+                            contentColor = contentColor,
+                        ) {
+                            Text("标签 #$labelIndex")
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        fun findDrawBackdropElement(): Modifier {
+            val node = composeRule.onAllNodes(
+                matcher = SemanticsMatcher.keyIsDefined(HiGlassBlurActive),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().single()
+            return node.layoutInfo.getModifierInfo()
+                .map { it.modifier }
+                .first { it.javaClass.name == "com.kyant.backdrop.DrawBackdropElement" }
+        }
+
+        val initialElement = findDrawBackdropElement()
+
+        // 触发 HiGlassSurface 自身重组（改变 contentColor 与子文本），但 backdropConfig/shape/state 不变
+        contentColor = Color.DarkGray
+        labelIndex = 1
+        composeRule.waitForIdle()
+        val afterUnrelatedRecomp = findDrawBackdropElement()
+        assertSame(
+            "无关父重组不得重建 DrawBackdropElement（防止触发 DrawBackdropNode.invalidateDrawCache）",
+            initialElement,
+            afterUnrelatedRecomp,
+        )
+
+        // 切换档位改变 backdropConfig 后，应重建为新的 DrawBackdropElement
+        style = HiGlassStyle.TopBar
+        composeRule.waitForIdle()
+        val afterStyleChange = findDrawBackdropElement()
+        assertNotSame(
+            "backdropConfig 变化时应更新为新的 DrawBackdropElement 实例",
+            initialElement,
+            afterStyleChange,
+        )
     }
 }

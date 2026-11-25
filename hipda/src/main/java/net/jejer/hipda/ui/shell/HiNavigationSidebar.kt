@@ -94,6 +94,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -194,6 +195,24 @@ fun HiNavigationSidebar(
 ) {
     val cs = MaterialTheme.colorScheme
     val sidebarPaneTitle = stringResource(R.string.shell_pane_sidebar_title)
+    // 展开态与收起态各自持有独立 LazyListState，防止 AnimatedContent 过渡帧双 LazyColumn 共用同一 state
+    val initialExpanded = remember { expanded }
+    val alternateListState = rememberLazyListState()
+    val expandedListState = if (initialExpanded) listState else alternateListState
+    val collapsedListState = if (initialExpanded) alternateListState else listState
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            expandedListState.scrollToItem(
+                collapsedListState.firstVisibleItemIndex,
+                collapsedListState.firstVisibleItemScrollOffset,
+            )
+        } else {
+            collapsedListState.scrollToItem(
+                expandedListState.firstVisibleItemIndex,
+                expandedListState.firstVisibleItemScrollOffset,
+            )
+        }
+    }
     HiCappedFontScale {
         Row(
             modifier = modifier
@@ -221,7 +240,7 @@ fun HiNavigationSidebar(
                     state = state,
                     expanded = isExpanded,
                     mineGroupExpanded = mineGroupExpanded,
-                    listState = listState,
+                    listState = if (isExpanded) expandedListState else collapsedListState,
                     onToggleSidebar = onToggleSidebar,
                     onToggleMineGroup = onToggleMineGroup,
                     onCollapsedMineClick = onCollapsedMineClick,
@@ -263,8 +282,10 @@ internal fun HiNavigationSidebarModalOverlay(
     val sidebarPaneTitle = stringResource(R.string.shell_pane_sidebar_title)
 
     LaunchedEffect(visible) {
-        dragOffsetPx.snapTo(0f)
-        if (visible) runCatching { drawerFocusRequester.requestFocus() }
+        if (visible) {
+            dragOffsetPx.snapTo(0f)
+            runCatching { drawerFocusRequester.requestFocus() }
+        }
     }
 
     val dragState = rememberDraggableState { delta ->
@@ -325,11 +346,12 @@ internal fun HiNavigationSidebarModalOverlay(
             HiCappedFontScale {
                 Surface(
                     modifier = Modifier
+                        .graphicsLayer { translationX = dragOffsetPx.value }
                         .testTag(HiShellTestTags.SidebarModalDrawer)
                         .width(SHELL_SIDEBAR_MODAL_WIDTH_DP.dp)
                         .fillMaxHeight()
-                        .graphicsLayer { translationX = dragOffsetPx.value }
                         .focusRequester(drawerFocusRequester)
+                        .focusProperties { onExit = { cancelFocusChange() } }
                         .focusGroup()
                         .focusable()
                         .modalDismissDrag(dragState, onDragStopped)

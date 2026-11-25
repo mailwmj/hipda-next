@@ -45,22 +45,47 @@ import java.util.Locale
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 
+/** 调参面板四档毛玻璃预设分组。 */
+internal enum class GlassTuningPreset(
+    val defaultStyle: HiGlassStyle,
+    val labelRes: Int,
+) {
+    Navigation(HiGlassStyle.Navigation, R.string.preview_glass_tune_preset_nav),
+    TopBar(HiGlassStyle.TopBar, R.string.preview_glass_tune_preset_topbar),
+    Toolbar(HiGlassStyle.Toolbar, R.string.preview_glass_tune_preset_toolbar),
+    Sheet(HiGlassStyle.Sheet, R.string.preview_glass_tune_preset_sheet),
+    ;
+
+    companion object {
+        fun matchOrDefault(style: HiGlassStyle): GlassTuningPreset =
+            entries.firstOrNull { it.defaultStyle == style } ?: Navigation
+    }
+}
+
 /** 将当前液态毛玻璃参数格式化为单行稳定文本（固定 `Locale.US`），便于直接复制发给负责人。 */
-fun formatGlassStyleParams(style: HiGlassStyle): String = String.format(
-    Locale.US,
-    "blur=%.1fdp refractH=%.1fdp refractAmt=%.1fdp depth=%s ca=%s vibrancy=%s lightTint=%.2f darkTint=%.2f sat=%.2f border=%.2f indicator=%.2f",
-    style.blurRadius.value,
-    style.refractionHeight.value,
-    style.refractionAmount.value,
-    if (style.depthEffect) "on" else "off",
-    if (style.chromaticAberration) "on" else "off",
-    if (style.vibrancyEnabled) "on" else "off",
-    style.lightTintAlpha,
-    style.darkTintAlpha,
-    style.saturation,
-    style.borderHighlightStrength,
-    style.indicatorAlpha,
-)
+fun formatGlassStyleParams(style: HiGlassStyle): String {
+    val base = String.format(
+        Locale.US,
+        "blur=%.1fdp refractH=%.1fdp refractAmt=%.1fdp depth=%s ca=%s vibrancy=%s lightTint=%.2f darkTint=%.2f sat=%.2f border=%.2f indicator=%.2f",
+        style.blurRadius.value,
+        style.refractionHeight.value,
+        style.refractionAmount.value,
+        if (style.depthEffect) "on" else "off",
+        if (style.chromaticAberration) "on" else "off",
+        if (style.vibrancyEnabled) "on" else "off",
+        style.lightTintAlpha,
+        style.darkTintAlpha,
+        style.saturation,
+        style.borderHighlightStrength,
+        style.indicatorAlpha,
+    )
+    val darkBlur = style.darkBlurRadius
+    return if (darkBlur != null) {
+        String.format(Locale.US, "%s darkBlur=%.1fdp", base, darkBlur.value)
+    } else {
+        base
+    }
+}
 
 /**
  * 仅用于 `src/debug` 预览外壳页的实时毛玻璃调参面板。
@@ -75,11 +100,20 @@ internal fun GlassTuningPanel(
     themeMode: HiThemeMode = HiTheme.state.themeMode,
     pureBlack: Boolean = HiTheme.state.pureBlack,
     onThemeChange: ((HiThemeMode, Boolean) -> Unit)? = null,
+    selectedPreset: GlassTuningPreset? = null,
+    onPresetSelected: ((GlassTuningPreset) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val cs = MaterialTheme.colorScheme
     val formatted = remember(style) { formatGlassStyleParams(style) }
     var copiedNotice by remember(formatted) { mutableStateOf(false) }
+    var localPreset by remember { mutableStateOf(GlassTuningPreset.matchOrDefault(style)) }
+    val activePreset = selectedPreset ?: localPreset
+    val selectPreset: (GlassTuningPreset) -> Unit = { preset ->
+        localPreset = preset
+        onPresetSelected?.invoke(preset)
+        onStyleChange(preset.defaultStyle)
+    }
 
     Card(
         modifier = modifier
@@ -96,11 +130,11 @@ internal fun GlassTuningPanel(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (onThemeChange != null) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (onThemeChange != null) {
                     FilterChip(
                         selected = themeMode == HiThemeMode.LIGHT,
                         onClick = { onThemeChange(HiThemeMode.LIGHT, false) },
@@ -119,16 +153,12 @@ internal fun GlassTuningPanel(
                         label = { Text(stringResource(R.string.preview_glass_tune_oled), style = MaterialTheme.typography.labelSmall) },
                         shape = HiShapeTokens.Small,
                     )
+                }
+                GlassTuningPreset.entries.forEach { preset ->
                     FilterChip(
-                        selected = style == HiGlassStyle.Navigation,
-                        onClick = { onStyleChange(HiGlassStyle.Navigation) },
-                        label = { Text(stringResource(R.string.preview_glass_tune_preset_nav), style = MaterialTheme.typography.labelSmall) },
-                        shape = HiShapeTokens.Small,
-                    )
-                    FilterChip(
-                        selected = style == HiGlassStyle.Toolbar,
-                        onClick = { onStyleChange(HiGlassStyle.Toolbar) },
-                        label = { Text(stringResource(R.string.preview_glass_tune_preset_toolbar), style = MaterialTheme.typography.labelSmall) },
+                        selected = activePreset == preset,
+                        onClick = { selectPreset(preset) },
+                        label = { Text(stringResource(preset.labelRes), style = MaterialTheme.typography.labelSmall) },
                         shape = HiShapeTokens.Small,
                     )
                 }
@@ -141,6 +171,16 @@ internal fun GlassTuningPanel(
                 valueRange = 0f..24f,
                 onValueChange = { onStyleChange(style.copy(blurRadius = it.dp)) },
             )
+            val darkBlur = style.darkBlurRadius
+            if (darkBlur != null) {
+                GlassTuningSliderRow(
+                    label = stringResource(R.string.preview_glass_tune_dark_blur),
+                    valueText = String.format(Locale.US, "%.1fdp", darkBlur.value),
+                    value = darkBlur.value,
+                    valueRange = 0f..24f,
+                    onValueChange = { onStyleChange(style.copy(darkBlurRadius = it.dp)) },
+                )
+            }
             GlassTuningSliderRow(
                 label = stringResource(R.string.preview_glass_tune_refraction_height),
                 valueText = String.format(Locale.US, "%.1fdp", style.refractionHeight.value),
@@ -212,7 +252,7 @@ internal fun GlassTuningPanel(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 OutlinedButton(
-                    onClick = { onStyleChange(HiGlassStyle.Navigation) },
+                    onClick = { onStyleChange(activePreset.defaultStyle) },
                     modifier = Modifier.weight(1f),
                     shape = HiShapeTokens.Small,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),

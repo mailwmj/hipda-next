@@ -44,10 +44,13 @@ import com.kyant.backdrop.effects.vibrancy
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 
-/** 毛玻璃表面视觉令牌，含导航胶囊默认档与帖子详情工具条预留档（底层为 Kyant `backdrop` 液态玻璃）。 */
+/** 毛玻璃表面视觉令牌，覆盖 `Navigation`/`TopBar`/`Toolbar`/`Sheet` 四档及叠加层峰值上限（底层为 Kyant `backdrop` 液态玻璃）。 */
 @Immutable
 object HiGlassTokens {
-    // 导航胶囊默认档（轻透 + 边缘光学折射）
+    /** Kyant `backdrop 2.0.1` `VibrantColorFilter` 的固有饱和度倍率（`colorControlsColorFilter(saturation = 1.5f)`）。 */
+    const val VibrancySaturationFactor: Float = 1.5f
+
+    // 导航胶囊默认档（轻透 + 边缘光学折射，product-design.md §5）
     val BlurRadius: Dp = 10.dp
     const val LightBlurTintAlpha: Float = 0.45f
     const val DarkBlurTintAlpha: Float = 0.46f
@@ -58,18 +61,37 @@ object HiGlassTokens {
     const val ChromaticAberration: Boolean = false
     const val VibrancyEnabled: Boolean = true
 
-    // 帖子详情工具条预留档（护读 + 克制折射）
+    // 透明液态玻璃顶栏档（论坛吸顶顶栏 / 三栏中栏顶栏 / 详情极简顶栏，护读 + 轻边缘折射）
+    val TopBarBlurRadius: Dp = 14.dp
+    const val TopBarLightBlurTintAlpha: Float = 0.66f
+    const val TopBarDarkBlurTintAlpha: Float = 0.70f
+    const val TopBarBlurSaturation: Float = 1.06f
+    val TopBarRefractionHeight: Dp = 8.dp
+    val TopBarRefractionAmount: Dp = 16.dp
+
+    // 帖子详情底部三段工具条与内联跳页条档（护读 + 克制折射；浅色 0.62–0.72 / 深色 0.68–0.76）
     val ToolbarBlurRadius: Dp = 16.dp
-    const val ToolbarLightBlurTintAlpha: Float = 0.60f
+    const val ToolbarLightBlurTintAlpha: Float = 0.64f
     const val ToolbarDarkBlurTintAlpha: Float = 0.68f
     const val ToolbarBlurSaturation: Float = 1.08f
     val ToolbarRefractionHeight: Dp = 12.dp
     val ToolbarRefractionAmount: Dp = 24.dp
 
+    // 毛玻璃快速回复面板档（高隔离护读：亮 16–18dp / 暗 10–14dp，浅 0.72–0.80 / 深 0.70–0.78，1dp 描边）
+    val SheetBlurRadius: Dp = 18.dp
+    val SheetDarkBlurRadius: Dp = 12.dp
+    const val SheetLightBlurTintAlpha: Float = 0.76f
+    const val SheetDarkBlurTintAlpha: Float = 0.74f
+    const val SheetBlurSaturation: Float = 1.0f
+    val SheetRefractionHeight: Dp = 10.dp
+    val SheetRefractionAmount: Dp = 18.dp
+    val SheetBorderWidth: Dp = 1.dp
+    const val SheetScrimAlpha: Float = 0.35f
+
     // 降级态（无模糊）
     const val DegradedSurfaceAlpha: Float = 0.94f
 
-    // 描边：激活态为左上→右下渐变高光，浅色先垫 0.5dp 暗轮廓、再叠 0.75dp 白高光；降级态为 outlineVariant 细线
+    // 描边：激活态为左上→右下渐变高光，浅色先垫 0.5dp 暗轮廓、再叠高光；降级态为 outlineVariant 细线
     val BorderWidth: Dp = 0.75.dp
     val DegradedBorderWidth: Dp = 0.5.dp
     const val LightBorderHighlightTopLeftAlpha: Float = 0.85f
@@ -81,8 +103,21 @@ object HiGlassTokens {
     const val DarkBorderHighlightBottomRightAlpha: Float = 0.12f
     const val DefaultBorderHighlightStrength: Float = 1f
 
-    // 导航胶囊半透明选中指示器淡底
+    // 导航胶囊半透明选中指示器淡底（≤ 0.12）
     const val IndicatorAlpha: Float = 0.12f
+
+    // 叠加层峰值 alpha 令牌（供 E1/E2a/E4b 消费并由 CI 对比度单测 (b) 守卫，product-design.md §5）
+    const val TabHighlighterContainerLightMaxAlpha: Float = 0.55f
+    const val TabHighlighterContainerDarkMaxAlpha: Float = 0.45f
+    const val TabHighlighterPrimaryLightMaxAlpha: Float = 0.22f
+    const val TabHighlighterPrimaryDarkMaxAlpha: Float = 0.24f
+    const val ProgressFillContainerLightMaxAlpha: Float = 0.50f
+    const val ProgressFillContainerDarkMaxAlpha: Float = 0.45f
+    const val ProgressFillPrimaryLightMaxAlpha: Float = 0.22f
+    const val ProgressFillPrimaryDarkMaxAlpha: Float = 0.24f
+    const val TopBarActionButtonLightAlpha: Float = 0.60f
+    const val TopBarActionButtonDarkAlpha: Float = 0.65f
+    val TopBarActionButtonBorderWidth: Dp = 0.5.dp
 
     // 悬浮外阴影
     val FloatingShadowElevation: Dp = 4.dp
@@ -95,7 +130,8 @@ object HiGlassTokens {
 /**
  * 毛玻璃主题风格配置，由 [HiTheme] 通过 [LocalHiGlassStyle] 提供默认值。
  *
- * 生产组件只读取 [LocalHiGlassStyle] 或显式传入预置档（如 [Toolbar]）。
+ * 生产组件只读取 [LocalHiGlassStyle] 或显式传入四档预置（[Navigation]、[TopBar]、[Toolbar]、[Sheet]）。
+ * [darkBlurRadius] 为空时深浅色共用 [blurRadius]；非空时深色/纯黑采用独立模糊半径（如 [Sheet] 18dp/12dp）。
  * 注：Kyant `backdrop 2.0.1` 不支持噪点特效，不设噪点参数。
  */
 @Immutable
@@ -115,12 +151,23 @@ data class HiGlassStyle(
     val floatingShadowElevation: Dp = HiGlassTokens.FloatingShadowElevation,
     val lightShadowAlpha: Float = HiGlassTokens.LightShadowAlpha,
     val darkShadowAlpha: Float = HiGlassTokens.DarkShadowAlpha,
+    val darkBlurRadius: Dp? = null,
 ) {
     companion object {
         /** 导航胶囊默认档：10dp 模糊、16dp/24dp 折射、vibrancy 活色、0.45/0.46 着色、1.18 饱和度。 */
         val Navigation: HiGlassStyle = HiGlassStyle()
 
-        /** 帖子详情底部工具条预留档：16dp 模糊、12dp/24dp 折射、vibrancy 活色、0.60/0.68 着色、1.08 饱和度。 */
+        /** 透明液态玻璃顶栏档：14dp 模糊、8dp/16dp 轻边缘折射、vibrancy 活色、0.66/0.70 着色、1.06 饱和度。 */
+        val TopBar: HiGlassStyle = HiGlassStyle(
+            blurRadius = HiGlassTokens.TopBarBlurRadius,
+            lightTintAlpha = HiGlassTokens.TopBarLightBlurTintAlpha,
+            darkTintAlpha = HiGlassTokens.TopBarDarkBlurTintAlpha,
+            saturation = HiGlassTokens.TopBarBlurSaturation,
+            refractionHeight = HiGlassTokens.TopBarRefractionHeight,
+            refractionAmount = HiGlassTokens.TopBarRefractionAmount,
+        )
+
+        /** 帖子详情底部工具条档：16dp 模糊、12dp/24dp 折射、vibrancy 活色、0.64/0.68 着色、1.08 饱和度。 */
         val Toolbar: HiGlassStyle = HiGlassStyle(
             blurRadius = HiGlassTokens.ToolbarBlurRadius,
             lightTintAlpha = HiGlassTokens.ToolbarLightBlurTintAlpha,
@@ -128,6 +175,18 @@ data class HiGlassStyle(
             saturation = HiGlassTokens.ToolbarBlurSaturation,
             refractionHeight = HiGlassTokens.ToolbarRefractionHeight,
             refractionAmount = HiGlassTokens.ToolbarRefractionAmount,
+        )
+
+        /** 毛玻璃快速回复面板档：亮 18dp / 暗 12dp 模糊、10dp/18dp 折射、vibrancy 单层活色、0.76/0.74 着色、1dp 描边。 */
+        val Sheet: HiGlassStyle = HiGlassStyle(
+            blurRadius = HiGlassTokens.SheetBlurRadius,
+            lightTintAlpha = HiGlassTokens.SheetLightBlurTintAlpha,
+            darkTintAlpha = HiGlassTokens.SheetDarkBlurTintAlpha,
+            saturation = HiGlassTokens.SheetBlurSaturation,
+            refractionHeight = HiGlassTokens.SheetRefractionHeight,
+            refractionAmount = HiGlassTokens.SheetRefractionAmount,
+            borderWidth = HiGlassTokens.SheetBorderWidth,
+            darkBlurRadius = HiGlassTokens.SheetDarkBlurRadius,
         )
     }
 }
@@ -307,11 +366,12 @@ fun resolveHiGlassStyleSpec(
         Color.Transparent
     }
     val shadowAlpha = (if (darkTheme) style.darkShadowAlpha else style.lightShadowAlpha).coerceIn(0f, 1f)
+    val resolvedBlurRadius = if (darkTheme) style.darkBlurRadius ?: style.blurRadius else style.blurRadius
     return HiGlassStyleSpec(
         renderTier = renderTier,
         blurEnabled = blurEnabled,
         refractionEnabled = refractionEnabled,
-        blurRadius = style.blurRadius.coerceAtLeast(0.dp),
+        blurRadius = resolvedBlurRadius.coerceAtLeast(0.dp),
         refractionHeight = style.refractionHeight.coerceAtLeast(0.dp),
         refractionAmount = style.refractionAmount.coerceAtLeast(0.dp),
         depthEffect = style.depthEffect,
@@ -373,6 +433,17 @@ data class HiGlassBackdropConfig(
         get() = renderTier == GlassRenderTier.REFRACTION_AND_BLUR &&
             refractionHeight > 0.dp &&
             refractionAmount > 0.dp
+
+    /**
+     * 合并 `vibrancy()`（1.5× 饱和度）与 `saturation` 后的单层有效饱和度；
+     * 避免 `vibrancyEnabled && saturation != 1f` 时串联两层 `ColorFilterEffect`。
+     */
+    val effectiveSaturation: Float
+        get() = if (vibrancyEnabled) {
+            HiGlassTokens.VibrancySaturationFactor * saturation
+        } else {
+            saturation
+        }
 }
 
 /**
@@ -481,39 +552,41 @@ fun HiGlassSurface(
     val surfaceModifier = if (useBackdrop) {
         val backdropShape = remember(shape) { resolveBackdropShape(shape) }
         val canApplyLens = remember(backdropShape) { supportsLensShape(backdropShape) }
-        Modifier.drawBackdrop(
-            backdrop = layerBackdrop,
-            shape = { backdropShape },
-            effects = {
-                if (backdropConfig.vibrancyEnabled) {
-                    vibrancy()
-                }
-                if (backdropConfig.saturation != 1f) {
-                    colorControls(saturation = backdropConfig.saturation)
-                }
-                if (backdropConfig.blurRadius > 0.dp) {
-                    blur(backdropConfig.blurRadius.toPx())
-                }
-                if (backdropConfig.refractionEnabled && canApplyLens) {
-                    try {
-                        lens(
-                            refractionHeight = backdropConfig.refractionHeight.toPx(),
-                            refractionAmount = backdropConfig.refractionAmount.toPx(),
-                            depthEffect = backdropConfig.depthEffect,
-                            chromaticAberration = backdropConfig.chromaticAberration,
-                        )
-                    } catch (_: IllegalArgumentException) {
-                        // RuntimeShader 在不支持 AGSL eval() 的环境（部分定制 ROM 或离线 SkSL 渲染器）
-                        // 会抛出 IllegalArgumentException；回退至同档位的纯模糊 + 活色效果，避免崩溃。
+        remember(layerBackdrop, backdropShape, canApplyLens, backdropConfig) {
+            Modifier.drawBackdrop(
+                backdrop = layerBackdrop,
+                shape = { backdropShape },
+                effects = {
+                    val effectiveSaturation = backdropConfig.effectiveSaturation
+                    if (backdropConfig.vibrancyEnabled && backdropConfig.saturation == 1f) {
+                        vibrancy()
+                    } else if (effectiveSaturation != 1f) {
+                        colorControls(saturation = effectiveSaturation)
                     }
-                }
-            },
-            highlight = null,
-            shadow = null,
-            onDrawSurface = {
-                drawRect(backdropConfig.tintColor)
-            },
-        )
+                    if (backdropConfig.blurRadius > 0.dp) {
+                        blur(backdropConfig.blurRadius.toPx())
+                    }
+                    if (backdropConfig.refractionEnabled && canApplyLens) {
+                        try {
+                            lens(
+                                refractionHeight = backdropConfig.refractionHeight.toPx(),
+                                refractionAmount = backdropConfig.refractionAmount.toPx(),
+                                depthEffect = backdropConfig.depthEffect,
+                                chromaticAberration = backdropConfig.chromaticAberration,
+                            )
+                        } catch (_: IllegalArgumentException) {
+                            // RuntimeShader 在不支持 AGSL eval() 的环境（部分定制 ROM 或离线 SkSL 渲染器）
+                            // 会抛出 IllegalArgumentException；回退至同档位的纯模糊 + 活色效果，避免崩溃。
+                        }
+                    }
+                },
+                highlight = null,
+                shadow = null,
+                onDrawSurface = {
+                    drawRect(backdropConfig.tintColor)
+                },
+            )
+        }
     } else {
         Modifier.background(backdropConfig.fallbackColor)
     }

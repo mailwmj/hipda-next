@@ -48,8 +48,13 @@
     <string name="preview_glass_tune_close">收起调参</string>
     <string name="preview_glass_tune_oled">纯黑</string>
     <string name="preview_glass_tune_preset_nav">导航默认</string>
+    <string name="preview_glass_tune_preset_topbar">顶栏档</string>
     <string name="preview_glass_tune_preset_toolbar">工具条档</string>
+    <string name="preview_glass_tune_preset_sheet">面板档</string>
     <string name="preview_glass_tune_blur">模糊半径</string>
+    <string name="preview_glass_tune_dark_blur">深色模糊半径</string>
+    <string name="preview_glass_sheet_sample_title">快速回复面板（Sheet 档）</string>
+    <string name="preview_glass_sheet_sample_hint">亮 18dp / 暗 12dp 高隔离护读玻璃 · 1dp 描边 · 0.35 暗罩</string>
     <string name="preview_glass_tune_refraction_height">折射高度</string>
     <string name="preview_glass_tune_refraction_amount">折射强度</string>
     <string name="preview_glass_tune_light_tint">浅色着色透明度</string>

@@ -79,19 +79,20 @@ class ShellNavigationModeTest {
         assertEquals(891, compact.sidebarWidthDp + compact.middlePaneWidthDp + compact.rightPaneWidthDp)
         assertTrue(compact.middlePaneSnapPointsDp.isEmpty())
 
-        // 窄屏单栏（< 600dp）
-        listOf(340f, 411f, 559f, 599f).forEach { w ->
+        // 窄屏单栏（< 600dp），含临界浮点 599.6f（先浮点分档 SinglePane，再 roundToInt 得 w=600）
+        listOf(340f to 340, 411f to 411, 559f to 559, 599f to 599, 599.6f to 600).forEach { (w, expectedW) ->
             val layout = calculateShellPaneLayout(widthDp = w, heightDp = 800f)
             assertEquals("width=$w", ShellPaneLayoutMode.SinglePane, layout.layoutMode)
             assertEquals("width=$w", ShellNavigationMode.BottomPill, layout.navigationMode)
+            assertEquals("width=$w", expectedW, layout.windowWidthDp)
             assertEquals("width=$w", 0, layout.sidebarWidthDp)
-            assertEquals("width=$w", w.toInt(), layout.middlePaneWidthDp)
+            assertEquals("width=$w", expectedW, layout.middlePaneWidthDp)
             assertEquals("width=$w", 0, layout.rightPaneWidthDp)
             assertEquals("width=$w", layout.windowWidthDp, layout.sidebarWidthDp + layout.middlePaneWidthDp + layout.rightPaneWidthDp)
         }
 
-        // 图标轨单栏（600–679dp）
-        listOf(600f to 536, 640f to 576, 679f to 615).forEach { (w, expectedContent) ->
+        // 图标轨单栏（600–679dp），含临界浮点 679.6f（先浮点分档 SidebarSinglePane，再 roundToInt 得 w=680）
+        listOf(600f to 536, 640f to 576, 679f to 615, 679.6f to 616).forEach { (w, expectedContent) ->
             val layout = calculateShellPaneLayout(widthDp = w, heightDp = 900f)
             assertEquals("width=$w", ShellPaneLayoutMode.SidebarSinglePane, layout.layoutMode)
             assertEquals("width=$w", ShellNavigationMode.SidebarCollapsed, layout.navigationMode)
@@ -125,6 +126,8 @@ class ShellNavigationModeTest {
             ExpectedThreePane(748.59f, false, ShellPaneLayoutMode.CompactThreePane, 64, 274, 411, listOf(0, 274, 325)),
             ExpectedThreePane(800f, false, ShellPaneLayoutMode.CompactThreePane, 64, 294, 442, listOf(0, 294, 368)),
             ExpectedThreePane(839f, false, ShellPaneLayoutMode.CompactThreePane, 64, 310, 465, listOf(0, 310, 388)),
+            // 临界浮点 839.6f：先按浮点 < 840f 判为 CompactThreePane，再 roundToInt 得 w=840
+            ExpectedThreePane(839.6f, false, ShellPaneLayoutMode.CompactThreePane, 64, 310, 466, listOf(0, 310, 388)),
             ExpectedThreePane(840f, false, ShellPaneLayoutMode.ExpandedThreePane, 176, 266, 398, listOf(0, 266, 304)),
             ExpectedThreePane(840f, true, ShellPaneLayoutMode.ExpandedThreePane, 64, 310, 466, listOf(0, 310, 388)),
             ExpectedThreePane(851.69f, false, ShellPaneLayoutMode.ExpandedThreePane, 176, 270, 406, listOf(0, 270, 316)),
@@ -226,6 +229,41 @@ class ShellNavigationModeTest {
         assertEquals(ShellPaneLayoutMode.HingeFallbackSinglePane, narrowHinge.layoutMode)
         assertEquals(0, narrowHinge.rightPaneWidthDp)
         assertEquals(ShellPillAnchor(startDp = 0, widthDp = 559), narrowHinge.pillAnchor)
+
+        // 非零 12dp 物理折痕 [368, 380]：749dp → left=368 ≥ 280, right=749-380=369 ≥ 360 → HingeTwoPane
+        val widePhysicalHinge = calculateShellPaneLayout(
+            widthDp = 749f,
+            heightDp = 559f,
+            hingeBoundsDp = ShellHingeBoundsDp(left = 368f, right = 380f),
+            hasDetailContent = true,
+        )
+        assertEquals(ShellPaneLayoutMode.HingeTwoPane, widePhysicalHinge.layoutMode)
+        assertEquals(ShellNavigationMode.CompactPill, widePhysicalHinge.navigationMode)
+        assertEquals(368, widePhysicalHinge.middlePaneWidthDp)
+        assertEquals(369, widePhysicalHinge.rightPaneWidthDp)
+        assertEquals(749, widePhysicalHinge.middlePaneWidthDp + 12 + widePhysicalHinge.rightPaneWidthDp)
+        assertEquals(listOf(0, 368), widePhysicalHinge.middlePaneSnapPointsDp)
+        assertEquals(ShellPillAnchor(startDp = 0, widthDp = 368), widePhysicalHinge.pillAnchor)
+
+        // 非零 12dp 物理折痕 [368, 380] 在 735dp 窗口下右侧 735-380=355 < 360，必须退单栏（锁死用 right 而非 left）
+        val tightRightPhysicalHinge = calculateShellPaneLayout(
+            widthDp = 735f,
+            heightDp = 600f,
+            hingeBoundsDp = ShellHingeBoundsDp(left = 368f, right = 380f),
+        )
+        assertEquals(ShellPaneLayoutMode.HingeFallbackSinglePane, tightRightPhysicalHinge.layoutMode)
+        assertEquals(0, tightRightPhysicalHinge.rightPaneWidthDp)
+        assertEquals(ShellPillAnchor(startDp = 0, widthDp = 368), tightRightPhysicalHinge.pillAnchor)
+
+        // 非零 12dp 物理折痕 [260, 272] 在 700dp 窗口下左不足退单栏，胶囊放右侧 [272, 700]（宽 428）
+        val asymmetricPhysicalHinge = calculateShellPaneLayout(
+            widthDp = 700f,
+            heightDp = 800f,
+            hingeBoundsDp = ShellHingeBoundsDp(left = 260f, right = 272f),
+        )
+        assertEquals(ShellPaneLayoutMode.HingeFallbackSinglePane, asymmetricPhysicalHinge.layoutMode)
+        assertEquals(0, asymmetricPhysicalHinge.rightPaneWidthDp)
+        assertEquals(ShellPillAnchor(startDp = 272, widthDp = 428), asymmetricPhysicalHinge.pillAnchor)
     }
 
     @Test

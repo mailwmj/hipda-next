@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -55,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -71,6 +73,7 @@ import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.GlassRenderTier
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
+import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
@@ -832,12 +835,15 @@ fun ShellPreviewScreen(
     var selectedItemIndex by rememberSaveable { mutableIntStateOf(0) }
     var tuningExpanded by rememberSaveable { mutableStateOf(false) }
     var localGlassStyle by remember { mutableStateOf(HiGlassStyle.Navigation) }
+    var activeGlassPreset by remember { mutableStateOf(GlassTuningPreset.matchOrDefault(glassStyle ?: HiGlassStyle.Navigation)) }
     val activeGlassStyle = glassStyle ?: localGlassStyle
     val updateGlassStyle: (HiGlassStyle) -> Unit = onGlassStyleChange ?: { localGlassStyle = it }
     val previewForums = remember { listOf(2, 6, 7, 59, 60) }
     val cs = MaterialTheme.colorScheme
     val listPaneTitle = stringResource(R.string.shell_pane_list_title)
     val detailPaneTitle = stringResource(R.string.shell_pane_detail_title)
+    val showGlassTopBar = activeGlassPreset == GlassTuningPreset.TopBar
+    val showGlassSheet = activeGlassPreset == GlassTuningPreset.Sheet
 
     val sidebarState = HiSidebarState(
         selectedEntry = selectedSidebarEntry,
@@ -869,6 +875,7 @@ fun ShellPreviewScreen(
                 selectedItemIndex = 0
             },
             hasDetailContent = true,
+            managesGlassSource = { showGlassTopBar || showGlassSheet },
             modifier = modifier,
         ) { destination, contentPadding ->
             val headerTitle = if (paneLayout.isSidebar) {
@@ -901,135 +908,222 @@ fun ShellPreviewScreen(
                 )
             }
 
-            val listColumn: @Composable (Modifier) -> Unit = { listModifier ->
-                Column(modifier = listModifier) {
+            val headerRow: @Composable () -> Unit = {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = headerTitle,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = cs.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(cs.surfaceContainer)
-                            .statusBarsPadding()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = headerTitle,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = cs.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (!paneLayout.isSidebar) {
-                                FilledTonalButton(
-                                    onClick = { tuningExpanded = !tuningExpanded },
-                                    shape = HiShapeTokens.Small,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        if (!paneLayout.isSidebar) {
+                            FilledTonalButton(
+                                onClick = { tuningExpanded = !tuningExpanded },
+                                shape = HiShapeTokens.Small,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Text(
+                                    text = stringResource(
+                                        if (tuningExpanded) {
+                                            R.string.preview_glass_tune_close
+                                        } else {
+                                            R.string.preview_glass_tune_open
+                                        },
+                                    ),
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                        }
+                        TextButton(onClick = onBack, shape = HiShapeTokens.Small) {
+                            Text(text = "返回样张")
+                        }
+                    }
+                }
+            }
+
+            val tuningPanelSlot: @Composable () -> Unit = {
+                AnimatedVisibility(
+                    visible = tuningExpanded && !paneLayout.isSidebar,
+                    enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(),
+                    exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut(),
+                ) {
+                    GlassTuningPanel(
+                        style = activeGlassStyle,
+                        onStyleChange = updateGlassStyle,
+                        themeMode = themeMode,
+                        pureBlack = pureBlack,
+                        onThemeChange = onThemeChange,
+                        selectedPreset = activeGlassPreset,
+                        onPresetSelected = { activeGlassPreset = it },
+                    )
+                }
+            }
+
+            val listBody: @Composable (Modifier, PaddingValues) -> Unit = { bodyModifier, bodyPadding ->
+                LazyColumn(
+                    modifier = bodyModifier,
+                    contentPadding = bodyPadding,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items.forEachIndexed { index, rowTitle ->
+                        if (!paneLayout.isSidebar && index % 4 == 0) {
+                            item(key = "color_backdrop_${index / 4}") {
+                                GlassColorBackdropBanner(variant = index / 4)
+                            }
+                        }
+                        item(key = "row_$index") {
+                            val isSelectedRow = paneLayout.isThreePane && index == selectedItemIndex
+                            val accentBg = swatchColors[index % swatchColors.size]
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(HiShapeTokens.Medium)
+                                    .background(if (isSelectedRow) cs.secondaryContainer else cs.surfaceContainerLow)
+                                    .clickable { selectedItemIndex = index }
+                                    .padding(if (paneLayout.isSidebar) 12.dp else 14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(if (paneLayout.isSidebar) 10.dp else 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (!paneLayout.isThreePane || paneLayout.middlePaneWidthDp >= 300) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(if (paneLayout.isSidebar) 36.dp else 40.dp)
+                                            .clip(HiShapeTokens.Full)
+                                            .background(accentBg),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text(
+                                            text = headerTitle.take(1),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = Color.White,
+                                        )
+                                    }
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
                                 ) {
                                     Text(
-                                        text = stringResource(
-                                            if (tuningExpanded) {
-                                                R.string.preview_glass_tune_close
-                                            } else {
-                                                R.string.preview_glass_tune_open
-                                            },
-                                        ),
-                                        style = MaterialTheme.typography.labelMedium,
+                                        text = rowTitle,
+                                        style = HiTheme.typography.threadTitle,
+                                        color = if (isSelectedRow) cs.onSecondaryContainer else cs.onSurface,
+                                        maxLines = if (paneLayout.isSidebar) 2 else 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = if (paneLayout.isSidebar) {
+                                            "三栏预览：左 ${paneLayout.sidebarWidthDp}dp · 中 ${paneLayout.middlePaneWidthDp}dp · 右 ${paneLayout.rightPaneWidthDp}dp"
+                                        } else {
+                                            "高对比正文与饱和色块穿插滚动，便于检视模糊清晰度、透色质感与字迹可读性。"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (isSelectedRow) cs.onSecondaryContainer else cs.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }
-                            TextButton(onClick = onBack, shape = HiShapeTokens.Small) {
-                                Text(text = "返回样张")
-                            }
                         }
                     }
-                    AnimatedVisibility(
-                        visible = tuningExpanded && !paneLayout.isSidebar,
-                        enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(),
-                        exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut(),
-                    ) {
-                        GlassTuningPanel(
-                            style = activeGlassStyle,
-                            onStyleChange = updateGlassStyle,
-                            themeMode = themeMode,
-                            pureBlack = pureBlack,
-                            onThemeChange = onThemeChange,
+                }
+            }
+
+            val listColumn: @Composable (Modifier) -> Unit = { listModifier ->
+                val activeShellGlass = shellGlassState
+                if (!paneLayout.isSidebar && (showGlassTopBar || showGlassSheet) && activeShellGlass != null) {
+                    Box(modifier = listModifier) {
+                        listBody(
+                            Modifier
+                                .fillMaxSize()
+                                .shellGlassSource(),
+                            PaddingValues(
+                                start = 16.dp,
+                                top = if (showGlassTopBar) 80.dp else 12.dp,
+                                end = 16.dp,
+                                bottom = (if (showGlassSheet) 120.dp else 12.dp) + contentPadding.calculateBottomPadding(),
+                            ),
                         )
-                    }
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = if (paneLayout.isSidebar) 12.dp else 16.dp,
-                            top = 12.dp,
-                            end = if (paneLayout.isSidebar) 12.dp else 16.dp,
-                            bottom = 12.dp + contentPadding.calculateBottomPadding(),
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        items.forEachIndexed { index, rowTitle ->
-                            if (!paneLayout.isSidebar && index % 4 == 0) {
-                                item(key = "color_backdrop_${index / 4}") {
-                                    GlassColorBackdropBanner(variant = index / 4)
+                        Column(modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
+                            if (showGlassTopBar) {
+                                HiGlassSurface(
+                                    state = activeShellGlass,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RectangleShape,
+                                    floating = false,
+                                    style = activeGlassStyle,
+                                ) {
+                                    headerRow()
+                                }
+                            } else {
+                                Box(modifier = Modifier.fillMaxWidth().background(cs.surfaceContainer)) {
+                                    headerRow()
                                 }
                             }
-                            item(key = "row_$index") {
-                                val isSelectedRow = paneLayout.isThreePane && index == selectedItemIndex
-                                val accentBg = swatchColors[index % swatchColors.size]
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(HiShapeTokens.Medium)
-                                        .background(if (isSelectedRow) cs.secondaryContainer else cs.surfaceContainerLow)
-                                        .clickable { selectedItemIndex = index }
-                                        .padding(if (paneLayout.isSidebar) 12.dp else 14.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(if (paneLayout.isSidebar) 10.dp else 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
+                            tuningPanelSlot()
+                        }
+                        if (showGlassSheet) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .padding(bottom = contentPadding.calculateBottomPadding() + 8.dp)
+                                    .background(cs.scrim.copy(alpha = HiGlassTokens.SheetScrimAlpha)),
+                            ) {
+                                HiGlassSurface(
+                                    state = activeShellGlass,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                                    floating = true,
+                                    style = activeGlassStyle,
+                                    contentAlignment = Alignment.CenterStart,
                                 ) {
-                                    if (!paneLayout.isThreePane || paneLayout.middlePaneWidthDp >= 300) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(if (paneLayout.isSidebar) 36.dp else 40.dp)
-                                                .clip(HiShapeTokens.Full)
-                                                .background(accentBg),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            Text(
-                                                text = headerTitle.take(1),
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = Color.White,
-                                            )
-                                        }
-                                    }
                                     Column(
-                                        modifier = Modifier.weight(1f),
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                                         verticalArrangement = Arrangement.spacedBy(4.dp),
                                     ) {
                                         Text(
-                                            text = rowTitle,
-                                            style = HiTheme.typography.threadTitle,
-                                            color = if (isSelectedRow) cs.onSecondaryContainer else cs.onSurface,
-                                            maxLines = if (paneLayout.isSidebar) 2 else 1,
-                                            overflow = TextOverflow.Ellipsis,
+                                            text = stringResource(R.string.preview_glass_sheet_sample_title),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = cs.onSurface,
                                         )
                                         Text(
-                                            text = if (paneLayout.isSidebar) {
-                                                "三栏预览：左 ${paneLayout.sidebarWidthDp}dp · 中 ${paneLayout.middlePaneWidthDp}dp · 右 ${paneLayout.rightPaneWidthDp}dp"
-                                            } else {
-                                                "高对比正文与饱和色块穿插滚动，便于检视模糊清晰度、透色质感与字迹可读性。"
-                                            },
+                                            text = stringResource(R.string.preview_glass_sheet_sample_hint),
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = if (isSelectedRow) cs.onSecondaryContainer else cs.onSurfaceVariant,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
+                                            color = cs.onSurfaceVariant,
                                         )
                                     }
                                 }
                             }
                         }
+                    }
+                } else {
+                    Column(modifier = listModifier) {
+                        Box(modifier = Modifier.fillMaxWidth().background(cs.surfaceContainer)) {
+                            headerRow()
+                        }
+                        tuningPanelSlot()
+                        listBody(
+                            Modifier.fillMaxSize(),
+                            PaddingValues(
+                                start = if (paneLayout.isSidebar) 12.dp else 16.dp,
+                                top = 12.dp,
+                                end = if (paneLayout.isSidebar) 12.dp else 16.dp,
+                                bottom = 12.dp + contentPadding.calculateBottomPadding(),
+                            ),
+                        )
                     }
                 }
             }

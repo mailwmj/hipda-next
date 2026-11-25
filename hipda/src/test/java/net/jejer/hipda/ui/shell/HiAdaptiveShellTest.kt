@@ -7,12 +7,16 @@ import android.graphics.Rect as AndroidRect
 import android.view.View
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -21,13 +25,19 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.ComposeUiTest
@@ -41,6 +51,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
@@ -64,12 +75,19 @@ import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.PreviewRootContent
+import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
+import net.jejer.hipda.ui.designsystem.glass.HiGlassState
+import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
+import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
 import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
+import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
+import net.jejer.hipda.ui.designsystem.glass.assertAllGlassSurfacesBlurActive
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -1208,6 +1226,701 @@ class HiAdaptiveShellTest {
             val sidebarBounds = onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot
             assertEquals("900dp 水平桌面姿态应保持 180dp 展开侧栏", 180f, with(density) { sidebarBounds.width.toDp().value }, 1.5f)
         }
+    }
+
+    // ---- (g) C4d 范围 2：hiGlassSource 外层下放、透明 TopBar 兄弟拓扑、切页门控与纯色页默认挂源回退 ----
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun glassSourceDelegation_transparentTopBarAndBottomPill_strictSiblingTopologyAndZeroOuterSource() =
+        withAnimatorDurationScale(1f) {
+            var observedState: HiGlassState? = null
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        HiAdaptiveShell(
+                            selected = ShellDestination.Forum,
+                            onSelect = {},
+                            managesGlassSource = { it == ShellDestination.Forum },
+                        ) { _, contentPadding ->
+                            observedState = shellGlassState
+                            Box(Modifier.fillMaxSize()) {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("delegated_list")
+                                        .shellGlassSource(),
+                                    contentPadding = contentPadding,
+                                ) {
+                                    items(20) { idx ->
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .height(64.dp)
+                                                .background(if (idx % 2 == 0) Color(0xFFE3F2FD) else Color(0xFFF3E5F5)),
+                                        ) {
+                                            Text("帖子 #$idx")
+                                        }
+                                    }
+                                }
+                                shellGlassState?.let { state ->
+                                    HiGlassSurface(
+                                        state = state,
+                                        modifier = Modifier
+                                            .align(Alignment.TopCenter)
+                                            .fillMaxWidth()
+                                            .height(56.dp)
+                                            .testTag("transparent_top_bar"),
+                                        shape = RectangleShape,
+                                        floating = false,
+                                        style = HiGlassStyle.TopBar,
+                                    ) {
+                                        Text("论坛透明顶栏")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            waitForIdle()
+
+            val state = requireNotNull(observedState)
+            assertTrue("激活态透明顶栏+底部胶囊应触发采样源需求", state.hasSourceDemand)
+            assertGlassSurfaceCountAtMost(2)
+            assertAllGlassSurfacesBlurActive(true)
+            val markerCount = onAllNodes(
+                matcher = SemanticsMatcher.expectValue(HiGlassMarker, true),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().size
+            assertEquals("透明顶栏 + 底部胶囊应恰好计为 2 个玻璃区域", 2, markerCount)
+
+            // 确认外层 ContentContainer 不再挂 LayerBackdropElement，采样源严格位于纯列表体 delegated_list 上
+            val outerHasBackdrop = onNodeWithTag(HiShellTestTags.ContentContainer)
+                .fetchSemanticsNode()
+                .layoutInfo
+                .getModifierInfo()
+                .any { it.modifier.javaClass.name.contains("LayerBackdrop") }
+            assertFalse("外层 ContentContainer 严禁挂接 LayerBackdropElement（防循环采样）", outerHasBackdrop)
+
+            val listHasBackdrop = onNodeWithTag("delegated_list")
+                .fetchSemanticsNode()
+                .layoutInfo
+                .getModifierInfo()
+                .any { it.modifier.javaClass.name.contains("LayerBackdrop") }
+            assertTrue("纯滚动 LazyColumn 应成功挂接 LayerBackdropElement", listHasBackdrop)
+
+            val layerBackdrop = requireNotNull(state.layerBackdrop)
+            val coordsGetter = layerBackdrop.javaClass.methods.first { it.name.startsWith("getLayerCoordinates") }
+            assertNotNull("下放后的列表采样源应正确写入 LayerBackdrop 坐标", coordsGetter.invoke(layerBackdrop))
+        }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun glassSourceDelegation_transitionGatesExitingDestinationToNull_andUnmanagedFallsBack() =
+        withAnimatorDurationScale(1f) {
+            var selected by mutableStateOf(ShellDestination.Forum)
+            val observedPerDest = mutableMapOf<ShellDestination, HiGlassState?>()
+
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        HiAdaptiveShell(
+                            selected = selected,
+                            onSelect = { selected = it },
+                            managesGlassSource = { it == ShellDestination.Forum },
+                        ) { destination, _ ->
+                            observedPerDest[destination] = shellGlassState
+                            if (destination == ShellDestination.Forum) {
+                                Box(Modifier.fillMaxSize().testTag("page_Forum")) {
+                                    Box(Modifier.fillMaxSize().shellGlassSource().background(Color.Cyan))
+                                }
+                            } else {
+                                // 未声明自管的纯色顶栏页（Search）：外壳自动回退挂源
+                                Box(Modifier.fillMaxSize().testTag("page_${destination.name}").background(Color.Yellow)) {
+                                    Text(destination.name)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            waitForIdle()
+            val forumState = requireNotNull(observedPerDest[ShellDestination.Forum])
+
+            // 切页过渡期内：退场旧页 Forum 的 shellGlassState 应立即门控为 null，进场新页 Search 非空且回退挂源正常
+            mainClock.autoAdvance = false
+            try {
+                selected = ShellDestination.Search
+                Snapshot.sendApplyNotifications()
+                mainClock.advanceTimeByFrame()
+                mainClock.advanceTimeByFrame()
+
+                assertNull("切页退场期内旧目的地 Forum 的 shellGlassState 必须门控为 null", observedPerDest[ShellDestination.Forum])
+                assertNotNull("进场新目的地 Search 的 shellGlassState 应非空", observedPerDest[ShellDestination.Search])
+                assertEquals(forumState, observedPerDest[ShellDestination.Search])
+            } finally {
+                mainClock.autoAdvance = true
+            }
+            waitForIdle()
+
+            // 纯色顶栏页 Search 未显式调用 shellGlassSource，外壳应自动回退挂接 LayerBackdrop
+            assertTrue("未接管纯色页回退挂源后采样需求应保持活跃", forumState.hasSourceDemand)
+            val layerBackdrop = requireNotNull(forumState.layerBackdrop)
+            val coordsGetter = layerBackdrop.javaClass.methods.first { it.name.startsWith("getLayerCoordinates") }
+            assertNotNull("纯色顶栏页回退挂源后 LayerBackdrop 坐标应非空", coordsGetter.invoke(layerBackdrop))
+            assertAllGlassSurfacesBlurActive(true)
+        }
+
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun glassSourceDelegation_sidebarModeExposesNullShellGlassState() = withAnimatorDurationScale(1f) {
+        var observed: HiGlassState? = HiGlassState()
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _, _ ->
+                    observed = shellGlassState
+                    Box(Modifier.fillMaxSize().shellGlassSource())
+                }
+            }
+        }
+        waitForIdle()
+        assertNull("侧栏态（≥ 600dp）下 shellGlassState 必须为 null", observed)
+    }
+
+    // ---- (h) C4d 范围 3：底部胶囊与紧凑胶囊跟手拖拽预选、竖向 > 48dp 弹回、< 452dp 防返回、减动效与可打断 ----
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun bottomPillDrag_tracksFingerWithoutEarlySelect_commitsOnRelease_andKeepsSingleGlassMarker() =
+        withAnimatorDurationScale(1f) {
+            var selected by mutableStateOf(ShellDestination.Forum)
+            var selectCallCount = 0
+            var touchSlop = 0f
+
+            setContent {
+                touchSlop = LocalViewConfiguration.current.touchSlop
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(
+                        selected = selected,
+                        onSelect = {
+                            selectCallCount++
+                            selected = it
+                        },
+                    ) { destination, _ ->
+                        Box(Modifier.fillMaxSize()) { Text(destination.name) }
+                    }
+                }
+            }
+            waitForIdle()
+
+            val pillBounds = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot
+            val forumCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum)).fetchSemanticsNode().boundsInRoot.center
+            val searchCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search)).fetchSemanticsNode().boundsInRoot.center
+            val startLocal = Offset(forumCenter.x - pillBounds.left, forumCenter.y - pillBounds.top)
+            val searchLocal = Offset(searchCenter.x - pillBounds.left, searchCenter.y - pillBounds.top)
+
+            // 1) 未超 touchSlop 移动不进入拖拽、不切页；越过 touchSlop 拖向 Search：跟手 snapTo、不提前调 onSelect、HiGlassMarker 仍为 1
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                down(startLocal)
+                moveBy(Offset(touchSlop * 0.4f, 0f))
+            }
+            waitForIdle()
+            assertEquals("未超 touchSlop 不得提前切页", 0, selectCallCount)
+
+            val midLocal = Offset((startLocal.x + searchLocal.x) / 2f, startLocal.y)
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                moveTo(midLocal)
+                moveTo(searchLocal)
+            }
+            waitForIdle()
+            assertEquals("拖动过程中绝不得提前触发 onSelect", 0, selectCallCount)
+            assertEquals(ShellDestination.Forum, selected)
+
+            val draggedIndicatorCenterX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot.center.x
+            assertEquals("拖动过程中指示器中心应直接跟手对齐手指位置", searchCenter.x, draggedIndicatorCenterX, 6f)
+
+            val glassCountDuringDrag = onAllNodes(
+                matcher = SemanticsMatcher.expectValue(HiGlassMarker, true),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().size
+            assertEquals("拖动期间整条胶囊必须保持严格 1 个 HiGlassMarker", 1, glassCountDuringDrag)
+
+            // 2) 容差内松手 → 触发 onSelect(Search) 并落位到 Search
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput { up() }
+            waitForIdle()
+            assertEquals(1, selectCallCount)
+            assertEquals(ShellDestination.Search, selected)
+            val settledCenterX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot.center.x
+            assertEquals("松手后指示器应落位在 Search 中心", searchCenter.x, settledCenterX, 2f)
+        }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun bottomPillDrag_verticalExceeding48dpAndSystemCancel_reboundWithoutSelecting() =
+        withAnimatorDurationScale(1f) {
+            var selected by mutableStateOf(ShellDestination.Forum)
+            var selectCallCount = 0
+
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(
+                        selected = selected,
+                        onSelect = {
+                            selectCallCount++
+                            selected = it
+                        },
+                    ) { _, _ -> Box(Modifier.fillMaxSize()) }
+                }
+            }
+            waitForIdle()
+
+            val pillBounds = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot
+            val forumCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum)).fetchSemanticsNode().boundsInRoot.center
+            val mineCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Mine)).fetchSemanticsNode().boundsInRoot.center
+            val startLocal = Offset(forumCenter.x - pillBounds.left, forumCenter.y - pillBounds.top)
+            val mineLocal = Offset(mineCenter.x - pillBounds.left, mineCenter.y - pillBounds.top)
+            val aboveCancelY = -with(density) { 56.dp.toPx() }
+
+            // 1) 拖到 Mine 后竖向拖离胶囊上界 > 48dp → 取消并以 spatialSnap 连续弹回 Forum，不触发 onSelect
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                down(startLocal)
+                moveTo(mineLocal)
+            }
+            waitForIdle()
+            val draggedX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot.center.x
+            assertEquals(mineCenter.x, draggedX, 6f)
+
+            val reboundResult = assertFrameContinuity(
+                nodeProvider = { onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true) },
+                frameCount = 24,
+                maxStepDp = 120.dp,
+                minTotalTravelDp = 60.dp,
+                onFrame = { frame ->
+                    if (frame == 0) {
+                        onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                            moveTo(Offset(mineLocal.x, aboveCancelY))
+                        }
+                    } else if (frame == 2) {
+                        onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput { up() }
+                    }
+                },
+            )
+            mainClock.autoAdvance = true
+            waitForIdle()
+            assertEquals("竖向离界 > 48dp 取消不得触发 onSelect", 0, selectCallCount)
+            assertEquals(ShellDestination.Forum, selected)
+            val afterVerticalCancelX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot.center.x
+            assertEquals("竖向取消后指示器应弹回原选中项 Forum", forumCenter.x, afterVerticalCancelX, 2f)
+            assertTrue("取消弹回过程应平滑经过中间帧", reboundResult.positionsPx.map { it.x }.distinct().size >= 4)
+
+            // 2) 手势取消事件（ACTION_CANCEL）同理弹回 Forum 且不触发 onSelect
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                down(startLocal)
+                moveTo(mineLocal)
+                cancel()
+            }
+            waitForIdle()
+            assertEquals("手势 cancel 事件不得触发 onSelect", 0, selectCallCount)
+            assertEquals(ShellDestination.Forum, selected)
+            val afterGestureCancelX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot.center.x
+            assertEquals("手势 cancel 后指示器应弹回 Forum", forumCenter.x, afterGestureCancelX, 2f)
+        }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun bottomPillDrag_reducedMotionFinishesInOneFrame_andReboundIsInterruptible() {
+        // 1) 减少动态效果：松手切页与竖向取消均 1 帧落位
+        withAnimatorDurationScale(0f) {
+            var selected by mutableStateOf(ShellDestination.Forum)
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(
+                        selected = selected,
+                        onSelect = { selected = it },
+                    ) { _, _ -> Box(Modifier.fillMaxSize()) }
+                }
+            }
+            waitForIdle()
+
+            val pillBounds = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot
+            val forumCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum)).fetchSemanticsNode().boundsInRoot.center
+            val searchCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search)).fetchSemanticsNode().boundsInRoot.center
+            val startLocal = Offset(forumCenter.x - pillBounds.left, forumCenter.y - pillBounds.top)
+            val searchLocal = Offset(searchCenter.x - pillBounds.left, searchCenter.y - pillBounds.top)
+
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                down(startLocal)
+                moveTo(searchLocal)
+            }
+            waitForIdle()
+
+            mainClock.autoAdvance = false
+            try {
+                onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput { up() }
+                mainClock.advanceTimeByFrame()
+                mainClock.advanceTimeByFrame()
+                assertEquals(ShellDestination.Search, selected)
+                val landedX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+                    .fetchSemanticsNode().boundsInRoot.center.x
+                assertEquals("减少动态效果下松手应一帧落位 Search", searchCenter.x, landedX, 2f)
+            } finally {
+                mainClock.autoAdvance = true
+            }
+        }
+
+        // 2) 正常动效下取消弹回中途被点击打断，位置连续无跳变
+        withAnimatorDurationScale(1f) {
+            var selected by mutableStateOf(ShellDestination.Forum)
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(
+                        selected = selected,
+                        onSelect = { selected = it },
+                    ) { _, _ -> Box(Modifier.fillMaxSize()) }
+                }
+            }
+            waitForIdle()
+
+            val pillBounds = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot
+            val forumCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum)).fetchSemanticsNode().boundsInRoot.center
+            val mineCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Mine)).fetchSemanticsNode().boundsInRoot.center
+            val messagesCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Messages)).fetchSemanticsNode().boundsInRoot.center
+            val startLocal = Offset(forumCenter.x - pillBounds.left, forumCenter.y - pillBounds.top)
+            val mineLocal = Offset(mineCenter.x - pillBounds.left, mineCenter.y - pillBounds.top)
+
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                down(startLocal)
+                moveTo(mineLocal)
+            }
+            waitForIdle()
+
+            assertFrameContinuity(
+                nodeProvider = { onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true) },
+                frameCount = 26,
+                maxStepDp = 120.dp,
+                minTotalTravelDp = 40.dp,
+                onFrame = { frame ->
+                    if (frame == 0) {
+                        onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                            moveTo(Offset(mineLocal.x, -with(density) { 60.dp.toPx() }))
+                            up()
+                        }
+                    } else if (frame == 3) {
+                        selected = ShellDestination.Messages
+                    }
+                },
+            )
+            mainClock.autoAdvance = true
+            waitForIdle()
+            val finalX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot.center.x
+            assertEquals("弹回中途点击打断后应平滑落位 Messages", messagesCenter.x, finalX, 2f)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun bottomPillDrag_narrowScreenLeftEdge16dpGuard_blocksEdgeDragButPreservesTapAndTalkBack() =
+        withAnimatorDurationScale(1f) {
+            var selected by mutableStateOf(ShellDestination.Messages)
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(
+                        selected = selected,
+                        onSelect = { selected = it },
+                    ) { _, _ -> Box(Modifier.fillMaxSize()) }
+                }
+            }
+            waitForIdle()
+
+            val pillBounds = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot
+            val searchCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search)).fetchSemanticsNode().boundsInRoot.center
+            val edgeLocal = Offset(with(density) { 8.dp.toPx() }, pillBounds.height / 2f)
+            val searchLocal = Offset(searchCenter.x - pillBounds.left, pillBounds.height / 2f)
+
+            // 1) < 452dp 窄屏下从胶囊左缘 16dp 内起拖，不得劫持为胶囊拖拽
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                down(edgeLocal)
+                moveTo(searchLocal)
+                up()
+            }
+            waitForIdle()
+            assertEquals("窄屏左缘 16dp 起点横滑不得触发胶囊拖拽切页", ShellDestination.Messages, selected)
+
+            // 2) 同一左缘区域普通单击仍畅通点击 Forum
+            onNodeWithTag(HiShellTestTags.BottomPill).performTouchInput {
+                down(edgeLocal)
+                up()
+            }
+            waitForIdle()
+            assertEquals("左缘区域普通单击应正常选中 Forum", ShellDestination.Forum, selected)
+
+            // 3) TalkBack / 语义 OnClick 动作畅通无阻
+            onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Mine))
+                .performSemanticsAction(SemanticsActions.OnClick)
+            waitForIdle()
+            assertEquals("TalkBack OnClick 应正常切换至 Mine", ShellDestination.Mine, selected)
+        }
+
+    @Test
+    @Config(qualifiers = "w891dp-h411dp-xhdpi")
+    fun compactPillDrag_previewsCommitsAndVerticalCancelsCleanly() = withAnimatorDurationScale(1f) {
+        var selected by mutableStateOf(ShellDestination.Forum)
+        var selectCalls = 0
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = selected,
+                    onSelect = {
+                        selectCalls++
+                        selected = it
+                    },
+                ) { _, _ -> Box(Modifier.fillMaxSize()) }
+            }
+        }
+        waitForIdle()
+
+        val pillBounds = onNodeWithTag(HiShellTestTags.CompactPill).fetchSemanticsNode().boundsInRoot
+        val forumCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum)).fetchSemanticsNode().boundsInRoot.center
+        val searchCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search)).fetchSemanticsNode().boundsInRoot.center
+        val startLocal = Offset(forumCenter.x - pillBounds.left, forumCenter.y - pillBounds.top)
+        val searchLocal = Offset(searchCenter.x - pillBounds.left, searchCenter.y - pillBounds.top)
+
+        // 紧凑胶囊跟手拖拽到 Search → 拖动中不切页，松手切到 Search
+        onNodeWithTag(HiShellTestTags.CompactPill).performTouchInput {
+            down(startLocal)
+            moveTo(searchLocal)
+        }
+        waitForIdle()
+        assertEquals("紧凑胶囊拖动中不得提前切页", 0, selectCalls)
+        assertEquals(ShellDestination.Forum, selected)
+
+        onNodeWithTag(HiShellTestTags.CompactPill).performTouchInput { up() }
+        waitForIdle()
+        assertEquals(1, selectCalls)
+        assertEquals(ShellDestination.Search, selected)
+
+        // 紧凑胶囊竖向离界 > 48dp 取消不切页
+        val newPillBounds = onNodeWithTag(HiShellTestTags.CompactPill).fetchSemanticsNode().boundsInRoot
+        val newSearchCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search)).fetchSemanticsNode().boundsInRoot.center
+        val mineCenter = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Mine)).fetchSemanticsNode().boundsInRoot.center
+        onNodeWithTag(HiShellTestTags.CompactPill).performTouchInput {
+            down(Offset(newSearchCenter.x - newPillBounds.left, newSearchCenter.y - newPillBounds.top))
+            moveTo(Offset(mineCenter.x - newPillBounds.left, mineCenter.y - newPillBounds.top))
+            moveTo(Offset(mineCenter.x - newPillBounds.left, -with(density) { 56.dp.toPx() }))
+            up()
+        }
+        waitForIdle()
+        assertEquals("紧凑胶囊竖向取消不得再次切页", 1, selectCalls)
+        assertEquals(ShellDestination.Search, selected)
+    }
+
+    // ---- (i) C4d 范围 5（R-C4c S1–S3）：浮层 Tab 锁焦、左滑关闭无首帧回跳与回弹、常驻侧栏过渡不共用 LazyListState ----
+
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun sidebarModalDrawer_keyboardTabLocksFocusInsideDrawerAndAllowsWhenClosed() = withAnimatorDurationScale(1f) {
+        var underlyingFocused by mutableStateOf(false)
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _, _ ->
+                    Box(Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .size(120.dp)
+                                .testTag("underlying_focus_target")
+                                .onFocusChanged { if (it.isFocused) underlyingFocused = true }
+                                .focusable()
+                                .clickable {},
+                        ) {
+                            Text("底层可聚焦按钮")
+                        }
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        // 展开 240dp 浮层后连续按 25 次 Key.Tab，焦点不得逃逸到底层内容
+        onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        waitForIdle()
+        onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+        underlyingFocused = false
+
+        repeat(25) {
+            onNodeWithTag(HiShellTestTags.SidebarModalDrawer).performKeyInput {
+                pressKey(Key.Tab)
+            }
+            waitForIdle()
+        }
+        assertFalse("浮层展开时连续按 Key.Tab 焦点绝不得逃逸到底层按钮", underlyingFocused)
+
+        // 关闭浮层后，Tab 键可正常进入底层内容
+        onNodeWithTag(HiShellTestTags.SidebarModalDrawer).performKeyInput {
+            pressKey(Key.Escape)
+        }
+        waitForIdle()
+        onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertDoesNotExist()
+
+        repeat(20) {
+            onRoot().performKeyInput { pressKey(Key.Tab) }
+            waitForIdle()
+            if (underlyingFocused) return@repeat
+        }
+        assertTrue("浮层关闭后按 Key.Tab 应可正常聚焦底层按钮", underlyingFocused)
+    }
+
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun sidebarModalDrawer_leftSwipeShortReboundsAndPastThresholdDismissesWithoutJumpingToZero() =
+        withAnimatorDurationScale(1f) {
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(
+                        selected = ShellDestination.Forum,
+                        onSelect = {},
+                    ) { _, _ -> Box(Modifier.fillMaxSize()) }
+                }
+            }
+            waitForIdle()
+
+            // 打开浮层
+            onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+            waitForIdle()
+            onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+            assertEquals(0f, onNodeWithTag(HiShellTestTags.SidebarModalDrawer).fetchSemanticsNode().boundsInRoot.left, 1.5f)
+
+            // 1) 左滑未达阈值（40dp 慢速）→ 松手后保持打开并以 spatialSnap 回弹至 left=0
+            val shortDragPx = with(density) { 40.dp.toPx() }
+            onNodeWithTag(HiShellTestTags.SidebarModalDrawer).performTouchInput {
+                down(Offset(width * 0.7f, centerY))
+                moveBy(Offset(-shortDragPx, 0f), delayMillis = 200L)
+                advanceEventTime(200L)
+                moveBy(Offset.Zero)
+            }
+            waitForIdle()
+            val shortDraggedLeft = onNodeWithTag(HiShellTestTags.SidebarModalDrawer).fetchSemanticsNode().boundsInRoot.left
+            assertTrue("慢速左滑 40dp 后浮层应已左移，实际 left=$shortDraggedLeft", shortDraggedLeft < -10f)
+
+            onNodeWithTag(HiShellTestTags.SidebarModalDrawer).performTouchInput { up() }
+            waitForIdle()
+            onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+            assertEquals(
+                "未超阈值松手应通过 spatialSnap 回弹回 left=0",
+                0f,
+                onNodeWithTag(HiShellTestTags.SidebarModalDrawer).fetchSemanticsNode().boundsInRoot.left,
+                1.5f,
+            )
+
+            // 2) 左滑超 35% 阈值（120dp）→ 松手关闭退场首帧不得回跳到 0f，必须持续向左滑出直至消失
+            val longDragPx = with(density) { 120.dp.toPx() }
+            onNodeWithTag(HiShellTestTags.SidebarModalDrawer).performTouchInput {
+                down(Offset(width * 0.8f, centerY))
+                moveBy(Offset(-longDragPx, 0f), delayMillis = 120L)
+                advanceEventTime(150L)
+                moveBy(Offset.Zero)
+            }
+            waitForIdle()
+            val releaseLeft = onNodeWithTag(HiShellTestTags.SidebarModalDrawer).fetchSemanticsNode().boundsInRoot.left
+            assertTrue("左滑 120dp 后浮层松手前应显著为负值，实际 left=$releaseLeft", releaseLeft < -with(density) { 80.dp.toPx() })
+
+            mainClock.autoAdvance = false
+            try {
+                onNodeWithTag(HiShellTestTags.SidebarModalDrawer).performTouchInput { up() }
+                var sawExitFrame = false
+                repeat(30) { frame ->
+                    mainClock.advanceTimeByFrame()
+                    val node = onAllNodes(
+                        SemanticsMatcher.expectValue(SemanticsProperties.TestTag, HiShellTestTags.SidebarModalDrawer),
+                    ).fetchSemanticsNodes().firstOrNull()
+                    if (node != null) {
+                        sawExitFrame = true
+                        assertTrue(
+                            "关闭退场第 $frame 帧浮层 left=${node.boundsInRoot.left} 不得回跳至 > releaseLeft($releaseLeft)",
+                            node.boundsInRoot.left <= releaseLeft + 1.5f,
+                        )
+                    }
+                }
+                assertTrue("应观测到至少一帧连续退场过程", sawExitFrame)
+            } finally {
+                mainClock.autoAdvance = true
+            }
+            waitForIdle()
+            onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertDoesNotExist()
+        }
+
+    @Test
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun permanentSidebar_toggleTransitionUsesIndependentLazyListStatesWithoutCrash() = withAnimatorDurationScale(1f) {
+        val manyForums = ForumMetadataRegistry.BuiltInForums.map { it.fid }
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                    sidebarState = HiSidebarState(
+                        selectedEntry = ShellSidebarEntry.Forum(2),
+                        followedForumIds = manyForums,
+                    ),
+                ) { _, _ -> Box(Modifier.fillMaxSize()) }
+            }
+        }
+        waitForIdle()
+
+        // 向下滚动侧栏列表后，在 AnimatedContent 交叉淡入淡出期间逐帧验证双挂载 LazyColumn 互不冲突
+        onNodeWithTag(HiShellTestTags.SidebarList).performTouchInput {
+            down(center)
+            moveBy(Offset(0f, -240f), delayMillis = 80L)
+            up()
+        }
+        waitForIdle()
+
+        mainClock.autoAdvance = false
+        try {
+            onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+            repeat(24) {
+                mainClock.advanceTimeByFrame()
+            }
+        } finally {
+            mainClock.autoAdvance = true
+        }
+        waitForIdle()
+        assertEquals(
+            "收起后宽应稳定在 64dp",
+            64f,
+            with(density) { onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot.width.toDp().value },
+            1.5f,
+        )
+
+        // 再次展开过渡同样稳定无冲突
+        mainClock.autoAdvance = false
+        try {
+            onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+            repeat(24) {
+                mainClock.advanceTimeByFrame()
+            }
+        } finally {
+            mainClock.autoAdvance = true
+        }
+        waitForIdle()
+        assertEquals(
+            "展开后宽应恢复至 187dp",
+            187f,
+            with(density) { onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot.width.toDp().value },
+            1.5f,
+        )
     }
 
     // ---- 局部辅助 ----
