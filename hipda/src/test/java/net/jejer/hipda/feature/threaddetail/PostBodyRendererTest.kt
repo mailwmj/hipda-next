@@ -1,17 +1,26 @@
 package net.jejer.hipda.feature.threaddetail
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -22,14 +31,21 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
+import androidx.test.core.app.ApplicationProvider
 import net.jejer.hipda.emoji.EmojiMap
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
+import net.jejer.hipda.feature.common.LocalHiImageLoader
 import net.jejer.hipda.feature.threaddetail.body.PostBodyRenderer
 import net.jejer.hipda.feature.threaddetail.body.ResolvedForumEmoji
 import net.jejer.hipda.feature.threaddetail.body.buildPostTextBlock
 import net.jejer.hipda.feature.threaddetail.body.resolveForumEmoji
 import net.jejer.hipda.feature.threaddetail.body.resolveSmallImageDrawable
 import net.jejer.hipda.feature.threaddetail.body.sanitizePostUrl
+import net.jejer.hipda.feature.threaddetail.media.ImageAspectRatioCache
+import net.jejer.hipda.feature.threaddetail.media.OfflineTestImageLoader
+import net.jejer.hipda.feature.threaddetail.media.captureTestNetworkState
+import net.jejer.hipda.feature.threaddetail.media.configureTestNetworkState
+import net.jejer.hipda.feature.threaddetail.media.restoreTestNetworkState
 import net.jejer.hipda.parser.LegacyTestSupport
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.parser.threaddetail.InlineSpan
@@ -207,6 +223,10 @@ class PostBodyRendererTest {
 
     @Test
     fun postBodyRenderer_rendersAllSixContentBlocksAndRoutesImageToPostImageBlock() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val savedNetwork = captureTestNetworkState(context)
+        ImageAspectRatioCache.Default.clear()
+        val offlineLoader = OfflineTestImageLoader.success(width = 400, height = 300)
         val openedImages = mutableListOf<ImageViewerLaunchArgs>()
         val openedLinks = mutableListOf<String>()
         val authorOnlySample = ThreadDetailParser.parse(
@@ -217,7 +237,7 @@ class PostBodyRendererTest {
         val sampleQuote = authorOnlySample.floors.flatMap { it.blocks }.filterIsInstance<ContentBlock.Quote>().first()
         val sampleGoTo = authorOnlySample.floors.flatMap { it.blocks }.filterIsInstance<ContentBlock.GoToFloor>().first()
 
-        val blocks = listOf(
+        val baseBlocks = listOf(
             sampleQuote,
             sampleGoTo,
             ContentBlock.Text(
@@ -234,36 +254,76 @@ class PostBodyRendererTest {
             ContentBlock.Attachment(url = "https://www.4d4y.com/forum/attachment.php?aid=1001", title = "spec.pdf", description = "12 KB"),
             ContentBlock.Notice("提示: 作者被禁止或删除 内容自动屏蔽"),
         )
+        var showMeteredImage by mutableStateOf(false)
 
-        composeRule.setContent {
-            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                val listState = rememberLazyListState()
-                Box(Modifier.fillMaxWidth()) {
-                    PostBodyRenderer(
-                        blocks = blocks,
-                        floorPostId = "post_1001",
-                        listState = listState,
-                        onOpenImageViewer = { openedImages += it },
-                        onLinkClick = { openedLinks += it },
-                    )
+        try {
+            configureTestNetworkState(
+                context,
+                metered = false,
+                restrictStatus = ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED,
+            )
+            composeRule.setContent {
+                CompositionLocalProvider(LocalHiImageLoader provides offlineLoader) {
+                    HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                        val listState = rememberLazyListState()
+                        val renderedBlocks = if (showMeteredImage) {
+                            baseBlocks + ContentBlock.Image(
+                                fullUrl = "https://img.example.invalid/metered.jpg",
+                                thumbUrl = null,
+                                fileSizeBytes = 2048L,
+                            )
+                        } else {
+                            baseBlocks
+                        }
+                        Box(Modifier.fillMaxWidth()) {
+                            PostBodyRenderer(
+                                blocks = renderedBlocks,
+                                floorPostId = "post_1001",
+                                listState = listState,
+                                onOpenImageViewer = { openedImages += it },
+                                onLinkClick = { openedLinks += it },
+                            )
+                        }
+                    }
                 }
             }
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithText(sampleQuote.authorAndTime).assertIsDisplayed()
+            composeRule.onNodeWithText(sampleGoTo.label).assertIsDisplayed()
+            composeRule.onNodeWithContentDescription(":lol:").assertIsDisplayed()
+            composeRule.onNodeWithContentDescription("{:2_41:}").assertIsDisplayed()
+            composeRule.onNodeWithContentDescription("{:3_64:}").assertIsDisplayed()
+            composeRule.onNodeWithText("原生正文含表情", substring = true).assertIsDisplayed()
+            composeRule.onNodeWithText("[missing_x]", substring = true).assertIsDisplayed()
+            assertEquals(listOf("https://img.example.invalid/full.jpg"), offlineLoader.requestedUrls)
+            composeRule.onNode(hasClickAction() and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image))
+                .assertIsDisplayed()
+                .performClick()
+            composeRule.onNodeWithText("spec.pdf").assertIsDisplayed().performClick()
+            composeRule.onNodeWithText("提示: 作者被禁止或删除 内容自动屏蔽").assertIsDisplayed()
+
+            assertEquals(1, openedImages.size)
+            assertEquals(listOf("https://img.example.invalid/full.jpg"), openedImages.single().urls)
+            val bounds = openedImages.single().sourceBoundsInWindow
+            assertNotNull("点击已加载图片必须上报非空 sourceBoundsInWindow", bounds)
+            assertTrue("sourceBoundsInWindow 尺寸必须非零，实际：$bounds", bounds!!.width > 0f && bounds.height > 0f)
+            assertEquals(listOf("https://www.4d4y.com/forum/attachment.php?aid=1001"), openedLinks)
+
+            // 切至流量节省 + 计费网络，验证新增图片块按大小显示省流文案且不自动发包
+            configureTestNetworkState(
+                context,
+                metered = true,
+                restrictStatus = ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED,
+            )
+            showMeteredImage = true
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("点击加载图片（2 KB）").assertIsDisplayed()
+            assertEquals(listOf("https://img.example.invalid/full.jpg"), offlineLoader.requestedUrls)
+        } finally {
+            restoreTestNetworkState(context, savedNetwork)
+            ImageAspectRatioCache.Default.clear()
         }
-        composeRule.waitForIdle()
-
-        composeRule.onNodeWithText(sampleQuote.authorAndTime).assertIsDisplayed()
-        composeRule.onNodeWithText(sampleGoTo.label).assertIsDisplayed()
-        composeRule.onNodeWithContentDescription(":lol:").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("{:2_41:}").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("{:3_64:}").assertIsDisplayed()
-        composeRule.onNodeWithText("原生正文含表情", substring = true).assertIsDisplayed()
-        composeRule.onNodeWithText("[missing_x]", substring = true).assertIsDisplayed()
-        composeRule.onNodeWithText("点击加载图片").assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("spec.pdf").assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("提示: 作者被禁止或删除 内容自动屏蔽").assertIsDisplayed()
-
-        assertEquals(listOf(ImageViewerLaunchArgs(urls = listOf("https://img.example.invalid/full.jpg"))), openedImages)
-        assertEquals(listOf("https://www.4d4y.com/forum/attachment.php?aid=1001"), openedLinks)
     }
 
     @Test
