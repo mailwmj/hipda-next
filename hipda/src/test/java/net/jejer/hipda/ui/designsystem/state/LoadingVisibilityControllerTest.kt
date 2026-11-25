@@ -1,11 +1,20 @@
 package net.jejer.hipda.ui.designsystem.state
 
 import android.app.Application
+import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.StateRestorationTester
+import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
@@ -18,6 +27,7 @@ import net.jejer.hipda.ui.designsystem.HiThemeMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -202,5 +212,104 @@ class LoadingVisibilityReducedMotionTest {
         mainClock.advanceTimeBy(250L)
         waitForIdle()
         assertFalse("满 250ms 最短停留期后应隐藏", observedVisible)
+    }
+
+    @Test
+    fun activeOperation_inCompose_becomesVisibleInSameCompositionPass() = withAnimatorDurationScale(0f) {
+        var isLoading by mutableStateOf(false)
+        val observedPairs = mutableListOf<Pair<Boolean, Boolean>>()
+
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                val visible by rememberLoadingIndicatorVisible(
+                    isLoading = isLoading,
+                    passive = false,
+                )
+                observedPairs += isLoading to visible
+            }
+        }
+        waitForIdle()
+        assertEquals(listOf(false to false), observedPairs)
+
+        // 主动操作 false -> true：必须在首轮以 isLoading=true 组合时同帧即为 true（不得先组合出 false 再二次重组）
+        observedPairs.clear()
+        isLoading = true
+        waitForIdle()
+        assertEquals(
+            "主动操作切到加载中时应在同一组合帧返回 true，而非先返回 false 再二次重组",
+            listOf(true to true),
+            observedPairs,
+        )
+
+        // 主动操作 true -> false：同样在同一组合帧返回 false
+        observedPairs.clear()
+        isLoading = false
+        waitForIdle()
+        assertEquals(
+            "主动操作结束时应在同一组合帧返回 false",
+            listOf(false to false),
+            observedPairs,
+        )
+    }
+}
+
+@RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class, sdk = [34])
+class LoadingVisibilityStateRestorationTest {
+
+    @get:Rule
+    val composeRule = createComposeRule()
+
+    @Test
+    fun passiveLoad_afterShowingSkeleton_preservesSkeletonImmediatelyOnStateRestoration() {
+        val restorationTester = StateRestorationTester(composeRule)
+        var loadState by mutableStateOf<HiLoadState<String>>(HiLoadState.Loading)
+
+        composeRule.mainClock.autoAdvance = false
+        restorationTester.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiContentState(
+                    state = loadState,
+                    skeleton = {
+                        HiSkeletonBlock(
+                            width = 120.dp,
+                            height = 24.dp,
+                            modifier = Modifier.testTag("restored_skeleton"),
+                        )
+                    },
+                    empty = { HiEmptyState(message = "暂无帖子") },
+                    error = { err -> HiErrorState(message = err.message) },
+                ) { value ->
+                    Text(text = value)
+                }
+            }
+        }
+
+        // 初始 150ms 内不显示骨架
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("restored_skeleton").assertDoesNotExist()
+
+        // 超过 150ms 后骨架已显示
+        composeRule.mainClock.advanceTimeBy(160L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("restored_skeleton").assertIsDisplayed()
+
+        // 模拟宿主旋转/重建：不推进时钟（0ms），重建后应立即仍显示骨架，而非退回 150ms 空白
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.onNodeWithTag("restored_skeleton").assertIsDisplayed()
+
+        // 加载完成并切到内容后，再重建不应误显示骨架
+        loadState = HiLoadState.Content("已加载内容")
+        Snapshot.sendApplyNotifications()
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.mainClock.advanceTimeBy(600L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("已加载内容").assertIsDisplayed()
+        composeRule.onNodeWithTag("restored_skeleton").assertDoesNotExist()
+
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.onNodeWithText("已加载内容").assertIsDisplayed()
+        composeRule.onNodeWithTag("restored_skeleton").assertDoesNotExist()
     }
 }

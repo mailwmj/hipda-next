@@ -9,7 +9,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +18,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -30,7 +28,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -43,7 +40,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
@@ -58,27 +54,11 @@ import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 import net.jejer.hipda.ui.designsystem.motion.hiShrinkVertically
 
-internal object HiStateTestTags {
-    const val EMPTY_MESSAGE = "hi_empty_state_message"
-    const val EMPTY_ACTION = "hi_empty_state_action"
-    const val ERROR_MESSAGE = "hi_error_state_message"
-    const val ERROR_ACTION = "hi_error_state_action"
-    const val ERROR_DETAILS_TOGGLE = "hi_error_state_details_toggle"
-    const val ERROR_DETAILS_PANEL = "hi_error_state_details_panel"
-    const val ERROR_COPY_DETAILS = "hi_error_state_copy_details"
-    const val LIST_FOOTER = "hi_list_footer"
-}
-
 /** 空状态与错误状态的可选操作按钮定义。 */
 @Immutable
-data class HiStateAction(
-    val label: String,
-    val onClick: () -> Unit,
-)
+data class HiStateAction(val label: String, val onClick: () -> Unit)
 
-/**
- * 通用空状态视图：居中说明文字 + 可选操作按钮，不添加次级说明文字（product-design.md §2 原则 8）。
- */
+/** 通用空状态视图：居中说明文字 + 可选操作按钮，不添加次级说明文字（product-design.md §2 原则 8）。 */
 @Composable
 fun HiEmptyState(
     message: String,
@@ -86,9 +66,7 @@ fun HiEmptyState(
     action: HiStateAction? = null,
 ) {
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 32.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -97,28 +75,13 @@ fun HiEmptyState(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
-            modifier = Modifier
-                .widthIn(max = 420.dp)
-                .testTag(HiStateTestTags.EMPTY_MESSAGE),
+            modifier = Modifier.widthIn(max = 420.dp),
         )
-        if (action != null) {
-            Spacer(modifier = Modifier.height(16.dp))
-            FilledTonalButton(
-                onClick = action.onClick,
-                shape = HiShapeTokens.Small,
-                modifier = Modifier
-                    .defaultMinSize(minWidth = 88.dp, minHeight = 48.dp)
-                    .testTag(HiStateTestTags.EMPTY_ACTION),
-            ) {
-                Text(text = action.label)
-            }
-        }
+        if (action != null) StateActionButton(action)
     }
 }
 
-/**
- * 通用错误状态视图：主提示仅显示原因短语，绝不包含 [details]；[details] 非空时提供可打断展开的详情区与复制按钮。
- */
+/** 通用错误状态视图：主提示仅显示原因短语，绝不包含 [details]；[details] 非空时可打断展开详情与复制。 */
 @Composable
 fun HiErrorState(
     message: String,
@@ -127,19 +90,11 @@ fun HiErrorState(
     details: String? = null,
 ) {
     val hasDetails = !details.isNullOrBlank()
-    var detailsExpanded by rememberSaveable { mutableStateOf(false) }
+    var detailsExpanded by rememberSaveable(hasDetails) { mutableStateOf(false) }
     val context = LocalContext.current
 
-    LaunchedEffect(hasDetails) {
-        if (!hasDetails) {
-            detailsExpanded = false
-        }
-    }
-
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 24.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -148,97 +103,67 @@ fun HiErrorState(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center,
-            modifier = Modifier
-                .widthIn(max = 420.dp)
-                .testTag(HiStateTestTags.ERROR_MESSAGE),
+            modifier = Modifier.widthIn(max = 420.dp),
         )
-        if (action != null) {
-            Spacer(modifier = Modifier.height(16.dp))
-            FilledTonalButton(
-                onClick = action.onClick,
-                shape = HiShapeTokens.Small,
-                modifier = Modifier
-                    .defaultMinSize(minWidth = 88.dp, minHeight = 48.dp)
-                    .testTag(HiStateTestTags.ERROR_ACTION),
-            ) {
-                Text(text = action.label)
-            }
-        }
+        if (action != null) StateActionButton(action)
         if (hasDetails) {
-            Spacer(modifier = Modifier.height(if (action != null) 4.dp else 12.dp))
-            val toggleLabel = stringResource(
-                if (detailsExpanded) R.string.state_error_hide_details else R.string.state_error_view_details,
-            )
+            Spacer(Modifier.height(if (action != null) 4.dp else 12.dp))
             TextButton(
                 onClick = { detailsExpanded = !detailsExpanded },
                 shape = HiShapeTokens.Small,
-                modifier = Modifier
-                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                    .testTag(HiStateTestTags.ERROR_DETAILS_TOGGLE),
+                modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
             ) {
-                Text(text = toggleLabel)
+                Text(stringResource(if (detailsExpanded) R.string.state_error_hide_details else R.string.state_error_view_details))
             }
             AnimatedVisibility(
                 visible = detailsExpanded,
-                modifier = Modifier
-                    .widthIn(max = 480.dp)
-                    .fillMaxWidth(),
+                modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(),
                 enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(),
                 exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut(),
             ) {
                 val copyLabel = stringResource(R.string.state_error_copy_details)
                 Surface(
-                    modifier = Modifier
-                        .padding(top = 8.dp)
-                        .fillMaxWidth()
-                        .testTag(HiStateTestTags.ERROR_DETAILS_PANEL),
+                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
                     shape = HiShapeTokens.Medium,
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 8.dp),
-                    ) {
-                        Box(
+                    Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 8.dp)) {
+                        Text(
+                            text = details.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(max = 220.dp)
                                 .verticalScroll(rememberScrollState()),
-                        ) {
-                            Text(
-                                text = details.orEmpty(),
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                        ) {
-                            TextButton(
-                                onClick = {
-                                    runCatching {
-                                        val clipboard = context.getSystemService(ClipboardManager::class.java)
-                                        clipboard?.setPrimaryClip(ClipData.newPlainText(copyLabel, details.orEmpty()))
-                                    }
-                                },
-                                shape = HiShapeTokens.Small,
-                                modifier = Modifier
-                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                    .testTag(HiStateTestTags.ERROR_COPY_DETAILS),
-                            ) {
-                                Text(text = copyLabel)
-                            }
-                        }
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(
+                            onClick = {
+                                runCatching {
+                                    context.getSystemService(ClipboardManager::class.java)
+                                        ?.setPrimaryClip(ClipData.newPlainText(copyLabel, details.orEmpty()))
+                                }
+                            },
+                            shape = HiShapeTokens.Small,
+                            modifier = Modifier.align(Alignment.End).defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
+                        ) { Text(copyLabel) }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun StateActionButton(action: HiStateAction) {
+    Spacer(Modifier.height(16.dp))
+    FilledTonalButton(
+        onClick = action.onClick,
+        shape = HiShapeTokens.Small,
+        modifier = Modifier.defaultMinSize(minWidth = 88.dp, minHeight = 48.dp),
+    ) { Text(action.label) }
 }
 
 /** 列表尾部连续加载状态。 */
@@ -252,104 +177,65 @@ sealed interface HiFooterState {
     data object End : HiFooterState
 }
 
-/**
- * 列表尾部状态行（触摸目标高度 ≥ 48dp）：
- * - [HiFooterState.Loading]：`正在加载…` + 令牌驱动进度圈；
- * - [HiFooterState.Failed]：整行可点的 `加载失败，点击重试`；
- * - [HiFooterState.End]：`没有更多了`。
- */
+/** 列表尾部状态行（触摸目标高度 ≥ 48dp）：`Loading`、`Failed(onRetry)` 整行可点、`End`。 */
 @Composable
-fun HiListFooter(
-    state: HiFooterState,
-    modifier: Modifier = Modifier,
-) {
-    val rowModifier = modifier
-        .fillMaxWidth()
-        .heightIn(min = 48.dp)
-        .testTag(HiStateTestTags.LIST_FOOTER)
-
-    when (state) {
-        HiFooterState.Loading -> {
-            Row(
-                modifier = rowModifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                HiLoadingSpinner(modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(10.dp))
+fun HiListFooter(state: HiFooterState, modifier: Modifier = Modifier) {
+    val clickableModifier = if (state is HiFooterState.Failed) {
+        Modifier.clickable(role = Role.Button, onClick = state.onRetry)
+    } else {
+        Modifier
+    }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .then(clickableModifier)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        when (state) {
+            HiFooterState.Loading -> {
+                HiLoadingSpinner(Modifier.size(16.dp))
                 Text(
                     text = stringResource(R.string.state_loading),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        }
-        is HiFooterState.Failed -> {
-            Row(
-                modifier = rowModifier
-                    .clickable(role = Role.Button, onClick = state.onRetry)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(R.string.state_footer_load_failed),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
-        HiFooterState.End -> {
-            Box(
-                modifier = rowModifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = stringResource(R.string.state_footer_no_more),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-            }
+            is HiFooterState.Failed -> Text(
+                text = stringResource(R.string.state_footer_load_failed),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+            )
+            HiFooterState.End -> Text(
+                text = stringResource(R.string.state_footer_no_more),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
 
 @Composable
-private fun HiLoadingSpinner(
-    modifier: Modifier = Modifier,
-) {
+private fun HiLoadingSpinner(modifier: Modifier = Modifier) {
     val color = MaterialTheme.colorScheme.primary
     val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val angleState: State<Float> = if (HiTheme.isReducedMotion) {
         remember { mutableFloatStateOf(-90f) }
     } else {
-        val transition = rememberInfiniteTransition(label = "hiSpinner")
-        transition.animateFloat(
+        rememberInfiniteTransition(label = "hiSpinner").animateFloat(
             initialValue = 0f,
             targetValue = 360f,
             animationSpec = HiMotion.spinnerRepeatable(),
             label = "hiSpinnerAngle",
         )
     }
-
-    Canvas(modifier = modifier) {
-        val strokeWidth = 2.dp.toPx()
-        val stroke = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-        drawArc(
-            color = trackColor,
-            startAngle = 0f,
-            sweepAngle = 360f,
-            useCenter = false,
-            style = stroke,
-        )
-        drawArc(
-            color = color,
-            startAngle = angleState.value,
-            sweepAngle = 270f,
-            useCenter = false,
-            style = stroke,
-        )
+    Canvas(modifier) {
+        val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+        drawArc(color = trackColor, startAngle = 0f, sweepAngle = 360f, useCenter = false, style = stroke)
+        drawArc(color = color, startAngle = angleState.value, sweepAngle = 270f, useCenter = false, style = stroke)
     }
 }

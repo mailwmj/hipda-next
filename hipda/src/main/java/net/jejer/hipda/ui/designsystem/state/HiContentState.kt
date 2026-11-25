@@ -11,19 +11,19 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 
-/**
- * 页面内容区的统一加载状态模型。
- */
+/** 页面内容区的统一加载状态模型。 */
 @Stable
 sealed interface HiLoadState<out T> {
     data object Loading : HiLoadState<Nothing>
@@ -42,10 +42,10 @@ sealed interface HiLoadState<out T> {
 }
 
 /**
- * 记住并驱动加载指示器的防闪可见性状态（委托给纯协程 [LoadingVisibilityController]）。
- *
- * - 被动加载（`passive = true`）：150ms 后仍未结束才显示，显示后至少停留 250ms；不受系统动画缩放为 0 影响。
- * - 主动操作（`passive = false`）：0ms 立即显示，结束立即隐藏。
+ * 加载指示器防闪可见性状态（委托给 [LoadingVisibilityController]）：
+ * - `passive = true`：150ms 后仍未结束才显示，至少停留 250ms，不受动画缩放 0 影响；
+ *   通过 `rememberSaveable` 保存“本轮加载已显示”标记，宿主重建时若仍在加载立即保持显示。
+ * - `passive = false`：同帧 0ms 同步返回 [isLoading]，无二次重组。
  */
 @Composable
 fun rememberLoadingIndicatorVisible(
@@ -53,30 +53,32 @@ fun rememberLoadingIndicatorVisible(
     passive: Boolean = true,
 ): State<Boolean> {
     val scope = rememberCoroutineScope()
-    val state = remember { mutableStateOf(isLoading && !passive) }
+    val shownInCurrentLoad = rememberSaveable { BooleanArray(1) }
     val controller = remember(scope) {
         LoadingVisibilityController(
             scope = scope,
-            initialVisible = isLoading && !passive,
-            onVisibilityChange = { state.value = it },
+            initialVisible = isLoading && (!passive || shownInCurrentLoad[0]),
         )
+    }
+    val isLoadingState = rememberUpdatedState(isLoading)
+    val passiveState = rememberUpdatedState(passive)
+    val controllerVisibleState = produceState(initialValue = controller.visible.value, key1 = controller) {
+        controller.visible.collect { visible ->
+            value = visible
+            shownInCurrentLoad[0] = isLoadingState.value && visible
+        }
     }
     SideEffect {
         controller.update(isLoading = isLoading, passive = passive)
+        shownInCurrentLoad[0] = isLoading && controller.visible.value
     }
-    DisposableEffect(controller) {
-        onDispose { controller.cancel() }
+    DisposableEffect(controller) { onDispose { controller.cancel() } }
+    return remember(controllerVisibleState, isLoadingState, passiveState) {
+        derivedStateOf { if (!passiveState.value) isLoadingState.value else controllerVisibleState.value }
     }
-    return state
 }
 
-private enum class ContentVisualSlot {
-    PENDING,
-    SKELETON,
-    EMPTY,
-    ERROR,
-    CONTENT,
-}
+private enum class ContentVisualSlot { PENDING, SKELETON, EMPTY, ERROR, CONTENT }
 
 private class ContentSlotCache<T> {
     var lastSettledSlot: ContentVisualSlot? = null
@@ -85,10 +87,9 @@ private class ContentSlotCache<T> {
 }
 
 /**
- * 统一内容状态容器：
- * - 首次加载受 [rememberLoadingIndicatorVisible] 延迟规则约束（150ms 内完成直接显示内容，不闪骨架）；
- * - 各状态之间原地交叉淡入淡出（[HiMotion.effectsDefault] / `exit(effectsDefault)`，无位移、无尺寸跳动）；
- * - 仅在状态类别切换时触发过渡，`Content(value)` 内部数据增量更新不重建子树。
+ * 统一内容状态容器：首次加载受 [rememberLoadingIndicatorVisible] 延迟规则约束（150ms 内完成直接显示内容，
+ * 不闪骨架；“重试”等用户主动触发的整页重载传 `passive = false`）；状态间以 `hiFadeIn()` / `hiFadeOut()`
+ * 原地交叉淡入淡出，无位移、无尺寸跳动；`Content(value)` 数据增量更新不重建子树。
  */
 @Composable
 fun <T> HiContentState(
@@ -100,30 +101,21 @@ fun <T> HiContentState(
     error: @Composable (HiLoadState.Error) -> Unit,
     content: @Composable (T) -> Unit,
 ) {
-    val showSkeleton by rememberLoadingIndicatorVisible(
-        isLoading = state is HiLoadState.Loading,
-        passive = passive,
-    )
+    val showSkeleton by rememberLoadingIndicatorVisible(state is HiLoadState.Loading, passive)
     val cache = remember { ContentSlotCache<T>() }
-
     when (state) {
         is HiLoadState.Content -> {
             cache.latestContent = state
             cache.lastSettledSlot = ContentVisualSlot.CONTENT
         }
-        HiLoadState.Empty -> {
-            cache.lastSettledSlot = ContentVisualSlot.EMPTY
-        }
+        HiLoadState.Empty -> cache.lastSettledSlot = ContentVisualSlot.EMPTY
         is HiLoadState.Error -> {
             cache.latestError = state
             cache.lastSettledSlot = ContentVisualSlot.ERROR
         }
         HiLoadState.Loading -> Unit
     }
-
-    if (showSkeleton) {
-        cache.lastSettledSlot = null
-    }
+    if (showSkeleton) cache.lastSettledSlot = null
 
     val targetSlot = when {
         showSkeleton -> ContentVisualSlot.SKELETON
@@ -136,39 +128,22 @@ fun <T> HiContentState(
     AnimatedContent(
         targetState = targetSlot,
         modifier = modifier,
-        transitionSpec = {
-            (hiFadeIn(animationSpec = HiMotion.effectsDefault()) togetherWith
-                hiFadeOut(animationSpec = HiMotion.exit(HiMotion.effectsDefault())))
-                .using(null)
-        },
+        transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) },
         contentAlignment = Alignment.TopStart,
         label = "HiContentState",
     ) { slot ->
         when (slot) {
             ContentVisualSlot.PENDING -> Spacer(Modifier)
             ContentVisualSlot.SKELETON -> skeleton()
-            ContentVisualSlot.EMPTY -> Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                empty()
-            }
-            ContentVisualSlot.ERROR -> {
-                val errorState = (state as? HiLoadState.Error) ?: cache.latestError
-                if (errorState != null) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        error(errorState)
-                    }
+            ContentVisualSlot.EMPTY, ContentVisualSlot.ERROR -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                if (slot == ContentVisualSlot.EMPTY) {
+                    empty()
+                } else {
+                    ((state as? HiLoadState.Error) ?: cache.latestError)?.let { error(it) }
                 }
             }
-            ContentVisualSlot.CONTENT -> {
-                val contentState = (state as? HiLoadState.Content<T>) ?: cache.latestContent
-                if (contentState != null) {
-                    content(contentState.value)
-                }
+            ContentVisualSlot.CONTENT -> ((state as? HiLoadState.Content<T>) ?: cache.latestContent)?.let {
+                content(it.value)
             }
         }
     }

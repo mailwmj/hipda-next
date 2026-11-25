@@ -105,8 +105,7 @@ class HiStateBehaviorTest {
             minTotalTravelDp = 20.dp,
             onFrame = { frame ->
                 if (frame == 0) {
-                    onNodeWithTag(HiStateTestTags.ERROR_DETAILS_TOGGLE)
-                        .performSemanticsAction(SemanticsActions.OnClick)
+                    onNodeWithText("查看详情").performSemanticsAction(SemanticsActions.OnClick)
                 }
             },
         )
@@ -116,7 +115,7 @@ class HiStateBehaviorTest {
 
         // 复位为收起态
         mainClock.autoAdvance = true
-        onNodeWithTag(HiStateTestTags.ERROR_DETAILS_TOGGLE).performClick()
+        onNodeWithText("收起详情").performClick()
         waitForIdle()
         val resetY = onNodeWithTag("anchor_below_error").fetchSemanticsNode().positionInRoot.y
         assertEquals(initialY, resetY, 1f)
@@ -129,11 +128,9 @@ class HiStateBehaviorTest {
             minTotalTravelDp = 20.dp,
             onFrame = { frame ->
                 if (frame == 0) {
-                    onNodeWithTag(HiStateTestTags.ERROR_DETAILS_TOGGLE)
-                        .performSemanticsAction(SemanticsActions.OnClick)
+                    onNodeWithText("查看详情").performSemanticsAction(SemanticsActions.OnClick)
                 } else if (frame == 5) {
-                    onNodeWithTag(HiStateTestTags.ERROR_DETAILS_TOGGLE)
-                        .performSemanticsAction(SemanticsActions.OnClick)
+                    onNodeWithText("收起详情").performSemanticsAction(SemanticsActions.OnClick)
                 }
             },
         )
@@ -180,7 +177,7 @@ class HiStateBehaviorTest {
             val collapsedY = onNodeWithTag("anchor_below_error").fetchSemanticsNode().positionInRoot.y
 
             mainClock.autoAdvance = false
-            onNodeWithTag(HiStateTestTags.ERROR_DETAILS_TOGGLE).performClick()
+            onNodeWithText("查看详情").performClick()
             mainClock.advanceTimeByFrame() // 触发重组与状态切换
             mainClock.advanceTimeByFrame() // 动画首帧：scale=0 立即到达目标尺寸
             mainClock.advanceTimeByFrame() // 提交最终布局
@@ -202,7 +199,7 @@ class HiStateBehaviorTest {
             assertEquals("缩放为 0 展开后不应残留中间状态", expandedYAfterOneAnimFrame, settledExpandedY, 0.5f)
 
             // 同样验证收起一帧到位且详情节点彻底移除
-            onNodeWithTag(HiStateTestTags.ERROR_DETAILS_TOGGLE).performClick()
+            onNodeWithText("收起详情").performClick()
             mainClock.advanceTimeByFrame()
             mainClock.advanceTimeByFrame()
             mainClock.advanceTimeByFrame()
@@ -210,7 +207,8 @@ class HiStateBehaviorTest {
 
             val afterCollapseY = onNodeWithTag("anchor_below_error").fetchSemanticsNode().positionInRoot.y
             assertEquals("缩放为 0 收起应立即回到初始高度", collapsedY, afterCollapseY, 1f)
-            onNodeWithTag(HiStateTestTags.ERROR_DETAILS_PANEL).assertDoesNotExist()
+            onNodeWithText("复制详情").assertDoesNotExist()
+            onNodeWithText(sampleDetails).assertDoesNotExist()
         }
 
     @Test
@@ -241,102 +239,157 @@ class HiStateBehaviorTest {
 
     // endregion
 
-    // region Step 3b: HiContentState Loading -> Content 顶部距离不变 + 150ms 不闪骨架 + 数据更新不重建
+    // region Step 3b: HiContentState Loading -> Content 顶部与水平零位移 + Empty/Error 分支 + 150ms 不闪骨架
 
     @Test
-    fun contentState_loadingToContent_keepsFirstItemTopDistanceWithin1dp() = withAnimatorDurationScale(1f) {
-        var loadState by mutableStateOf<HiLoadState<List<String>>>(HiLoadState.Loading)
+    fun contentState_loadingToContent_keepsFirstItemTopAndHorizontalPositionWithin1dp() =
+        withAnimatorDurationScale(1f) {
+            var loadState by mutableStateOf<HiLoadState<List<String>>>(HiLoadState.Loading)
 
-        setContent {
-            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    HiContentState(
-                        state = loadState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("content_state_container"),
-                        skeleton = {
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        HiContentState(
+                            state = loadState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("content_state_container"),
+                            skeleton = {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    HiSkeletonBlock(
+                                        width = 240.dp,
+                                        height = 56.dp,
+                                        shape = HiShapeTokens.Medium,
+                                        modifier = Modifier.testTag("first_skeleton_item"),
+                                    )
+                                    HiSkeletonBlock(width = 240.dp, height = 56.dp, shape = HiShapeTokens.Medium)
+                                }
+                            },
+                            empty = { HiEmptyState(message = "暂无帖子") },
+                            error = { err -> HiErrorState(message = err.message, details = err.details) },
+                        ) { items ->
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                HiSkeletonBlock(
-                                    width = 240.dp,
-                                    height = 56.dp,
-                                    shape = HiShapeTokens.Medium,
-                                    modifier = Modifier.testTag("first_skeleton_item"),
-                                )
-                                HiSkeletonBlock(width = 240.dp, height = 56.dp, shape = HiShapeTokens.Medium)
-                            }
-                        },
-                        empty = { HiEmptyState(message = "暂无帖子") },
-                        error = { err -> HiErrorState(message = err.message, details = err.details) },
-                    ) { items ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            items.forEachIndexed { index, title ->
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(56.dp)
-                                        .then(if (index == 0) Modifier.testTag("first_content_item") else Modifier),
-                                ) {
-                                    Text(text = title)
+                                items.forEachIndexed { index, title ->
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(56.dp)
+                                            .then(if (index == 0) Modifier.testTag("first_content_item") else Modifier),
+                                    ) {
+                                        Text(text = title)
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            mainClock.autoAdvance = false
+            mainClock.advanceTimeByFrame()
+            waitForIdle()
+            // 150ms 内不显示骨架
+            onNodeWithTag("first_skeleton_item").assertDoesNotExist()
+
+            // 超过 150ms 后骨架显示，记录首项相对容器的顶部与水平位置
+            mainClock.advanceTimeBy(180L)
+            waitForIdle()
+            onNodeWithTag("first_skeleton_item").assertIsDisplayed()
+
+            val containerPos = onNodeWithTag("content_state_container").fetchSemanticsNode().positionInRoot
+            val skeletonPos = onNodeWithTag("first_skeleton_item").fetchSemanticsNode().positionInRoot
+            val skeletonTopDistancePx = skeletonPos.y - containerPos.y
+            val skeletonLeftDistancePx = skeletonPos.x - containerPos.x
+
+            // 切换到 Content，越过 250ms 最短停留进入交叉淡入过渡中帧
+            loadState = HiLoadState.Content(listOf("第 1 条帖子", "第 2 条帖子"))
+            Snapshot.sendApplyNotifications()
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeBy(260L)
+            waitForIdle()
+            onNodeWithTag("first_content_item").assertIsDisplayed()
+            val midContentPos = onNodeWithTag("first_content_item").fetchSemanticsNode().positionInRoot
+            val tolerancePx = with(density) { 1.dp.toPx() }
+            assertTrue(
+                "交叉淡入过渡期间第一项距顶偏移超过 1dp：skeleton=$skeletonTopDistancePx, content=${midContentPos.y - containerPos.y}",
+                abs((midContentPos.y - containerPos.y) - skeletonTopDistancePx) <= tolerancePx,
+            )
+            assertEquals(
+                "交叉淡入过渡期间第一项水平坐标应零位移",
+                skeletonLeftDistancePx,
+                midContentPos.x - containerPos.x,
+                0.5f,
+            )
+
+            // 过渡完全结束后再次验证 y 与 x
+            mainClock.advanceTimeBy(400L)
+            waitForIdle()
+            val settledContentPos = onNodeWithTag("first_content_item").fetchSemanticsNode().positionInRoot
+            assertTrue(
+                "替换完成后第一项距顶偏移超过 1dp：skeleton=$skeletonTopDistancePx, content=${settledContentPos.y - containerPos.y}",
+                abs((settledContentPos.y - containerPos.y) - skeletonTopDistancePx) <= tolerancePx,
+            )
+            assertEquals(
+                "替换完成后第一项水平坐标应零位移",
+                skeletonLeftDistancePx,
+                settledContentPos.x - containerPos.x,
+                0.5f,
+            )
         }
 
-        mainClock.autoAdvance = false
-        mainClock.advanceTimeByFrame()
-        waitForIdle()
-        // 150ms 内不显示骨架
-        onNodeWithTag("first_skeleton_item").assertDoesNotExist()
+    @Test
+    fun contentState_emptyAndErrorBranches_renderExpectedSlotsAndInvokeRetry() =
+        withAnimatorDurationScale(0f) {
+            var retryCount by mutableIntStateOf(0)
+            var loadState by mutableStateOf<HiLoadState<String>>(HiLoadState.Empty)
 
-        // 超过 150ms 后骨架显示，记录首项到容器顶部距离
-        mainClock.advanceTimeBy(180L)
-        waitForIdle()
-        onNodeWithTag("first_skeleton_item").assertIsDisplayed()
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        HiContentState(
+                            state = loadState,
+                            modifier = Modifier.fillMaxSize(),
+                            skeleton = { HiSkeletonBlock(width = 120.dp, height = 24.dp) },
+                            empty = { HiEmptyState(message = "还没有收藏") },
+                            error = { err ->
+                                HiErrorState(
+                                    message = err.message,
+                                    action = err.retry?.let { HiStateAction(label = "重试", onClick = it) },
+                                    details = err.details,
+                                )
+                            },
+                        ) { value ->
+                            Text(text = value)
+                        }
+                    }
+                }
+            }
+            waitForIdle()
+            onNodeWithText("还没有收藏").assertIsDisplayed()
 
-        val containerTop = onNodeWithTag("content_state_container").fetchSemanticsNode().positionInRoot.y
-        val skeletonTopDistancePx =
-            onNodeWithTag("first_skeleton_item").fetchSemanticsNode().positionInRoot.y - containerTop
-
-        // 切换到 Content，并越过 250ms 最短停留与交叉淡入淡出
-        loadState = HiLoadState.Content(listOf("第 1 条帖子", "第 2 条帖子"))
-        Snapshot.sendApplyNotifications()
-        mainClock.advanceTimeByFrame()
-        mainClock.advanceTimeBy(260L)
-        // 检查过渡中帧：首项距离已对齐
-        waitForIdle()
-        onNodeWithTag("first_content_item").assertIsDisplayed()
-        val midContentTopDistancePx =
-            onNodeWithTag("first_content_item").fetchSemanticsNode().positionInRoot.y - containerTop
-        val tolerancePx = with(density) { 1.dp.toPx() }
-        assertTrue(
-            "交叉淡入过渡期间第一项距顶偏移超过 1dp：skeleton=$skeletonTopDistancePx, content=$midContentTopDistancePx",
-            abs(midContentTopDistancePx - skeletonTopDistancePx) <= tolerancePx,
-        )
-
-        // 过渡完全结束后再次验证
-        mainClock.advanceTimeBy(400L)
-        waitForIdle()
-        val settledContentTopDistancePx =
-            onNodeWithTag("first_content_item").fetchSemanticsNode().positionInRoot.y - containerTop
-        assertTrue(
-            "替换完成后第一项距顶偏移超过 1dp：skeleton=$skeletonTopDistancePx, content=$settledContentTopDistancePx",
-            abs(settledContentTopDistancePx - skeletonTopDistancePx) <= tolerancePx,
-        )
-    }
+            loadState = HiLoadState.Error(
+                message = "网络连接失败",
+                details = "SocketTimeoutException",
+                retry = { retryCount++ },
+            )
+            waitForIdle()
+            onNodeWithText("还没有收藏").assertDoesNotExist()
+            onNodeWithText("网络连接失败").assertIsDisplayed()
+            onNodeWithText("查看详情").assertIsDisplayed()
+            onNodeWithText("重试").performClick()
+            waitForIdle()
+            assertEquals("HiContentState Error 分支点击重试应触发 retry 回调", 1, retryCount)
+        }
 
     @Test
     fun contentState_finishesWithin150ms_neverShowsSkeletonAndPreservesStateOnContentUpdate() =
@@ -474,13 +527,15 @@ class HiStateBehaviorTest {
 
     // endregion
 
-    // region Step 3d: 无障碍（触摸目标 ≥ 48dp、HiErrorState 主提示不含 details）
+    // region Step 3d: 无障碍（触摸目标 ≥ 48dp、动作按钮回调、HiErrorState 主提示不含 details）
 
     @Test
     fun accessibility_buttonsAndFooterTouchTargetsAtLeast48dp_andErrorPrimaryExcludesDetails() =
         withAnimatorDurationScale(0f) {
-            var retryClicks by mutableIntStateOf(0)
-            var footerState by mutableStateOf<HiFooterState>(HiFooterState.Failed { retryClicks++ })
+            var emptyActionClicks by mutableIntStateOf(0)
+            var errorActionClicks by mutableIntStateOf(0)
+            var footerRetryClicks by mutableIntStateOf(0)
+            var footerState by mutableStateOf<HiFooterState>(HiFooterState.Failed { footerRetryClicks++ })
 
             setContent {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
@@ -488,14 +543,17 @@ class HiStateBehaviorTest {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             HiEmptyState(
                                 message = "暂无帖子",
-                                action = HiStateAction(label = "刷新", onClick = {}),
+                                action = HiStateAction(label = "刷新", onClick = { emptyActionClicks++ }),
                             )
                             HiErrorState(
                                 message = "网络连接失败",
-                                action = HiStateAction(label = "重试", onClick = {}),
+                                action = HiStateAction(label = "重试", onClick = { errorActionClicks++ }),
                                 details = "java.io.IOException: HTTP 504 Gateway Timeout",
                             )
-                            HiListFooter(state = footerState)
+                            HiListFooter(
+                                state = footerState,
+                                modifier = Modifier.testTag("list_footer"),
+                            )
                         }
                     }
                 }
@@ -504,27 +562,32 @@ class HiStateBehaviorTest {
 
             val minTouchPx = with(density) { 48.dp.toPx() } - 0.5f
 
-            fun assertMinTouchTarget(tag: String) {
-                val node = onNodeWithTag(tag).fetchSemanticsNode()
+            fun assertMinTouchTarget(label: String, node: androidx.compose.ui.semantics.SemanticsNode) {
                 val bounds = node.boundsInRoot
                 val touchBounds = node.touchBoundsInRoot
                 assertTrue(
-                    "$tag 宽度应 ≥ 48dp，实际 bounds=${bounds.width}px touch=${touchBounds.width}px",
+                    "$label 宽度应 ≥ 48dp，实际 bounds=${bounds.width}px touch=${touchBounds.width}px",
                     bounds.width >= minTouchPx && touchBounds.width >= minTouchPx,
                 )
                 assertTrue(
-                    "$tag 高度应 ≥ 48dp，实际 bounds=${bounds.height}px touch=${touchBounds.height}px",
+                    "$label 高度应 ≥ 48dp，实际 bounds=${bounds.height}px touch=${touchBounds.height}px",
                     bounds.height >= minTouchPx && touchBounds.height >= minTouchPx,
                 )
             }
 
-            // 1) 空状态按钮、错误状态按钮与“查看详情”按钮均 ≥ 48dp
-            assertMinTouchTarget(HiStateTestTags.EMPTY_ACTION)
-            assertMinTouchTarget(HiStateTestTags.ERROR_ACTION)
-            assertMinTouchTarget(HiStateTestTags.ERROR_DETAILS_TOGGLE)
+            // 1) 空状态按钮、错误状态按钮与“查看详情”按钮均 ≥ 48dp，且点击触发各自 onClick
+            assertMinTouchTarget("空状态动作按钮", onNodeWithText("刷新").fetchSemanticsNode())
+            assertMinTouchTarget("错误状态动作按钮", onNodeWithText("重试").fetchSemanticsNode())
+            assertMinTouchTarget("查看详情按钮", onNodeWithText("查看详情").fetchSemanticsNode())
+
+            onNodeWithText("刷新").performClick()
+            onNodeWithText("重试").performClick()
+            waitForIdle()
+            assertEquals("点击 HiEmptyState 动作按钮应触发 onClick", 1, emptyActionClicks)
+            assertEquals("点击 HiErrorState 动作按钮应触发 onClick", 1, errorActionClicks)
 
             // 2) 收起态下，主提示仅含原因短语，树中不得出现 details 文本
-            val primaryTextCollapsed = onNodeWithTag(HiStateTestTags.ERROR_MESSAGE)
+            val primaryTextCollapsed = onNodeWithText("网络连接失败")
                 .fetchSemanticsNode()
                 .config[SemanticsProperties.Text]
                 .joinToString("") { it.text }
@@ -535,31 +598,31 @@ class HiStateBehaviorTest {
             onNodeWithText("504", substring = true).assertDoesNotExist()
 
             // 3) 展开后，主提示仍不含 details，且“复制详情”按钮 ≥ 48dp
-            onNodeWithTag(HiStateTestTags.ERROR_DETAILS_TOGGLE).performClick()
+            onNodeWithText("查看详情").performClick()
             waitForIdle()
-            val primaryTextExpanded = onNodeWithTag(HiStateTestTags.ERROR_MESSAGE)
+            val primaryTextExpanded = onNodeWithText("网络连接失败")
                 .fetchSemanticsNode()
                 .config[SemanticsProperties.Text]
                 .joinToString("") { it.text }
             assertEquals("网络连接失败", primaryTextExpanded)
             assertFalse(primaryTextExpanded.contains("IOException"))
-            assertMinTouchTarget(HiStateTestTags.ERROR_COPY_DETAILS)
+            assertMinTouchTarget("复制详情按钮", onNodeWithText("复制详情").fetchSemanticsNode())
 
             // 4) 列表尾部三种状态整行触摸目标 ≥ 48dp，且 Failed 整行可点
-            assertMinTouchTarget(HiStateTestTags.LIST_FOOTER)
-            onNodeWithTag(HiStateTestTags.LIST_FOOTER).performClick()
+            assertMinTouchTarget("列表尾部 Failed 行", onNodeWithTag("list_footer").fetchSemanticsNode())
+            onNodeWithTag("list_footer").performClick()
             waitForIdle()
-            assertEquals("Failed 状态整行点击应触发 onRetry", 1, retryClicks)
+            assertEquals("Failed 状态整行点击应触发 onRetry", 1, footerRetryClicks)
 
             footerState = HiFooterState.Loading
             waitForIdle()
             onNodeWithText("正在加载…").assertIsDisplayed()
-            assertMinTouchTarget(HiStateTestTags.LIST_FOOTER)
+            assertMinTouchTarget("列表尾部 Loading 行", onNodeWithTag("list_footer").fetchSemanticsNode())
 
             footerState = HiFooterState.End
             waitForIdle()
             onNodeWithText("没有更多了").assertIsDisplayed()
-            assertMinTouchTarget(HiStateTestTags.LIST_FOOTER)
+            assertMinTouchTarget("列表尾部 End 行", onNodeWithTag("list_footer").fetchSemanticsNode())
         }
 
     // endregion
