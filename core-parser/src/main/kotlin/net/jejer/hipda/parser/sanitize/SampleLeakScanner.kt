@@ -95,24 +95,26 @@ object SampleLeakScanner {
     private val ALLOWED_SMS_AVATARS = setOf(PLACEHOLDER_SELF_AVATAR_PATH, PLACEHOLDER_PEER_AVATAR_PATH)
 
     fun scan(html: String, selfUid: String? = null): List<Leak> {
+        val validatedSelfUid = normalizeAndValidateSelfUid(selfUid)
         val leaks = mutableListOf<Leak>()
         if (isXmlDocument(html)) {
             val xmlDoc = Jsoup.parse(html, "", Parser.xmlParser())
             val cdataNodes = Collections.newSetFromMap(IdentityHashMap<TextNode, Boolean>())
             xmlDoc.forEachNode { node ->
                 if (node is CDataNode) {
-                    scanDocument(Jsoup.parseBodyFragment(node.text()), leaks, selfUid)
+                    scanDocument(Jsoup.parseBodyFragment(node.text()), leaks, validatedSelfUid)
                     cdataNodes.add(node)
                 }
             }
-            scanDocument(xmlDoc, leaks, selfUid, skippedTextNodes = cdataNodes)
+            scanDocument(xmlDoc, leaks, validatedSelfUid, skippedTextNodes = cdataNodes)
             return leaks
         }
-        scanDocument(Jsoup.parse(html), leaks, selfUid)
+        scanDocument(Jsoup.parse(html), leaks, validatedSelfUid)
         return leaks
     }
 
     fun scanDirectory(directory: Path, selfUid: String? = null): List<FileLeakReport> {
+        val validatedSelfUid = normalizeAndValidateSelfUid(selfUid)
         if (!Files.exists(directory) || !Files.isDirectory(directory)) return emptyList()
         val files = Files.walk(directory).use { stream ->
             stream.filter { path ->
@@ -121,12 +123,23 @@ object SampleLeakScanner {
             }.sorted().toList()
         }
         return files.mapNotNull { file ->
-            scan(readSampleFile(file), selfUid).takeIf { it.isNotEmpty() }?.let { FileLeakReport(file, it) }
+            scan(readSampleFile(file), validatedSelfUid).takeIf { it.isNotEmpty() }?.let { FileLeakReport(file, it) }
         }
     }
 
-    fun scanDirectories(directories: List<Path>, selfUid: String? = null): List<FileLeakReport> =
-        directories.flatMap { scanDirectory(it, selfUid) }
+    fun scanDirectories(directories: List<Path>, selfUid: String? = null): List<FileLeakReport> {
+        val validatedSelfUid = normalizeAndValidateSelfUid(selfUid)
+        return directories.flatMap { scanDirectory(it, validatedSelfUid) }
+    }
+
+    private fun normalizeAndValidateSelfUid(selfUid: String?): String? {
+        val trimmed = selfUid?.trim() ?: return null
+        if (trimmed.isEmpty()) return null
+        require(trimmed.all { it in '0'..'9' }) {
+            "Invalid selfUid: expected ASCII digits only (length=${trimmed.length})"
+        }
+        return trimmed
+    }
 
     fun formatLeakReport(reports: List<FileLeakReport>): String = buildString {
         appendLine("检测到未脱敏的样本文件，请用 HtmlSanitizer 重新导出：")

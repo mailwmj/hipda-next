@@ -163,7 +163,7 @@ object SanitizeSelectors {
             .sortedByDescending { it.length }
         if (eligible.isEmpty()) return null
         val alternation = eligible.joinToString("|", transform = Regex::escape)
-        return Regex("""(?<!\d)(?:$alternation)(?!\d)""")
+        return Regex("""(?:(?<!\d)|(?<=%[0-9A-Fa-f]{2}))(?:$alternation)(?!\d)""")
     }
 
     internal fun isSafeSmsHref(href: String): Boolean =
