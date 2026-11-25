@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-26 00:13 +07）
+# 负责人交接说明（2026-11-26 01:08 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -7,7 +7,7 @@
 ## 1. 全局进度总览
 
 - 设计文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4（大屏三栏方案 `b4ab916` + kudo 液态玻璃与交互设计修订 `bba139c`，经 R-Dkudo 审查与修订轮 APPROVE `@6f139c4`）；`docs/agents/decisions.md` 已记录 2026-11-25 用户拍板（参考 `kudo-android`、毛玻璃换用 Kyant `backdrop`、同屏上限 `2→3` 等，`0895b83`）。
-- **已合并进 `main`**（当前代码 `HEAD`：`cbcb9c0`；`D8a @ cbcb9c0` **main CI `45659929460` 绿**）：
+- **已合并进 `main`**（当前代码 `HEAD`：`db7dba6`；`E0 @ db7dba6` 已合入，R-E0 与 V-E0 第 2 轮 `@fed1070` 均通过）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
   - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
@@ -44,19 +44,22 @@
     - D6 发帖/回复/编辑/上传 Repository + 草稿/小尾巴/30s 冷却 + 闭合 R-B9b S3（R-D6 APPROVE + V-D6 PASS `@ce4840e`）→ `99879a1`
     - D9 提醒轮询 WorkManager + HiltWorker + 免打扰 + 遇验证放弃 + 闭合 R-D7 S1–S4（R-D9 APPROVE + V-D9 PASS `@933a5ac`）→ `3600f45`（**main CI `45655134227` 绿**）
     - D8a 搜索、今日新帖、收藏与关注 Repository + D3d 缓存（R-D8a 复审轮 2 `@6046d62` 闭合 B1 与 S1–S4，APPROVE，不设 V）→ `cbcb9c0`（**main CI `45659929460` 绿**）
+    - E0 M5 阅读核心端到端 Tracer Bullet 与 E 线不可逆公共基座（R-E0 复审轮 2 APPROVE + V-E0 复验轮 2 PASS `@fed1070`）→ `db7dba6`
 - **阶段验收状态**：
   - **M1 真机验收通过**：用户已在真机使用 A5c 构建完成登录、抓取全部 16 个页面并导出脱敏样本入仓（`d5ed2ce`）。
   - **M2 解析器安全网与 `:core-parser` 全部合入完成**：`B9a`（`d45b6a2`）、`B9b`（`c0b8c8c`）、`B8`（`cf59951`）、`B7`（`db5857d`）全部合入 `main` 且 main CI 绿（`@db5857d`）。
   - **M3 数据层全部合入完成**：`D1`/`D2`/`D3a`/`D3c`/`D4`/`D5`/`D6`/`D7`/`D8a`（含 D3d 缓存）/`D8b`/`D9` 已全部合入 `main`（`D8a @ cbcb9c0` main CI `45659929460` 绿；剩余小修归入 `D-cleanup`）。
   - **M4 真机验收通过 + Kyant `backdrop` 底层与 `C4d` 外壳微调全部合入**：`G2`（`5ce63dc`）、`C4d`（`21b1e3c`，真机清单同步至 `e1eb834`）均已合入；待用户用真机 debug 实时调参面板实测定值后回写 §5。
-- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `D8a`/`R-D8a` 卡与报告，D8a 不设 V；`D4`/`C4d` 待下轮归档批次补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`。
+- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `E0`/`R-E0`/`V-E0` 卡与报告、`V-E0/` 截图目录以及 `BATCH-5`/`R-BATCH5`；`D4`/`C4d` 待下轮归档批次补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`。
 
 ## 2. 进行中与待派发
 
 | 卡号 | 分支 / worktree | 状态 |
 |---|---|---|
-| E0（BATCH-5 Wave 1）M5 阅读核心端到端 Tracer Bullet 与 E 线不可逆公共基座 | `card/E0-reading-tracer-bullet` / `../hipda-next.wt/E0` | 修复轮 1 进行中（`R-E0 B1–B3`：B1 `今日新帖` 未在宿主路由打通、B2 `SingleHostPaneSnackbarController` 带按钮缺 `duration` 占锁、B3 生产测试钩子与保活/旋转/主题测试防伪造缺口） |
-| E1 / E2a / E15（BATCH-5 Wave 2）+ E2d（Wave 3a） | 仅 `_cards/` 已起草，待 `E0` 合入后填 `{BASE}` 派发 | `E1`/`R-E1`/`V-E1`（D8a 已合入解锁）、`E2a`/`R-E2a`/`V-E2a`（已拆出连续加载）、`E15`/`R-E15`/`V-E15`、`E2d`/`R-E2d`/`V-E2d` 全部就绪 |
+| E1（BATCH-5 Wave 2）论坛页完整版（透明吸顶顶栏、荧光笔标签、`今日新帖`、`R-D4 S1`/`V-C1`、`R-E0 R2-S1 & S3`） | `card/E1-forum-page` / `/home/mir/Documents/hipda-next.wt/E1` | W2 已派出，实现中 |
+| E2a（BATCH-5 Wave 2）帖子详情核心完整版（透明顶栏/原生正文/表情调色/`PostImageBlock` 接缝、`C1b#2`、`R-E0 R2-S2 & S3`；翻页暂沿用 E0 上下页） | `card/E2a-thread-detail-core` / `/home/mir/Documents/hipda-next.wt/E2a` | W2 已派出，实现中 |
+| E15（BATCH-5 Wave 2）登录页 + 临时退出登录出口 + `R-A6 S3/S4` & `V-A6` | `card/E15-login-and-challenge-polish` / `/home/mir/Documents/hipda-next.wt/E15` | W2 已派出，实现中 |
+| E2d（BATCH-5 Wave 3a）详情双向连续加载与向上插页零闪跳 | 仅 `_cards/` 已起草，待 `E2a` 合入后派发 | `E2d`/`R-E2d`/`V-E2d` 已就绪 |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线。
@@ -67,9 +70,9 @@
   1. **Wave 1–3（全部合入）**：`B9a` → `d45b6a2`、`B9b` → `c0b8c8c`、`B8` → `cf59951`、`D2` → `0e5fb57`、`B7` → `db5857d`（**M2 收官**）、`D8b` → `5c71b35`、`D7` → `18dfa80`（同期 `G2` → `5ce63dc`、`C4d` → `21b1e3c`）
   2. **Wave 4（全部合入）**：`D4` → `243aee8`、`D5` → `e71c3fb`（main CI `45650433258` 绿）、`D6` → `99879a1`
   3. **Wave 5（M3 全部收官）**：`D9` → `3600f45`（main CI `45655134227` 绿）、`D8a` → `cbcb9c0`（main CI `45659929460` 绿）
-- **BATCH-5 计划**（工作副本 `/home/mir/Documents/hipda-next.wt/_cards/BATCH-5.md`，已按 R-BATCH5 修订并按风险拆出 `E2d`）：M5 阅读核心 **9 卡 4 波**：
-  - **Wave 1**：`E0` 曳光弹（修复轮 1 进行中）
-  - **Wave 2（3 并行 → 达里程碑 A 真机浏览包）**：`E1`（论坛完整版，D8a 已合入解锁）‖ `E2a`（详情顶栏/原生正文/表情调色/`PostImageBlock` 接缝，翻页暂沿用 `E0` 上下页）‖ `E15`（登录页 + 临时退登出口 + `R-A6`/`V-A6`）
+- **BATCH-5 计划**（已归档至 `docs/agents/cards/BATCH-5.md`，已按 `R-BATCH5` 修订并按风险拆出 `E2d`）：M5 阅读核心 **9 卡 4 波**：
+  - **Wave 1（已合入）**：`E0` 曳光弹 → `db7dba6`（R-E0 & V-E0 第 2 轮 `@fed1070` 均通过）
+  - **Wave 2（3 并行在途 → 达里程碑 A 真机浏览包）**：`E1`（论坛完整版）‖ `E2a`（详情顶栏/原生正文/表情调色/`PostImageBlock` 接缝，翻页暂沿用 `E0` 上下页）‖ `E15`（登录页 + 临时退登出口 + `R-A6`/`V-A6`）
   - **Wave 3a（3 并行，100% 零文件重叠）**：`E3`（三栏/铰链/拖拽/全屏/3 玻璃 + `R-C4d S1–S3`）‖ `E2b`（帖子图片预占位与三分支滚动补偿，仅 `media/`）‖ `E2d`（详情双向连续加载与向上插页同帧零闪跳，仅改 `ThreadDetailViewModel.kt`/`ThreadDetailPane.kt`，`V-E2d` 强制 `autoAdvance=false` 首帧 `≤ 1dp` 且 `LaunchedEffect` 反例必判 FAIL）
   - **Wave 3b（待 `E2d` 合入后派发，避免 2 文件重叠）**：`E2c`（引用/高亮/长按菜单/1 楼投票 + `R-B8 S4` & `R-B7 S2`，与 `E2d` 共享 `ThreadDetailViewModel.kt`/`ThreadDetailPane.kt`）
   - **Wave 4**：`E4`（阅读位置记忆门闩/三段工具条/内联跳页 + `R-C5b` → 达里程碑 B 完整验收包）
@@ -89,20 +92,20 @@
   - R-D9 S1：`NotificationPollingWorker.kt:131` 放宽 `catch` 到 `Exception`，`CancellationException` 照常重抛。
 - **→ “毛玻璃定稿”小卡（待用户用 `G2`/`C4d` debug 实时调参面板给出最终参数后派发）**：
   - 将用户拍板的最终液态玻璃参数与同屏上限 `3` 回写 `docs/design/product-design.md` §5。
-- **→ E1（论坛页）**：
+- **→ E1（论坛页，W2 在途）**：
   - R-D4 S1：`E1` 接入 `observeThreadList` / `loadMore` 时须固定传入从 `AppSettings.isSortByPostTime(fid)` 解析的显式 `sortByPostTime` 布尔值（或在 `RawThreadListCache` 记录本批排序），防止切排序未刷新前直接 `loadMore` 混入异序页或导致 `null`/`false` 缓存桶分裂。
   - V-C1：深色模式下已读标题与未读标题区分度偏弱（`10.05:1` vs `13.23:1`），列表页接入时评估拉大已读弱化程度。
-  - R-E0 S3（E1 部分）：`ForumViewModel` 切版块避免串行 `collect` 挂起期间闪现 `暂无帖子`，改为按 query 并发/切换取消并以 `fetchedPage == 0` 守卫骨架态。
-- **→ E2a（帖子详情核心：顶栏/原生正文/表情调色/`PostImageBlock` 接缝；翻页暂沿用 E0 上下页）**：
+  - R-E0 R2-S1 & S3（列表部分）：`ForumViewModel.kt:98` 账号 `uid` 变化同步执行 `todayNewState.value = TodayNewState()` 清空旧账号今日新帖内存态、`:130` 翻页保留 `res.searchId ?: cur.searchId`；并改为按 query 并发/切换取消且以 `fetchedPage == 0` 守卫骨架态，防慢网切版块闪现 `暂无帖子`。
+- **→ E2a（帖子详情核心，W2 在途：顶栏/原生正文/表情调色/`PostImageBlock` 接缝；翻页暂沿用 E0 上下页）**：
   - C1b#2：`B8` 已通过 `InlineSpan.Emoji.normalizedKey` 完成表情键归一化（如 `default_smile`），`E2a` 渲染直接传给 `EmojiMap.drawableForImageSrc` / `codeForImageSrc`。
-  - R-E0 S3（E2a 部分）：`ThreadDetailViewModel` 订阅 `AuthRepository.currentAccount`，使 `AuthRequired` 经登录成功后自动重拉。
-- **→ E15（登录页，同时收口验证提示与面板）**：
+  - R-E0 R2-S2 & S3（详情部分）：`ThreadDetailViewModel` 订阅 `AuthRepository.currentAccount`，使 `AuthRequired` 经登录成功后自动重拉恢复（对齐 §7.11）。
+- **→ E15（登录页，W2 在途，同时收口验证提示与面板）**：
   - R-A6 S3：为 `ChallengeStatusView` 补齐未满 2s 时的原加载指示插槽；验证面板的 `HiTheme` 接入用户主题配置。
   - R-A6 S4：复用 `ChallengeState.effectiveAt`，并将 `HiLoadingSpinner` 公开去重。
   - V-A6：340dp 窄屏 + 2x 字号下验证面板副行过长时做省略处理，避免挤占内容区。
 - **→ E3（多栏容器与外壳收口，Wave 3a）**：
   - R-C4d S1–S3：`HiAdaptiveShell.kt` 加固未传 `managesGlassSource` 首帧门控并对齐 KDoc；`HiNavigationSidebar.kt` 跳过首次挂载无条件 `scrollToItem` 并补偏移断言；`HiAdaptiveShellTest.kt` 补底部胶囊拖拽预选视觉态断言。
-  - R-E0 S4：`LazyListState` 迁入按 `fid`/`tid` 键控的 `SaveableStateHolder` 承接 `StateRestorationTester` 进程回收恢复；另改 `ui/shell/` 时将合并未读数接入 `HiNavigationPill` 并在窄屏单栏二级页退场胶囊（§3.1 L38）。
+  - R-E0 R2-S3 & S4：`MultiPaneStateMigrationTest`/`MultiPaneBackStackTest` 补“三栏切 `tid` 时面板内无键 `rememberSaveable` 必隔离重置”与“开帖态切左栏版块自动清空右栏并 `clear()` 旧帖 Store”断言；`LazyListState` 迁入按 `fid`/`tid` 键控的 `SaveableStateHolder` 承接 `StateRestorationTester` 进程回收恢复；另改 `ui/shell/` 时将合并未读数接入 `HiNavigationPill` 并在窄屏单栏二级页退场胶囊（§3.1 L38）。
 - **→ E2d（详情双向连续加载与向上插页零闪跳，Wave 3a，仅改 `ThreadDetailViewModel`/`ThreadDetailPane`）**：
   - 承接原 `E2a` 拆出的双向连续预取加载与 `mainClock.autoAdvance = false` 首帧 `≤ 1dp` 锚定（`V-E2d` 反例红线：`LaunchedEffect` 滞后补偿必判 FAIL）；须先于 `E2c` 合入。
 - **→ E2c（引用展开、楼层高亮、长按菜单与 1 楼投票；Wave 3b，待 `E2d` 合入后派发；同卡清零 `:core-parser` 遗留）**：
