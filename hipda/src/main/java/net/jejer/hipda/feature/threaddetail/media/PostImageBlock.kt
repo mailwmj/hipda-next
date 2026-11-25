@@ -80,6 +80,17 @@ private class PostImageLayoutTracker {
     var boundsInWindow: Rect? = null
 }
 
+/**
+ * 详情列表同帧单一滚动权威接口：统一仲裁向上插页锚定与首楼越顶图片高度变化补偿，
+ * 保证同一未重测帧窗口内无论二者先后顺序如何，仅由单一权威合成最终 `(targetIndex, targetOffset)`。
+ */
+internal fun interface AboveViewportHeightCompensationAuthority {
+    fun onAboveViewportImageHeightDelta(floorPostId: String, deltaPx: Int)
+}
+
+internal val LocalAboveViewportHeightCompensationAuthority =
+    staticCompositionLocalOf<AboveViewportHeightCompensationAuthority?> { null }
+
 internal fun classifyHeightChangeBranch(
     floorPostId: String,
     listState: LazyListState,
@@ -89,10 +100,12 @@ internal fun classifyHeightChangeBranch(
     if (visibleItems.isEmpty()) return ImageHeightChangeBranch.IN_OR_BELOW_VIEWPORT_ANIMATE
     val floorItem = visibleItems.firstOrNull { it.key == "floor:$floorPostId" }
         ?: return ImageHeightChangeBranch.ABOVE_FIRST_VISIBLE_FLOOR_SNAP
-    val firstVisibleIndex = listState.firstVisibleItemIndex
+    // 严格从同一帧已布局的 layoutInfo.visibleItemsInfo 快照判定首可见项，
+    // 避免与向上插页同帧提前改写的未重测 listState.firstVisibleItemIndex 跨代比较导致误分类。
+    val firstVisibleItem = visibleItems.firstOrNull { it.offset + it.size > 0 } ?: visibleItems.first()
     return when {
-        floorItem.index < firstVisibleIndex -> ImageHeightChangeBranch.ABOVE_FIRST_VISIBLE_FLOOR_SNAP
-        floorItem.index == firstVisibleIndex && imageBottomInViewportPx != null && imageBottomInViewportPx <= 0.5f ->
+        floorItem.index < firstVisibleItem.index -> ImageHeightChangeBranch.ABOVE_FIRST_VISIBLE_FLOOR_SNAP
+        floorItem.index == firstVisibleItem.index && imageBottomInViewportPx != null && imageBottomInViewportPx <= 0.5f ->
             ImageHeightChangeBranch.ABOVE_VIEWPORT_COMPENSATE
         else -> ImageHeightChangeBranch.IN_OR_BELOW_VIEWPORT_ANIMATE
     }
@@ -152,6 +165,7 @@ fun PostImageBlock(
 
     val context = LocalContext.current
     val imageLoader = currentHiImageLoader()
+    val scrollAuthority by rememberUpdatedState(LocalAboveViewportHeightCompensationAuthority.current)
     val reducedMotion = HiTheme.isReducedMotion
     val displayUrl = resolvedUrls.displayUrl
     val viewerUrl = resolvedUrls.viewerUrl
@@ -223,8 +237,14 @@ fun PostImageBlock(
         when (classifyHeightChangeBranch(floorPostId, listState, bottomInViewport)) {
             ImageHeightChangeBranch.ABOVE_VIEWPORT_COMPENSATE -> {
                 aspectRatioAnim.snapTo(cachedRatio)
-                val targetOffset = (listState.firstVisibleItemScrollOffset + deltaPx.roundToInt()).coerceAtLeast(0)
-                listState.requestScrollToItem(listState.firstVisibleItemIndex, targetOffset)
+                val deltaInt = deltaPx.roundToInt()
+                val authority = scrollAuthority
+                if (authority != null) {
+                    authority.onAboveViewportImageHeightDelta(floorPostId, deltaInt)
+                } else {
+                    val targetOffset = (listState.firstVisibleItemScrollOffset + deltaInt).coerceAtLeast(0)
+                    listState.requestScrollToItem(listState.firstVisibleItemIndex, targetOffset)
+                }
                 loadState = loadedState
             }
             ImageHeightChangeBranch.ABOVE_FIRST_VISIBLE_FLOOR_SNAP -> {
