@@ -37,6 +37,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
@@ -44,6 +45,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
@@ -219,10 +221,14 @@ fun HiListFooter(state: HiFooterState, modifier: Modifier = Modifier) {
     }
 }
 
+/** 通用不确定环形进度圈（遵循 [HiMotion.spinnerRepeatable]，减少动态效果下静态停于 -90°）。 */
 @Composable
-private fun HiLoadingSpinner(modifier: Modifier = Modifier) {
-    val color = MaterialTheme.colorScheme.primary
-    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+fun HiLoadingSpinner(
+    modifier: Modifier = Modifier,
+    strokeWidth: Dp = 2.dp,
+    color: Color = MaterialTheme.colorScheme.primary,
+    trackColor: Color = MaterialTheme.colorScheme.surfaceContainerHighest,
+) {
     val angleState: State<Float> = if (HiTheme.isReducedMotion) {
         remember { mutableFloatStateOf(-90f) }
     } else {
@@ -234,7 +240,7 @@ private fun HiLoadingSpinner(modifier: Modifier = Modifier) {
         )
     }
     Canvas(modifier) {
-        val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+        val stroke = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round)
         drawArc(color = trackColor, startAngle = 0f, sweepAngle = 360f, useCenter = false, style = stroke)
         drawArc(color = color, startAngle = angleState.value, sweepAngle = 270f, useCenter = false, style = stroke)
     }
