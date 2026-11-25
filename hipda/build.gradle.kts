@@ -68,6 +68,10 @@ room {
     schemaDirectory("$projectDir/schemas")
 }
 
+roborazzi {
+    outputDir.set(layout.projectDirectory.dir("src/test/snapshots/images"))
+}
+
 java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(17))
