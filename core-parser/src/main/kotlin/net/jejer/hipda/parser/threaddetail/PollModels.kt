@@ -1,5 +1,8 @@
 package net.jejer.hipda.parser.threaddetail
 
+import net.jejer.hipda.parser.common.DiscuzTextDecoder
+import org.jsoup.Jsoup
+
 /**
  * 1 楼投票单个选项不可变模型（对照旧 `PollOptionBean`）。
  *
@@ -22,6 +25,8 @@ data class PollOption(
  * @property maxChoices 最多可选票数，单选默认为 `1`；多选按“最多可选 N 项”解析且至少为 `1`。
  * @property options 有序投票选项列表。
  * @property footer 投票表尾说明文本（已排除 `<button>` 文本且不修改原 DOM），为空时为 `null`。
+ * @property titleText 投票摘要纯文本（不含任何 HTML 标签，已排除 `<a>` 且解码二次转义数字实体，`R-B8 S4`）。
+ * @property timerText 投票倒计时/截止时间纯文本（不含任何 HTML 标签，缺省为 `null`，`R-B8 S4`）。
  */
 data class ThreadPoll(
     val titleHtml: String,
@@ -30,6 +35,8 @@ data class ThreadPoll(
     val maxChoices: Int = 1,
     val options: List<PollOption>,
     val footer: String?,
+    val titleText: String = extractPollPlainText(titleHtml),
+    val timerText: String? = timerHtml?.let(::extractPollPlainText)?.ifEmpty { null },
 ) {
     /** 是否为多选投票。 */
     val isMultipleChoice: Boolean
@@ -38,4 +45,10 @@ data class ThreadPoll(
     /** 与旧 `PollBean.getTitle()` 对齐的合并标题 HTML（存在 [timerHtml] 时以 `<br>` 拼接）。 */
     val combinedTitleHtml: String
         get() = if (timerHtml.isNullOrEmpty()) titleHtml else "$titleHtml<br>$timerHtml"
+}
+
+private fun extractPollPlainText(rawHtml: String): String {
+    if (rawHtml.isBlank()) return ""
+    val text = Jsoup.parseBodyFragment(rawHtml).text()
+    return DiscuzTextDecoder.decodeDoubleEscapedEntities(text).trim()
 }

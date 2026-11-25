@@ -18,17 +18,23 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.feature.threaddetail.interact.FloorContextMenuOverlay
+import net.jejer.hipda.feature.threaddetail.interact.ThreadPollCard
+import net.jejer.hipda.feature.threaddetail.interact.copyFloorPlainTextToClipboard
 import net.jejer.hipda.feature.threaddetail.media.AboveViewportHeightCompensationAuthority
 import net.jejer.hipda.feature.threaddetail.media.LocalAboveViewportHeightCompensationAuthority
+import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
@@ -51,13 +57,11 @@ private fun firstVisibleFloor(listState: LazyListState): LazyListItemInfo? {
 }
 
 /**
- * 详情列表同帧单一滚动权威控制器（闭合 `R-BATCH5 B4-E2a ①` 与 `V-E2b` E2b+E2d 同帧竞态）：
- * - 严禁依赖滞后一帧的 `LaunchedEffect` 回滚；
- * - 以不可变 `LazyListLayoutInfo` 引用作为未重测帧纪元，同一帧内统一仲裁向上插页锚定与首楼越顶图片
- *   高度变化补偿：无论先插页后图变高、先图变高后插页、还是同楼层多图同帧完成，均合成唯一最终
- *   `(targetIndex, targetOffset)`，既不丢失补偿也不跨帧重复补偿；
- * - 若原首可见楼层上方露出了顶部状态行（`offset > 0`），先同帧落位至 `offset = 0`，再于本帧
- *   `onGloballyPositioned` 通过 `dispatchRawDelta` 同步回滚差值并触发同帧重测，保证合入首帧偏差 `≤ 1dp`。
+ * 详情列表同帧单一滚动权威控制器（闭合 `R-BATCH5 B4-E2a ①`、`V-E2b`、`R-E2b S3` 与 `R-E2d S2-R2`）：
+ * - 全文件唯一持有 `LazyListState` 滚动写入权限（向上插页锚定、首楼越顶图片高度补偿、`PendingScrollTarget` 本页/跨页跳楼与定位、头部失败行露出）；
+ * - 以不可变 `LazyListLayoutInfo` 引用作为未重测帧纪元，同一帧内统一仲裁向上插页与越顶图片高度变化，绝不跨帧重复叠加；
+ * - 跨会话（`!sameSession`）同步清空帧纪元状态与 `pendingFloorKey`（`R-E2d S2-R2`）；
+ * - 跳楼严格按稳定键 `floor:$targetPid` 查表落位（绝不用楼层号减 1）。
  */
 private class PrependAnchorController(initialGeneration: Long, initialHeader: Boolean, initialEpoch: Long) {
     private var handledGeneration: Long = initialGeneration
@@ -131,7 +135,10 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         handledGeneration = uiState.prependGeneration
         lastShowHeader = uiState.showPrependHeader
         lastResetEpoch = uiState.resetEpoch
-        if (!sameSession) clearFrameAuthorityState()
+        if (!sameSession) {
+            clearFrameAuthorityState()
+            clearPending()
+        }
         if (!genChanged && !headerChanged) return
         if (uiState.floors.isEmpty()) { clearPending(); return }
         val visibleItems = layoutInfo.visibleItemsInfo
@@ -145,12 +152,20 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         if (anchorOffset <= 0) {
             clearPending()
             val sameFrameImageDelta = if (activeImageDeltaFloorKey == anchorKey) activeImageDeltaPx else 0
-            val targetScrollOffset = (-anchorOffset + sameFrameImageDelta).coerceAtLeast(0)
+            // R-E2b S3：当 anchorItem 恰为当前首可见项时优先读取 listState.firstVisibleItemScrollOffset
+            // （已含同帧越顶图片增量或直接偏移更新，避免重复叠加两份 sameFrameImageDelta）。
+            val sameItemScrollOffset = anchorItem.index == listState.firstVisibleItemIndex
+            val targetScrollOffset = if (sameItemScrollOffset) {
+                listState.firstVisibleItemScrollOffset
+            } else {
+                (-anchorOffset + sameFrameImageDelta).coerceAtLeast(0)
+            }
             activeAnchorKey = anchorKey
             activeTargetIndex = newListIndex
             activeTargetScrollOffset = targetScrollOffset
             val primaryKey = visibleItems.firstOrNull { it.offset + it.size > 0 }?.key
-            if (sameFrameImageDelta != 0 || !(primaryKey == anchorKey && listState.isScrollInProgress)) {
+            val hasPendingScrollDelta = sameFrameImageDelta != 0 || (sameItemScrollOffset && targetScrollOffset != -anchorOffset)
+            if (hasPendingScrollDelta || !(primaryKey == anchorKey && listState.isScrollInProgress)) {
                 listState.requestScrollToItem(index = newListIndex, scrollOffset = targetScrollOffset)
             }
         } else {
@@ -171,6 +186,28 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         val delta = targetOffset - currentItem.offset
         clearPending()
         if (delta > 0 && listState.canScrollBackward) listState.dispatchRawDelta(-delta.toFloat())
+    }
+
+    /** 统一经由单一滚动权威按稳定键 `floor:$postId` 定位跳楼与过滤回位目标，同步刷新布局纪元。 */
+    suspend fun scrollToPendingTarget(
+        uiState: ThreadDetailUiState,
+        pending: PendingScrollTarget,
+        listState: LazyListState,
+    ) {
+        val idx = pending.postId?.let { pid -> uiState.floors.indexOfFirst { it.postId == pid }.takeIf { it >= 0 } } ?: 0
+        val matched = pending.postId == null || uiState.floors.getOrNull(idx)?.postId == pending.postId
+        val targetIndex = (if (uiState.showPrependHeader) 1 else 0) + idx
+        val targetOffset = if (matched) pending.scrollOffset.coerceAtLeast(0) else 0
+        clearPending()
+        clearFrameAuthorityState()
+        listState.scrollToItem(targetIndex, targetOffset)
+    }
+
+    /** 统一经由单一滚动权威露出顶部失败重试行。 */
+    suspend fun revealPrependErrorHeader(listState: LazyListState) {
+        clearPending()
+        clearFrameAuthorityState()
+        listState.scrollToItem(0, 0)
     }
 }
 
@@ -195,7 +232,7 @@ private data class ScrollWindow(
     val hasPendingScroll: Boolean,
 )
 
-/** 帖子详情核心完整面板（M5 `E2a`/`E2d`，严格保持 `E0` 锁定顶层签名与 `floor:$postId` 主键，支持双向连续加载与同帧零闪跳锚定）。 */
+/** 帖子详情核心完整面板（M5 `E2a`/`E2d`/`E2c`，严格保持 `E0` 锁定顶层签名、`floor:$postId` 主键与 `PrependAnchorController` 单一滚动权威）。 */
 @Composable
 fun ThreadDetailPane(
     args: ThreadNavArgs,
@@ -206,14 +243,20 @@ fun ThreadDetailPane(
     listState: LazyListState = rememberLazyListState(),
     contentPadding: PaddingValues = PaddingValues(0.dp),
     onOpenImageViewer: (ImageViewerLaunchArgs) -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenReply: (ReplyRequest) -> Unit = {},
+    onOpenReply: (ReplyRequest) -> Unit = {},
     onOpenUserProfile: (uid: String, username: String) -> Unit = { _, _ -> },
     viewModel: ThreadDetailViewModel = viewModel(key = "thread:${args.tid}"),
 ) {
     LaunchedEffect(args.tid) { viewModel.bindArgs(args) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val latestUiState by rememberUpdatedState(uiState)
+    val context = LocalContext.current
+    val snackbarController = LocalPaneSnackbarController.current
+    val coroutineScope = rememberCoroutineScope()
     val detailGlassState = rememberHiGlassState()
+    val activeMenuFloorState = remember(args.tid, uiState.tid) { mutableStateOf<PostFloor?>(null) }
+    var activeMenuFloor by activeMenuFloorState
+
     val isScrolledState = remember(listState) {
         derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
     }
@@ -234,6 +277,7 @@ fun ThreadDetailPane(
             anchorController.onAboveViewportImageHeightDelta(floorPostId, deltaPx, listState)
         }
     }
+    val onOpenFloorMenu = remember(activeMenuFloorState) { { floor: PostFloor -> activeMenuFloorState.value = floor } }
     val floorPositionedModifier = remember(anchorController, listState) {
         Modifier.onGloballyPositioned { anchorController.applyPendingPositiveOffset(listState) }
     }
@@ -253,16 +297,29 @@ fun ThreadDetailPane(
     val pendingScroll = uiState.pendingScroll
     LaunchedEffect(pendingScroll?.id, uiState.floors) {
         if (pendingScroll == null || uiState.isLoading) return@LaunchedEffect
-        val idx = pendingScroll.postId?.let { pid -> uiState.floors.indexOfFirst { it.postId == pid }.takeIf { it >= 0 } } ?: 0
-        val matched = pendingScroll.postId == null || uiState.floors.getOrNull(idx)?.postId == pendingScroll.postId
-        listState.scrollToItem((if (uiState.showPrependHeader) 1 else 0) + idx, if (matched) pendingScroll.scrollOffset else 0)
+        anchorController.scrollToPendingTarget(uiState, pendingScroll, listState)
         viewModel.consumePendingScroll(pendingScroll.id)
     }
 
     LaunchedEffect(uiState.prependError) {
         if (uiState.prependError != null && uiState.showPrependHeader && listState.firstVisibleItemIndex <= 1 && listState.firstVisibleItemScrollOffset == 0) {
-            listState.scrollToItem(0, 0)
+            anchorController.revealPrependErrorHeader(listState)
         }
+    }
+
+    val activeNotice = uiState.notice
+    val activeNoticeMessage = activeNotice?.let { stringResource(it.error.messageRes) }
+    val loginActionLabel = stringResource(R.string.common_action_login)
+    LaunchedEffect(activeNotice?.id) {
+        if (activeNotice == null || activeNoticeMessage == null) return@LaunchedEffect
+        val isLoginAction = activeNotice.error.action == UiErrorAction.Login
+        viewModel.consumeNotice(activeNotice.id)
+        snackbarController.show(
+            message = activeNoticeMessage,
+            target = PaneSnackbarTarget.DetailPane,
+            actionLabel = if (isLoginAction) loginActionLabel else null,
+            onAction = if (isLoginAction) onOpenLogin else null,
+        )
     }
 
     LaunchedEffect(listState) {
@@ -309,6 +366,8 @@ fun ThreadDetailPane(
         !uiState.isLoading && uiState.floors.isEmpty() -> DetailBodySlot.EMPTY
         else -> DetailBodySlot.CONTENT
     }
+    val copiedLabel = stringResource(R.string.thread_detail_menu_copy)
+    val copiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_copied)
 
     Surface(modifier = modifier.fillMaxSize(), color = cs.background, contentColor = cs.onBackground) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -356,7 +415,36 @@ fun ThreadDetailPane(
                                     }
                                     items(items = uiState.floors, key = { "$FLOOR_KEY_PREFIX${it.postId}" }) { item ->
                                         val isOp = item.floor.floor == 1 || (uiState.threadAuthorId != null && item.floor.uid == uiState.threadAuthorId)
-                                        PostFloorCard(item, isOp, listState, onOpenImageViewer, onOpenUserProfile, modifier = floorPositionedModifier)
+                                        val highlightToken = uiState.highlightedFloor?.takeIf { it.postId == item.postId }?.tokenId
+                                        val floorPollSlot: (@Composable (net.jejer.hipda.parser.threaddetail.ThreadPoll) -> Unit)? =
+                                            if (item.floor.floor == 1 && item.floor.poll != null) {
+                                                { poll ->
+                                                    ThreadPollCard(
+                                                        poll = poll,
+                                                        isLoggedIn = uiState.isLoggedIn,
+                                                        isSubmitting = uiState.isPollSubmitting,
+                                                        error = uiState.pollError,
+                                                        onSubmitVote = { ids -> viewModel.submitPollVote(poll, ids) },
+                                                        onOpenLogin = onOpenLogin,
+                                                        onClearError = viewModel::clearPollError,
+                                                    )
+                                                }
+                                            } else {
+                                                null
+                                            }
+                                        PostFloorCard(
+                                            item = item,
+                                            isOp = isOp,
+                                            listState = listState,
+                                            onOpenImageViewer = onOpenImageViewer,
+                                            onAuthorClick = onOpenUserProfile,
+                                            modifier = floorPositionedModifier,
+                                            onJumpToFloor = viewModel::jumpToFloor,
+                                            onLongPress = onOpenFloorMenu,
+                                            highlightToken = highlightToken,
+                                            onHighlightFinished = viewModel::onHighlightFinished,
+                                            pollSlot = floorPollSlot,
+                                        )
                                         HorizontalDivider(Modifier.widthIn(max = PostMaxContentWidth).fillMaxWidth(), color = cs.outlineVariant.copy(alpha = 0.5f))
                                     }
                                     val tailFooter = when {
@@ -392,6 +480,33 @@ fun ThreadDetailPane(
                     )
                     FilterCapsuleBar(uiState.filter, viewModel::clearFilter)
                 }
+
+                // 严格兄弟节点 3：楼层长按菜单（纯色表面，零玻璃标记开销）
+                FloorContextMenuOverlay(
+                    floor = activeMenuFloor,
+                    isLoggedIn = uiState.isLoggedIn,
+                    currentUserUid = uiState.currentUserUid,
+                    onQuoteReply = { floor ->
+                        onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = floor.postId, quoteAuthor = floor.author, quoteFloor = floor.floor))
+                    },
+                    onReply = { floor ->
+                        onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = null, quoteAuthor = floor.author, quoteFloor = floor.floor))
+                    },
+                    onFilterByUser = { floor ->
+                        val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "$FLOOR_KEY_PREFIX${floor.postId}" }
+                        val anchorOffset = itemInfo?.let { (-it.offset).coerceAtLeast(0) } ?: 0
+                        viewModel.filterByUser(floor.uid, floor.author, anchorPostId = floor.postId, anchorScrollOffset = anchorOffset)
+                    },
+                    onCopy = { floor ->
+                        if (copyFloorPlainTextToClipboard(context, copiedLabel, floor)) {
+                            coroutineScope.launch {
+                                snackbarController.show(copiedSnackbarMessage, target = PaneSnackbarTarget.DetailPane)
+                            }
+                        }
+                    },
+                    onOpenLogin = onOpenLogin,
+                    onDismiss = { activeMenuFloor = null },
+                )
             }
 
             if (uiState.lastPage > 1) {
