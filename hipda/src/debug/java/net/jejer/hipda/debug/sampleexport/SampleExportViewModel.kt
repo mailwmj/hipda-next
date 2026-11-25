@@ -69,36 +69,57 @@ class SampleExportViewModel(
     fun openLoginWebView() = _uiState.update { it.copy(showLoginWebView = true) }
 
     fun closeLoginWebView() {
-        _uiState.update { it.copy(showLoginWebView = false) }
-        refreshLoginStatus()
+        syncCookiesFromWebView(showFeedback = false, closeWebViewAfterSync = true)
     }
 
     fun syncCookiesFromWebView(showFeedback: Boolean = true, closeWebViewAfterSync: Boolean = false) {
-        viewModelScope.launch { syncCookiesFromWebViewNow(showFeedback, closeWebViewAfterSync) }
-    }
-
-    internal suspend fun syncCookiesFromWebViewNow(showFeedback: Boolean = false, closeWebViewAfterSync: Boolean = false) {
-        runCatching { webViewCookieBridge.syncFromWebView(loginUrl) }
-        val loggedIn = isForumLoggedIn(siteCookieStore, baseUrl)
-        _uiState.update { current ->
-            current.copy(
-                isLoggedIn = loggedIn,
-                showLoginWebView = if (closeWebViewAfterSync) false else current.showLoginWebView,
-                feedbackMessageRes = when {
-                    !showFeedback -> current.feedbackMessageRes
-                    loggedIn -> R.string.sample_export_feedback_synced_logged_in
-                    else -> R.string.sample_export_feedback_synced_logged_out
-                },
-            )
+        viewModelScope.launch {
+            runCatching { webViewCookieBridge.syncFromWebView(loginUrl) }
+            val loggedIn = isForumLoggedIn(siteCookieStore, baseUrl)
+            _uiState.update { current ->
+                current.copy(
+                    isLoggedIn = loggedIn,
+                    showLoginWebView = if (closeWebViewAfterSync) false else current.showLoginWebView,
+                    feedbackMessageRes = when {
+                        !showFeedback -> current.feedbackMessageRes
+                        loggedIn -> R.string.sample_export_feedback_synced_logged_in
+                        else -> R.string.sample_export_feedback_synced_logged_out
+                    },
+                )
+            }
         }
     }
 
-    fun onIncludePersonalHistoryChange(include: Boolean) =
-        _uiState.update { it.copy(includePersonalHistory = include) }
+    fun onIncludePersonalHistoryChange(include: Boolean) {
+        if (_uiState.value.isRunning) return
+        // Immediately invalidate previous zip reference so a stale archive with my_* cannot be shared during rebuild
+        _uiState.update { it.copy(includePersonalHistory = include, exportedZipFile = null, isRunning = true) }
+        activeTaskJob?.cancel()
+        activeTaskJob = viewModelScope.launch {
+            try {
+                val result = engine.updatePersonalHistoryInclusion(
+                    includePersonalHistory = include,
+                    customTid = _uiState.value.customTidInput,
+                    onItemUpdated = ::applyItemUpdate,
+                )
+                _uiState.update {
+                    it.copy(
+                        isRunning = false,
+                        items = result.items,
+                        exportedZipFile = result.zipFile,
+                        resolvedTid = result.resolvedTid,
+                    )
+                }
+            } finally {
+                _uiState.update { it.copy(isRunning = false) }
+            }
+        }
+    }
 
     fun onCustomTidChange(raw: String) {
         val trimmed = raw.trim()
-        _uiState.update { it.copy(customTidInput = raw, customTidError = trimmed.isNotEmpty() && !trimmed.all(Char::isDigit)) }
+        val isInvalid = trimmed.isNotEmpty() && SampleHtmlExtractors.normalizePositiveTid(trimmed) == null
+        _uiState.update { it.copy(customTidInput = raw, customTidError = isInvalid) }
     }
 
     fun startBatchExport() = runExportTask(
@@ -127,11 +148,24 @@ class SampleExportViewModel(
     ) {
         val snapshot = _uiState.value
         if (snapshot.isRunning || snapshot.customTidError) return
+        if (!isForumLoggedIn(siteCookieStore, baseUrl)) {
+            _uiState.update {
+                it.copy(
+                    isLoggedIn = false,
+                    feedbackMessageRes = R.string.sample_export_feedback_login_required,
+                )
+            }
+            return
+        }
         activeTaskJob?.cancel()
         activeTaskJob = viewModelScope.launch {
             _uiState.update {
-                if (resetList) it.copy(isRunning = true, exportedZipFile = null, items = SampleExportManifest.initialItems())
-                else it.copy(isRunning = true)
+                val loggedInState = it.copy(isLoggedIn = true, isRunning = true)
+                if (resetList) {
+                    loggedInState.copy(exportedZipFile = null, items = SampleExportManifest.initialItems())
+                } else {
+                    loggedInState
+                }
             }
             try {
                 val result = block(snapshot)

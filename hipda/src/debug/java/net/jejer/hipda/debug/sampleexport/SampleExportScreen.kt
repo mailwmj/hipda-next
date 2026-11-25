@@ -102,6 +102,7 @@ fun SampleExportScreen(
                     }
                     item(key = "controls_card") {
                         ExportControlsCard(
+                            isLoggedIn = state.isLoggedIn,
                             customTidInput = state.customTidInput,
                             customTidError = state.customTidError,
                             isRunning = state.isRunning,
@@ -272,6 +273,7 @@ private fun PrivacyWarningCard(
 
 @Composable
 private fun ExportControlsCard(
+    isLoggedIn: Boolean,
     customTidInput: String,
     customTidError: Boolean,
     isRunning: Boolean,
@@ -311,7 +313,7 @@ private fun ExportControlsCard(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = onStartExport,
-                    enabled = !isRunning && !customTidError,
+                    enabled = isLoggedIn && !isRunning && !customTidError,
                     shape = HiShapeTokens.Small,
                     interactionSource = startInteraction,
                     modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).hiPressScale(startInteraction),
@@ -320,7 +322,7 @@ private fun ExportControlsCard(
                 }
                 FilledTonalButton(
                     onClick = onShareZip,
-                    enabled = exportedZipName != null && !isRunning,
+                    enabled = isLoggedIn && exportedZipName != null && !isRunning,
                     shape = HiShapeTokens.Small,
                     interactionSource = shareInteraction,
                     modifier = Modifier.defaultMinSize(minWidth = 88.dp, minHeight = 48.dp).hiPressScale(shareInteraction),

@@ -14,7 +14,12 @@ object SampleHtmlExtractors {
     private val TID_PARAM_REGEX = Regex("""(?i)(?:^|[?&;])tid=(\d+)(?![0-9A-Za-z_])""")
     private val PAGE_PARAM_REGEX = Regex("""(?i)(?:^|[?&;])page=(\d+)(?![0-9A-Za-z_])""")
     private val THREAD_TBODY_ID_REGEX = Regex("""(?i)^(?:normal|stick)thread_(\d+)$""")
-    private val DISCUZ_UID_REGEX = Regex("""(?i)\bdiscuz_uid\s*=\s*['"]?(\d+)['"]?""")
+    private val DISCUZ_UID_REGEX =
+        Regex("""(?i)(?<![.\w$])(['"]?)discuz_uid\1\s*(?:=|:)\s*(?:(?:parseInt|Number)\s*\(\s*)?(['"]?)(\d+)\2(?![0-9A-Za-z_])""")
+    private val POSITIVE_INT_REGEX = Regex("""^[1-9]\d*$""")
+
+    fun normalizePositiveTid(raw: String?): String? =
+        raw?.trim()?.takeIf { POSITIVE_INT_REGEX.matches(it) }
 
     fun extractIdentity(html: String): Identity? {
         val doc = Jsoup.parse(html)
@@ -24,7 +29,7 @@ object SampleHtmlExtractors {
         val uid = umenuUid
             ?: doc.select(SanitizeSelectors.UMENU_LINKS)
                 .firstNotNullOfOrNull { extractUidParam(it.attr("href")) }
-            ?: DISCUZ_UID_REGEX.find(html)?.groupValues?.get(1)?.takeIf(::isPositiveUid)
+            ?: DISCUZ_UID_REGEX.find(html)?.groupValues?.get(3)?.takeIf(::isPositiveUid)
             ?: ""
         if (uid.isBlank() && username.isBlank()) return null
         return Identity(uid = uid, username = username)

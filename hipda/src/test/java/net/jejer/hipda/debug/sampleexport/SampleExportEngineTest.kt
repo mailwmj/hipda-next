@@ -4,10 +4,15 @@ import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.ValueCallback
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.v2.runComposeUiTest
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.nio.charset.Charset
@@ -20,11 +25,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
+import net.jejer.hipda.R
 import net.jejer.hipda.data.network.ChallengeDetector
 import net.jejer.hipda.data.network.HttpClientModule
 import net.jejer.hipda.data.network.InMemorySiteCookieStore
@@ -39,6 +46,7 @@ import net.jejer.hipda.parser.sanitize.LeakType
 import net.jejer.hipda.parser.sanitize.PageType
 import net.jejer.hipda.parser.sanitize.SampleLeakScanner
 import net.jejer.hipda.ui.challenge.TestWebViewCookieAccess
+import net.jejer.hipda.ui.designsystem.HiTheme
 import okhttp3.Cookie
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -57,6 +65,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
@@ -471,11 +480,261 @@ class SampleExportEngineTest {
         assertEquals(listOf("https://www.4d4y.com/forum/index.php"), navigationEvents)
 
         // Syncing cookies via bridge populates SiteCookieStore and updates ViewModel login state
-        viewModel.syncCookiesFromWebViewNow()
+        viewModel.syncCookiesFromWebView(showFeedback = true)
+        awaitViewModelCondition(viewModel) { it.isLoggedIn }
 
         assertTrue(viewModel.uiState.value.isLoggedIn)
         val syncedNames = cookieStore.loadForRequest(SampleExportConstants.FORUM_BASE_URL).map { it.name }.toSet()
         assertEquals(setOf("cdb_auth", "cdb_sid", "cf_clearance"), syncedNames)
+    }
+
+    // S5: closeLoginWebView syncs Cookie before closing & WebView blocks null/empty scheme by default
+    @Test
+    fun closeLoginWebView_syncsCookiesBeforeClosing_andNullSchemeIsBlocked() = runBlocking {
+        val fakeCookieAccess = TestWebViewCookieAccess()
+        val cookieBridge = WebViewCookieBridge(
+            siteCookieStore = cookieStore,
+            webViewCookieAccess = fakeCookieAccess,
+            cookieDispatcher = Dispatchers.Unconfined,
+        )
+        val viewModel = SampleExportViewModel(
+            siteAccessGateway = gateway,
+            siteCookieStore = cookieStore,
+            webViewCookieBridge = cookieBridge,
+            exportDir = exportDir,
+        )
+
+        // Null scheme (e.g. scheme-relative or relative URL) must be blocked fail-closed
+        val webView = WebView(application)
+        configureSampleLoginWebView(
+            webView = webView,
+            userAgentProvider = UserAgentProvider { unifiedUa },
+            onPageNavigationChanged = {},
+        )
+        assertTrue(
+            "Null scheme URL must be blocked by default",
+            webView.webViewClient.shouldOverrideUrlLoading(webView, fakeWebRequest("//evil.example/path")),
+        )
+        assertTrue(
+            "Relative path without scheme must be blocked by default",
+            webView.webViewClient.shouldOverrideUrlLoading(webView, fakeWebRequest("relative/path")),
+        )
+
+        // User opens login WebView, logs in, and closes via "关闭"/Back without tapping "完成登录"
+        viewModel.openLoginWebView()
+        assertTrue(viewModel.uiState.value.showLoginWebView)
+        assertFalse(viewModel.uiState.value.isLoggedIn)
+
+        val loginUrl = SampleExportConstants.LOGIN_URL
+        fakeCookieAccess.seedCookie(loginUrl, "cdb_auth=close_sync_auth; Domain=.4d4y.com; Path=/; HttpOnly")
+        fakeCookieAccess.seedCookie(loginUrl, "cdb_sid=close_sync_sid; Domain=.4d4y.com; Path=/")
+
+        viewModel.closeLoginWebView()
+        awaitViewModelCondition(viewModel) { !it.showLoginWebView }
+
+        assertFalse(viewModel.uiState.value.showLoginWebView)
+        assertTrue("Closing login WebView must sync cookies and reflect logged-in state", viewModel.uiState.value.isLoggedIn)
+    }
+
+    // S1: After full export with personal history ON, toggling OFF rebuilds clean zip without my_* and retry respects toggle
+    @Test
+    fun privacyToggleTurnedOffAfterFullExport_rebuildsZipWithoutPersonalHistoryAndInvalidatesCache() = runBlocking {
+        val serverBaseUrl = server.url("/forum/")
+        server.dispatcher = createForumDispatcher()
+        seedLoggedInAuthCookie(serverBaseUrl)
+
+        val fakeCookieAccess = TestWebViewCookieAccess()
+        val cookieBridge = WebViewCookieBridge(
+            siteCookieStore = cookieStore,
+            webViewCookieAccess = fakeCookieAccess,
+            cookieDispatcher = Dispatchers.Unconfined,
+        )
+        val viewModel = SampleExportViewModel(
+            siteAccessGateway = gateway,
+            siteCookieStore = cookieStore,
+            webViewCookieBridge = cookieBridge,
+            exportDir = exportDir,
+            baseUrl = serverBaseUrl,
+            loginUrl = serverBaseUrl,
+        )
+
+        // 1) Fetch all 16 items with personal history enabled
+        viewModel.startBatchExport()
+        awaitViewModelCondition(viewModel) { !it.isRunning && it.exportedZipFile != null }
+
+        val firstZip = requireNotNull(viewModel.uiState.value.exportedZipFile)
+        val firstUnzipped = tempFolder.newFolder("s1_unzipped_before_toggle")
+        val firstPaths = unzipTo(firstZip, firstUnzipped)
+        assertTrue(firstPaths.contains("simple_list/my_threads.html"))
+        assertTrue(firstPaths.contains("simple_list/my_posts.html"))
+        assertTrue(firstPaths.contains("simple_list/my_favorites.html"))
+
+        // 2) Turn OFF privacy toggle -> stale zip invalidated & rebuilt without my_*
+        viewModel.onIncludePersonalHistoryChange(false)
+        awaitViewModelCondition(viewModel) { !it.isRunning && it.exportedZipFile != null }
+
+        val sharedZip = requireNotNull(viewModel.uiState.value.exportedZipFile)
+        val secondUnzipped = tempFolder.newFolder("s1_unzipped_after_toggle")
+        val secondPaths = unzipTo(sharedZip, secondUnzipped)
+        assertFalse("Zip after toggle-off must NOT contain my_threads.html", secondPaths.contains("simple_list/my_threads.html"))
+        assertFalse("Zip after toggle-off must NOT contain my_posts.html", secondPaths.contains("simple_list/my_posts.html"))
+        assertFalse("Zip after toggle-off must NOT contain my_favorites.html", secondPaths.contains("simple_list/my_favorites.html"))
+        assertEquals(13 + 1, secondPaths.size)
+        assertTrue(SampleLeakScanner.scanDirectory(secondUnzipped.toPath()).isEmpty())
+
+        // Old zip with my_* must be deleted from exportDir so only the clean zip exists
+        val archivesOnDisk = exportDir.listFiles()?.filter { it.isFile && it.name.endsWith(".zip") }.orEmpty()
+        assertEquals(listOf(sharedZip), archivesOnDisk)
+
+        // 3) Single-item retry on an unrelated item while toggle is OFF must also keep my_* out of zip
+        viewModel.retryItem(SampleEntryId.NOTIFY_LIST)
+        awaitViewModelCondition(viewModel) { !it.isRunning && it.exportedZipFile != null }
+        val retryZip = requireNotNull(viewModel.uiState.value.exportedZipFile)
+        val thirdUnzipped = tempFolder.newFolder("s1_unzipped_after_retry")
+        val thirdPaths = unzipTo(retryZip, thirdUnzipped)
+        assertTrue(thirdPaths.none { it.startsWith("simple_list/my_") })
+        assertEquals(13 + 1, thirdPaths.size)
+
+        // 4) Turning toggle BACK ON invalidates cached zip and resets personal history items to Pending
+        viewModel.onIncludePersonalHistoryChange(true)
+        awaitViewModelCondition(viewModel) { !it.isRunning }
+        assertNull("Turning toggle back ON must invalidate stale zip", viewModel.uiState.value.exportedZipFile)
+        assertTrue(
+            viewModel.uiState.value.items
+                .filter { it.spec.isPersonalHistory }
+                .all { it.status is SampleExportStatus.Pending },
+        )
+    }
+
+    // S3: DISCUZ_UID_REGEX supports parseInt/Number/JSON; incomplete username blocks release; later identity retroactively re-sanitizes
+    @Test
+    fun incompleteIdentity_blocksReleaseWhenUsernameMissing_andRetroactivelyResanitizesWhenCompletedLater() = runBlocking {
+        // Verify parseInt / Number / JSON discuz_uid extraction
+        val parseIntHtml = """<html><head><script>var discuz_uid = parseInt('54321');</script></head><body>ok</body></html>"""
+        assertEquals("54321", SampleHtmlExtractors.extractIdentity(parseIntHtml)?.uid)
+        val numberHtml = """<html><head><script>var discuz_uid = Number("65432");</script></head><body>ok</body></html>"""
+        assertEquals("65432", SampleHtmlExtractors.extractIdentity(numberHtml)?.uid)
+        val jsonHtml = """<html><head><script>var cfg = {"discuz_uid": "76543"};</script></head><body>ok</body></html>"""
+        assertEquals("76543", SampleHtmlExtractors.extractIdentity(jsonHtml)?.uid)
+
+        // Case 1: ALL pages lack #umenu username (only parseInt discuz_uid) -> fail closed, no zip written
+        server.dispatcher = createForumDispatcher(omitUmenuPredicate = { true })
+        val blockedEngine = SampleExportEngine(
+            siteAccessGateway = gateway,
+            exportDir = exportDir,
+            baseUrl = server.url("/forum/"),
+        )
+        val blockedResult = blockedEngine.runAll(includePersonalHistory = false)
+        assertNull("Must not produce zip when username is never extracted", blockedResult.zipFile)
+        assertTrue(
+            "No fetched entry may pass without complete identity",
+            blockedResult.items.none { it.status is SampleExportStatus.Success },
+        )
+        assertTrue(
+            "Export dir must remain empty when identity is incomplete",
+            exportDir.listFiles().orEmpty().isEmpty(),
+        )
+
+        // Case 2: Entry 1 (forum_2_p1_lastpost) lacks #umenu (only parseInt('54321') + mentions SecretLoginUser in text);
+        // Entry 2+ include #umenu with SecretLoginUser -> Entry 1 must be retroactively re-sanitized cleanly!
+        server.dispatcher = createForumDispatcher(
+            omitUmenuPredicate = { req ->
+                req.url.encodedPath == "/forum/forumdisplay.php" &&
+                    req.url.queryParameter("page") == "1" &&
+                    req.url.queryParameter("orderby") == null
+            },
+        )
+        val retroactiveEngine = SampleExportEngine(
+            siteAccessGateway = gateway,
+            exportDir = exportDir,
+            baseUrl = server.url("/forum/"),
+        )
+        val result = retroactiveEngine.runAll(includePersonalHistory = true)
+        assertEquals(
+            "All 16 items should succeed after retroactive identity completion: ${result.items}",
+            16,
+            result.items.count { it.status is SampleExportStatus.Success },
+        )
+        val zipFile = requireNotNull(result.zipFile)
+        val unzipped = tempFolder.newFolder("s3_retroactive_unzipped")
+        unzipTo(zipFile, unzipped)
+        val firstPageHtml = File(unzipped, "thread_list/forum_2_p1_lastpost.html").readText(Charsets.UTF_8)
+        assertFalse("Retroactively re-sanitized page 1 must scrub SecretLoginUser", firstPageHtml.contains("SecretLoginUser"))
+        assertFalse("Retroactively re-sanitized page 1 must scrub uid 54321", firstPageHtml.contains("54321"))
+        assertTrue(SampleLeakScanner.scanDirectory(unzipped.toPath()).isEmpty())
+    }
+
+    // S4: Logged-out state disables fetch/export (ViewModel + UI); customTid only accepts positive integers
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun loggedOutState_blocksFetchAndExport_andCustomTidRequiresPositiveInteger() = runComposeUiTest {
+        val serverBaseUrl = server.url("/forum/")
+        val recordedRequests = CopyOnWriteArrayList<RecordedRequest>()
+        server.dispatcher = createForumDispatcher(recorded = recordedRequests)
+
+        val cookieBridge = WebViewCookieBridge(
+            siteCookieStore = cookieStore,
+            webViewCookieAccess = TestWebViewCookieAccess(),
+            cookieDispatcher = Dispatchers.Unconfined,
+        )
+        val viewModel = SampleExportViewModel(
+            siteAccessGateway = gateway,
+            siteCookieStore = cookieStore,
+            webViewCookieBridge = cookieBridge,
+            exportDir = exportDir,
+            baseUrl = serverBaseUrl,
+            loginUrl = serverBaseUrl,
+        )
+
+        // 1) Logged-out UI disables both "一键抓取并导出" and "分享"
+        val loggedOutState = viewModel.uiState.value
+        setContent {
+            HiTheme {
+                SampleExportScreen(
+                    state = loggedOutState,
+                    onBack = {},
+                    onOpenLogin = {},
+                    onSyncCookies = {},
+                    onIncludePersonalHistoryChange = {},
+                    onCustomTidChange = {},
+                    onStartExport = {},
+                    onShareZip = {},
+                    onRetryItem = {},
+                    onConsumeSnackbar = {},
+                )
+            }
+        }
+        waitForIdle()
+        onNodeWithText("一键抓取并导出").assertIsNotEnabled()
+        onNodeWithText("分享").assertIsNotEnabled()
+
+        // 2) Logged-out ViewModel refuses startBatchExport & retryItem with 0 HTTP requests
+        viewModel.startBatchExport()
+        viewModel.retryItem(SampleEntryId.THREAD_LIST_P1_LASTPOST)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("Logged-out export must send zero HTTP requests", recordedRequests.isEmpty())
+        assertEquals(R.string.sample_export_feedback_login_required, viewModel.uiState.value.feedbackMessageRes)
+        assertNull(viewModel.uiState.value.exportedZipFile)
+
+        // 3) customTid accepts only positive integers (rejects 0, 000, 012, -5, abc; accepts blank & 88421)
+        for (invalid in listOf("0", "000", "012", "-5", "abc")) {
+            viewModel.onCustomTidChange(invalid)
+            assertTrue("Expected customTid='$invalid' to be rejected", viewModel.uiState.value.customTidError)
+            assertNull(SampleHtmlExtractors.normalizePositiveTid(invalid))
+        }
+        seedLoggedInAuthCookie(serverBaseUrl)
+        viewModel.refreshLoginStatus()
+        viewModel.onCustomTidChange("0")
+        viewModel.startBatchExport()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("Invalid customTid='0' must prevent starting export", recordedRequests.isEmpty())
+
+        viewModel.onCustomTidChange("88421")
+        assertFalse(viewModel.uiState.value.customTidError)
+        assertEquals("88421", SampleHtmlExtractors.normalizePositiveTid(" 88421 "))
+
+        viewModel.onCustomTidChange("")
+        assertFalse(viewModel.uiState.value.customTidError)
     }
 
     // (e) Privacy toggle: unchecking my_threads/my_posts/my_favorites sends no requests and excludes them from zip
@@ -584,6 +843,7 @@ class SampleExportEngineTest {
         recorded: CopyOnWriteArrayList<RecordedRequest>? = null,
         emptySmsList: Boolean = false,
         failPathPredicate: (String) -> Boolean = { false },
+        omitUmenuPredicate: (RecordedRequest) -> Boolean = { false },
     ): Dispatcher = object : Dispatcher() {
         override fun dispatch(request: RecordedRequest): MockResponse {
             recorded?.add(request)
@@ -591,20 +851,21 @@ class SampleExportEngineTest {
             if (failPathPredicate(path)) {
                 return MockResponse.Builder().code(500).body("Internal Server Error").build()
             }
+            val omitUmenu = omitUmenuPredicate(request)
             val html = when (path) {
-                "/forum/forumdisplay.php" -> sampleThreadListHtml()
-                "/forum/viewthread.php" -> sampleThreadDetailHtml()
+                "/forum/forumdisplay.php" -> sampleThreadListHtml(omitUmenu)
+                "/forum/viewthread.php" -> sampleThreadDetailHtml(omitUmenu)
                 "/forum/pm.php" -> if (request.url.queryParameter("filter") == "privatepm") {
-                    if (emptySmsList) sampleEmptySmsListHtml() else sampleSmsListHtml()
+                    if (emptySmsList) sampleEmptySmsListHtml(omitUmenu) else sampleSmsListHtml(omitUmenu)
                 } else {
-                    sampleSmsDetailHtml()
+                    sampleSmsDetailHtml(omitUmenu)
                 }
-                "/forum/notice.php" -> sampleNotifyHtml()
-                "/forum/search.php" -> sampleSearchHtml()
-                "/forum/space.php" -> sampleUserProfileHtml()
-                "/forum/my.php" -> sampleSimpleListHtml(request.url.queryParameter("item").orEmpty())
-                "/forum/post.php" -> samplePostFormHtml()
-                "/forum/logging.php" -> sampleLoginHtml()
+                "/forum/notice.php" -> sampleNotifyHtml(omitUmenu)
+                "/forum/search.php" -> sampleSearchHtml(omitUmenu)
+                "/forum/space.php" -> sampleUserProfileHtml(omitUmenu)
+                "/forum/my.php" -> sampleSimpleListHtml(request.url.queryParameter("item").orEmpty(), omitUmenu)
+                "/forum/post.php" -> samplePostFormHtml(omitUmenu)
+                "/forum/logging.php" -> sampleLoginHtml(omitUmenu)
                 else -> return MockResponse.Builder().code(404).body("Not Found").build()
             }
             return MockResponse.Builder()
@@ -615,26 +876,63 @@ class SampleExportEngineTest {
         }
     }
 
-    private fun sampleHeaderShell(title: String): String = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta http-equiv="Content-Type" content="text/html; charset=gbk" />
-          <title>$title - Hi!PDA</title>
-          <script>
-            var discuz_uid = '54321';
-            var formhash = 'a1b2c3d4';
-            document.cookie = 'cdb_auth=realAuthSecret; cf_clearance=realCfToken';
-          </script>
-        </head>
-        <body>
-          <div id="umenu">
-            <cite><a href="space.php?uid=54321" class="noborder">SecretLoginUser</a></cite>
-            <a href="logging.php?action=logout&amp;formhash=a1b2c3d4">退出</a>
-          </div>
-    """.trimIndent()
+    private fun seedLoggedInAuthCookie(url: HttpUrl) {
+        cookieStore.saveFromResponse(
+            url,
+            listOf(
+                Cookie.Builder()
+                    .name(SampleExportConstants.AUTH_COOKIE_NAME)
+                    .value("valid_test_auth_token")
+                    .hostOnlyDomain(url.host)
+                    .path("/")
+                    .build(),
+            ),
+        )
+    }
 
-    private fun sampleThreadListHtml(): String = sampleHeaderShell("Discovery") + """
+    private suspend fun awaitViewModelCondition(
+        viewModel: SampleExportViewModel,
+        predicate: (SampleExportUiState) -> Boolean,
+    ) {
+        repeat(500) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (predicate(viewModel.uiState.value)) return
+            delay(10)
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("Timed out waiting for ViewModel condition; state=${viewModel.uiState.value}", predicate(viewModel.uiState.value))
+    }
+
+    private fun sampleHeaderShell(title: String, omitUmenu: Boolean = false): String = buildString {
+        append(
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta http-equiv="Content-Type" content="text/html; charset=gbk" />
+              <title>$title - Hi!PDA</title>
+              <script>
+                var discuz_uid = parseInt('54321');
+                var formhash = 'a1b2c3d4';
+                document.cookie = 'cdb_auth=realAuthSecret; cf_clearance=realCfToken';
+              </script>
+            </head>
+            <body>
+            """.trimIndent(),
+        )
+        if (!omitUmenu) {
+            append(
+                """
+                  <div id="umenu">
+                    <cite><a href="space.php?uid=54321" class="noborder">SecretLoginUser</a></cite>
+                    <a href="logging.php?action=logout&amp;formhash=a1b2c3d4">退出</a>
+                  </div>
+                """.trimIndent(),
+            )
+        }
+    }
+
+    private fun sampleThreadListHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("Discovery", omitUmenu) + """
           <table class="datatable">
             <tbody id="stickthread_99001">
               <tr>
@@ -669,7 +967,7 @@ class SampleExportEngineTest {
         </body></html>
     """.trimIndent()
 
-    private fun sampleThreadDetailHtml(): String = sampleHeaderShell("公开多页讨论帖标题") + """
+    private fun sampleThreadDetailHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("公开多页讨论帖标题", omitUmenu) + """
           <div id="postlist">
             <div id="post_100001">
               <table><tbody><tr>
@@ -689,7 +987,7 @@ class SampleExportEngineTest {
         </body></html>
     """.trimIndent()
 
-    private fun sampleSmsListHtml(): String = sampleHeaderShell("短消息") + """
+    private fun sampleSmsListHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("短消息", omitUmenu) + """
           <ul class="pm_list">
             <li class="s_clear">
               <a class="avatar" href="space.php?uid=77889"><img src="https://img02.4d4y.com/forum/uc_server/data/avatar/000/07/78/89_avatar_middle.jpg" /></a>
@@ -700,12 +998,12 @@ class SampleExportEngineTest {
         </body></html>
     """.trimIndent()
 
-    private fun sampleEmptySmsListHtml(): String = sampleHeaderShell("短消息") + """
+    private fun sampleEmptySmsListHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("短消息", omitUmenu) + """
           <div class="nodata">暂无短消息</div>
         </body></html>
     """.trimIndent()
 
-    private fun sampleSmsDetailHtml(): String = sampleHeaderShell("与 PeerBob 的短消息") + """
+    private fun sampleSmsDetailHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("与 PeerBob 的短消息", omitUmenu) + """
           <div class="itemtitle"><h1>与 PeerBob 的短消息</h1></div>
           <ul class="pm_list">
             <li class="s_clear">
@@ -721,19 +1019,19 @@ class SampleExportEngineTest {
         </body></html>
     """.trimIndent()
 
-    private fun sampleNotifyHtml(): String = sampleHeaderShell("提醒") + """
+    private fun sampleNotifyHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("提醒", omitUmenu) + """
           <ul class="feed">
             <li><div class="f_buddy"><a href="space.php?uid=77889">PeerBob</a> 附言：加个好友聊聊</div></li>
           </ul>
         </body></html>
     """.trimIndent()
 
-    private fun sampleSearchHtml(): String = sampleHeaderShell("搜索结果") + """
+    private fun sampleSearchHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("搜索结果", omitUmenu) + """
           <div class="searchlist"><table><tbody><tr><th><a href="viewthread.php?tid=88421">公开多页讨论帖标题</a></th></tr></tbody></table></div>
         </body></html>
     """.trimIndent()
 
-    private fun sampleUserProfileHtml(): String = sampleHeaderShell("个人资料") + """
+    private fun sampleUserProfileHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("个人资料", omitUmenu) + """
           <div id="profilecontent">
             <div class="itemtitle"><h1>SecretLoginUser</h1></div>
             <p>邮箱：real@private.org，登录 IP：203.0.113.42</p>
@@ -741,12 +1039,12 @@ class SampleExportEngineTest {
         </body></html>
     """.trimIndent()
 
-    private fun sampleSimpleListHtml(item: String): String = sampleHeaderShell("我的-$item") + """
+    private fun sampleSimpleListHtml(item: String, omitUmenu: Boolean = false): String = sampleHeaderShell("我的-$item", omitUmenu) + """
           <div class="datalist"><table><tbody><tr><th><a href="viewthread.php?tid=88421">记录项-$item</a></th></tr></tbody></table></div>
         </body></html>
     """.trimIndent()
 
-    private fun samplePostFormHtml(): String = sampleHeaderShell("发表新话题") + """
+    private fun samplePostFormHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("发表新话题", omitUmenu) + """
           <form action="post.php?action=newthread&amp;fid=2">
             <input type="hidden" name="formhash" value="a1b2c3d4" />
             <input type="hidden" name="hash" value="deadbeef99" />
@@ -754,7 +1052,7 @@ class SampleExportEngineTest {
         </body></html>
     """.trimIndent()
 
-    private fun sampleLoginHtml(): String = sampleHeaderShell("登录") + """
+    private fun sampleLoginHtml(omitUmenu: Boolean = false): String = sampleHeaderShell("登录", omitUmenu) + """
           <form action="logging.php?action=login">
             <input type="hidden" name="formhash" value="a1b2c3d4" />
           </form>

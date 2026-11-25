@@ -65,7 +65,7 @@ fun configureSampleLoginWebView(
     }
     webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            val scheme = request.url?.scheme?.lowercase(Locale.ROOT) ?: return false
+            val scheme = request.url?.scheme?.lowercase(Locale.ROOT) ?: return true
             return scheme != "http" && scheme != "https" && scheme != "about"
         }
 

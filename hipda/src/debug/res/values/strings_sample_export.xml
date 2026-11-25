@@ -22,7 +22,7 @@
 
     <string name="sample_export_tid_label">自定义公开帖子编号（可选）</string>
     <string name="sample_export_tid_placeholder">留空则自动挑选版块内公开多页帖</string>
-    <string name="sample_export_tid_invalid">请输入纯数字帖子编号</string>
+    <string name="sample_export_tid_invalid">请输入正整数帖子编号</string>
     <string name="sample_export_action_start">一键抓取并导出</string>
     <string name="sample_export_action_running">正在抓取…</string>
     <string name="sample_export_action_share">分享</string>
@@ -42,6 +42,7 @@
     <string name="sample_export_feedback_synced_logged_out">已同步 Cookie，尚未检测到登录态</string>
     <string name="sample_export_feedback_zip_ready">脱敏样本压缩包已生成</string>
     <string name="sample_export_feedback_export_failed">没有可导出的样本，请查看失败项</string>
+    <string name="sample_export_feedback_login_required">请先登录后再抓取样本</string>
     <string name="sample_export_feedback_share_failed">无法打开系统分享</string>
 
     <string name="sample_export_item_thread_list_p1">版块列表 · 第 1 页（按回复）</string>

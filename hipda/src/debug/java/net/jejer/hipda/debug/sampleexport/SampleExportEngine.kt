@@ -71,6 +71,7 @@ class SampleExportEngine(
     private val json = Json { prettyPrint = true }
     private val statusById = linkedMapOf<SampleEntryId, SampleExportStatus>()
     private val verifiedHtmlById = linkedMapOf<SampleEntryId, String>()
+    private val pendingIdentityRawHtmlById = linkedMapOf<SampleEntryId, String>()
 
     private var discoveredIdentity: Identity? = null
     private var discoveredTid: String? = null
@@ -94,13 +95,14 @@ class SampleExportEngine(
     ): SampleExportRunResult {
         resetStates()
         verifiedHtmlById.clear()
+        pendingIdentityRawHtmlById.clear()
         discoveredIdentity = null
         discoveredTid = null
         discoveredAuthorUid = null
         discoveredPeerUid = null
         latestZip = null
 
-        val tid = normalizeCustomTid(customTid)
+        val tid = SampleHtmlExtractors.normalizePositiveTid(customTid)
         for (spec in SampleExportManifest.entries) {
             processEntry(spec, includePersonalHistory, tid, onItemUpdated)
         }
@@ -113,15 +115,64 @@ class SampleExportEngine(
         customTid: String? = null,
         onItemUpdated: (SampleExportItemState) -> Unit = {},
     ): SampleExportRunResult {
+        enforcePersonalHistoryPolicy(includePersonalHistory, onItemUpdated)
         val spec = SampleExportManifest.entries.first { it.id == id }
-        val tid = normalizeCustomTid(customTid)
+        val tid = SampleHtmlExtractors.normalizePositiveTid(customTid)
         processEntry(spec, includePersonalHistory, tid, onItemUpdated)
         return finishRun(includePersonalHistory, tid)
+    }
+
+    /**
+     * 当用户事后切换隐私开关时立即生效：
+     * - 关闭时清除已缓存的 `my_*` 样本、标为跳过并立即基于剩余已校验样本重建无 `my_*` 的 zip；
+     * - 重新开启时重置被隐私跳过的条目为待抓取并使旧 zip 失效，要求重新抓取后再分享。
+     */
+    suspend fun updatePersonalHistoryInclusion(
+        includePersonalHistory: Boolean,
+        customTid: String? = null,
+        onItemUpdated: (SampleExportItemState) -> Unit = {},
+    ): SampleExportRunResult {
+        val tid = SampleHtmlExtractors.normalizePositiveTid(customTid)
+        if (!includePersonalHistory) {
+            val hadExistingResults = verifiedHtmlById.isNotEmpty() ||
+                pendingIdentityRawHtmlById.isNotEmpty() ||
+                latestZip != null
+            enforcePersonalHistoryPolicy(includePersonalHistory = false, onItemUpdated = onItemUpdated, markSkipped = hadExistingResults)
+            return finishRun(includePersonalHistory = false, customTid = tid)
+        }
+        for (spec in SampleExportManifest.entries) {
+            if (spec.isPersonalHistory) {
+                verifiedHtmlById.remove(spec.id)
+                pendingIdentityRawHtmlById.remove(spec.id)
+                if (statusById[spec.id] is SampleExportStatus.Skipped) {
+                    updateStatus(spec, SampleExportStatus.Pending, onItemUpdated)
+                }
+            }
+        }
+        withContext(ioDispatcher) { removeOldArchives(keepName = null) }
+        latestZip = null
+        return SampleExportRunResult(currentItems(), null, tid ?: discoveredTid)
     }
 
     private suspend fun finishRun(includePersonalHistory: Boolean, customTid: String?): SampleExportRunResult {
         latestZip = writeZipIfAny(includePersonalHistory)
         return SampleExportRunResult(currentItems(), latestZip, customTid ?: discoveredTid)
+    }
+
+    private fun enforcePersonalHistoryPolicy(
+        includePersonalHistory: Boolean,
+        onItemUpdated: (SampleExportItemState) -> Unit,
+        markSkipped: Boolean = true,
+    ) {
+        if (includePersonalHistory) return
+        for (spec in SampleExportManifest.entries) {
+            if (!spec.isPersonalHistory) continue
+            verifiedHtmlById.remove(spec.id)
+            pendingIdentityRawHtmlById.remove(spec.id)
+            if (markSkipped) {
+                updateStatus(spec, SampleExportStatus.Skipped(PRIVACY_SKIP_REASON), onItemUpdated)
+            }
+        }
     }
 
     private suspend fun processEntry(
@@ -132,7 +183,8 @@ class SampleExportEngine(
     ) {
         if (spec.isPersonalHistory && !includePersonalHistory) {
             verifiedHtmlById.remove(spec.id)
-            updateStatus(spec, SampleExportStatus.Skipped("已按隐私选项跳过"), onItemUpdated)
+            pendingIdentityRawHtmlById.remove(spec.id)
+            updateStatus(spec, SampleExportStatus.Skipped(PRIVACY_SKIP_REASON), onItemUpdated)
             return
         }
 
@@ -140,6 +192,7 @@ class SampleExportEngine(
             is TargetResolution.Ready -> target.url
             is TargetResolution.Skip -> {
                 verifiedHtmlById.remove(spec.id)
+                pendingIdentityRawHtmlById.remove(spec.id)
                 updateStatus(spec, SampleExportStatus.Skipped(target.reason), onItemUpdated)
                 return
             }
@@ -178,10 +231,59 @@ class SampleExportEngine(
             return
         }
 
-        val (sanitized, leaks) = withContext(ioDispatcher) {
+        val identityBecameComplete = withContext(ioDispatcher) {
             updateDynamicContext(spec.id, fetchedHtml)
-            val activeIdentity = discoveredIdentity ?: Identity(uid = "", username = "")
-            val cleaned = sanitizer(fetchedHtml, spec.pageType, activeIdentity)
+        }
+
+        val activeIdentity = discoveredIdentity
+        if (identityBecameComplete && activeIdentity != null && activeIdentity.isComplete()) {
+            resanitizePendingEntries(activeIdentity, includePersonalHistory, onItemUpdated)
+        }
+
+        if (activeIdentity == null || !activeIdentity.isComplete()) {
+            pendingIdentityRawHtmlById[spec.id] = fetchedHtml
+            verifiedHtmlById.remove(spec.id)
+            updateStatus(
+                spec,
+                SampleExportStatus.Failed(
+                    reason = INCOMPLETE_IDENTITY_REASON,
+                    detail = "缺少完整登录身份（uid=${activeIdentity?.uid.orEmpty().isNotBlank()}，username=${activeIdentity?.username.orEmpty().isNotBlank()}）",
+                ),
+                onItemUpdated,
+            )
+            return
+        }
+
+        pendingIdentityRawHtmlById.remove(spec.id)
+        sanitizeScanAndRecord(spec, fetchedHtml, activeIdentity, onItemUpdated)
+    }
+
+    private suspend fun resanitizePendingEntries(
+        completeIdentity: Identity,
+        includePersonalHistory: Boolean,
+        onItemUpdated: (SampleExportItemState) -> Unit,
+    ) {
+        val pendingIds = pendingIdentityRawHtmlById.keys.toList()
+        for (pendingId in pendingIds) {
+            val rawHtml = pendingIdentityRawHtmlById.remove(pendingId) ?: continue
+            val pendingSpec = SampleExportManifest.entries.first { it.id == pendingId }
+            if (pendingSpec.isPersonalHistory && !includePersonalHistory) {
+                verifiedHtmlById.remove(pendingId)
+                updateStatus(pendingSpec, SampleExportStatus.Skipped(PRIVACY_SKIP_REASON), onItemUpdated)
+                continue
+            }
+            sanitizeScanAndRecord(pendingSpec, rawHtml, completeIdentity, onItemUpdated)
+        }
+    }
+
+    private suspend fun sanitizeScanAndRecord(
+        spec: SampleSpec,
+        rawHtml: String,
+        identity: Identity,
+        onItemUpdated: (SampleExportItemState) -> Unit,
+    ) {
+        val (sanitized, leaks) = withContext(ioDispatcher) {
+            val cleaned = sanitizer(rawHtml, spec.pageType, identity)
             cleaned to leakScanner(cleaned)
         }
 
@@ -197,13 +299,15 @@ class SampleExportEngine(
         updateStatus(spec, SampleExportStatus.Success(spec.relativePath, byteSize), onItemUpdated)
     }
 
-    private fun updateDynamicContext(id: SampleEntryId, rawHtml: String) {
-        if (discoveredIdentity == null || discoveredIdentity?.uid.isNullOrBlank()) {
+    /** 返回是否在本页刚刚补齐完整 `Identity(uid, username)`。 */
+    private fun updateDynamicContext(id: SampleEntryId, rawHtml: String): Boolean {
+        val wasComplete = discoveredIdentity?.isComplete() == true
+        if (!wasComplete) {
             SampleHtmlExtractors.extractIdentity(rawHtml)?.let { extracted ->
                 val cur = discoveredIdentity
                 discoveredIdentity = Identity(
-                    uid = extracted.uid.ifBlank { cur?.uid.orEmpty() },
-                    username = extracted.username.ifBlank { cur?.username.orEmpty() },
+                    uid = cur?.uid.orEmpty().ifBlank { extracted.uid },
+                    username = cur?.username.orEmpty().ifBlank { extracted.username },
                 )
             }
         }
@@ -216,6 +320,7 @@ class SampleExportEngine(
                 discoveredPeerUid = SampleHtmlExtractors.extractFirstSmsPeerUid(rawHtml, discoveredIdentity?.uid)
             else -> Unit
         }
+        return !wasComplete && discoveredIdentity?.isComplete() == true
     }
 
     private fun resolveTargetUrl(id: SampleEntryId, customTid: String?): TargetResolution {
@@ -280,7 +385,10 @@ class SampleExportEngine(
     }
 
     private suspend fun writeZipIfAny(includePersonalHistory: Boolean): File? = withContext(ioDispatcher) {
-        if (verifiedHtmlById.isEmpty()) {
+        val eligibleSpecs = SampleExportManifest.entries.filter { spec ->
+            !(spec.isPersonalHistory && !includePersonalHistory) && verifiedHtmlById.containsKey(spec.id)
+        }
+        if (eligibleSpecs.isEmpty()) {
             removeOldArchives(keepName = null)
             return@withContext null
         }
@@ -294,7 +402,7 @@ class SampleExportEngine(
 
         try {
             ZipOutputStream(tempZip.outputStream().buffered()).use { zos ->
-                for (spec in SampleExportManifest.entries) {
+                for (spec in eligibleSpecs) {
                     val cleanHtml = verifiedHtmlById[spec.id] ?: continue
                     zos.putNextEntry(ZipEntry(spec.relativePath))
                     zos.write(cleanHtml.toByteArray(Charsets.UTF_8))
@@ -318,7 +426,11 @@ class SampleExportEngine(
 
     private fun buildManifestBytes(exportedAtEpochMs: Long, includePersonalHistory: Boolean): ByteArray {
         val entries = SampleExportManifest.entries.map { spec ->
-            val st = statusById[spec.id] ?: SampleExportStatus.Pending
+            val st = if (spec.isPersonalHistory && !includePersonalHistory) {
+                SampleExportStatus.Skipped(PRIVACY_SKIP_REASON)
+            } else {
+                statusById[spec.id] ?: SampleExportStatus.Pending
+            }
             val (label, leaks, bytes, note) = when (st) {
                 is SampleExportStatus.Success -> ManifestRow("success", 0, st.byteSize, null)
                 is SampleExportStatus.Skipped -> ManifestRow("skipped", 0, 0, st.reason)
@@ -344,6 +456,7 @@ class SampleExportEngine(
         onItemUpdated: (SampleExportItemState) -> Unit,
     ) {
         verifiedHtmlById.remove(spec.id)
+        pendingIdentityRawHtmlById.remove(spec.id)
         updateStatus(spec, SampleExportStatus.Failed(reason, detail), onItemUpdated)
     }
 
@@ -360,8 +473,7 @@ class SampleExportEngine(
         for (spec in SampleExportManifest.entries) statusById[spec.id] = SampleExportStatus.Pending
     }
 
-    private fun normalizeCustomTid(raw: String?): String? =
-        raw?.trim()?.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }
+    private fun Identity.isComplete(): Boolean = uid.isNotBlank() && username.isNotBlank()
 
     private data class ManifestRow(val label: String, val leaks: Int, val bytes: Int, val note: String?)
 
@@ -372,6 +484,8 @@ class SampleExportEngine(
     }
 
     companion object {
+        internal const val PRIVACY_SKIP_REASON: String = "已按隐私选项跳过"
+        internal const val INCOMPLETE_IDENTITY_REASON: String = "未提取到完整登录身份，拒绝放行"
         private val TIMESTAMP_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS", Locale.US).withZone(ZoneOffset.UTC)
     }
