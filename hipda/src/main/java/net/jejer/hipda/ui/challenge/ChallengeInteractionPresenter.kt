@@ -51,28 +51,27 @@ class ChallengeInteractionSession(
  * Extension point invoked when background auto-solving cannot complete silently (8s background
  * budget exhausted or Turnstile emitted `interactiveBegin` / `interactiveTimeout`).
  *
- * A5b binds [DefaultChallengeInteractionPresenter] (cancels silently without displaying any UI);
- * A6 replaces the binding in [ChallengeInteractionModule] with a visible Compose verification panel
- * reusing the same WebView.
+ * Production binds [ComposeChallengeInteractionPresenter] in [ChallengeInteractionModule] to reveal
+ * an adaptive Compose verification panel reusing the exact same WebView.
  */
 fun interface ChallengeInteractionPresenter {
     suspend fun present(session: ChallengeInteractionSession): SolveResult
 }
 
-/** Default A5b presenter that cancels silently without displaying any UI. */
+/** Silent no-op presenter retained for unit tests that exercise background-only solver paths. */
 @Singleton
 class DefaultChallengeInteractionPresenter @Inject constructor() : ChallengeInteractionPresenter {
     override suspend fun present(session: ChallengeInteractionSession): SolveResult =
         SolveResult.Cancelled
 }
 
-/** Isolated Hilt module so A6 can replace [ChallengeInteractionPresenter] independently. */
+/** Hilt module binding [ChallengeInteractionPresenter] to [ComposeChallengeInteractionPresenter]. */
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class ChallengeInteractionModule {
     @Binds
     @Singleton
     abstract fun bindChallengeInteractionPresenter(
-        impl: DefaultChallengeInteractionPresenter,
+        impl: ComposeChallengeInteractionPresenter,
     ): ChallengeInteractionPresenter
 }
