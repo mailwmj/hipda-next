@@ -1,0 +1,12 @@
+# 审查卡 R-B8：帖子详情、内容块与 1 楼投票解析器（commit 178e548a7847eae4239c0b972db37094621917e6）
+
+【角色】独立代码审查者，只读。
+【边界】对象 `origin/card/B8-parser-thread-detail` @ `178e548a7847eae4239c0b972db37094621917e6`，相对 `{BASE}`。`git -C /home/mir/Documents/hipda-next fetch origin` 后用 `git show 178e548a7847eae4239c0b972db37094621917e6:<路径>`、`git diff {BASE}...178e548a7847eae4239c0b972db37094621917e6` 读代码；不 checkout、不提交推送、不在主目录切换分支、不编译。CI：`gh run view 45612331356`（核实 `headSha` 匹配、含 `:core-parser:test`、`:hipda:testDebugUnitTest`、`:hipda:assembleDebug`、`:hipda:assembleRelease`、`:hipda:lintDebug`）。详报写 `/home/mir/Documents/hipda-next.wt/_reports/R-B8.md`。
+【背景】任务卡 `/home/mir/Documents/hipda-next.wt/_cards/B8.md`；实现者报告 `/home/mir/Documents/hipda-next.wt/_reports/B8.md`（可读，所有结论须以代码与 diff 核实为准）。依据 `docs/design/tech-plan.md` §5（T2、T6）、`docs/agents/handoff.md` §4（A1 S4、C1b#2）、`hipda/src/main/java/net/jejer/hipda/utils/HiParserThreadDetail.java`、`TextViewWithEmoticon.java:82-98` 及 `B9a` 公共基座。阻断标准 `docs/agents/DISPATCH.md` §4（敏感区 `HiParserThreadDetail` 解析回归、修改调用方 DOM、违反 `E2a` 内容块契约或 `C1b#2` 表情键错误、越界修改旧代码/样本/同波 `D2`/`B9b`/在途 `C4c`/`G1`，须给具体触发路径）。
+【审查重点】
+1. **不可逆 `ContentBlock` 契约质量（供给 `E2a` Compose 原生渲染）**：审视 `ContentBlock` 与行内富文本模型能否直接支撑 `AnnotatedString` + `InlineTextContent` + `LinkAnnotation` + 引用展开 + 图片占位 + 跳楼 + 附件 + 1 楼投票，无需 `E2a` 再次正则解析 HTML；确认 `<font color>` 原样透传 `rawColor` 不在解析期做深浅色变换（T6）；确认 `C1b#2` 表情 `normalizedKey` 与 `:emoji` `EmojiMap` 规则完全一致；确认复用 B9a `DiscuzPageMeta`/`DiscuzTextDecoder`/`DiscuzUrlHelper` 无重复造轮子。
+2. **DOM 遍历正确性与零副作用**：对照 `HiParserThreadDetail.java:201-664` 逐分支核查——`div#nav` 标题与 `div#threadtitle` 回退、`i.pstatus` 剥离不重复入正文、`div.quote` 去除 `font[size=2]` 与 `display:none`、跳楼 `<strong>` vs 普通加粗、行内 `span` 附件紧邻文本节点描述消费、图片 `onclick="zoom(...)"` / `file` / `thumb` 优先级与 `div#<id>_menu` 尺寸、`dl.attachimg` 与 `dl.t_attachlist`、1 楼 `form#poll` 与 `div.specialmsg`；确认全程**绝不调用 `.remove()` 破坏调用方 `Document`**，且对深嵌套/畸形 HTML 不栈溢出不死循环。
+3. **只读边界与零冲突**：确认 `hipda/src/main/`（含 `HiParserThreadDetail.java`）、`core-parser` 其余包、`SampleFixtures.kt`、`LegacyTestSupport.kt`、`samples/`、`ui/`、`data/`、共享文件零改动；测试全程离线。
+4. **等价测试与变异覆盖**：核实 `ThreadDetailParserEquivalenceTest` 是否真的在 3 份真机样本（含 `thread_p2.html` 双重转义 Emoji）与合成夹具上逐楼层逐块比对，找出“改坏关键一行测试仍通过”的测试盲区（若存在）。
+5. **复杂度与可维护性**：按 `DISPATCH.md` §5 评估遍历实现清晰度与有无冗余抽象。
+【交付】最后一条回复 ≤600 字，第一个词 DONE/NEEDS-INPUT/STUCK：APPROVE/CHANGES-REQUESTED + `178e548a7847eae4239c0b972db37094621917e6`、阻断项（触发路径 + 文件:行号 + 后果）、建议项一行一条、详报路径 `/home/mir/Documents/hipda-next.wt/_reports/R-B8.md`。
