@@ -144,6 +144,7 @@ class ThreadDetailViewModel(
 
     fun bindArgs(args: ThreadNavArgs) {
         if (boundTid == args.tid) return
+        val isRebind = boundTid != null
         boundTid = args.tid
         preFilterAnchor = null
         cancelPagingJobs()
@@ -155,7 +156,7 @@ class ThreadDetailViewModel(
                 isLoading = true, prependGeneration = prev.prependGeneration, resetEpoch = nextEpoch,
             )
         }
-        loadInternal(page = 1, filter = ThreadDetailFilterUi.All, priority = AccessPriority.UserBlocking)
+        loadInternal(page = 1, filter = ThreadDetailFilterUi.All, priority = AccessPriority.UserBlocking, scrollToTop = isRebind)
     }
 
     fun loadPage(page: Int, priority: AccessPriority = AccessPriority.UserBlocking) =

@@ -1,8 +1,31 @@
 package net.jejer.hipda.feature.threaddetail
 
 import android.app.Application
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableIntState
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onLayoutRectChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -18,6 +41,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
 import kotlinx.coroutines.CompletableDeferred
@@ -48,6 +72,8 @@ import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
+import net.jejer.hipda.ui.designsystem.state.HiFooterState
+import net.jejer.hipda.ui.designsystem.state.HiListFooter
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -60,14 +86,18 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 覆盖任务卡 E2d 全部验收项（100% 离线）：
- * 1. B4-E2a ①（最高优先级）：`mainClock.autoAdvance = false` 下从第 2 页顶部触发向上加载第 1 页并合入数据，
- *    逐帧推进并断言每一帧（含数据合入后的第 1 帧）原首可见楼层距屏幕顶部偏移变化均 ≤ 1dp（覆盖 offset == 0、
- *    offset < 0 以及顶部状态行可见时的 offset > 0 三种位置）；
- * 2. 向下距尾 5 楼自动预取、重复滚动单飞防重入、楼层去重、头尾各自失败原地 `HiListFooter(Failed)` 整行点击重试、
+ * 覆盖任务卡 E2d 全部验收项与 R-E2d B1/S1 修复项（100% 离线）：
+ * 1. B4-E2a ① + R-E2d B1：`mainClock.autoAdvance = false` 下通过 `PrependFrameProbe`（挂载
+ *    `Modifier.onLayoutRectChanged(0, 0)` 于 `AndroidComposeView.measureAndLayout()` 末尾
+ *    `RectManager.dispatchCallbacks()`、严格早于 `LaunchedEffect` 唤醒与下一帧 `requestLayout`）
+ *    并结合 `composeRule.runWithoutImplicitWait`，真捕获合入首帧并逐帧断言偏差 ≤ 1dp（覆盖 offset == 0、
+ *    offset > 0 与 offset < 0）；
+ * 2. B1 双反例自证：同一套逐帧校验器对 `LaunchedEffect` 滞后回滚反例与 `onGloballyPositioned` 内改调
+ *    `requestScrollToItem` 反例均在合入首帧必定 FAIL，正式 `ThreadDetailPane` 必定 PASS；
+ * 3. 向下距尾 5 楼自动预取、重复滚动单飞防重入、楼层去重、头尾各自失败原地 `HiListFooter(Failed)` 整行点击重试、
  *    末页展示 `没有更多了`；
- * 3. 底部翻页栏页码随连续加载后的当前可见楼层所在页实时同步；
- * 4. 切换 `只看楼主` 或跨页跳转正确重置连续加载区间并取消在途预取请求。
+ * 4. 底部翻页栏页码随连续加载后的当前可见楼层所在页实时同步；
+ * 5. 切换 `只看楼主`、跨页跳转与 S1 同一 VM/LazyListState 切换新 `tid` 复位至顶部。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], qualifiers = "w411dp-h891dp-xhdpi")
@@ -76,38 +106,52 @@ class ContinuousPagingAnchorTest {
     @get:Rule
     val composeRule = createComposeRule()
 
+    private data class TraversalFrameSample(
+        val step: Int,
+        val floorsCount: Int,
+        val layoutTotalItemsCount: Int,
+        val firstLoadedPage: Int,
+        val anchorOffsetPx: Int?,
+        val anchorIndex: Int?,
+        val firstVisibleKey: Any?,
+    )
+
     @Test
     fun upwardPrepend_fromTopOfPage2_zeroJumpOnEveryFrameIncludingFirstMergeFrame() {
         val repo = PagingFakeThreadDetailRepository(totalPages = 3)
         val vm = ThreadDetailViewModel(repo, createIdleGateway())
         lateinit var listState: LazyListState
+        val probeStep = mutableIntStateOf(0)
+        val samples = mutableListOf<TraversalFrameSample>()
         var density = 1f
+        val anchorKey = "floor:5001_p2_1"
+        val anchorText = "连续加载第 2 页第 1 楼正文"
 
         composeRule.setContent {
             density = LocalDensity.current.density
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 listState = rememberLazyListState()
-                ThreadDetailPane(
-                    args = ThreadNavArgs(tid = "5001", title = "向上插页同帧锚定测试"),
-                    chromeSpec = DetailChromeSpec(showBack = true),
-                    onBack = {},
-                    onOpenLogin = {},
-                    listState = listState,
-                    viewModel = vm,
-                )
+                Box(Modifier.fillMaxSize()) {
+                    ThreadDetailPane(
+                        args = ThreadNavArgs(tid = "5001", title = "向上插页同帧锚定测试"),
+                        chromeSpec = DetailChromeSpec(showBack = true),
+                        onBack = {},
+                        onOpenLogin = {},
+                        listState = listState,
+                        viewModel = vm,
+                    )
+                    PrependFrameProbe(vm, listState, anchorKey, probeStep, samples)
+                }
             }
         }
         composeRule.waitForIdle()
 
-        // 跳至第 2 页并确认停留在第 2 页 1 号楼（即全帖第 21 楼）
         composeRule.runOnIdle { vm.loadPage(2) }
         composeRule.waitForIdle()
         assertEquals(2, vm.uiState.value.firstLoadedPage)
         assertEquals(2, vm.uiState.value.lastLoadedPage)
         assertEquals(20, vm.uiState.value.floors.size)
 
-        val anchorText = "连续加载第 2 页第 1 楼正文"
-        val anchorKey = "floor:5001_p2_1"
         val anchorTopInitial = composeRule.onNodeWithText(anchorText, substring = true)
             .assertIsDisplayed()
             .fetchSemanticsNode()
@@ -124,6 +168,8 @@ class ContinuousPagingAnchorTest {
 
         assertTrue("滚近第 2 页头部应自动触发向上加载第 1 页", vm.uiState.value.isPrepending)
         assertEquals(page1CallsBefore + 1, repo.requestedPages.count { it == 1 })
+
+        val anchorOffsetWhileLoading = listState.layoutInfo.visibleItemsInfo.first { it.key == anchorKey }.offset
         val topWhileLoading = composeRule.onNodeWithText(anchorText, substring = true)
             .fetchSemanticsNode()
             .boundsInRoot.top
@@ -132,33 +178,22 @@ class ContinuousPagingAnchorTest {
             abs(topWhileLoading - anchorTopInitial) / density <= 1.0f,
         )
 
-        // 关闭自动推进时钟，放行第 1 页合入并逐帧断言每一帧（必须覆盖合入第 1 帧）偏差 ≤ 1dp
-        composeRule.mainClock.autoAdvance = false
-        page1Gate.complete(Unit)
-
-        var mergeFrameObserved = false
-        for (frame in 1..15) {
-            composeRule.mainClock.advanceTimeByFrame()
-            val mergedNow = vm.uiState.value.floors.size == 40 && vm.uiState.value.firstLoadedPage == 1
-            if (mergedNow) mergeFrameObserved = true
-            val currentTop = composeRule.onNodeWithText(anchorText, substring = true)
-                .fetchSemanticsNode()
-                .boundsInRoot.top
-            val diffDp = abs(currentTop - topWhileLoading) / density
-            assertTrue(
-                "第 $frame 帧（merged=$mergedNow）原首可见楼层距顶偏差 ${diffDp}dp 超过 1dp（before=$topWhileLoading, now=$currentTop）",
-                diffDp <= 1.0f,
-            )
-            if (mergedNow) {
-                val visibleAnchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == anchorKey }
-                assertNotNull("第 $frame 帧合入后原首可见楼层必须仍在视口内", visibleAnchor)
-                assertEquals("合入后第 2 页首楼应精确平移至索引 20", 20, visibleAnchor!!.index)
-            }
-        }
-        assertTrue("逐帧检查必须实际观测到第 1 页数据合入首帧", mergeFrameObserved)
+        verifyPrependMergeFrameByFrame(
+            vm = vm,
+            listState = listState,
+            anchorKey = anchorKey,
+            anchorText = anchorText,
+            baselineOffsetPx = anchorOffsetWhileLoading,
+            baselineBoundsTopPx = topWhileLoading,
+            expectedMergedCount = 40,
+            expectedNewAnchorIndex = 20,
+            density = density,
+            probeStep = probeStep,
+            samples = samples,
+            releaseMerge = { page1Gate.complete(Unit) },
+        )
 
         // 恢复自动时钟并向上滚入第 1 页，确认第 1 页楼层已正确接在顶部
-        composeRule.mainClock.autoAdvance = true
         composeRule.runOnIdle { listState.requestScrollToItem(index = 0, scrollOffset = 0) }
         composeRule.waitForIdle()
         composeRule.onNodeWithText("连续加载第 1 页第 1 楼正文", substring = true).assertIsDisplayed()
@@ -169,20 +204,27 @@ class ContinuousPagingAnchorTest {
         val repo = PagingFakeThreadDetailRepository(totalPages = 3)
         val vm = ThreadDetailViewModel(repo, createIdleGateway())
         lateinit var listState: LazyListState
+        val probeStep = mutableIntStateOf(0)
+        val samples = mutableListOf<TraversalFrameSample>()
         var density = 1f
+        val anchorKey = "floor:5002_p2_1"
+        val anchorText = "连续加载第 2 页第 1 楼正文"
 
         composeRule.setContent {
             density = LocalDensity.current.density
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 listState = rememberLazyListState()
-                ThreadDetailPane(
-                    args = ThreadNavArgs(tid = "5002", title = "顶部状态行露出时同帧锚定测试"),
-                    chromeSpec = DetailChromeSpec(showBack = true),
-                    onBack = {},
-                    onOpenLogin = {},
-                    listState = listState,
-                    viewModel = vm,
-                )
+                Box(Modifier.fillMaxSize()) {
+                    ThreadDetailPane(
+                        args = ThreadNavArgs(tid = "5002", title = "顶部状态行露出时同帧锚定测试"),
+                        chromeSpec = DetailChromeSpec(showBack = true),
+                        onBack = {},
+                        onOpenLogin = {},
+                        listState = listState,
+                        viewModel = vm,
+                    )
+                    PrependFrameProbe(vm, listState, anchorKey, probeStep, samples)
+                }
             }
         }
         composeRule.waitForIdle()
@@ -200,8 +242,6 @@ class ContinuousPagingAnchorTest {
             .assertIsDisplayed()
             .assertHeightIsAtLeast(48.dp)
 
-        val anchorText = "连续加载第 2 页第 1 楼正文"
-        val anchorKey = "floor:5002_p2_1"
         val anchorItemBefore = listState.layoutInfo.visibleItemsInfo.first { it.key == anchorKey }
         assertTrue("点击重试前原首可见楼层应位于顶部失败行下方（offset > 0，实际=${anchorItemBefore.offset}）", anchorItemBefore.offset > 0)
         val anchorTopBefore = composeRule.onNodeWithText(anchorText, substring = true)
@@ -215,6 +255,7 @@ class ContinuousPagingAnchorTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithText("正在加载…").assertIsDisplayed()
 
+        val anchorOffsetWhileRetrying = listState.layoutInfo.visibleItemsInfo.first { it.key == anchorKey }.offset
         val anchorTopWhileRetrying = composeRule.onNodeWithText(anchorText, substring = true)
             .fetchSemanticsNode()
             .boundsInRoot.top
@@ -223,24 +264,20 @@ class ContinuousPagingAnchorTest {
             abs(anchorTopWhileRetrying - anchorTopBefore) / density <= 1.0f,
         )
 
-        composeRule.mainClock.autoAdvance = false
-        retryGate.complete(Unit)
-
-        var mergeFrameObserved = false
-        for (frame in 1..15) {
-            composeRule.mainClock.advanceTimeByFrame()
-            val mergedNow = vm.uiState.value.floors.size == 40 && vm.uiState.value.firstLoadedPage == 1
-            if (mergedNow) mergeFrameObserved = true
-            val currentTop = composeRule.onNodeWithText(anchorText, substring = true)
-                .fetchSemanticsNode()
-                .boundsInRoot.top
-            val diffDp = abs(currentTop - anchorTopWhileRetrying) / density
-            assertTrue(
-                "顶部状态行消失并合入第 1 页第 $frame 帧（merged=$mergedNow）原首楼偏差 ${diffDp}dp 超过 1dp",
-                diffDp <= 1.0f,
-            )
-        }
-        assertTrue("必须实际观测到重试合入第 1 页首帧", mergeFrameObserved)
+        verifyPrependMergeFrameByFrame(
+            vm = vm,
+            listState = listState,
+            anchorKey = anchorKey,
+            anchorText = anchorText,
+            baselineOffsetPx = anchorOffsetWhileRetrying,
+            baselineBoundsTopPx = anchorTopWhileRetrying,
+            expectedMergedCount = 40,
+            expectedNewAnchorIndex = 20,
+            density = density,
+            probeStep = probeStep,
+            samples = samples,
+            releaseMerge = { retryGate.complete(Unit) },
+        )
     }
 
     @Test
@@ -248,20 +285,27 @@ class ContinuousPagingAnchorTest {
         val repo = PagingFakeThreadDetailRepository(totalPages = 3)
         val vm = ThreadDetailViewModel(repo, createIdleGateway())
         lateinit var listState: LazyListState
+        val probeStep = mutableIntStateOf(0)
+        val samples = mutableListOf<TraversalFrameSample>()
         var density = 1f
+        val anchorKey = "floor:5003_p2_3"
+        val anchorText = "连续加载第 2 页第 3 楼正文"
 
         composeRule.setContent {
             density = LocalDensity.current.density
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 listState = rememberLazyListState()
-                ThreadDetailPane(
-                    args = ThreadNavArgs(tid = "5003", title = "非零偏移向上插页锚定测试"),
-                    chromeSpec = DetailChromeSpec(showBack = true),
-                    onBack = {},
-                    onOpenLogin = {},
-                    listState = listState,
-                    viewModel = vm,
-                )
+                Box(Modifier.fillMaxSize()) {
+                    ThreadDetailPane(
+                        args = ThreadNavArgs(tid = "5003", title = "非零偏移向上插页锚定测试"),
+                        chromeSpec = DetailChromeSpec(showBack = true),
+                        onBack = {},
+                        onOpenLogin = {},
+                        listState = listState,
+                        viewModel = vm,
+                    )
+                    PrependFrameProbe(vm, listState, anchorKey, probeStep, samples)
+                }
             }
         }
         composeRule.waitForIdle()
@@ -280,27 +324,206 @@ class ContinuousPagingAnchorTest {
 
         assertTrue(vm.uiState.value.isPrepending)
         val expectedMergedCount = vm.uiState.value.floors.size + 20
-        val anchorText = "连续加载第 2 页第 3 楼正文"
+        val baselineOffsetPx = listState.layoutInfo.visibleItemsInfo.first { it.key == anchorKey }.offset
         val anchorTopBefore = composeRule.onNodeWithText(anchorText, substring = true)
             .fetchSemanticsNode()
             .boundsInRoot.top
 
-        composeRule.mainClock.autoAdvance = false
-        page1Gate.complete(Unit)
+        verifyPrependMergeFrameByFrame(
+            vm = vm,
+            listState = listState,
+            anchorKey = anchorKey,
+            anchorText = anchorText,
+            baselineOffsetPx = baselineOffsetPx,
+            baselineBoundsTopPx = anchorTopBefore,
+            expectedMergedCount = expectedMergedCount,
+            expectedNewAnchorIndex = 22,
+            density = density,
+            probeStep = probeStep,
+            samples = samples,
+            releaseMerge = { page1Gate.complete(Unit) },
+        )
+    }
 
-        var mergeFrameObserved = false
-        for (frame in 1..15) {
-            composeRule.mainClock.advanceTimeByFrame()
-            if (vm.uiState.value.floors.size == expectedMergedCount && vm.uiState.value.firstLoadedPage == 1) {
-                mergeFrameObserved = true
+    /**
+     * R-E2d B1 反例自证 1：以滞后一帧的 `LaunchedEffect(uiState.prependGeneration)` 调用 `scrollToItem` 补偿，
+     * 同一套 `PrependFrameProbe` + `verifyPrependMergeFrameByFrame` 必须在合入首帧必定 FAIL（证明测试能拦截
+     * 滞后补偿，不会被 `advanceTimeByFrame()` 末尾的 `scheduler.runCurrent()` 掩盖）。
+     */
+    @Test
+    fun counterexample_launchedEffectCompensation_mustFailOnFirstMergeFrame() {
+        val repo = PagingFakeThreadDetailRepository(totalPages = 3)
+        val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        lateinit var listState: LazyListState
+        val probeStep = mutableIntStateOf(0)
+        val samples = mutableListOf<TraversalFrameSample>()
+        var density = 1f
+        val anchorKey = "floor:5101_p2_1"
+        val anchorText = "连续加载第 2 页第 1 楼正文"
+
+        composeRule.setContent {
+            density = LocalDensity.current.density
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
+                    CounterexampleLaunchedEffectPane(
+                        tid = "5101",
+                        vm = vm,
+                        listState = listState,
+                    )
+                    PrependFrameProbe(vm, listState, anchorKey, probeStep, samples)
+                }
             }
-            val currentTop = composeRule.onNodeWithText(anchorText, substring = true)
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle { vm.loadPage(2) }
+        composeRule.waitForIdle()
+        val page1Gate = CompletableDeferred<Unit>()
+        repo.gateForPage[1] = page1Gate
+        composeRule.runOnIdle { vm.loadPreviousPage() }
+        composeRule.waitForIdle()
+        // 滚至顶部露出 Loading 行，使首项为顶部状态行、锚点楼层位于 offset = +48dp
+        composeRule.runOnIdle { listState.requestScrollToItem(index = 0, scrollOffset = 0) }
+        composeRule.waitForIdle()
+
+        val baselineOffsetPx = listState.layoutInfo.visibleItemsInfo.first { it.key == anchorKey }.offset
+        val baselineTopPx = composeRule.onNodeWithText(anchorText, substring = true)
+            .fetchSemanticsNode()
+            .boundsInRoot.top
+        assertTrue("反例 1 准备态应露出顶部状态行（offset > 0，实际=$baselineOffsetPx）", baselineOffsetPx > 0)
+
+        var caughtFailure: AssertionError? = null
+        try {
+            verifyPrependMergeFrameByFrame(
+                vm = vm,
+                listState = listState,
+                anchorKey = anchorKey,
+                anchorText = anchorText,
+                baselineOffsetPx = baselineOffsetPx,
+                baselineBoundsTopPx = baselineTopPx,
+                expectedMergedCount = 40,
+                expectedNewAnchorIndex = 20,
+                density = density,
+                probeStep = probeStep,
+                samples = samples,
+                releaseMerge = { page1Gate.complete(Unit) },
+            )
+        } catch (e: AssertionError) {
+            caughtFailure = e
+        }
+        val err = caughtFailure
+            ?: throw AssertionError("反例 1（LaunchedEffect 滞后补偿）在合入首帧必须 FAIL，不应假绿通过")
+        val firstMergeSample = samples.firstOrNull {
+            it.floorsCount == 40 && it.layoutTotalItemsCount >= 40 && it.firstLoadedPage == 1
+        }
+        assertNotNull("探针必须截获反例 1 的合入首帧样本（samples=$samples）", firstMergeSample)
+        assertEquals("反例 1 必须在合入首帧（第 1 帧）即被拦截（failure=${err.message}）", 1, firstMergeSample!!.step)
+        assertEquals(
+            "反例 1 合入首帧原首楼应被 20 楼新内容顶出视口（anchorOffsetPx == null），实际样本=$firstMergeSample，失败信息=${err.message}",
+            null,
+            firstMergeSample.anchorOffsetPx,
+        )
+        // 验证：即便 LaunchedEffect 在同次 advanceTimeByFrame() 末尾的 scheduler.runCurrent() 中把锚点拉回原位（96px），
+        // PrependFrameProbe 依然在合入首帧 traversal 瞬间将其精准拦截（杜绝旧测试假绿）
+        val postRunCurrentOffset = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == anchorKey }?.offset
+        assertEquals("反例 1 滞后补偿仅在 runCurrent 之后才把锚点拉回基线偏移", baselineOffsetPx, postRunCurrentOffset)
+    }
+
+    /**
+     * R-E2d B1 反例自证 2：保留 `SideEffect` 落位，但在 `onGloballyPositioned` 中把 `dispatchRawDelta`
+     * 劣化为无同步重测的 `requestScrollToItem`（排入下一帧），同一套校验器必须在合入首帧以约 48dp 偏移 FAIL
+     * （证明 `PrependFrameProbe` + `runWithoutImplicitWait` 未隐式冲刷下一帧布局）。
+     */
+    @Test
+    fun counterexample_onGloballyPositionedRequestScrollToItem_mustFailOnFirstMergeFrame() {
+        val repo = PagingFakeThreadDetailRepository(totalPages = 3)
+        val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        lateinit var listState: LazyListState
+        val probeStep = mutableIntStateOf(0)
+        val samples = mutableListOf<TraversalFrameSample>()
+        var density = 1f
+        val anchorKey = "floor:5102_p2_1"
+        val anchorText = "连续加载第 2 页第 1 楼正文"
+
+        composeRule.setContent {
+            density = LocalDensity.current.density
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
+                    CounterexampleDeferredRequestScrollPane(
+                        tid = "5102",
+                        vm = vm,
+                        listState = listState,
+                    )
+                    PrependFrameProbe(vm, listState, anchorKey, probeStep, samples)
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle { vm.loadPage(2) }
+        composeRule.waitForIdle()
+        val page1Gate = CompletableDeferred<Unit>()
+        repo.gateForPage[1] = page1Gate
+        composeRule.runOnIdle { vm.loadPreviousPage() }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { listState.requestScrollToItem(index = 0, scrollOffset = 0) }
+        composeRule.waitForIdle()
+
+        val baselineOffsetPx = listState.layoutInfo.visibleItemsInfo.first { it.key == anchorKey }.offset
+        val baselineTopPx = composeRule.onNodeWithText(anchorText, substring = true)
+            .fetchSemanticsNode()
+            .boundsInRoot.top
+        assertTrue("反例 2 准备态应露出顶部状态行（offset > 0，实际=$baselineOffsetPx）", baselineOffsetPx > 0)
+
+        var caughtFailure: AssertionError? = null
+        try {
+            verifyPrependMergeFrameByFrame(
+                vm = vm,
+                listState = listState,
+                anchorKey = anchorKey,
+                anchorText = anchorText,
+                baselineOffsetPx = baselineOffsetPx,
+                baselineBoundsTopPx = baselineTopPx,
+                expectedMergedCount = 40,
+                expectedNewAnchorIndex = 20,
+                density = density,
+                probeStep = probeStep,
+                samples = samples,
+                releaseMerge = { page1Gate.complete(Unit) },
+            )
+        } catch (e: AssertionError) {
+            caughtFailure = e
+        }
+        val err = caughtFailure
+            ?: throw AssertionError("反例 2（onGloballyPositioned 改调 requestScrollToItem）在合入首帧必须 FAIL，不应假绿通过")
+        val firstMergeSample = samples.firstOrNull {
+            it.floorsCount == 40 && it.layoutTotalItemsCount >= 40 && it.firstLoadedPage == 1
+        }
+        assertNotNull("探针必须截获反例 2 的合入首帧样本（samples=$samples）", firstMergeSample)
+        assertEquals("反例 2 必须在合入首帧（第 1 帧）即被拦截（failure=${err.message}）", 1, firstMergeSample!!.step)
+        assertEquals(
+            "反例 2 的 SideEffect 已将锚点落位至 0px，但 onGloballyPositioned 中 requestScrollToItem 无同步重测导致合入首帧停在 0px（sample=$firstMergeSample）",
+            0,
+            firstMergeSample.anchorOffsetPx,
+        )
+        val firstFrameDriftPx = abs(firstMergeSample.anchorOffsetPx!! - baselineOffsetPx)
+        val firstFrameDriftDp = firstFrameDriftPx / density
+        assertEquals("反例 2 合入首帧偏差应等于原正偏移（96px / 48.0dp，failure=${err.message}）", baselineOffsetPx, firstFrameDriftPx)
+        assertTrue("反例 2 合入首帧偏移应显著大于 1dp（实际=${firstFrameDriftDp}dp）", firstFrameDriftDp >= 40.0f)
+        val postFrameNoImplicitWaitTop = composeRule.runWithoutImplicitWait {
+            composeRule.onNodeWithText(anchorText, substring = true)
                 .fetchSemanticsNode()
                 .boundsInRoot.top
-            val diffDp = abs(currentTop - anchorTopBefore) / density
-            assertTrue("带像素偏移合入第 $frame 帧偏差 ${diffDp}dp 超过 1dp", diffDp <= 1.0f)
         }
-        assertTrue(mergeFrameObserved)
+        val boundsDriftPx = abs(postFrameNoImplicitWaitTop - baselineTopPx)
+        assertEquals(
+            "反例 2 合入首帧 runWithoutImplicitWait 读取 boundsInRoot 同样应反映完整 48.0dp 跳变（未隐式冲刷下一帧 onLayout）",
+            baselineOffsetPx.toFloat(),
+            boundsDriftPx,
+            0.5f,
+        )
     }
 
     @Test
@@ -617,6 +840,284 @@ class ContinuousPagingAnchorTest {
         assertEquals(4, vm.uiState.value.lastLoadedPage)
         assertEquals(4, listState.firstVisibleItemIndex)
         assertEquals(20, listState.firstVisibleItemScrollOffset)
+    }
+
+    /**
+     * R-E2d S1：同一 `ThreadDetailViewModel` 与 `LazyListState` 切换绑定至新 `tid` 时（`boundTid != null`），
+     * 必须自动复位滚动位置至新帖顶部（首次绑定仍保持 `scrollToTop = false`，不干扰预设偏移场景）。
+     */
+    @Test
+    fun bindArgs_rebindingToNewTid_resetsScrollPositionToTop() {
+        val repo = PagingFakeThreadDetailRepository(totalPages = 3)
+        val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        var activeArgs by mutableStateOf(ThreadNavArgs(tid = "6001", title = "旧帖 6001"))
+        lateinit var listState: LazyListState
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                listState = rememberLazyListState(initialFirstVisibleItemIndex = 0, initialFirstVisibleItemScrollOffset = 48)
+                ThreadDetailPane(
+                    args = activeArgs,
+                    chromeSpec = DetailChromeSpec(showBack = true),
+                    onBack = {},
+                    onOpenLogin = {},
+                    listState = listState,
+                    viewModel = vm,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        // 首次绑定不强行归零预设偏移（保护既有截图测试）
+        assertEquals(48, listState.firstVisibleItemScrollOffset)
+
+        // 将旧帖滚动至深处后再切到新 tid
+        composeRule.runOnIdle { listState.requestScrollToItem(index = 6, scrollOffset = 40) }
+        composeRule.waitForIdle()
+        assertEquals(6, listState.firstVisibleItemIndex)
+        assertEquals(40, listState.firstVisibleItemScrollOffset)
+
+        activeArgs = ThreadNavArgs(tid = "6002", title = "新帖 6002")
+        composeRule.waitForIdle()
+
+        assertEquals("6002", vm.uiState.value.tid)
+        assertEquals("切换新 tid 后首项索引必须复位为 0", 0, listState.firstVisibleItemIndex)
+        assertEquals("切换新 tid 后像素偏移必须复位为 0", 0, listState.firstVisibleItemScrollOffset)
+        composeRule.onNodeWithText("连续加载第 1 页第 1 楼正文", substring = true).assertIsDisplayed()
+    }
+
+    /**
+     * 共享逐帧合入校验器（同时服务正式实现与两个反例自证）：
+     * 1. 关闭 `mainClock.autoAdvance` 并清空旧样本；
+     * 2. 每推进一帧前翻转 `probeStep` 强制 `PrependFrameProbe` 在 `AndroidComposeView.measureAndLayout()` 末尾
+     *    `RectManager.dispatchCallbacks()` 处（严格早于 `LaunchedEffect` 恢复与下一帧 `requestLayout`）采样；
+     * 3. 每一帧既断言 `PrependFrameProbe` 截获的真实上屏 `anchorOffsetPx` 偏差 `≤ 1dp`，又在
+     *    `composeRule.runWithoutImplicitWait` 中断言语义树 `boundsInRoot.top` 偏差 `≤ 1dp`（零隐式 `waitForIdle`）。
+     */
+    private fun verifyPrependMergeFrameByFrame(
+        vm: ThreadDetailViewModel,
+        listState: LazyListState,
+        anchorKey: String,
+        anchorText: String,
+        baselineOffsetPx: Int,
+        baselineBoundsTopPx: Float,
+        expectedMergedCount: Int,
+        expectedNewAnchorIndex: Int,
+        density: Float,
+        probeStep: MutableIntState,
+        samples: MutableList<TraversalFrameSample>,
+        releaseMerge: () -> Unit,
+    ) {
+        samples.clear()
+        composeRule.mainClock.autoAdvance = false
+        try {
+            releaseMerge()
+            var mergeFrameObserved = false
+            for (frame in 1..15) {
+                val sampleStart = samples.size
+                probeStep.intValue += 1
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+
+                val frameSamples = samples.subList(sampleStart, samples.size).toList()
+                assertTrue("第 $frame 帧必须捕获到至少 1 条 traversal 末尾探针样本", frameSamples.isNotEmpty())
+                for (sample in frameSamples) {
+                    val mergedInTraversal = sample.floorsCount == expectedMergedCount &&
+                        sample.layoutTotalItemsCount >= expectedMergedCount &&
+                        sample.firstLoadedPage == 1
+                    if (mergedInTraversal) mergeFrameObserved = true
+                    val sampleOffset = sample.anchorOffsetPx
+                    assertNotNull(
+                        "第 $frame 帧（traversal merged=$mergedInTraversal, firstVisibleKey=${sample.firstVisibleKey}）原首楼已跳出视口",
+                        sampleOffset,
+                    )
+                    val traversalDriftDp = abs(sampleOffset!! - baselineOffsetPx) / density
+                    assertTrue(
+                        "第 $frame 帧（traversal merged=$mergedInTraversal）原首楼偏移变化 ${traversalDriftDp}dp 超过 1dp（before=$baselineOffsetPx, now=$sampleOffset）",
+                        traversalDriftDp <= 1.0f,
+                    )
+                    if (mergedInTraversal) {
+                        assertEquals("合入首帧锚点楼层应精确位于索引 $expectedNewAnchorIndex", expectedNewAnchorIndex, sample.anchorIndex)
+                    }
+                }
+
+                // 使用 runWithoutImplicitWait 读取语义节点 boundsInRoot，禁止隐式触发 waitForIdle / 下一帧 onLayout
+                val currentTop = composeRule.runWithoutImplicitWait {
+                    composeRule.onNodeWithText(anchorText, substring = true)
+                        .fetchSemanticsNode()
+                        .boundsInRoot.top
+                }
+                val boundsDriftDp = abs(currentTop - baselineBoundsTopPx) / density
+                assertTrue(
+                    "第 $frame 帧（runWithoutImplicitWait bounds）原首楼距顶偏差 ${boundsDriftDp}dp 超过 1dp（before=$baselineBoundsTopPx, now=$currentTop）",
+                    boundsDriftDp <= 1.0f,
+                )
+                if (vm.uiState.value.floors.size == expectedMergedCount && vm.uiState.value.firstLoadedPage == 1) {
+                    val visibleAnchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == anchorKey }
+                    assertNotNull("第 $frame 帧合入后原首可见楼层必须仍在视口内", visibleAnchor)
+                    assertEquals(expectedNewAnchorIndex, visibleAnchor!!.index)
+                }
+            }
+            assertTrue("逐帧探针必须实际观测到第 1 页数据合入首帧（samples=$samples）", mergeFrameObserved)
+        } finally {
+            composeRule.mainClock.autoAdvance = true
+        }
+    }
+
+    /**
+     * 旁路布局探针：借 `Modifier.onLayoutRectChanged(0, 0)` 挂入 `AndroidComposeView.measureAndLayout()`
+     * 末尾的 `RectManager.dispatchCallbacks()`（严格在 `dispatchOnPositionedCallbacks()` 之后、`root.draw` 与
+     * `LaunchedEffect` 恢复之前），忠实记录每一帧真实上屏瞬间的锚点像素偏移。
+     */
+    @Composable
+    private fun PrependFrameProbe(
+        vm: ThreadDetailViewModel,
+        listState: LazyListState,
+        anchorKey: String,
+        probeStep: MutableIntState,
+        samples: MutableList<TraversalFrameSample>,
+    ) {
+        val uiState by vm.uiState.collectAsStateWithLifecycle()
+        val heightDp = with(LocalDensity.current) { (if (probeStep.intValue % 2 == 0) 1 else 2).toDp() }
+        Spacer(
+            modifier = Modifier
+                .width(1.dp)
+                .height(heightDp)
+                .onLayoutRectChanged(debounceMillis = 0L, throttleMillis = 0L) {
+                    val layoutInfo = listState.layoutInfo
+                    val visible = layoutInfo.visibleItemsInfo
+                    val anchorItem = visible.firstOrNull { it.key == anchorKey }
+                    val primaryKey = visible.firstOrNull { it.offset + it.size > 0 }?.key
+                    samples += TraversalFrameSample(
+                        step = probeStep.intValue,
+                        floorsCount = uiState.floors.size,
+                        layoutTotalItemsCount = layoutInfo.totalItemsCount,
+                        firstLoadedPage = uiState.firstLoadedPage,
+                        anchorOffsetPx = anchorItem?.offset,
+                        anchorIndex = anchorItem?.index,
+                        firstVisibleKey = primaryKey,
+                    )
+                },
+        )
+    }
+
+    /**
+     * 反例 1（仅测试源码用）：用滞后一帧的 `LaunchedEffect(prependGeneration)` 调用 `scrollToItem`
+     * （并辅以 `dispatchRawDelta` 把正偏移也拉回原位），验证即便在 `advanceTimeByFrame()` 末尾
+     * `scheduler.runCurrent()` 中把锚点完美拉回，合入首帧 traversal 探针仍能精准拦截首帧闪跳。
+     */
+    @Composable
+    private fun CounterexampleLaunchedEffectPane(
+        tid: String,
+        vm: ThreadDetailViewModel,
+        listState: LazyListState,
+    ) {
+        LaunchedEffect(tid) { vm.bindArgs(ThreadNavArgs(tid = tid, title = "反例 1")) }
+        val uiState by vm.uiState.collectAsStateWithLifecycle()
+        val lastAnchor = remember { mutableStateOf<Pair<String, Int>?>(null) }
+        SideEffect {
+            if (uiState.showPrependHeader) {
+                val item = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.offset + it.size > 0 && (it.key as? String)?.startsWith("floor:") == true }
+                if (item != null) lastAnchor.value = (item.key as String).removePrefix("floor:") to item.offset
+            }
+        }
+        LaunchedEffect(uiState.prependGeneration) {
+            if (uiState.prependGeneration == 0L) return@LaunchedEffect
+            val (pid, offset) = lastAnchor.value ?: return@LaunchedEffect
+            val idx = uiState.floors.indexOfFirst { it.postId == pid }
+            if (idx >= 0) {
+                listState.scrollToItem(idx, (-offset).coerceAtLeast(0))
+                if (offset > 0) listState.dispatchRawDelta(-offset.toFloat())
+            }
+        }
+        val trackAnchorModifier = remember(listState) {
+            Modifier.onGloballyPositioned {
+                if (vm.uiState.value.showPrependHeader) {
+                    val item = listState.layoutInfo.visibleItemsInfo
+                        .firstOrNull { it.offset + it.size > 0 && (it.key as? String)?.startsWith("floor:") == true }
+                    if (item != null) lastAnchor.value = (item.key as String).removePrefix("floor:") to item.offset
+                }
+            }
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 60.dp, bottom = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (uiState.showPrependHeader) {
+                item(key = "thread_prepend_header") {
+                    HiListFooter(HiFooterState.Loading, modifier = Modifier.widthIn(max = PostMaxContentWidth))
+                }
+            }
+            items(items = uiState.floors, key = { "floor:${it.postId}" }) { item ->
+                PostFloorCard(item, item.floor.floor == 1, listState, {}, { _, _ -> }, modifier = trackAnchorModifier)
+            }
+        }
+    }
+
+    /** 反例 2（仅测试源码用）：在 `onGloballyPositioned` 里改调无同步重测的 `requestScrollToItem`（必闪一帧）。 */
+    @Composable
+    private fun CounterexampleDeferredRequestScrollPane(
+        tid: String,
+        vm: ThreadDetailViewModel,
+        listState: LazyListState,
+    ) {
+        LaunchedEffect(tid) { vm.bindArgs(ThreadNavArgs(tid = tid, title = "反例 2")) }
+        val uiState by vm.uiState.collectAsStateWithLifecycle()
+        // 在组合体中显式读取状态快照，确保合入帧触发本函数重组并执行 SideEffect（与生产 ThreadDetailPane 一致）
+        val currentUiState = uiState
+        val handledGen = remember { mutableStateOf(0L) }
+        val pendingTargetIdx = remember { mutableStateOf<Int?>(null) }
+        val pendingPositivePx = remember { mutableIntStateOf(0) }
+
+        SideEffect {
+            if (currentUiState.prependGeneration != handledGen.value) {
+                handledGen.value = currentUiState.prependGeneration
+                val anchorItem = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.offset + it.size > 0 && (it.key as? String)?.startsWith("floor:") == true }
+                if (anchorItem != null) {
+                    val pid = (anchorItem.key as String).removePrefix("floor:")
+                    val newIdx = currentUiState.floors.indexOfFirst { it.postId == pid }
+                    if (newIdx >= 0) {
+                        listState.requestScrollToItem(newIdx, 0)
+                        if (anchorItem.offset > 0) {
+                            pendingTargetIdx.value = newIdx
+                            pendingPositivePx.intValue = anchorItem.offset
+                        }
+                    }
+                }
+            }
+        }
+
+        val deferredModifier = remember(listState) {
+            Modifier.onGloballyPositioned {
+                val targetIdx = pendingTargetIdx.value ?: return@onGloballyPositioned
+                val positivePx = pendingPositivePx.intValue
+                pendingTargetIdx.value = null
+                pendingPositivePx.intValue = 0
+                if (targetIdx > 0 && positivePx > 0) {
+                    // 故意使用 requestScrollToItem（forceRemeasure=false）替代 dispatchRawDelta，延迟至下一帧
+                    listState.requestScrollToItem(targetIdx - 1, positivePx)
+                }
+            }
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 60.dp, bottom = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (currentUiState.showPrependHeader) {
+                item(key = "thread_prepend_header") {
+                    HiListFooter(HiFooterState.Loading, modifier = Modifier.widthIn(max = PostMaxContentWidth))
+                }
+            }
+            items(items = currentUiState.floors, key = { "floor:${it.postId}" }) { item ->
+                PostFloorCard(item, item.floor.floor == 1, listState, {}, { _, _ -> }, modifier = deferredModifier)
+            }
+        }
     }
 
     private fun scrollContainer() = composeRule.onNode(
