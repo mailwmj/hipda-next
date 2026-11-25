@@ -6,8 +6,13 @@ import org.jsoup.nodes.Document
 import org.jsoup.parser.Parser
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.Base64
 
 class HtmlSanitizerTest {
@@ -1149,6 +1154,109 @@ class HtmlSanitizerTest {
         assertEquals("2", shortLinks[2].text())
         assertEquals("2", shortDoc.firstMatch("font")!!.attr("size"))
         assertTrue(SampleLeakScanner.scan(shortSanitized, selfUid = "2").isEmpty())
+    }
+
+    @Test
+    fun rB1cS1SanitizesAndScansSelfUidAdjacentToPercentEncodedSequencesWithoutOvermatchingLongerNumbers() {
+        val self = Identity(uid = "424242", username = "FakeMember")
+        val positiveCases = listOf(
+            "percent3D" to """<a href="redirect.php?url=space.php%3Fuid%3D424242">编码等号</a>""",
+            "percent20" to """<a href="search.php?q=member%20424242%20posts">编码空格</a>""",
+            "percent22" to """<a href="search.php?q=%22424242%22">编码引号</a>""",
+            "percent26" to """<a href="redirect.php?next=a%26424242%26b">编码与号</a>""",
+        )
+
+        for ((label, fragment) in positiveCases) {
+            val leaks = SampleLeakScanner.scan(fragment, selfUid = self.uid)
+            assertTrue(
+                leaks.any { it.type == LeakType.SELF_UID },
+                "Scanner must detect percent-adjacent self UID in case=$label: $leaks",
+            )
+            val sanitized = HtmlSanitizer.sanitize(fragment, PageType.USER_INFO, self)
+            assertFalse(
+                sanitized.contains(self.uid),
+                "Sanitizer must replace percent-adjacent self UID in case=$label: $sanitized",
+            )
+            assertTrue(
+                sanitized.contains(SanitizeSelectors.PLACEHOLDER_UID),
+                "Sanitizer must substitute placeholder UID in case=$label: $sanitized",
+            )
+            assertTrue(
+                SampleLeakScanner.scan(sanitized, selfUid = self.uid).isEmpty(),
+                "Sanitized output must pass scanner in case=$label: $sanitized",
+            )
+        }
+
+        // 反例：更长纯数字（包括紧跟在 %20/%22 后的更长数字）绝不能被误伤或误报
+        val negativeHtml = """
+            <!DOCTYPE html>
+            <html>
+            <body>
+              <a href="viewthread.php?tid=94242420">前后均有数字</a>
+              <a href="viewthread.php?tid=1424242">前有数字</a>
+              <a href="viewthread.php?tid=4242429">后有数字</a>
+              <a href="search.php?q=%204242429">百分号转义后接更长数字</a>
+              <a href="search.php?q=%221424242%22">百分号引号内前有数字</a>
+              <a href="search.php?q=%3D4242420">编码等号后接更长数字</a>
+            </body>
+            </html>
+        """.trimIndent()
+
+        assertTrue(
+            SampleLeakScanner.scan(negativeHtml, selfUid = self.uid).isEmpty(),
+            "Longer numbers must not trigger false-positive SELF_UID leaks",
+        )
+        val sanitizedNegative = HtmlSanitizer.sanitize(negativeHtml, PageType.THREAD_DETAIL, self)
+        val doc = Jsoup.parse(sanitizedNegative)
+        val links = doc.select("a")
+        assertEquals("viewthread.php?tid=94242420", links[0].attr("href"))
+        assertEquals("viewthread.php?tid=1424242", links[1].attr("href"))
+        assertEquals("viewthread.php?tid=4242429", links[2].attr("href"))
+        assertEquals("search.php?q=%204242429", links[3].attr("href"))
+        assertEquals("search.php?q=%221424242%22", links[4].attr("href"))
+        assertEquals("search.php?q=%3D4242420", links[5].attr("href"))
+    }
+
+    @Test
+    fun rB1cS2SampleLeakScannerFailsClosedOnNonNumericSelfUidAcrossAllEntryPoints(@TempDir tempDir: Path) {
+        val cleanHtml = """<html><body><div id="umenu"><cite><a href="space.php?uid=10000">HiUser</a></cite></div></body></html>"""
+        val cleanFile = tempDir.resolve("clean.html")
+        Files.writeString(cleanFile, cleanHtml, StandardCharsets.UTF_8)
+        val missingDir = tempDir.resolve("missing")
+
+        val invalidSelfUids = listOf("abc", "uid=424242", "424242a", "-424242", "42 42")
+        for (invalidUid in invalidSelfUids) {
+            val scanError = assertThrows(IllegalArgumentException::class.java) {
+                SampleLeakScanner.scan(cleanHtml, selfUid = invalidUid)
+            }
+            assertFalse(
+                scanError.message.orEmpty().contains("424242"),
+                "Exception message must not leak raw selfUid value",
+            )
+            assertThrows(IllegalArgumentException::class.java) {
+                SampleLeakScanner.scanDirectory(tempDir, selfUid = invalidUid)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                SampleLeakScanner.scanDirectory(missingDir, selfUid = invalidUid)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                SampleLeakScanner.scanDirectories(listOf(tempDir), selfUid = invalidUid)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                SampleLeakScanner.scanDirectories(emptyList(), selfUid = invalidUid)
+            }
+        }
+
+        // null、空串、纯空白与合法占位 UID "10000" 仍正常通过
+        for (validOrBlank in listOf(null, "", "   ", "10000", " 10000 ")) {
+            assertTrue(SampleLeakScanner.scan(cleanHtml, selfUid = validOrBlank).isEmpty())
+            assertTrue(SampleLeakScanner.scanDirectory(tempDir, selfUid = validOrBlank).isEmpty())
+            assertTrue(SampleLeakScanner.scanDirectories(listOf(tempDir), selfUid = validOrBlank).isEmpty())
+        }
+        // 前后带空白的合法数字 UID 经 trim 后仍正常检出泄漏
+        assertTrue(
+            SampleLeakScanner.scan("<p>424242</p>", selfUid = " 424242 ").any { it.type == LeakType.SELF_UID },
+        )
     }
 
     private fun assertStructureUnchanged(raw: String, sanitized: String, selectors: List<String>) {
