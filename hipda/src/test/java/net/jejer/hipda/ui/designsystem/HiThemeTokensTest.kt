@@ -5,12 +5,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
@@ -75,19 +75,70 @@ class HiThemeTokensTest {
     }
 
     @Test
-    fun chromeFontScaleCap_limitsScaleAt125Percent() {
-        val baseStyle = TextStyle(fontSize = 12.sp, lineHeight = 16.sp)
+    fun hiCappedFontScale_preservesScaleUpTo125PercentAndClampsAbove() {
+        var scaleAt100 = 0f
+        var scaleAt125 = 0f
+        var scaleAt150 = 0f
+        var fontSizePxAt100 = 0f
+        var lineHeightPxAt100 = 0f
+        var fontSizePxAt125 = 0f
+        var lineHeightPxAt125 = 0f
+        var fontSizePxAt150 = 0f
+        var lineHeightPxAt150 = 0f
 
-        val normal = baseStyle.capFontScale(currentFontScale = 1.0f)
-        assertEquals(12f, normal.fontSize.value, 0.001f)
-        assertEquals(16f, normal.lineHeight.value, 0.001f)
+        composeRule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(density = 1f, fontScale = 1.0f)) {
+                HiCappedFontScale {
+                    val d = LocalDensity.current
+                    scaleAt100 = d.fontScale
+                    fontSizePxAt100 = with(d) { 12.sp.toPx() }
+                    lineHeightPxAt100 = with(d) { 16.sp.toPx() }
+                }
+            }
+            CompositionLocalProvider(LocalDensity provides Density(density = 1f, fontScale = 1.25f)) {
+                HiCappedFontScale {
+                    val d = LocalDensity.current
+                    scaleAt125 = d.fontScale
+                    fontSizePxAt125 = with(d) { 12.sp.toPx() }
+                    lineHeightPxAt125 = with(d) { 16.sp.toPx() }
+                }
+            }
+            CompositionLocalProvider(LocalDensity provides Density(density = 1f, fontScale = 1.5f)) {
+                HiCappedFontScale {
+                    val d = LocalDensity.current
+                    scaleAt150 = d.fontScale
+                    fontSizePxAt150 = with(d) { 12.sp.toPx() }
+                    lineHeightPxAt150 = with(d) { 16.sp.toPx() }
+                }
+            }
+        }
 
-        val atLimit = baseStyle.capFontScale(currentFontScale = 1.25f)
-        assertEquals(12f, atLimit.fontSize.value, 0.001f)
+        assertEquals(1.0f, scaleAt100, 0.001f)
+        assertEquals(12f, fontSizePxAt100, 0.01f)
+        assertEquals(16f, lineHeightPxAt100, 0.01f)
 
-        val oversized = baseStyle.capFontScale(currentFontScale = 1.5f)
-        assertEquals(12f * 1.25f, oversized.fontSize.value * 1.5f, 0.01f)
-        assertEquals(16f * 1.25f, oversized.lineHeight.value * 1.5f, 0.01f)
+        assertEquals(1.25f, scaleAt125, 0.001f)
+        assertTrue(fontSizePxAt125 > fontSizePxAt100)
+        assertTrue(lineHeightPxAt125 > lineHeightPxAt100)
+
+        assertEquals(HI_CHROME_MAX_FONT_SCALE, scaleAt150, 0.001f)
+        assertEquals(fontSizePxAt125, fontSizePxAt150, 0.01f)
+        assertEquals(lineHeightPxAt125, lineHeightPxAt150, 0.01f)
+    }
+
+    @Test
+    fun labelSlots_differFromMaterial3DefaultsAndAreRetainedForPixelStability() {
+        val m3Defaults = Typography()
+        val hiTypography = hiTypographyTokens().materialTypography
+
+        // Material 3 默认 label* 使用 FontFamily.SansSerif、非零 letterSpacing（0.1sp/0.5sp）与自定义
+        // LineHeightStyle/PlatformTextStyle，与 HiTypography 的 FontFamily.Default + 未设字距并不等价。
+        assertNotEquals(m3Defaults.labelLarge, hiTypography.labelLarge)
+        assertNotEquals(m3Defaults.labelMedium, hiTypography.labelMedium)
+        assertNotEquals(m3Defaults.labelSmall, hiTypography.labelSmall)
+        assertEquals(FontFamily.Default, hiTypography.labelLarge.fontFamily)
+        assertEquals(FontFamily.Default, hiTypography.labelMedium.fontFamily)
+        assertEquals(FontFamily.Default, hiTypography.labelSmall.fontFamily)
     }
 
     @Test

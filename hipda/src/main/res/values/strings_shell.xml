@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shell_nav_forum">论坛</string>
+    <string name="shell_nav_messages">消息</string>
+    <string name="shell_nav_search">搜索</string>
+    <string name="shell_nav_mine">我的</string>
+</resources>
