@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -169,19 +170,20 @@ class DefaultAuthRepository internal constructor(
                 credentialsStore.accounts,
                 credentialsStore.activeUid,
                 credentialsStore.manuallyLoggedOut,
-            ) { accounts, activeUid, manuallyLoggedOut ->
-                PersistentSnapshot(
-                    accounts = accounts,
-                    activeUid = activeUid,
-                    manuallyLoggedOut = manuallyLoggedOut,
-                )
-            }.collect { snapshot ->
-                synchronized(stateLock) {
-                    if (explicitOperationCount == 0) {
-                        applyPersistentSnapshotLocked(snapshot)
+            ) { _, _, _ -> Unit }
+                .conflate()
+                .collect {
+                    val genBeforeRead = synchronized(stateLock) {
+                        if (explicitOperationCount > 0) return@collect
+                        authGeneration
+                    }
+                    val latest = readPersistentSnapshotFromStore()
+                    synchronized(stateLock) {
+                        if (explicitOperationCount == 0 && authGeneration == genBeforeRead) {
+                            applyPersistentSnapshotLocked(latest)
+                        }
                     }
                 }
-            }
         }
     }
 
@@ -386,14 +388,22 @@ class DefaultAuthRepository internal constructor(
                     }
                 }
             } else {
-                credentialsStore.remove(targetUid)
-                val refreshed = readPersistentSnapshotFromStore()
                 synchronized(stateLock) {
-                    if (rejectedCredentialKey?.first == targetUid) {
-                        rejectedCredentialKey = null
-                    }
-                    if (explicitOperationCount == 0) {
+                    explicitOperationCount++
+                    authGeneration++
+                }
+                try {
+                    credentialsStore.remove(targetUid)
+                    val refreshed = readPersistentSnapshotFromStore()
+                    synchronized(stateLock) {
+                        if (rejectedCredentialKey?.first == targetUid) {
+                            rejectedCredentialKey = null
+                        }
                         applyPersistentSnapshotLocked(refreshed)
+                    }
+                } finally {
+                    synchronized(stateLock) {
+                        explicitOperationCount = (explicitOperationCount - 1).coerceAtLeast(0)
                     }
                 }
             }

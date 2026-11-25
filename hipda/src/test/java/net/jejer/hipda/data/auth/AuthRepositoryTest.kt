@@ -1072,19 +1072,23 @@ class AuthRepositoryTest {
         }
         assertTrue(firstGetEntered.await(5, TimeUnit.SECONDS))
 
-        val switchJob = async(Dispatchers.Default) {
-            repo.switchAccount(accountB.uid)
+        try {
+            val switchJob = async(Dispatchers.Default) {
+                repo.switchAccount(accountB.uid)
+            }
+            // Wait for switchAccount to deterministically invalidate the stale silent relogin first.
+            val reloginRes = withTimeout(5.seconds) { staleRelogin.await() }
+            releaseFirstGet.countDown()
+            val switchRes = withTimeout(5.seconds) { switchJob.await() }
+
+            assertTrue(reloginRes is SilentReloginResult.Failed)
+            assertEquals(SilentReloginFailureReason.SESSION_INVALIDATED, (reloginRes as SilentReloginResult.Failed).reason)
+            assertTrue("Expected switchAccount to succeed, got $switchRes", switchRes is LoginResult.Success)
+            assertEquals(accountB.uid, repo.currentAccount.value?.uid)
+            assertEquals(AuthState.SignedIn((switchRes as LoginResult.Success).account), repo.authState.value)
+        } finally {
+            releaseFirstGet.countDown()
         }
-        releaseFirstGet.countDown()
-
-        val reloginRes = withTimeout(5.seconds) { staleRelogin.await() }
-        val switchRes = withTimeout(5.seconds) { switchJob.await() }
-
-        assertTrue(reloginRes is SilentReloginResult.Failed)
-        assertEquals(SilentReloginFailureReason.SESSION_INVALIDATED, (reloginRes as SilentReloginResult.Failed).reason)
-        assertTrue("Expected switchAccount to succeed, got $switchRes", switchRes is LoginResult.Success)
-        assertEquals(accountB.uid, repo.currentAccount.value?.uid)
-        assertEquals(AuthState.SignedIn((switchRes as LoginResult.Success).account), repo.authState.value)
     }
 
     @Test
