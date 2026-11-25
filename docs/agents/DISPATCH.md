@@ -49,6 +49,7 @@
   - 不要用真实账号对论坛做写操作。
   - 完成标准以 CI 运行结果为证据（给出 run 链接和 commit hash）。
 - 界面字符串放在 `res/values/strings_<功能>.xml`。
+- 界面卡另加：优先用 Compose 标准组件，手写 `Layout`/`Modifier.Node`/状态机要说明理由；生产代码不含只为测试存在的代码；超过估计行数 1.5 倍先自查简化。（第三批三张 C 卡都写到估计的 2–3 倍，见 lesson.md）
 
 ## 6. 决策记录
 - 用户的决定记在 `docs/agents/decisions.md`。
