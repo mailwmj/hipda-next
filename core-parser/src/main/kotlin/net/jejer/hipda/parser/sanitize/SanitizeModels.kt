@@ -42,6 +42,7 @@ enum class LeakType {
     UMENU_IDENTITY,
     ATTACHMENT_AID,
     PERSONAL_INFO,
+    SELF_UID,
 }
 
 data class Leak(

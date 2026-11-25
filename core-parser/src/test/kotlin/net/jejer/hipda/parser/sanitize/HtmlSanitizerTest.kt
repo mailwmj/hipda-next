@@ -978,6 +978,179 @@ class HtmlSanitizerTest {
         assertTrue(SampleLeakScanner.scan(nonCdataXmlSanitized).isEmpty())
     }
 
+    @Test
+    fun b1cSanitizesAndScansStandaloneSelfUidAcrossUrlsScriptsAttributesAndText() {
+        val self = Identity(uid = "424242", username = "FakeMember")
+        val cases = listOf(
+            "newbuddyid" to """<a href="my.php?item=buddylist&amp;newbuddyid=424242&amp;buddysubmit=yes" id="addbuddy">加为好友</a>""",
+            "touid" to """<a href="pm.php?action=send&amp;touid=424242">发短消息</a>""",
+            "buddyid" to """<a href="my.php?item=buddylist&amp;buddyid=424242">好友</a>""",
+            "authorid" to """<a href="viewthread.php?tid=88888&amp;authorid=424242">只看作者</a>""",
+            "customQueryParam" to """<a href="custom.php?target=424242">自定义参数</a>""",
+            "attribute" to """<span data-member="424242" title="访问424242主页" onclick="openCard(424242)">卡片</span>""",
+            "scriptVar" to """<script>var customTarget = 424242; var strTarget = '424242'; var cfg = {owner: "424242"}; notify(424242);</script>""",
+            "plainText" to """<p>当前编号 424242，账号424242已登录</p>""",
+            "forumActionLinkText" to """<a href="my.php?item=threads">成员424242的主题</a>""",
+            "comment" to """<!-- owner=424242 -->""",
+        )
+
+        for ((label, fragment) in cases) {
+            val leaks = SampleLeakScanner.scan(fragment, selfUid = self.uid)
+            assertTrue(
+                leaks.any { it.type == LeakType.SELF_UID },
+                "Scanner must block unsanitized self UID in case=$label: $leaks",
+            )
+            assertTrue(
+                leaks.none { it.detail.contains(self.uid) },
+                "Leak detail must never expose raw self UID in case=$label: $leaks",
+            )
+        }
+
+        val combined = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <script>var customTarget = 424242; var strTarget = '424242'; var cfg = {owner: "424242"}; notify(424242);</script>
+            </head>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+              <a href="my.php?item=buddylist&amp;newbuddyid=424242&amp;buddysubmit=yes" id="addbuddy">加为好友</a>
+              <a href="pm.php?action=send&amp;touid=424242">发短消息</a>
+              <a href="my.php?item=buddylist&amp;buddyid=424242">好友</a>
+              <a href="viewthread.php?tid=88888&amp;authorid=424242">只看作者</a>
+              <a href="custom.php?target=424242">自定义参数</a>
+              <span data-member="424242" title="访问424242主页" onclick="openCard(424242)">卡片</span>
+              <p>当前编号 424242，账号424242已登录</p>
+              <a href="my.php?item=threads">成员424242的主题</a>
+              <!-- owner=424242 -->
+            </body>
+            </html>
+        """.trimIndent()
+
+        val sanitized = HtmlSanitizer.sanitize(combined, PageType.USER_INFO, self)
+        assertFalse(sanitized.contains("424242"), "Sanitized HTML must not contain self UID: $sanitized")
+
+        val doc = Jsoup.parse(sanitized)
+        assertEquals(
+            "my.php?item=buddylist&newbuddyid=10000&buddysubmit=yes",
+            doc.firstMatch("a#addbuddy")!!.attr("href"),
+        )
+        assertEquals("pm.php?action=send&touid=10000", doc.select("a")[2].attr("href"))
+        assertEquals("my.php?item=buddylist&buddyid=10000", doc.select("a")[3].attr("href"))
+        assertEquals("viewthread.php?tid=88888&authorid=10000", doc.select("a")[4].attr("href"))
+        assertEquals("custom.php?target=10000", doc.select("a")[5].attr("href"))
+        val span = doc.firstMatch("span")!!
+        assertEquals("10000", span.attr("data-member"))
+        assertEquals("访问10000主页", span.attr("title"))
+        assertEquals("openCard(10000)", span.attr("onclick"))
+        assertEquals("当前编号 10000，账号10000已登录", doc.firstMatch("p")!!.text())
+        assertEquals("成员10000的主题", doc.select("a").lastOrNull()!!.text())
+        val script = doc.firstMatch("script")!!.data()
+        assertEquals(
+            """var customTarget = 10000; var strTarget = '10000'; var cfg = {owner: "10000"}; notify(10000);""",
+            script,
+        )
+
+        assertTrue(SampleLeakScanner.scan(sanitized, selfUid = self.uid).isEmpty(), "Sanitized HTML must have 0 leaks with selfUid")
+        assertTrue(SampleLeakScanner.scan(sanitized).isEmpty(), "Sanitized HTML must have 0 leaks without selfUid")
+        assertEquals(sanitized, HtmlSanitizer.sanitize(sanitized, PageType.USER_INFO, self), "Re-sanitizing must be idempotent")
+    }
+
+    @Test
+    fun b1cDoesNotCorruptOrFlagLongerNumbersContainingSelfUid() {
+        val self = Identity(uid = "424242", username = "FakeMember")
+        val raw = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <script>var tid = 94242420; var pid = '1424242'; var ts = 4242429;</script>
+            </head>
+            <body>
+              <a href="viewthread.php?tid=94242420">前后均有数字</a>
+              <a href="viewthread.php?tid=1424242">前面有数字</a>
+              <a href="viewthread.php?tid=4242429">后面有数字</a>
+              <span data-tid="94242420" title="编号1424242888">ok</span>
+              <p>订单 1424242888 与 4242420 与 7424242 不应替换</p>
+              <!-- long=94242420 -->
+            </body>
+            </html>
+        """.trimIndent()
+
+        assertTrue(
+            SampleLeakScanner.scan(raw, selfUid = self.uid).isEmpty(),
+            "Scanner must not false-positive when longer numbers contain self UID",
+        )
+
+        val sanitized = HtmlSanitizer.sanitize(raw, PageType.THREAD_DETAIL, self)
+        val doc = Jsoup.parse(sanitized)
+        val links = doc.select("a")
+        assertEquals("viewthread.php?tid=94242420", links[0].attr("href"))
+        assertEquals("viewthread.php?tid=1424242", links[1].attr("href"))
+        assertEquals("viewthread.php?tid=4242429", links[2].attr("href"))
+        val span = doc.firstMatch("span")!!
+        assertEquals("94242420", span.attr("data-tid"))
+        assertEquals("编号1424242888", span.attr("title"))
+        assertEquals("订单 1424242888 与 4242420 与 7424242 不应替换", doc.firstMatch("p")!!.text())
+        val script = doc.firstMatch("script")!!.data()
+        assertEquals("var tid = 94242420; var pid = '1424242'; var ts = 4242429;", script)
+        assertTrue(sanitized.contains("<!-- long=94242420 -->"))
+        assertTrue(SampleLeakScanner.scan(sanitized, selfUid = self.uid).isEmpty())
+    }
+
+    @Test
+    fun b1cProfileSideConsistencyAndShortUidRules() {
+        val leakedSelfProfile = """
+            <div class="profile_side">
+              <div class="avatar"><img src="https://img02.4d4y.com/forum/uc_server/data/avatar/000/01/00/00_avatar_middle.jpg"></div>
+              <ul id="profile_act">
+                <li class="pm"><a href="pm.php?action=new&amp;uid=10000" id="sendpm">发短消息</a></li>
+                <li class="buddy"><a href="my.php?item=buddylist&amp;newbuddyid=424242&amp;buddysubmit=yes" id="addbuddy">加为好友</a></li>
+                <li class="searchpost"><a href="search.php?srchuid=10000">搜索帖子</a></li>
+              </ul>
+            </div>
+        """.trimIndent()
+        val profileLeaks = SampleLeakScanner.scan(leakedSelfProfile)
+        assertTrue(
+            profileLeaks.any { it.type == LeakType.SELF_UID },
+            "Leaked newbuddyid on sanitized self profile must be caught even without selfUid parameter",
+        )
+
+        val publicOtherProfile = """
+            <div class="profile_side">
+              <div class="avatar"><img src="https://img02.4d4y.com/forum/uc_server/data/avatar/000/08/88/88_avatar_middle.jpg"></div>
+              <ul id="profile_act">
+                <li class="pm"><a href="pm.php?action=new&amp;uid=88888" id="sendpm">发短消息</a></li>
+                <li class="buddy"><a href="my.php?item=buddylist&amp;newbuddyid=88888&amp;buddysubmit=yes" id="addbuddy">加为好友</a></li>
+                <li class="searchpost"><a href="search.php?srchuid=88888">搜索帖子</a></li>
+              </ul>
+            </div>
+        """.trimIndent()
+        assertTrue(
+            SampleLeakScanner.scan(publicOtherProfile).isEmpty(),
+            "Public profile of another user must not trigger SELF_UID leak",
+        )
+
+        val shortSelf = Identity(uid = "2", username = "RealUser")
+        val shortRaw = """
+            <html><body>
+              <a href="my.php?item=buddylist&amp;newbuddyid=2&amp;buddysubmit=yes">加为好友</a>
+              <a href="pm.php?touid=2">短消息</a>
+              <a href="forumdisplay.php?fid=2&amp;page=2">2</a>
+              <font size="2">ok</font>
+            </body></html>
+        """.trimIndent()
+        assertTrue(SampleLeakScanner.scan(shortRaw, selfUid = "2").any { it.type == LeakType.SELF_UID })
+        val shortSanitized = HtmlSanitizer.sanitize(shortRaw, PageType.USER_INFO, shortSelf)
+        val shortDoc = Jsoup.parse(shortSanitized)
+        val shortLinks = shortDoc.select("a")
+        assertEquals("my.php?item=buddylist&newbuddyid=10000&buddysubmit=yes", shortLinks[0].attr("href"))
+        assertEquals("pm.php?touid=10000", shortLinks[1].attr("href"))
+        assertEquals("forumdisplay.php?fid=2&page=2", shortLinks[2].attr("href"))
+        assertEquals("2", shortLinks[2].text())
+        assertEquals("2", shortDoc.firstMatch("font")!!.attr("size"))
+        assertTrue(SampleLeakScanner.scan(shortSanitized, selfUid = "2").isEmpty())
+    }
+
     private fun assertStructureUnchanged(raw: String, sanitized: String, selectors: List<String>) {
         val rawDoc: Document = Jsoup.parse(raw)
         val sanitizedDoc: Document = Jsoup.parse(sanitized)
