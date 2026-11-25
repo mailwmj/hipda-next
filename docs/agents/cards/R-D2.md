@@ -1,0 +1,12 @@
+# 审查卡 R-D2：`AuthRepository`、单飞静默重登与 `ForumHttpClient`（commit df1c12dd30701f2e5dad7cd59e29564f3b6f83d1）
+
+【角色】独立代码审查者，只读。
+【边界】对象 `origin/card/D2-auth-repository` @ `df1c12dd30701f2e5dad7cd59e29564f3b6f83d1`，相对 `{BASE}`。`git -C /home/mir/Documents/hipda-next fetch origin` 后用 `git show df1c12dd30701f2e5dad7cd59e29564f3b6f83d1:<路径>`、`git diff {BASE}...df1c12dd30701f2e5dad7cd59e29564f3b6f83d1` 读代码；不 checkout、不提交推送、不在主目录切换分支、不编译。CI：`gh run view 45614344633`（核实 `headSha` 匹配、含 `assembleDebug`、`assembleRelease`、`lintDebug`、`testDebugUnitTest`）。详报写 `/home/mir/Documents/hipda-next.wt/_reports/R-D2.md`。
+【背景】任务卡 `/home/mir/Documents/hipda-next.wt/_cards/D2.md`；实现者报告 `/home/mir/Documents/hipda-next.wt/_reports/D2.md`（可读，所有结论须以代码与 diff 核实为准）。依据 `docs/design/tech-plan.md` §6（T5）、`docs/design/product-design.md` §7.1、§7.11、`docs/agents/handoff.md` §4、`hipda/src/main/java/net/jejer/hipda/async/LoginHelper.java:77-182` 及 `B9a` 公共/登录解析 API。阻断标准 `docs/agents/DISPATCH.md` §4（登录/Cookie/凭据/GBK 编码失效、手动退出后仍自动重登、并发死锁或永挂、凭据明文泄露、越界修改同波或 C4c/G1/共享文件，须给具体触发路径）。
+【审查重点】
+1. **单飞静默重登并发状态机与防卡死**：重点审视 `DefaultAuthRepository` 并发合流实现（锁/世代号/`CompletableDeferred`/作用域）——多个过期请求并发进入是否严格合流为 1 次；单个等待者协程取消是否只取消自己而不打断其他等待者；如果 `@RecoveryHttpClient` 请求挂起、抛异常或取消，在途 `Deferred` 与 `activeRelogin` 槽位是否必定清理释放，绝不永久卡死（参照 V-A4b 教训）；`logout()` / `switchAccount()` 发生时若恰有静默重登在途，是否会竞态把旧账号 Cookie 或激活态写回来！
+2. **手动退出禁重登红线与重试上界**：核实 `manuallyLoggedOut == true` 时 `trySilentRelogin` 是否在任意路径下都发起 0 次网络请求；核实 `ForumHttpClient` 在 `requireAuth = true` 时遇未登录页最多重登并重试 1 次（绝不因服务器持续返回游客页而死循环）；核实 `BackgroundSilent` 遇 Cloudflare 验证或过期时不会排队挂起或弹窗。
+3. **`@RecoveryHttpClient` 线程隔离与 Cookie 切换安全**：核实静默重登请求确走 `@RecoveryHttpClient`（独立 Dispatcher，不占主 `OkHttpClient` 线程池）；核实 `switchAccount` / `logout` 清理 `cdb_*` 登录 Cookie 是否覆盖域变体（参照 R-A5a 教训）且不破坏 `cf_clearance`，切换失败时 `activeUid` 与 Cookie 是否不陷入错乱状态。
+4. **密码 MD5、GBK 编码与安全卫生**：核实 `PasswordMd5` 与旧 `LoginHelper.java:170-181`（`\`/`'`/`"`/32 位 hex）字节级一致；核实登录提交使用 `gbkFormBody` + `decodeBody` 并正确复用 B9a `LoginParser` / `DiscuzCommonParser`；核实无任何日志/异常消息输出密码、MD5、安全问题答案或 `cdb_auth` 值。
+5. **边界、零冲突与对外 API 质量**：核实仅改 `data/auth/*`、`di/AuthModule.kt`、`test/.../data/auth/*`，与 `B8`/`B9b`/`C4c`/`G1`、`data/settings/`、`HttpClientModule*`、共享文件零重叠；评估 `ForumHttpClient` 与 `AuthRepository` 对外签名是否干净易用（供 `D4`–`D9` 与 `E12`/`E15`），指出“改坏关键一行测试仍通过”的测试盲区（若存在）。
+【交付】最后一条回复 ≤600 字，第一个词 DONE/NEEDS-INPUT/STUCK：APPROVE/CHANGES-REQUESTED + `df1c12dd30701f2e5dad7cd59e29564f3b6f83d1`、阻断项（触发路径 + 文件:行号 + 后果）、建议项一行一条、详报路径 `/home/mir/Documents/hipda-next.wt/_reports/R-D2.md`。
