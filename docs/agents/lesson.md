@@ -17,6 +17,7 @@
 - OkHttp 5 Android 的 `Cookie.parse` 解析带 `Domain=` 的 Cookie 会读 `AssetManager` 里的 `PublicSuffixDatabase.list`，单测需用 Robolectric 并在 `@Before` 调 `OkHttp.initialize(ApplicationProvider.getApplicationContext())`。（2026-11-25）
 - 平台 API 的测试替身必须按真实语义建模：A5a 的假 `WebViewCookieAccess` 只按 Cookie 名删除，掩盖了真实 `CookieManager` 里 host-only 过期头删不掉 `Domain=.4d4y.com` Cookie 的行为（R-A5a 阻断）。卡片里写明：替身要按 (name, domain, path) 存取，并模拟已知的平台怪癖。（2026-11-25）
 - 本机的 Android SDK 和 JDK 由 mise 安装、不在环境变量里：本地 Gradle 前先 `export ANDROID_HOME=/home/mir/.local/share/mise/installs/android-sdk/21.0 JAVA_HOME=/home/mir/.local/share/mise/installs/java/latest; export PATH="$JAVA_HOME/bin:$PATH"`（不要在 worktree 写 `local.properties`），否则会误报“没有 SDK”。新 Roborazzi 基线用 `:hipda:recordRoborazziDebug --tests <本卡截图测试类>` 在本地按 DISPATCH 第 2 节录制，必须用 `--tests` 限定，以 CI 的 verify 为准。（2026-11-25）
+- 合并推送到 main 后 GitHub 偶发不触发 push 事件，30 秒内 `gh run list` 查不到时用 `gh workflow run "Android CI" --ref main` 补跑。（2026-11-25）
 
 ## 协作
 - 8 个代理同时用 `gh run watch`（默认每 3 秒查一次）约 40 分钟就耗尽了 GitHub API 每小时 5000 次的额度，所有 `gh` 命令返回 403；规则已写进 DISPATCH §2（`--interval 60`）。（2026-11-24）
