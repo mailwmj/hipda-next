@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
@@ -753,6 +754,150 @@ class SmsRepositoryTest {
         assertTrue(staleNullDelivered.await(5, TimeUnit.SECONDS))
         assertEquals(15, smsRepo.getRemainingCooldownSeconds())
         assertEquals(SmsSendOutcome.CooldownActive(15), smsRepo.sendSms(uid = "20000", username = null, message = "hi2"))
+    }
+
+    @Test
+    fun rD7S1_sendSms_loggedInGroupRestrictedNoPerm_returnsRejectedWithZeroReloginAndZeroRetry() = runBlocking {
+        val stack = createStack()
+        val postHits = AtomicInteger(0)
+        val loginHits = AtomicInteger(0)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
+                "/forum/pm.php?daterange=1&uid=20000" -> gbkHtmlResponse(
+                    MessageTestFixtures.smsPrefetchHtml(formhash = "fh_noperm"),
+                )
+                "/forum/pm.php?action=send&pmsubmit=yes&infloat=yes&inajax=1&uid=20000" -> {
+                    val attempt = postHits.incrementAndGet()
+                    if (attempt == 1) {
+                        gbkXmlResponse(
+                            """<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，您无权进行当前操作，您已经登录，但您的帐号或其所在的用户组无权访问当前页面。]]></root>""",
+                        )
+                    } else {
+                        gbkXmlResponse(
+                            """<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，您无权进行当前操作。]]></root>""",
+                        )
+                    }
+                }
+                else -> {
+                    if (request.target.startsWith("/forum/logging.php")) loginHits.incrementAndGet()
+                    MockResponse.Builder().code(404).build()
+                }
+            }
+        }
+
+        // Case 1: Full Discuz! logged-in group-restricted NOPERM containing both "无权进行当前操作" and "您已经登录"
+        val fullNoPerm = stack.smsRepo.sendSms(uid = "20000", username = null, message = "组受限测试1")
+        assertTrue("Expected Rejected, got $fullNoPerm", fullNoPerm is SmsSendOutcome.Rejected)
+        assertTrue((fullNoPerm as SmsSendOutcome.Rejected).message.contains("无权进行当前操作"))
+        assertEquals("Logged-in group NOPERM must NOT trigger silent relogin", 0, loginHits.get())
+        assertEquals("Logged-in group NOPERM must NOT retry POST", 1, postHits.get())
+        assertEquals(0, stack.smsRepo.getRemainingCooldownSeconds())
+
+        // Case 2: Shortened NOPERM containing only "无权进行当前操作" without unauthenticated login prompt
+        val shortNoPerm = stack.smsRepo.sendSms(uid = "20000", username = null, message = "组受限测试2")
+        assertTrue("Expected Rejected, got $shortNoPerm", shortNoPerm is SmsSendOutcome.Rejected)
+        assertEquals("Short NOPERM must NOT trigger silent relogin", 0, loginHits.get())
+        assertEquals("Short NOPERM must NOT retry POST", 2, postHits.get())
+        assertEquals(0, stack.smsRepo.getRemainingCooldownSeconds())
+    }
+
+    @Test
+    fun rD7S4a_accountSwitchAndLogout_immediatelyResetFifteenSecondCooldown() = runBlocking {
+        val accountA = SavedAccount("10001", "Alice", computeLegacyPasswordMd5("pwA"), lastLoginAt = 2_000L)
+        val accountB = SavedAccount("10002", "Bob", computeLegacyPasswordMd5("pwB"), lastLoginAt = 1_000L)
+        val stack = createStack(seedLoggedInAccount = accountA)
+        credentialsStore.upsert(accountB)
+        withTimeout(3.seconds) {
+            stack.authRepo.currentAccount.first { it?.uid == accountA.uid }
+        }
+
+        // 1. Account A sends an SMS -> 15s cooldown starts
+        server.enqueue(gbkHtmlResponse(MessageTestFixtures.smsPrefetchHtml(formhash = "fh_a", uid = "10001", username = "Alice")))
+        server.enqueue(gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[<div class="summary">from A</div>]]></root>"""))
+        assertEquals(SmsSendOutcome.Sent, stack.smsRepo.sendSms(uid = "20000", username = null, message = "hi from A"))
+        assertEquals(15, stack.smsRepo.getRemainingCooldownSeconds())
+        assertTrue(stack.smsRepo.cooldownUntilMs.value > 0L)
+
+        // 2. Switch to Account B -> reactive observer immediately clears cooldown to 0
+        server.enqueue(gbkHtmlResponse(MessageTestFixtures.loginFormHtml("fh_switch_b")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，Bob]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=bob_cookie; Path=/"),
+            ),
+        )
+        stack.authRepo.switchAccount(accountB.uid)
+        withTimeout(3.seconds) {
+            stack.smsRepo.cooldownUntilMs.first { it == 0L }
+        }
+        assertEquals(0, stack.smsRepo.getRemainingCooldownSeconds())
+
+        // 3. Account B can immediately send at the same virtual timestamp (no leftover cooldown from A)
+        server.enqueue(gbkHtmlResponse(MessageTestFixtures.smsPrefetchHtml(formhash = "fh_b", uid = "10002", username = "Bob")))
+        server.enqueue(gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[<div class="summary">from B</div>]]></root>"""))
+        assertEquals(SmsSendOutcome.Sent, stack.smsRepo.sendSms(uid = "20000", username = null, message = "hi from B"))
+        assertEquals(15, stack.smsRepo.getRemainingCooldownSeconds())
+
+        // 4. Logout immediately clears cooldown to 0 without needing another sendSms/getRemainingCooldownSeconds call
+        stack.authRepo.logout()
+        withTimeout(3.seconds) {
+            stack.smsRepo.cooldownUntilMs.first { it == 0L }
+        }
+        assertEquals(0, stack.smsRepo.getRemainingCooldownSeconds())
+    }
+
+    @Test
+    fun rD7S4c_sendSms_reloginRetrySuccessEchoingUnauthMarker_shortCircuitsToSentWithoutAuthRequired() = runBlocking {
+        val stack = createStack()
+        val postHits = AtomicInteger(0)
+        val loginPostHits = AtomicInteger(0)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
+                "/forum/pm.php?daterange=1&uid=20000" -> gbkHtmlResponse(
+                    MessageTestFixtures.smsPrefetchHtml(formhash = "fh_relogin_echo"),
+                )
+                "/forum/pm.php?action=send&pmsubmit=yes&infloat=yes&inajax=1&uid=20000" -> {
+                    postHits.incrementAndGet()
+                    if (request.headers["Cookie"].orEmpty().contains("cdb_auth=fresh_echo_auth")) {
+                        // Retry succeeds and echoes the user's message containing "您还未登录" inside div.summary!
+                        gbkXmlResponse(
+                            """<?xml version="1.0" encoding="gbk"?><root><![CDATA[<li class="s_clear self"><div class="summary">正文引用：您还未登录，请先登录</div></li>]]></root>""",
+                        )
+                    } else {
+                        gbkXmlResponse(
+                            """<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，您还未登录，无法进行此操作]]></root>""",
+                        )
+                    }
+                }
+                "/forum/logging.php?action=login" -> gbkHtmlResponse(
+                    MessageTestFixtures.loginFormHtml("fh_login_echo"),
+                )
+                "/forum/logging.php?action=login&loginsubmit=yes&inajax=1" -> {
+                    loginPostHits.incrementAndGet()
+                    gbkXmlResponse(
+                        """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，HiUser]]></root>""",
+                        headers = listOf("Set-Cookie" to "cdb_auth=fresh_echo_auth; Path=/"),
+                    )
+                }
+                else -> MockResponse.Builder().code(404).build()
+            }
+        }
+
+        val outcome = stack.smsRepo.sendSms(
+            uid = "20000",
+            username = null,
+            message = "正文引用：您还未登录，请先登录",
+        )
+        assertEquals(
+            "Post-relogin retry success echoing '您还未登录' must short-circuit to Sent (ForumHttpClient.kt:96)",
+            SmsSendOutcome.Sent,
+            outcome,
+        )
+        assertEquals(2, postHits.get())
+        assertEquals(1, loginPostHits.get())
+        assertEquals(15, stack.smsRepo.getRemainingCooldownSeconds())
     }
 
     companion object {
