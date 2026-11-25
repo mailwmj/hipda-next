@@ -1,7 +1,7 @@
 package net.jejer.hipda.feature.forum
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.ForumListSource
@@ -45,36 +45,24 @@ import net.jejer.hipda.ui.designsystem.motion.rememberHiMotionCoroutineScope
 internal val FORUM_TOP_BAR_TITLE_ROW_HEIGHT: Dp = 56.dp
 private const val TopBarSnapEpsilonPx: Float = 0.5f
 
-/** 论坛顶栏上行折叠与吸顶标签行联动状态（仅影响视觉偏移，不改 `LazyColumn` 固定 `contentPadding(top)`，闭合 B4-E1 ②）。 */
+/** 论坛顶栏上行折叠与吸顶标签行联动状态（基于标准 `Animatable`，仅影响视觉偏移，不改 `LazyColumn` 固定 `contentPadding(top)`，闭合 B4-E1 ②）。 */
 @Stable
 class ForumTopBarScrollState internal constructor(
     private val scope: CoroutineScope,
     private val isReducedMotion: () -> Boolean,
 ) {
+    private val offsetAnim = Animatable(0f)
     var maxCollapseOffsetPx: Float by mutableFloatStateOf(0f)
         private set
-    var collapseOffsetPx: Float by mutableFloatStateOf(0f)
-        private set
-    val collapseFraction: Float
-        get() = if (maxCollapseOffsetPx > 0f) (collapseOffsetPx / maxCollapseOffsetPx).coerceIn(0f, 1f) else 0f
-
-    private var settleJob: Job? = null
-    private var currentVelocity: Float = 0f
+    val collapseOffsetPx: Float get() = offsetAnim.value
+    val collapseFraction: Float get() = if (maxCollapseOffsetPx > 0f) (collapseOffsetPx / maxCollapseOffsetPx).coerceIn(0f, 1f) else 0f
 
     val nestedScrollConnection: NestedScrollConnection = object : NestedScrollConnection {
-        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            if (maxCollapseOffsetPx > 0f && available.y != 0f) cancelSettle()
-            return Offset.Zero
-        }
-
         override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
             if (maxCollapseOffsetPx <= 0f) return Offset.Zero
             val scrollUp = if (consumed.y > 0f || available.y > 0f) consumed.y.coerceAtLeast(0f) + available.y.coerceAtLeast(0f) else 0f
             val deltaY = if (scrollUp > 0f) scrollUp else consumed.y
-            if (deltaY != 0f) {
-                cancelSettle()
-                collapseOffsetPx = (collapseOffsetPx - deltaY).coerceIn(0f, maxCollapseOffsetPx)
-            }
+            if (deltaY != 0f) snapOffsetTo((collapseOffsetPx - deltaY).coerceIn(0f, maxCollapseOffsetPx))
             return Offset.Zero
         }
 
@@ -90,32 +78,16 @@ class ForumTopBarScrollState internal constructor(
         val clamped = newMaxPx.coerceAtLeast(0f)
         if (clamped == maxCollapseOffsetPx) return
         maxCollapseOffsetPx = clamped
-        if (clamped == 0f) { cancelSettle(); collapseOffsetPx = 0f } else collapseOffsetPx = collapseOffsetPx.coerceIn(0f, clamped)
+        offsetAnim.updateBounds(0f, clamped)
+        if (clamped == 0f || collapseOffsetPx > clamped) snapOffsetTo(collapseOffsetPx.coerceIn(0f, clamped))
     }
+
+    private fun snapOffsetTo(target: Float) { scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetAnim.snapTo(target) } }
 
     private fun animateOffsetTo(target: Float) {
         val clamped = target.coerceIn(0f, maxCollapseOffsetPx)
-        val velocity = currentVelocity
-        cancelSettle(resetVelocity = false)
-        if (isReducedMotion() || abs(collapseOffsetPx - clamped) < TopBarSnapEpsilonPx) {
-            collapseOffsetPx = clamped; currentVelocity = 0f; return
-        }
-        val start = collapseOffsetPx
-        settleJob = scope.launch {
-            try {
-                animate(start, clamped, velocity, HiMotion.spatialDefault(visibilityThreshold = TopBarSnapEpsilonPx)) { v, vel ->
-                    collapseOffsetPx = v.coerceIn(0f, maxCollapseOffsetPx); currentVelocity = vel
-                }
-                collapseOffsetPx = clamped
-            } finally {
-                if (settleJob == coroutineContext[Job]) { currentVelocity = 0f; settleJob = null }
-            }
-        }
-    }
-
-    private fun cancelSettle(resetVelocity: Boolean = true) {
-        settleJob?.cancel(); settleJob = null
-        if (resetVelocity) currentVelocity = 0f
+        if (isReducedMotion() || abs(collapseOffsetPx - clamped) < TopBarSnapEpsilonPx) { snapOffsetTo(clamped); return }
+        scope.launch { offsetAnim.animateTo(clamped, HiMotion.spatialDefault(visibilityThreshold = TopBarSnapEpsilonPx)) }
     }
 }
 
@@ -123,7 +95,7 @@ class ForumTopBarScrollState internal constructor(
 fun rememberForumTopBarScrollState(collapsible: Boolean): ForumTopBarScrollState {
     val scope = rememberHiMotionCoroutineScope()
     val reducedMotion by rememberUpdatedState(HiTheme.isReducedMotion)
-    val state = remember(scope) { ForumTopBarScrollState(scope, isReducedMotion = { reducedMotion }) }
+    val state = remember(scope) { ForumTopBarScrollState(scope) { reducedMotion } }
     val maxPx = with(LocalDensity.current) { if (collapsible) FORUM_TOP_BAR_TITLE_ROW_HEIGHT.toPx() else 0f }
     SideEffect { state.syncMaxCollapseOffsetPx(maxPx) }
     return state
@@ -155,15 +127,13 @@ fun ForumTopBar(
 ) {
     val cs = MaterialTheme.colorScheme
     Box(modifier = modifier.fillMaxWidth().clipToBounds()) {
-        ForumTopBarBackground(glassState, isScrolled, scrollState, Modifier.matchParentSize())
+        ForumTopBarBackground(glassState, isScrolled, Modifier.matchParentSize().graphicsLayer { translationY = -scrollState.collapseOffsetPx })
         Column(Modifier.fillMaxWidth()) {
             Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
             Box(Modifier.fillMaxWidth().clipToBounds()) {
                 Column(Modifier.fillMaxWidth().graphicsLayer { translationY = -scrollState.collapseOffsetPx }) {
                     ForumTopBarUpperRow(title, source is ForumListSource.Forum, sortByPostTime, scrollState, onNewThreadClick, onSelectSortByPostTime)
-                    if (showForumTabs) {
-                        BalancedForumTabRow(source, followedForums, onSelectSource, onManageForumsClick)
-                    }
+                    if (showForumTabs) BalancedForumTabRow(source, followedForums, onSelectSource, onManageForumsClick)
                     HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
                 }
             }
@@ -172,35 +142,22 @@ fun ForumTopBar(
 }
 
 @Composable
-private fun ForumTopBarBackground(
-    glassState: HiGlassState?,
-    isScrolled: () -> Boolean,
-    scrollState: ForumTopBarScrollState,
-    modifier: Modifier = Modifier,
-) {
+private fun ForumTopBarBackground(glassState: HiGlassState?, isScrolled: () -> Boolean, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
     val scrolled = isScrolled()
     if (glassState != null) {
-        val glassAlpha = animateFloatAsState(if (scrolled) 1f else 0f, animationSpec = HiMotion.effectsDefault(), label = "ForumTopBarGlassAlpha")
+        val glassAlpha = animateFloatAsState(if (scrolled) 1f else 0f, HiMotion.effectsDefault(), label = "ForumTopBarGlassAlpha")
         val surfaceColor = cs.surface
-        Box(modifier.graphicsLayer { translationY = -scrollState.collapseOffsetPx }) {
-            HiGlassSurface(
-                state = glassState,
-                style = HiGlassStyle.TopBar,
-                shape = RectangleShape,
-                floating = false,
-                modifier = Modifier.matchParentSize().graphicsLayer { alpha = glassAlpha.value },
-            ) {}
-            Box(
-                Modifier.matchParentSize().drawBehind {
-                    val solidAlpha = (1f - glassAlpha.value).coerceIn(0f, 1f)
-                    if (solidAlpha > 0.001f) drawRect(surfaceColor.copy(alpha = solidAlpha))
-                },
-            )
+        Box(modifier) {
+            HiGlassSurface(state = glassState, style = HiGlassStyle.TopBar, shape = RectangleShape, floating = false, modifier = Modifier.matchParentSize().graphicsLayer { alpha = glassAlpha.value }) {}
+            Box(Modifier.matchParentSize().drawBehind {
+                val solidAlpha = (1f - glassAlpha.value).coerceIn(0f, 1f)
+                if (solidAlpha > 0.001f) drawRect(surfaceColor.copy(alpha = solidAlpha))
+            })
         }
     } else {
-        val solidColor = animateColorAsState(if (scrolled) cs.surfaceContainer else cs.surface, animationSpec = HiMotion.effectsDefault(), label = "ForumTopBarSolidColor")
-        Box(modifier.graphicsLayer { translationY = -scrollState.collapseOffsetPx }.drawBehind { drawRect(solidColor.value) })
+        val solidColor = animateColorAsState(if (scrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "ForumTopBarSolidColor")
+        Box(modifier.drawBehind { drawRect(solidColor.value) })
     }
 }
 
@@ -218,9 +175,7 @@ private fun ForumTopBarUpperRow(
 
     HiCappedFontScale {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(FORUM_TOP_BAR_TITLE_ROW_HEIGHT)
+            modifier = Modifier.fillMaxWidth().height(FORUM_TOP_BAR_TITLE_ROW_HEIGHT)
                 .graphicsLayer { alpha = (1f - scrollState.collapseFraction).coerceIn(0f, 1f) }
                 .padding(start = 16.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,

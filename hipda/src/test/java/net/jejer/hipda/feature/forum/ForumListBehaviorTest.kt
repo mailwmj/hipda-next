@@ -1,15 +1,20 @@
 package net.jejer.hipda.feature.forum
 
 import android.app.Application
+import android.graphics.Bitmap
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -17,13 +22,17 @@ import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.roundToInt
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -85,6 +94,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -376,7 +386,88 @@ class ForumListBehaviorTest {
         composeRule.onNodeWithText("没有更多了").assertIsDisplayed()
     }
 
-    private class UiHarness {
+    /** 闭合 V-E1 F1：无外层 Surface 提供 LocalContentColor 时，浅色 / 深色 / OLED 纯黑三种主题下骨架块相对背景均有明显色差（delta >= 12 且可见像素 > 1000）。 */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun skeleton_lightDarkAndPureBlack_renderVisibleBlocksOverBackground() {
+        val pendingGate = CompletableDeferred<Unit>()
+        val harness = UiHarness(holdInitialRefresh = pendingGate)
+        var themeMode by mutableStateOf(HiThemeMode.LIGHT)
+        var pureBlack by mutableStateOf(false)
+
+        composeRule.mainClock.autoAdvance = false
+        try {
+            composeRule.setContent {
+                HiTheme(themeMode = themeMode, pureBlack = pureBlack, seed = HiColorPresets.Brand.toSeed()) {
+                    // 刻意使用 Box.background 而非 Surface，复现 HiAdaptiveShell 未提供 LocalContentColor 的真实场景
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+                        ForumPane(
+                            source = ForumListSource.Forum(2),
+                            chromeSpec = ForumChromeSpec(showForumTabs = true, useGlassTopBar = true),
+                            selectedTid = null,
+                            onSelectSource = {},
+                            onOpenThread = {},
+                            onOpenLogin = {},
+                            viewModel = harness.viewModel,
+                        )
+                    }
+                }
+            }
+
+            listOf(
+                Triple("light", HiThemeMode.LIGHT, false),
+                Triple("dark", HiThemeMode.DARK, false),
+                Triple("pureBlack", HiThemeMode.DARK, true),
+            ).forEach { (label, mode, oled) ->
+                themeMode = mode
+                pureBlack = oled
+                composeRule.mainClock.advanceTimeByFrame()
+                composeRule.mainClock.advanceTimeByFrame()
+                composeRule.mainClock.advanceTimeByFrame()
+
+                val bitmap = composeRule.onRoot().captureToImage().asAndroidBitmap()
+                val (maxDelta, visiblePixels) = measureSkeletonContrast(bitmap, expectBrighter = mode == HiThemeMode.DARK)
+                assertTrue(
+                    "V-E1 F1：$label 主题下骨架块与背景色差不足（maxDelta=$maxDelta, visiblePixels=$visiblePixels），期望 delta >= 12 且像素 > 1000",
+                    maxDelta >= 12 && visiblePixels > 1_000,
+                )
+            }
+        } finally {
+            pendingGate.complete(Unit)
+            composeRule.mainClock.autoAdvance = true
+        }
+    }
+
+    private fun measureSkeletonContrast(bitmap: Bitmap, expectBrighter: Boolean): Pair<Int, Int> {
+        val density = composeRule.density.density
+        val xStart = (16 * density).roundToInt().coerceIn(0, bitmap.width - 1)
+        val xEnd = (395 * density).roundToInt().coerceIn(xStart + 1, bitmap.width)
+        val yStart = (112 * density).roundToInt().coerceIn(0, bitmap.height - 1)
+        val yEnd = (520 * density).roundToInt().coerceIn(yStart + 1, bitmap.height)
+        val bgPixel = bitmap.getPixel(xEnd - 2, yEnd - 2)
+        val bgR = android.graphics.Color.red(bgPixel)
+        val bgG = android.graphics.Color.green(bgPixel)
+        val bgB = android.graphics.Color.blue(bgPixel)
+        var maxDelta = 0
+        var visiblePixels = 0
+        for (y in yStart until yEnd) {
+            for (x in xStart until xEnd) {
+                val p = bitmap.getPixel(x, y)
+                val dr = android.graphics.Color.red(p) - bgR
+                val dg = android.graphics.Color.green(p) - bgG
+                val db = android.graphics.Color.blue(p) - bgB
+                val delta = if (expectBrighter) maxOf(dr, dg, db) else maxOf(-dr, -dg, -db)
+                if (delta > maxDelta) maxDelta = delta
+                if (delta >= 12) visiblePixels++
+            }
+        }
+        return maxDelta to visiblePixels
+    }
+
+    private class UiHarness(
+        private val holdInitialRefresh: CompletableDeferred<Unit>? = null,
+    ) {
         val settingsFlow = MutableStateFlow(AppSettings())
         val loadMoreCalls = AtomicInteger(0)
         @Volatile var lastRefreshQuery: ThreadListQuery? = null
@@ -399,6 +490,10 @@ class ForumListBehaviorTest {
 
             override suspend fun refresh(query: ThreadListQuery, minVisibleItems: Int, maxAutoBackfillPages: Int, priority: AccessPriority): ThreadListLoadResult {
                 lastRefreshQuery = query
+                if (holdInitialRefresh != null) {
+                    stateFor(query).value = ThreadListLoadState(query, emptyList(), 0, 0, false, 0, null, isLoading = true)
+                    holdInitialRefresh.await()
+                }
                 if (pendingNewThreads > 0) {
                     val added = (1..pendingNewThreads).map { i ->
                         sampleSummary((9000 + i).toString(), "最新到来的帖子 $i")

@@ -131,12 +131,5 @@ private fun ThreadAuthorAvatar(avatarUrl: String?, author: String, size: Dp) {
     }
 }
 
-private fun formatReplyViewText(reply: String, view: String): String {
-    val r = reply.trim(); val v = view.trim()
-    return when {
-        r.isNotEmpty() && v.isNotEmpty() -> "$r/$v"
-        r.isNotEmpty() -> r
-        v.isNotEmpty() -> v
-        else -> ""
-    }
-}
+private fun formatReplyViewText(reply: String, view: String): String =
+    listOf(reply.trim(), view.trim()).filter(String::isNotEmpty).joinToString("/")

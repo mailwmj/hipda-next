@@ -14,12 +14,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.*
+import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
@@ -82,62 +78,48 @@ fun BalancedForumTabRow(
         val density = LocalDensity.current
         val measureStyle = remember { TextStyle(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Bold) }
 
-        Row(
-            modifier = modifier.fillMaxWidth().heightIn(min = FORUM_TAB_ROW_HEIGHT),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        Row(modifier = modifier.fillMaxWidth().heightIn(min = FORUM_TAB_ROW_HEIGHT), verticalAlignment = Alignment.CenterVertically) {
             BoxWithConstraints(modifier = Modifier.weight(1f)) {
-                val availableWidth = maxWidth
                 val tabMinWidths = remember(tabs, measureStyle, density) {
                     tabs.map { entry ->
                         val px = textMeasurer.measure(entry.label, style = measureStyle, maxLines = 1).size.width
                         max(with(density) { (px * SelectedTabScale).toDp() } + TabHorizontalPadding * 2, TabMinWidth)
                     }
                 }
-                val fitBalanced = tabs.isNotEmpty() && (tabMinWidths.maxOrNull() ?: TabMinWidth) * tabs.size <= availableWidth
+                val fitBalanced = tabs.isNotEmpty() && (tabMinWidths.maxOrNull() ?: TabMinWidth) * tabs.size <= maxWidth
+                val scrollState = rememberScrollState()
+                val tabBounds = remember { mutableStateMapOf<ForumListSource, Pair<Int, Int>>() }
+                val viewportPx = with(density) { maxWidth.roundToPx() }
+                val reducedMotion = HiTheme.isReducedMotion
 
-                if (fitBalanced) {
-                    Row(Modifier.fillMaxWidth().selectableGroup(), verticalAlignment = Alignment.CenterVertically) {
-                        tabs.forEach { entry ->
-                            ForumTabItem(entry, entry.source == selectedSource, highlighterColors, { onSelectSource(entry.source) }, Modifier.weight(1f))
-                        }
-                    }
-                } else {
-                    val scrollState = rememberScrollState()
-                    val tabBounds = remember { mutableStateMapOf<ForumListSource, Pair<Int, Int>>() }
-                    val viewportPx = with(density) { availableWidth.roundToPx() }
-                    val reducedMotion = HiTheme.isReducedMotion
+                LaunchedEffect(fitBalanced, selectedSource, viewportPx, tabBounds[selectedSource]) {
+                    if (fitBalanced) return@LaunchedEffect
+                    val (leftPx, widthPx) = tabBounds[selectedSource] ?: return@LaunchedEffect
+                    val target = (leftPx + widthPx / 2 - viewportPx / 2).coerceIn(0, scrollState.maxValue)
+                    if (reducedMotion) scrollState.scrollTo(target) else scrollState.animateScrollTo(target, HiMotion.spatialFast())
+                }
 
-                    LaunchedEffect(selectedSource, viewportPx, tabBounds[selectedSource]) {
-                        val (leftPx, widthPx) = tabBounds[selectedSource] ?: return@LaunchedEffect
-                        val target = (leftPx + widthPx / 2 - viewportPx / 2).coerceIn(0, scrollState.maxValue)
-                        if (reducedMotion) scrollState.scrollTo(target)
-                        else scrollState.animateScrollTo(target, animationSpec = HiMotion.spatialFast())
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(scrollState).padding(horizontal = 4.dp).selectableGroup(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        tabs.forEach { entry ->
-                            ForumTabItem(
-                                entry = entry,
-                                selected = entry.source == selectedSource,
-                                highlighterColors = highlighterColors,
-                                onClick = { onSelectSource(entry.source) },
-                                modifier = Modifier.onPlaced { tabBounds[entry.source] = it.positionInParent().x.roundToInt() to it.size.width },
-                            )
-                        }
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .then(if (fitBalanced) Modifier else Modifier.horizontalScroll(scrollState).padding(horizontal = 4.dp))
+                        .selectableGroup(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    tabs.forEach { entry ->
+                        ForumTabItem(
+                            entry = entry,
+                            selected = entry.source == selectedSource,
+                            highlighterColors = highlighterColors,
+                            onClick = { onSelectSource(entry.source) },
+                            modifier = if (fitBalanced) Modifier.weight(1f)
+                            else Modifier.onPlaced { tabBounds[entry.source] = it.positionInParent().x.roundToInt() to it.size.width },
+                        )
                     }
                 }
             }
 
             val manageInteraction = remember { MutableInteractionSource() }
-            IconButton(
-                onClick = onManageForumsClick,
-                interactionSource = manageInteraction,
-                modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(manageInteraction),
-            ) {
+            IconButton(onClick = onManageForumsClick, interactionSource = manageInteraction, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(manageInteraction)) {
                 Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.shell_sidebar_manage_forums), tint = cs.onSurfaceVariant, modifier = Modifier.size(22.dp))
             }
         }
@@ -154,8 +136,8 @@ private fun ForumTabItem(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val cs = MaterialTheme.colorScheme
-    val scaleState = animateFloatAsState(if (selected) SelectedTabScale else 1f, animationSpec = HiMotion.spatialFast(), label = "ForumTabScale")
-    val highlightState = animateFloatAsState(if (selected) 1f else 0f, animationSpec = HiMotion.effectsFast(), label = "ForumTabHighlight")
+    val scaleState = animateFloatAsState(if (selected) SelectedTabScale else 1f, HiMotion.spatialFast(), label = "ForumTabScale")
+    val highlightState = animateFloatAsState(if (selected) 1f else 0f, HiMotion.effectsFast(), label = "ForumTabHighlight")
 
     Box(
         modifier = modifier
@@ -180,15 +162,7 @@ private fun ForumTabItem(
                     val radius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
                     onDrawBehind {
                         val alpha = highlightState.value
-                        if (alpha > 0.001f) {
-                            drawRoundRect(
-                                brush = brush,
-                                topLeft = Offset(-overhang, size.height * 0.52f),
-                                size = Size(size.width + overhang * 2f, size.height * 0.42f),
-                                cornerRadius = radius,
-                                alpha = alpha,
-                            )
-                        }
+                        if (alpha > 0.001f) drawRoundRect(brush, Offset(-overhang, size.height * 0.52f), Size(size.width + overhang * 2f, size.height * 0.42f), radius, alpha = alpha)
                     }
                 },
         )

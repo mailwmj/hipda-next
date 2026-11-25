@@ -7,6 +7,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -18,6 +19,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.data.network.access.AccessPriority
@@ -64,46 +66,31 @@ fun ForumPane(
     val resources = LocalResources.current
     LaunchedEffect(viewModel, snackbarController, resources) {
         viewModel.refreshErrors.collect { err ->
-            snackbarController.show(
-                message = resources.getString(err.messageRes),
-                target = PaneSnackbarTarget.ContentArea,
-                actionLabel = err.action?.let { resources.getString(it.labelRes) },
-                onAction = err.action?.let { act ->
-                    {
-                        when (act) {
-                            UiErrorAction.Retry -> viewModel.retry(AccessPriority.UserBlocking)
-                            UiErrorAction.Login -> onOpenLogin()
-                            UiErrorAction.Reverify -> viewModel.retry(AccessPriority.UserExplicit)
-                        }
-                    }
-                },
-            )
+            val onAction = err.action?.let { act ->
+                { when (act) { UiErrorAction.Retry -> viewModel.retry(AccessPriority.UserBlocking); UiErrorAction.Login -> onOpenLogin(); UiErrorAction.Reverify -> viewModel.retry(AccessPriority.UserExplicit) } }
+            }
+            snackbarController.show(resources.getString(err.messageRes), PaneSnackbarTarget.ContentArea, err.action?.let { resources.getString(it.labelRes) }, onAction)
         }
     }
 
     val topBarScrollState = rememberForumTopBarScrollState(collapsible = chromeSpec.showForumTabs)
     LaunchedEffect(source) { topBarScrollState.expand() }
 
-    val ownGlassState = if (chromeSpec.useGlassTopBar && shellContentScope?.shellGlassState == null && chromeSpec.externalGlassState == null) {
-        rememberHiGlassState()
-    } else null
-    val topBarGlassState = if (chromeSpec.useGlassTopBar) {
-        shellContentScope?.shellGlassState ?: chromeSpec.externalGlassState ?: ownGlassState
-    } else null
+    val topBarGlassState = if (!chromeSpec.useGlassTopBar) null
+        else shellContentScope?.shellGlassState ?: chromeSpec.externalGlassState ?: rememberHiGlassState()
 
     val topBarExpandedHeight = forumTopBarExpandedHeight(chromeSpec.showForumTabs)
     val layoutDir = LocalLayoutDirection.current
     val listContentPadding = remember(contentPadding, topBarExpandedHeight, layoutDir) {
-        PaddingValues(
-            start = contentPadding.calculateStartPadding(layoutDir),
-            top = topBarExpandedHeight + contentPadding.calculateTopPadding(),
-            end = contentPadding.calculateEndPadding(layoutDir),
-            bottom = contentPadding.calculateBottomPadding(),
-        )
+        PaddingValues(contentPadding.calculateStartPadding(layoutDir), topBarExpandedHeight + contentPadding.calculateTopPadding(), contentPadding.calculateEndPadding(layoutDir), contentPadding.calculateBottomPadding())
     }
-
-    val isScrolledState = remember(listState) {
-        derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
+    var isListScrolled by remember(listState) {
+        mutableStateOf(Snapshot.withoutReadObservation { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 })
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
+            .distinctUntilChanged()
+            .collect { isListScrolled = it }
     }
     val coroutineScope = rememberCoroutineScope()
     val reducedMotion = HiTheme.isReducedMotion
@@ -125,24 +112,20 @@ fun ForumPane(
             }
             else -> {
                 val pullState = rememberPullToRefreshState()
-                val glassSourceModifier = when {
-                    shellContentScope?.shellGlassState != null -> with(shellContentScope) { Modifier.shellGlassSource() }
-                    chromeSpec.externalGlassState != null -> Modifier.hiGlassSource(chromeSpec.externalGlassState)
-                    topBarGlassState != null -> Modifier.hiGlassSource(topBarGlassState)
-                    else -> Modifier
+                val glassSourceModifier = if (shellContentScope?.shellGlassState != null) {
+                    with(shellContentScope) { Modifier.shellGlassSource() }
+                } else {
+                    (chromeSpec.externalGlassState ?: topBarGlassState)?.let(Modifier::hiGlassSource) ?: Modifier
                 }
-                val shouldAutoLoadMore by remember(listState) {
-                    derivedStateOf {
-                        if (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0) return@derivedStateOf false
+                val latestUiState by rememberUpdatedState(uiState)
+                LaunchedEffect(listState, uiState.source) {
+                    snapshotFlow {
+                        val s = latestUiState
+                        if (!s.hasMore || s.isLoading || s.isRefreshing || s.isLoadingMore || s.error != null) return@snapshotFlow false
+                        if (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0) return@snapshotFlow false
                         val info = listState.layoutInfo
-                        val total = info.totalItemsCount
-                        total > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= total - FORUM_PREFETCH_THRESHOLD
-                    }
-                }
-                LaunchedEffect(shouldAutoLoadMore, uiState.hasMore, uiState.isLoading, uiState.isRefreshing, uiState.isLoadingMore, uiState.error, uiState.source) {
-                    if (shouldAutoLoadMore && uiState.hasMore && !uiState.isLoading && !uiState.isRefreshing && !uiState.isLoadingMore && uiState.error == null) {
-                        viewModel.loadMore()
-                    }
+                        info.totalItemsCount > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - FORUM_PREFETCH_THRESHOLD
+                    }.distinctUntilChanged().collect { if (it) viewModel.loadMore() }
                 }
 
                 PullToRefreshBox(
@@ -150,36 +133,15 @@ fun ForumPane(
                     onRefresh = { viewModel.refresh() },
                     state = pullState,
                     modifier = Modifier.fillMaxSize(),
-                    indicator = {
-                        PullToRefreshDefaults.Indicator(
-                            state = pullState,
-                            isRefreshing = uiState.isRefreshing,
-                            modifier = Modifier.align(Alignment.TopCenter).padding(top = topBarExpandedHeight),
-                        )
-                    },
+                    indicator = { PullToRefreshDefaults.Indicator(pullState, uiState.isRefreshing, Modifier.align(Alignment.TopCenter).padding(top = topBarExpandedHeight)) },
                 ) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize().then(glassSourceModifier),
-                        contentPadding = listContentPadding,
-                    ) {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().then(glassSourceModifier), contentPadding = listContentPadding) {
                         items(items = uiState.items, key = { it.tid }) { item ->
-                            Column(
-                                Modifier.animateItem(
-                                    fadeInSpec = HiMotion.effectsDefault(),
-                                    placementSpec = HiMotion.spatialDefault(),
-                                    fadeOutSpec = HiMotion.exit(HiMotion.effectsDefault()),
-                                ),
-                            ) {
-                                ThreadListRow(
-                                    item = item,
-                                    selected = item.tid == selectedTid,
-                                    compactLayout = compactRow,
-                                    onClick = {
-                                        val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
-                                        onOpenThread(ThreadNavArgs(item.tid, item.summary.title, fid, if (fid > 0) headerTitle else item.summary.typeName, item.summary.author))
-                                    },
-                                )
+                            Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
+                                ThreadListRow(item, item.tid == selectedTid, compactRow, onClick = {
+                                    val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
+                                    onOpenThread(ThreadNavArgs(item.tid, item.summary.title, fid, if (fid > 0) headerTitle else item.summary.typeName, item.summary.author))
+                                })
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
                             }
                         }
@@ -220,7 +182,7 @@ fun ForumPane(
             sortByPostTime = uiState.sortByPostTime,
             showForumTabs = chromeSpec.showForumTabs,
             glassState = topBarGlassState,
-            isScrolled = { uiState.items.isNotEmpty() && isScrolledState.value },
+            isScrolled = { uiState.items.isNotEmpty() && isListScrolled },
             scrollState = topBarScrollState,
             onSelectSource = onSelectSource,
             onNewThreadClick = onNewThreadClick,

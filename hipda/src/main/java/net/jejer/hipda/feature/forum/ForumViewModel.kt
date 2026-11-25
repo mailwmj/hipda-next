@@ -55,13 +55,13 @@ private data class AuthSessionKey(val uid: String?, val lastLoginAt: Long?, val 
 
 private data class ForumAuxState(
     val newThreadsBySource: Map<ForumListSource, Int> = emptyMap(),
-    val settledQueries: Set<ThreadListQuery> = emptySet(),
     val authGeneration: Int = 0,
-    val queryAuthGenerations: Map<ThreadListQuery, Int> = emptyMap(),
+    val uidGeneration: Int = 0,
+    val queryUidGenerations: Map<ThreadListQuery, Int> = emptyMap(),
 )
 
 /**
- * 论坛/今日新帖列表 ViewModel：显式 `sortByPostTime` 持久化（R-D4 S1）、账号水合/登录恢复与退登清空（B4-E1 ①/R-E0 R2-S1）、
+ * 论坛/今日新帖列表 ViewModel：显式 `sortByPostTime` 持久化（R-D4 S1）、账号水合/重登恢复与跨号按 `uid` 世代屏蔽旧缓存（B4-E1 ① / R-E0 R2-S1 / R-E1 S3）、
  * `TodayNew` `searchId` 翻页保底及响应式黑名单/已读（B4-E1 ③）、下拉刷新 `tid` diff 与慢网防闪空态（R-E0 S3）。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -81,10 +81,8 @@ class ForumViewModel @Inject constructor(
     private val todayNewState = MutableStateFlow(TodayNewState())
     private val todayNewItems = threadListRepository.observeFiltered(todayNewState.map { it.rawThreads }.distinctUntilChanged())
     private val auxState = MutableStateFlow(ForumAuxState())
-    private val lastItemsBySource = LinkedHashMap<ForumListSource, List<ThreadListItem>>()
     private val _refreshErrors = MutableSharedFlow<UiError>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-    private var activeTodayNewJob: Job? = null
-    private var activeForumRefreshJob: Job? = null
+    private var activeRefreshJob: Job? = null
 
     val refreshErrors: SharedFlow<UiError> = _refreshErrors.asSharedFlow()
 
@@ -94,7 +92,6 @@ class ForumViewModel @Inject constructor(
             when (src) {
                 ForumListSource.TodayNew -> combine(todayNewState, todayNewItems, auxState, siteAccessGateway.challengeState) { tn, items, aux, ch ->
                     val loading = tn.isLoading || (!tn.hasLoadedOnce && items.isEmpty() && tn.error == null)
-                    if (items.isNotEmpty()) lastItemsBySource[src] = items
                     ForumUiState(src, s.followedForums, false, items, loading && items.isEmpty(), tn.isLoading && items.isNotEmpty(), tn.isLoadingMore, tn.hasMore, aux.newThreadsBySource[src] ?: 0, tn.error, tn.challengeFailure, ch)
                 }
                 is ForumListSource.Forum -> {
@@ -102,11 +99,10 @@ class ForumViewModel @Inject constructor(
                     combine(threadListRepository.observeThreadList(q), auxState, siteAccessGateway.challengeState) { load, aux, ch ->
                         val err = load.error
                         val cf = (err as? ThreadListError.ChallengeRequired)?.let { if (it.rejected) ChallengeFailureKind.Rejected else ChallengeFailureKind.Incomplete }
-                        val staleAuth = err is ThreadListError.AuthRequired && aux.queryAuthGenerations[q] != aux.authGeneration
-                        val visibleItems = if (staleAuth) emptyList() else load.items
-                        val unsettled = load.fetchedPage == 0 && load.stopReason == null && q !in aux.settledQueries
-                        val loading = load.isLoading || (unsettled && visibleItems.isEmpty() && err == null)
-                        if (visibleItems.isNotEmpty()) lastItemsBySource[src] = visibleItems
+                        val staleUidCache = aux.uidGeneration > 0 && aux.queryUidGenerations[q] != aux.uidGeneration
+                        val visibleItems = if (staleUidCache) emptyList() else load.items
+                        val unsettled = (staleUidCache || (load.fetchedPage == 0 && load.stopReason == null)) && err == null
+                        val loading = load.isLoading || (unsettled && visibleItems.isEmpty())
                         ForumUiState(src, s.followedForums, load.query.sortByPostTime ?: s.isSortByPostTime(src.fid), visibleItems, loading && visibleItems.isEmpty(), load.isLoading && visibleItems.isNotEmpty(), load.isLoadingMore, load.hasMore, aux.newThreadsBySource[src] ?: 0, err?.let(UiErrorMapper::map), cf, ch)
                     }
                 }
@@ -150,7 +146,7 @@ class ForumViewModel @Inject constructor(
                         (key.isSignedIn && !prev.isSignedIn && uiState.value.error?.action == UiErrorAction.Login)
                     )
                 if (uidChanged || sameAccountRecovered) {
-                    resetForAuthChange(clearItems = uidChanged)
+                    resetForAuthChange(uidChanged = uidChanged)
                     refreshInternal(AccessPriority.UserBlocking, computeDiff = false)
                 }
             }
@@ -179,7 +175,7 @@ class ForumViewModel @Inject constructor(
             ForumListSource.TodayNew -> {
                 val tn = todayNewState.value
                 if (tn.isLoading || tn.isLoadingMore || !tn.hasMore) return
-                activeTodayNewJob = viewModelScope.launch { loadTodayNew(tn.page + 1, true, priority, emptyList()) }
+                activeRefreshJob = viewModelScope.launch { loadTodayNew(tn.page + 1, true, priority, emptyList()) }
             }
             is ForumListSource.Forum -> viewModelScope.launch { threadListRepository.loadMore(forumQuery(src.fid), priority = priority) }
         }
@@ -191,34 +187,31 @@ class ForumViewModel @Inject constructor(
 
     private fun refreshInternal(priority: AccessPriority, computeDiff: Boolean) {
         val src = activeSource.value
-        val previous = if (computeDiff) currentItemsFor(src) else emptyList()
-        when (src) {
+        val previous = if (computeDiff) uiState.value.takeIf { it.source == src }?.items.orEmpty() else emptyList()
+        activeRefreshJob?.cancel()
+        activeRefreshJob = when (src) {
             ForumListSource.TodayNew -> {
                 todayNewInitialized = true
-                activeTodayNewJob?.cancel()
-                activeTodayNewJob = viewModelScope.launch { loadTodayNew(1, false, priority, previous) }
+                viewModelScope.launch { loadTodayNew(1, false, priority, previous) }
             }
             is ForumListSource.Forum -> {
                 val q = forumQuery(src.fid)
                 initializedQueries.add(q)
-                activeForumRefreshJob?.cancel()
-                activeForumRefreshJob = viewModelScope.launch { executeForumRefresh(src, q, priority, previous) }
+                viewModelScope.launch { executeForumRefresh(src, q, priority, previous) }
             }
         }
     }
 
     private suspend fun executeForumRefresh(src: ForumListSource.Forum, query: ThreadListQuery, priority: AccessPriority, diffPrevious: List<ThreadListItem>) {
-        val gen = auxState.value.authGeneration
+        val snap = auxState.value
         val result = threadListRepository.refresh(query, priority = priority)
-        if (auxState.value.authGeneration != gen) return
+        if (auxState.value.authGeneration != snap.authGeneration) return
         when (result) {
             is ThreadListBatchResult -> {
                 val newCount = computeTopNewThreadsCount(diffPrevious, result.items)
-                lastItemsBySource[src] = result.items
-                auxState.update { it.copy(settledQueries = it.settledQueries + query, queryAuthGenerations = it.queryAuthGenerations + (query to gen), newThreadsBySource = it.newThreadsBySource + (src to newCount)) }
+                auxState.update { it.copy(queryUidGenerations = it.queryUidGenerations + (query to snap.uidGeneration), newThreadsBySource = it.newThreadsBySource + (src to newCount)) }
             }
             is ThreadListError -> {
-                auxState.update { it.copy(settledQueries = it.settledQueries + query) }
                 if (diffPrevious.isNotEmpty() && result !is ThreadListError.AuthRequired) _refreshErrors.tryEmit(UiErrorMapper.map(result))
             }
         }
@@ -237,9 +230,7 @@ class ForumViewModel @Inject constructor(
                     cur.copy(rawThreads = merged, page = res.page, searchId = if (append) (res.searchId ?: cur.searchId) else res.searchId, hasMore = res.hasNextPage, hasLoadedOnce = true, isLoading = false, isLoadingMore = false)
                 }
                 if (!append) {
-                    val filtered = threadListRepository.observeFiltered(flowOf(mapped)).first()
-                    lastItemsBySource[ForumListSource.TodayNew] = filtered
-                    val newCount = computeTopNewThreadsCount(diffPrevious, filtered)
+                    val newCount = if (diffPrevious.isEmpty()) 0 else computeTopNewThreadsCount(diffPrevious, todayNewItems.first())
                     auxState.update { it.copy(newThreadsBySource = it.newThreadsBySource + (ForumListSource.TodayNew to newCount)) }
                 }
             }
@@ -253,15 +244,19 @@ class ForumViewModel @Inject constructor(
         }
     }
 
-    private fun resetForAuthChange(clearItems: Boolean) {
-        activeTodayNewJob?.cancel(); activeForumRefreshJob?.cancel()
+    private fun resetForAuthChange(uidChanged: Boolean) {
+        activeRefreshJob?.cancel()
         initializedQueries.clear(); todayNewInitialized = false
-        if (clearItems) { todayNewState.value = TodayNewState(); lastItemsBySource.clear() }
-        auxState.update { it.copy(newThreadsBySource = emptyMap(), settledQueries = emptySet(), authGeneration = it.authGeneration + 1, queryAuthGenerations = if (clearItems) emptyMap() else it.queryAuthGenerations) }
+        if (uidChanged) todayNewState.value = TodayNewState()
+        auxState.update {
+            it.copy(
+                newThreadsBySource = emptyMap(),
+                authGeneration = it.authGeneration + 1,
+                uidGeneration = if (uidChanged) it.uidGeneration + 1 else it.uidGeneration,
+                queryUidGenerations = if (uidChanged) emptyMap() else it.queryUidGenerations,
+            )
+        }
     }
-
-    private fun currentItemsFor(src: ForumListSource): List<ThreadListItem> =
-        uiState.value.takeIf { it.source == src && it.items.isNotEmpty() }?.items ?: lastItemsBySource[src].orEmpty()
 
     private fun clearNewThreadsCount(src: ForumListSource) =
         auxState.update { if ((it.newThreadsBySource[src] ?: 0) == 0) it else it.copy(newThreadsBySource = it.newThreadsBySource - src) }

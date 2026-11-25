@@ -173,16 +173,17 @@ class ForumViewModelTest {
         collector.cancel()
     }
 
-    /** 闭合 R-E0 R2-S1：退登/换号同步清空 todayNewState，防止残留上一账号列表遮蔽「需要登录才能查看」。 */
+    /** 闭合 R-E0 R2-S1 & R-E1 S2：退登及在版块页 A→B 切号均同步清空后台 todayNewState，防止残留旧账号列表。 */
     @Test
     fun logoutAndAccountSwitch_resetTodayNewStateAndShowLoginErrorInsteadOfStaleItems() = runTest {
         val accountA = SavedAccount(uid = "42", username = "UserA", passwordMd5 = "a".repeat(32), lastLoginAt = 100L)
+        val accountB = SavedAccount(uid = "99", username = "UserB", passwordMd5 = "b".repeat(32), lastLoginAt = 200L)
         val authRepo = TestAuthRepository(initialAccount = accountA)
+        var failAccountBTodayNew = false
         val searchRepo = TestSearchRepository { page, _ ->
-            if (authRepo.currentAccount.value == null) {
-                SearchError.AuthRequired(AuthRequiredReason.MANUALLY_LOGGED_OUT)
-            } else {
-                SearchResult.Success(
+            when (authRepo.currentAccount.value?.uid) {
+                null -> SearchError.AuthRequired(AuthRequiredReason.MANUALLY_LOGGED_OUT)
+                accountA.uid -> SearchResult.Success(
                     page = page,
                     fullText = false,
                     searchPage = SearchPage(
@@ -192,22 +193,109 @@ class ForumViewModelTest {
                         meta = emptyMeta(),
                     ),
                 )
+                else -> if (failAccountBTodayNew) {
+                    SearchError.NetworkError("b-offline")
+                } else {
+                    SearchResult.Success(
+                        page = page,
+                        fullText = false,
+                        searchPage = SearchPage(
+                            searchId = "sid-b",
+                            maxPage = 1,
+                            items = listOf(SearchItem("9002", null, "账号B的今日新帖", null, "作者B", "2", null, "刚刚", "Geek Talks")),
+                            meta = emptyMeta(),
+                        ),
+                    )
+                }
             }
         }
         val vm = ForumViewModel(TestThreadListRepository(), searchRepo, TestSettingsRepository(), authRepo, idleGateway())
-        val collector = backgroundScope.launch { vm.uiState.collect {} }
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
         vm.bindSource(ForumListSource.TodayNew)
         advanceUntilIdle()
 
         assertEquals(listOf("9001"), vm.uiState.value.items.map(ThreadListItem::tid))
 
-        // 手动退出登录：todayNewState 必须同步清空并展示 AuthRequired 错误页
+        // 1. 手动退出登录：todayNewState 必须同步清空并展示 AuthRequired 错误页
         authRepo.logout()
         advanceUntilIdle()
 
         assertTrue("退登后不得残留旧账号今日新帖条目", vm.uiState.value.items.isEmpty())
         assertEquals(R.string.common_error_login_required, vm.uiState.value.error?.messageRes)
         assertEquals(UiErrorAction.Login, vm.uiState.value.error?.action)
+
+        // 2. R-E1 S2：账号 A 加载今日新帖后切回版块页，在版块页执行 A→B 切号，再切回今日新帖不得残留 A 的任何帖子
+        authRepo.signIn(accountA)
+        advanceUntilIdle()
+        assertEquals(listOf("9001"), vm.uiState.value.items.map(ThreadListItem::tid))
+
+        vm.bindSource(ForumListSource.Forum(2))
+        advanceUntilIdle()
+        failAccountBTodayNew = true
+        authRepo.signIn(accountB)
+        advanceUntilIdle()
+
+        vm.bindSource(ForumListSource.TodayNew)
+        advanceUntilIdle()
+        assertTrue("在版块页 A→B 切号后后台今日新帖必须已清空，不得残留 A 的 9001", vm.uiState.value.items.isEmpty())
+        assertEquals(R.string.common_error_network, vm.uiState.value.error?.messageRes)
+
+        failAccountBTodayNew = false
+        vm.retry()
+        advanceUntilIdle()
+        assertEquals(listOf("9002"), vm.uiState.value.items.map(ThreadListItem::tid))
+        collector.cancel()
+    }
+
+    /** 闭合 R-E1 S3：A 账号有版块缓存，跨号切到 B 账号后请求返回 SiteError（无权访问），必须按 uid 世代屏蔽 A 的全部缓存条目。 */
+    @Test
+    fun accountSwitch_masksPreviousAccountCachedForumItemsWhenNewAccountGetsSiteError() = runTest {
+        val accountA = SavedAccount(uid = "42", username = "UserA", passwordMd5 = "a".repeat(32), lastLoginAt = 100L)
+        val accountB = SavedAccount(uid = "99", username = "UserB", passwordMd5 = "b".repeat(32), lastLoginAt = 200L)
+        val authRepo = TestAuthRepository(initialAccount = accountA)
+        val threadRepo = TestThreadListRepository { query ->
+            when {
+                authRepo.currentAccount.value?.uid == accountA.uid -> when (query.fid) {
+                    2 -> successBatch(query, listOf(summary("2001", "账号A在版块2的帖子1"), summary("2002", "账号A在版块2的帖子2")))
+                    6 -> successBatch(query, listOf(summary("6001", "账号A在版块6的帖子")))
+                    else -> successBatch(query, emptyList(), stopReason = ThreadListBackfillStopReason.EMPTY_PAGE)
+                }
+                query.fid == 2 || query.fid == 6 -> ThreadListError.SiteError("抱歉，您没有权限访问该版块")
+                else -> successBatch(query, listOf(summary("7001", "账号B在公开版块的帖子")))
+            }
+        }
+        val vm = ForumViewModel(threadRepo, TestSearchRepository(), TestSettingsRepository(), authRepo, idleGateway())
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
+        advanceUntilIdle()
+
+        // A 账号先在版块 2 与版块 6 建立仓库内存缓存
+        assertEquals(listOf("2001", "2002"), vm.uiState.value.items.map(ThreadListItem::tid))
+        vm.bindSource(ForumListSource.Forum(6))
+        advanceUntilIdle()
+        assertEquals(listOf("6001"), vm.uiState.value.items.map(ThreadListItem::tid))
+        vm.bindSource(ForumListSource.Forum(2))
+        advanceUntilIdle()
+        assertEquals(listOf("2001", "2002"), vm.uiState.value.items.map(ThreadListItem::tid))
+
+        // 跨号切换到 B 账号：B 请求版块 2 返回 SiteError，仓库内存仍保留旧 items，界面必须屏蔽 A 的任何帖子
+        authRepo.signIn(accountB)
+        advanceUntilIdle()
+        assertTrue("切号后 SiteError 分支严禁泄露 A 账号在版块 2 的缓存帖子", vm.uiState.value.items.isEmpty())
+        assertFalse(vm.uiState.value.isLoading)
+        assertEquals(R.string.common_error_no_forum_permission, vm.uiState.value.error?.messageRes)
+
+        // B 切换到此前 A 缓存过的版块 6 且同样返回 SiteError：同样不得泄露 A 的 6001
+        vm.bindSource(ForumListSource.Forum(6))
+        advanceUntilIdle()
+        assertTrue("切号后 SiteError 分支严禁泄露 A 账号在版块 6 的缓存帖子", vm.uiState.value.items.isEmpty())
+        assertFalse(vm.uiState.value.isLoading)
+        assertEquals(R.string.common_error_no_forum_permission, vm.uiState.value.error?.messageRes)
+
+        // B 切换到有权限的版块 7：正常展示 B 自己的帖子
+        vm.bindSource(ForumListSource.Forum(7))
+        advanceUntilIdle()
+        assertEquals(listOf("7001"), vm.uiState.value.items.map(ThreadListItem::tid))
+        assertNull(vm.uiState.value.error)
         collector.cancel()
     }
 
@@ -352,18 +440,20 @@ class ForumViewModelTest {
         }
     }
 
-    /** 闭合 R-E0 S3：慢网下切版块绝不闪现「暂无帖子」空态，且新版块请求不被旧慢请求串行阻塞。 */
+    /** 闭合 R-E0 S3 & R-E1 S2：慢网下 2→6→2 往返绝不闪现「暂无帖子」空态、不被旧慢请求阻塞，且取消后回滚初始化标记会重新拉取版块 2。 */
     @Test
     fun slowNetworkSourceSwitch_neverFlashesEmptyStateAndStartsNewForumImmediately() = runTest {
         val standardDispatcher = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(standardDispatcher)
         try {
-            val gateForum2 = CompletableDeferred<Unit>()
+            val gateForum2First = CompletableDeferred<Unit>()
+            val gateForum2Return = CompletableDeferred<Unit>()
             val gateForum6 = CompletableDeferred<Unit>()
+            val forum2Attempts = AtomicInteger(0)
             val threadRepo = TestThreadListRepository { query ->
                 when (query.fid) {
                     2 -> {
-                        gateForum2.await()
+                        if (forum2Attempts.incrementAndGet() == 1) gateForum2First.await() else gateForum2Return.await()
                         successBatch(query, listOf(summary("2001", "版块2帖子")))
                     }
                     6 -> {
@@ -399,6 +489,26 @@ class ForumViewModelTest {
             assertEquals(listOf("6001"), vm.uiState.value.items.map(ThreadListItem::tid))
             assertFalse(vm.uiState.value.isLoading)
 
+            // R-E1 S2：2→6→2 往返，首次 Forum(2) 请求被取消后必须回滚 initializedQueries 并在切回时重新发起请求且不闪空态
+            observedStates.clear()
+            vm.bindSource(ForumListSource.Forum(2))
+            advanceUntilIdle()
+
+            assertEquals("2→6→2 往返时必须重新发起第 2 次 Forum(2) 刷新请求", 2, threadRepo.refreshQueries.count { it.fid == 2 })
+            val flashedEmptyOnReturn = observedStates.any { state ->
+                state.source == ForumListSource.Forum(2) &&
+                    state.items.isEmpty() &&
+                    !state.isLoading &&
+                    state.error == null
+            }
+            assertFalse("2→6→2 切回版块 2 加载期间严禁闪现空态", flashedEmptyOnReturn)
+            assertTrue("2→6→2 切回版块 2 响应未到前应展示骨架态", vm.uiState.value.isLoading)
+
+            gateForum2Return.complete(Unit)
+            advanceUntilIdle()
+            assertEquals(listOf("2001"), vm.uiState.value.items.map(ThreadListItem::tid))
+            assertFalse(vm.uiState.value.isLoading)
+
             // 切至真正无帖的空版块 7：加载完成后才正常显示空态
             vm.bindSource(ForumListSource.Forum(7))
             advanceUntilIdle()
@@ -406,7 +516,7 @@ class ForumViewModelTest {
             assertFalse(vm.uiState.value.isLoading)
             assertNull(vm.uiState.value.error)
 
-            gateForum2.complete(Unit)
+            gateForum2First.complete(Unit)
             collector.cancel()
         } finally {
             Dispatchers.setMain(testDispatcher)

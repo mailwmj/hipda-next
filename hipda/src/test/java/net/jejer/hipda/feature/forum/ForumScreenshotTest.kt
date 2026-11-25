@@ -1,9 +1,13 @@
 package net.jejer.hipda.feature.forum
 
+import android.app.Activity
 import android.app.Application
+import android.content.Context
+import android.graphics.Rect as AndroidRect
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
@@ -24,12 +28,18 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
+import androidx.window.layout.FoldingFeature
+import androidx.window.layout.WindowInfoTracker
+import androidx.window.layout.WindowInfoTrackerDecorator
+import androidx.window.layout.WindowLayoutInfo
 import coil3.ImageLoader
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import net.jejer.hipda.R
 import net.jejer.hipda.data.account.SavedAccount
@@ -75,8 +85,11 @@ import net.jejer.hipda.ui.designsystem.HiFontSizeStep
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.captureHiSnapshot
+import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
 import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import net.jejer.hipda.ui.designsystem.state.HiEmptyState
 import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 import net.jejer.hipda.ui.shell.HiAdaptiveShell
@@ -216,6 +229,40 @@ class ForumScreenshotTest {
     @Config(qualifiers = FeatureScreenshotQualifiers.EXPANDED_933_696)
     fun forum_w933_h696_skeleton_dark() = captureForum("forum_w933_h696_skeleton_dark", HiThemeMode.DARK, mode = ScreenMode.Skeleton)
 
+    // ---- 铰链双栏纯色顶栏基线（闭合 V-E1 F2，2 张） ----
+
+    @Test
+    @Config(qualifiers = "w860dp-h744dp-xhdpi")
+    fun forum_hinge_w860_h744_light() = captureHingeForum("forum_hinge_w860_h744_light", HiThemeMode.LIGHT)
+
+    @Test
+    @Config(qualifiers = "w860dp-h744dp-xhdpi")
+    fun forum_hinge_w860_h744_dark() = captureHingeForum("forum_hinge_w860_h744_dark", HiThemeMode.DARK)
+
+    @Suppress("RestrictedApi")
+    private fun captureHingeForum(name: String, themeMode: HiThemeMode) {
+        val density = 2f
+        val hingeFeature = FakeFoldingFeature(
+            bounds = AndroidRect((426 * density).roundToInt(), 0, (434 * density).roundToInt(), (744 * density).roundToInt()),
+            orientation = FoldingFeature.Orientation.VERTICAL,
+            state = FoldingFeature.State.HALF_OPENED,
+            isSeparating = true,
+        )
+        val layoutInfo = WindowLayoutInfo(listOf(hingeFeature))
+        val decorator = object : WindowInfoTrackerDecorator {
+            override fun decorate(tracker: WindowInfoTracker): WindowInfoTracker = object : WindowInfoTracker {
+                override fun windowLayoutInfo(activity: Activity): Flow<WindowLayoutInfo> = flowOf(layoutInfo)
+                override fun windowLayoutInfo(context: Context): Flow<WindowLayoutInfo> = flowOf(layoutInfo)
+            }
+        }
+        WindowInfoTracker.overrideDecorator(decorator)
+        try {
+            captureForum(name = name, themeMode = themeMode, expectHingeSolidTopBar = true)
+        } finally {
+            WindowInfoTracker.reset()
+        }
+    }
+
     private fun captureForum(
         name: String,
         themeMode: HiThemeMode,
@@ -225,11 +272,14 @@ class ForumScreenshotTest {
         mode: ScreenMode = ScreenMode.Content,
         scrollToCollapseTopBar: Boolean = false,
         triggerNewThreadsPill: Int = 0,
+        expectHingeSolidTopBar: Boolean = false,
     ) {
         val harness = ScreenshotHarness(mode, followedForums)
         val offlineLoader = ImageLoader.Builder(ApplicationProvider.getApplicationContext()).build()
         var touchSlop = 0f
         var listState: LazyListState? = null
+        var latestLayoutMode: ShellPaneLayoutMode? = null
+        var latestUseGlassTopBar: Boolean? = null
 
         try {
             if (mode == ScreenMode.Skeleton) {
@@ -262,6 +312,8 @@ class ForumScreenshotTest {
                                 useGlassTopBar = paneLayout.layoutMode != ShellPaneLayoutMode.HingeTwoPane,
                                 externalGlassState = shellGlassState,
                             )
+                            latestLayoutMode = paneLayout.layoutMode
+                            latestUseGlassTopBar = chromeSpec.useGlassTopBar
                             val forumSlot: @Composable (Modifier) -> Unit = { slotModifier ->
                                 ForumPane(
                                     source = ForumListSource.Forum(2),
@@ -278,9 +330,14 @@ class ForumScreenshotTest {
                                 )
                             }
                             if (paneLayout.hasDetailPane) {
+                                val hingeWidthDp = paneLayout.hingeBoundsDp?.let { (it.right - it.left).coerceAtLeast(0f).dp } ?: 0.dp
                                 Row(Modifier.fillMaxSize()) {
                                     forumSlot(Modifier.width(paneLayout.middlePaneWidthDp.dp).fillMaxHeight())
-                                    Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+                                    if (hingeWidthDp > 0.dp) {
+                                        Spacer(Modifier.width(hingeWidthDp))
+                                    } else {
+                                        Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+                                    }
                                     Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
                                         HiEmptyState(stringResource(R.string.shell_empty_select_thread))
                                     }
@@ -327,6 +384,15 @@ class ForumScreenshotTest {
                 }
             }
 
+            if (expectHingeSolidTopBar) {
+                assertEquals(ShellPaneLayoutMode.HingeTwoPane, latestLayoutMode)
+                assertFalse("铰链双栏下论坛顶栏必须禁用玻璃降级为纯色", requireNotNull(latestUseGlassTopBar))
+                val glassNodes = composeRule.onAllNodes(
+                    SemanticsMatcher.expectValue(HiGlassMarker, true),
+                    useUnmergedTree = true,
+                ).fetchSemanticsNodes()
+                assertEquals("铰链双栏应仅底部 CompactPill 为 1 块玻璃，纯色顶栏 0 玻璃节点", 1, glassNodes.size)
+            }
             composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
             composeRule.onRoot().captureHiSnapshot(name)
         } finally {
@@ -528,4 +594,12 @@ class ForumScreenshotTest {
             ),
         )
     }
+
+    private class FakeFoldingFeature(
+        override val bounds: AndroidRect,
+        override val orientation: FoldingFeature.Orientation,
+        override val state: FoldingFeature.State,
+        override val isSeparating: Boolean,
+        override val occlusionType: FoldingFeature.OcclusionType = FoldingFeature.OcclusionType.FULL,
+    ) : FoldingFeature
 }

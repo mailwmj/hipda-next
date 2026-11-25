@@ -1,40 +1,38 @@
 package net.jejer.hipda.feature.forum
 
 import android.app.Application
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ExperimentalComposeRuntimeApi
+import androidx.compose.runtime.RecomposeScope
+import androidx.compose.runtime.Recomposer
+import androidx.compose.runtime.currentComposer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.compose.runtime.tooling.ComposeToolingApi
+import androidx.compose.runtime.tooling.CompositionData
+import androidx.compose.runtime.tooling.CompositionObserver
+import androidx.compose.runtime.tooling.CompositionObserverHandle
+import androidx.compose.runtime.tooling.CompositionRegistrationObserver
+import androidx.compose.runtime.tooling.IdentifiableRecomposeScope
+import androidx.compose.runtime.tooling.LocalInspectionTables
+import androidx.compose.runtime.tooling.ObservableComposition
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.LayoutInfo
 import androidx.compose.ui.platform.LocalViewConfiguration
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasAnyAncestor
-import androidx.compose.ui.test.hasContentDescription
-import androidx.compose.ui.test.hasTestTag
-import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.unit.dp
+import java.util.Collections
+import java.util.IdentityHashMap
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,8 +80,6 @@ import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
-import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
-import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.shell.HiAdaptiveShell
 import net.jejer.hipda.ui.shell.ShellDestination
 import okhttp3.OkHttpClient
@@ -354,112 +350,175 @@ class ForumTopBarScrollTest {
         onNodeWithText("今日新帖").assertIsDisplayed()
     }
 
-    /** 验收 5：列表持续滚动折叠/展开期间，顶栏与列表项 0 冗余重组。 */
+    /**
+     * 验收 5（闭合 R-E1 S1）：挂载真实 ForumPane，通过 Recomposer.observe + CompositionObserver
+     * 同时监控外层宿主与所有内层作用域（ForumPane / BoxWithConstraints / ForumTopBar / ForumTopBarBackground /
+     * ForumTopBarUpperRow / BalancedForumTabRow / 已见 ThreadListRow），验证持续滚动折叠与展开期间 0 冗余重组。
+     */
+    @OptIn(ComposeToolingApi::class, ExperimentalComposeRuntimeApi::class)
     @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
     fun continuousScroll_topBarAndRowsHaveZeroRedundantRecompositions() = withAnimatorDurationScale(1f) {
-        val topBarCounter = RecompositionCounter("ForumTopBar")
-        val rowCounters = LinkedHashMap<String, RecompositionCounter>()
-        val itemsList = (1..40).map { idx -> ThreadListItem(sampleSummary("30$idx", "性能门禁帖子标题 $idx"), isVisited = idx % 3 == 0) }
+        val vm = createForumViewModel(itemCount = 50)
+        val hostCounter = RecompositionCounter("ForumPaneHost")
+        val inspectionTables = Collections.newSetFromMap(IdentityHashMap<CompositionData, Boolean>())
+        var listState: LazyListState? = null
         var touchSlop = 0f
 
         setContent {
             touchSlop = LocalViewConfiguration.current.touchSlop
-            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                val listState = rememberLazyListState()
-                val topBarScrollState = rememberForumTopBarScrollState(collapsible = true)
-                val glassState = rememberHiGlassState()
-                val topPadding = forumTopBarExpandedHeight(showForumTabs = true)
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .nestedScroll(topBarScrollState.nestedScrollConnection),
-                ) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .hiGlassSource(glassState)
-                            .testTag("perf_list"),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = topPadding),
-                    ) {
-                        items(items = itemsList, key = { it.tid }) { item ->
-                            val counter = rowCounters.getOrPut(item.tid) { RecompositionCounter("Row-${item.tid}") }
-                            counter.Track()
-                            ThreadListRow(
-                                item = item,
-                                selected = false,
-                                compactLayout = false,
-                                onClick = {},
-                            )
-                        }
-                    }
-                    TrackedTopBar(
-                        counter = topBarCounter,
-                        glassState = glassState,
-                        scrollState = topBarScrollState,
+            currentComposer.collectParameterInformation()
+            inspectionTables.add(currentComposer.compositionData)
+            CompositionLocalProvider(LocalInspectionTables provides inspectionTables) {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    val state = rememberLazyListState()
+                    listState = state
+                    hostCounter.Track()
+                    ForumPane(
+                        source = ForumListSource.Forum(2),
+                        chromeSpec = ForumChromeSpec(showForumTabs = true, useGlassTopBar = true),
+                        selectedTid = null,
+                        onSelectSource = {},
+                        onOpenThread = {},
+                        onOpenLogin = {},
+                        listState = state,
+                        viewModel = vm,
                     )
                 }
             }
         }
         waitForIdle()
 
-        val topBarCountAfterInit = topBarCounter.count
-        val rowCountsBeforeScroll = rowCounters.mapValues { it.value.count }
+        val lazyState = requireNotNull(listState)
+        val runningRecomposers = Recomposer.runningRecomposers.value
+        assertTrue("测试环境应存在运行中的 Recomposer 以观察内层重组作用域", runningRecomposers.isNotEmpty())
+        val titleRowHeightPx = with(density) { FORUM_TOP_BAR_TITLE_ROW_HEIGHT.toPx() }
 
-        // 连续多步向下拖动滚动再向上拖回
-        onNodeWithTag("perf_list").performTouchInput {
-            down(center)
-            moveBy(Offset(0f, -touchSlop))
-            repeat(6) {
-                moveBy(Offset(0f, -40f), delayMillis = 16L)
-            }
-            advanceEventTime(200L)
-            up()
-        }
+        // 先将列表定位到中段（远离顶部与底部自动续载阈值），让 isScrolled=true 首帧稳定
+        runOnIdle { lazyState.requestScrollToItem(index = 6, scrollOffset = 0) }
         waitForIdle()
+        val expandedTabTop = onNodeWithText("今日新帖").fetchSemanticsNode().boundsInRoot.top
 
-        onNodeWithTag("perf_list").performTouchInput {
-            down(center)
-            moveBy(Offset(0f, touchSlop))
-            repeat(6) {
-                moveBy(Offset(0f, 40f), delayMillis = 16L)
+        // 校验 LocalInspectionTables 确实能解析真实 ForumPane 及其所有内层 Composable 的 sourceInfo（防止断言空转假绿）
+        fun collectAllSourceInfos(): Set<String> {
+            val out = LinkedHashSet<String>()
+            fun walk(data: CompositionData) {
+                data.compositionGroups.forEach { group ->
+                    group.sourceInfo?.let(out::add)
+                    walk(group)
+                }
             }
-            advanceEventTime(200L)
-            up()
+            inspectionTables.forEach(::walk)
+            return out
         }
-        waitForIdle()
-
-        assertEquals("持续滚动折叠与展开期间 ForumTopBar 不得发生冗余重组", topBarCountAfterInit, topBarCounter.count)
-        // 仍在视口内的已有行不得因滚动位移而重组
-        rowCountsBeforeScroll.forEach { (tid, beforeCount) ->
-            val afterCount = rowCounters.getValue(tid).count
-            assertEquals("列表项 $tid 在持续滚动中不得发生冗余重组", beforeCount, afterCount)
-        }
-    }
-
-    @Composable
-    private fun TrackedTopBar(
-        counter: RecompositionCounter,
-        glassState: net.jejer.hipda.ui.designsystem.glass.HiGlassState,
-        scrollState: ForumTopBarScrollState,
-    ) {
-        counter.Track()
-        ForumTopBar(
-            title = "Discovery",
-            source = ForumListSource.Forum(2),
-            followedForums = listOf(2, 6, 7),
-            sortByPostTime = false,
-            showForumTabs = true,
-            glassState = glassState,
-            isScrolled = { true },
-            scrollState = scrollState,
-            onSelectSource = {},
-            onNewThreadClick = {},
-            onSelectSortByPostTime = {},
-            onManageForumsClick = {},
+        val allSourceInfos = collectAllSourceInfos()
+        val guardedInnerNames = listOf(
+            "ForumPane",
+            "ForumTopBar",
+            "ForumTopBarBackground",
+            "ForumTopBarUpperRow",
+            "BalancedForumTabRow",
+            "ForumTabItem",
+            "NewThreadsPill",
+            "ThreadListRow",
         )
+        guardedInnerNames.forEach { name ->
+            assertTrue("InspectionTables 必须覆盖真实内层作用域 $name", allSourceInfos.any { name in it })
+        }
+
+        fun resolveSourceInfo(scope: RecomposeScope): String? {
+            val id = (scope as? IdentifiableRecomposeScope)?.identity ?: return null
+            return inspectionTables.firstNotNullOfOrNull { it.find(id)?.sourceInfo }
+        }
+
+        val trackedHandles = mutableListOf<CompositionObserverHandle>()
+        val existingCompositions = Collections.newSetFromMap(IdentityHashMap<ObservableComposition, Boolean>())
+        val forumReenteredScopes = Collections.synchronizedList(mutableListOf<String>())
+        val forumInvalidatedScopes = Collections.synchronizedList(mutableListOf<String>())
+        var recording = false
+
+        val registrationObserver = object : CompositionRegistrationObserver {
+            override fun onCompositionRegistered(composition: ObservableComposition) {
+                if (!recording) existingCompositions.add(composition)
+                val isExisting = composition in existingCompositions
+                trackedHandles += composition.setObserver(
+                    object : CompositionObserver {
+                        override fun onBeginComposition(composition: ObservableComposition) = Unit
+                        override fun onScopeEnter(scope: RecomposeScope) {
+                            if (!recording) return
+                            val info = resolveSourceInfo(scope) ?: return
+                            val isForumUiScope = guardedInnerNames.any { it != "ThreadListRow" && it in info }
+                            val isExistingRowScope = isExisting && "ThreadListRow" in info
+                            if (isForumUiScope || isExistingRowScope) {
+                                forumReenteredScopes += info
+                            }
+                        }
+                        override fun onReadInScope(scope: RecomposeScope, value: Any) = Unit
+                        override fun onScopeExit(scope: RecomposeScope) = Unit
+                        override fun onEndComposition(composition: ObservableComposition) = Unit
+                        override fun onScopeInvalidated(scope: RecomposeScope, value: Any?) {
+                            if (!recording) return
+                            val info = resolveSourceInfo(scope) ?: return
+                            val isForumUiScope = guardedInnerNames.any { it != "ThreadListRow" && it in info }
+                            val isExistingRowScope = isExisting && "ThreadListRow" in info
+                            if (isForumUiScope || isExistingRowScope) {
+                                forumInvalidatedScopes += "$info<-${value?.javaClass?.simpleName}"
+                            }
+                        }
+                        override fun onScopeDisposed(scope: RecomposeScope) = Unit
+                    },
+                )
+            }
+
+            override fun onCompositionUnregistered(composition: ObservableComposition) = Unit
+        }
+        val registrationHandles = runningRecomposers.map { it.observe(registrationObserver) }
+
+        try {
+            val hostCountBeforeScroll = hostCounter.count
+            recording = true
+
+            // 连续 6 步向下拖动折叠上行
+            onNode(verticalScrollMatcher()).performTouchInput {
+                down(center)
+                moveBy(Offset(0f, -touchSlop))
+                repeat(6) { moveBy(Offset(0f, -32f), delayMillis = 16L) }
+                advanceEventTime(200L)
+                moveBy(Offset.Zero)
+                up()
+            }
+            waitForIdle()
+            val collapsedTabTop = onNodeWithText("今日新帖").fetchSemanticsNode().boundsInRoot.top
+            assertEquals("中段持续下滑应真正折叠顶栏上行（防止静止假绿）", expandedTabTop - titleRowHeightPx, collapsedTabTop, 2f)
+
+            // 连续 6 步向上拖动重新展开上行（停留在中段不触顶）
+            onNode(verticalScrollMatcher()).performTouchInput {
+                down(center)
+                moveBy(Offset(0f, touchSlop))
+                repeat(6) { moveBy(Offset(0f, 32f), delayMillis = 16L) }
+                advanceEventTime(200L)
+                moveBy(Offset.Zero)
+                up()
+            }
+            waitForIdle()
+            val reExpandedTabTop = onNodeWithText("今日新帖").fetchSemanticsNode().boundsInRoot.top
+            assertEquals("中段持续上滑应真正恢复顶栏上行展开", expandedTabTop, reExpandedTabTop, 2f)
+            assertTrue("整个往返过程应停留在中段避免跨过 (0,0) 临界点", lazyState.firstVisibleItemIndex >= 1)
+
+            assertEquals("持续滚动折叠与展开期间 ForumPane 外层宿主不得冗余重组", hostCountBeforeScroll, hostCounter.count)
+            assertTrue(
+                "持续滚动折叠与展开期间 ForumPane/ForumTopBar 及全部内层作用域不得失效，实际=$forumInvalidatedScopes",
+                forumInvalidatedScopes.isEmpty(),
+            )
+            assertTrue(
+                "持续滚动折叠与展开期间 ForumPane/ForumTopBar 及已见 ThreadListRow 内层作用域不得重入，实际=$forumReenteredScopes",
+                forumReenteredScopes.isEmpty(),
+            )
+        } finally {
+            recording = false
+            trackedHandles.forEach { it.dispose() }
+            registrationHandles.forEach { it?.dispose() }
+        }
     }
 
     private fun verticalScrollMatcher(): SemanticsMatcher =
@@ -474,10 +533,10 @@ class ForumTopBarScrollTest {
         return false
     }
 
-    private fun createForumViewModel(): ForumViewModel {
+    private fun createForumViewModel(itemCount: Int = 30): ForumViewModel {
         val itemsByFid = mapOf(
-            2 to (1..30).map { sampleSummary("20$it", "Discovery 滚动验证帖子 $it") },
-            6 to (1..30).map { sampleSummary("60$it", "Buy & Sell 帖子 $it") },
+            2 to (1..itemCount).map { sampleSummary("20$it", "Discovery 滚动验证帖子 $it") },
+            6 to (1..itemCount).map { sampleSummary("60$it", "Buy & Sell 帖子 $it") },
         )
         val states = LinkedHashMap<ThreadListQuery, MutableStateFlow<ThreadListLoadState>>()
         val threadRepo = object : ThreadListRepository {
