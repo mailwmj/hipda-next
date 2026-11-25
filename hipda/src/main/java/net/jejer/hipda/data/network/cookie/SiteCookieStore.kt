@@ -16,7 +16,7 @@ interface SiteCookieStore {
     /** Returns non-expired cookies matching [url] via [Cookie.matches], longer paths first. */
     fun loadForRequest(url: HttpUrl): List<Cookie>
 
-    /** Overwrites by `(name, domain, path)`; already-expired cookies delete any matching entry. */
+    /** Overwrites matching-host cookies by `(name, domain, path)`; expired cookies delete any matching entry. */
     fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>)
 
     /** Clears all stored cookies and flushes the empty state to disk. */

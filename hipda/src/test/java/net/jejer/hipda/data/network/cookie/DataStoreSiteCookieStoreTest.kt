@@ -15,9 +15,12 @@ import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -26,6 +29,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import net.jejer.hipda.data.security.AeadProvider
 import net.jejer.hipda.data.security.KeysetBackend
 import net.jejer.hipda.data.security.TinkAeadProvider
@@ -332,6 +336,7 @@ class DataStoreSiteCookieStoreTest {
     fun clearForHost_removesMatchingHostAndDomainCookiesAndPersists() = runBlocking {
         val file = newCookieFile()
         val wwwUrl = "https://www.4d4y.com/forum/".toHttpUrl()
+        val subWwwUrl = "https://sub.www.4d4y.com/forum/".toHttpUrl()
         val apexUrl = "https://4d4y.com/".toHttpUrl()
         val imgUrl = "https://img.4d4y.com/".toHttpUrl()
         val otherUrl = "https://example.com/".toHttpUrl()
@@ -344,6 +349,7 @@ class DataStoreSiteCookieStoreTest {
                     requireNotNull(Cookie.parse(wwwUrl, "shared_domain=2; Domain=.4d4y.com; Path=/")),
                 ),
             )
+            store.saveFromResponse(subWwwUrl, listOf(requireNotNull(Cookie.parse(subWwwUrl, "sub_www_host=6; Path=/"))))
             store.saveFromResponse(apexUrl, listOf(requireNotNull(Cookie.parse(apexUrl, "apex_host=3; Path=/"))))
             store.saveFromResponse(imgUrl, listOf(requireNotNull(Cookie.parse(imgUrl, "img_host=4; Path=/"))))
             store.saveFromResponse(otherUrl, listOf(requireNotNull(Cookie.parse(otherUrl, "other=5; Path=/"))))
@@ -352,14 +358,29 @@ class DataStoreSiteCookieStoreTest {
             store.clearForHost("WWW.4D4Y.COM")
 
             assertTrue(store.loadForRequest(wwwUrl).isEmpty())
+            assertEquals(listOf("sub_www_host"), store.loadForRequest(subWwwUrl).map { it.name })
             assertEquals(listOf("apex_host"), store.loadForRequest(apexUrl).map { it.name })
             assertEquals(listOf("img_host"), store.loadForRequest(imgUrl).map { it.name })
             assertEquals(listOf("other"), store.loadForRequest(otherUrl).map { it.name })
+
+            // Leading and trailing dots are normalized without touching child subdomains.
+            store.saveFromResponse(wwwUrl, listOf(requireNotNull(Cookie.parse(wwwUrl, "dot_lead=7; Path=/"))))
+            store.clearForHost(".www.4d4y.com")
+            assertTrue(store.loadForRequest(wwwUrl).isEmpty())
+            assertEquals(listOf("sub_www_host"), store.loadForRequest(subWwwUrl).map { it.name })
+
+            store.saveFromResponse(wwwUrl, listOf(requireNotNull(Cookie.parse(wwwUrl, "dot_trail=8; Path=/"))))
+            store.clearForHost("www.4d4y.com.")
+            assertTrue(store.loadForRequest(wwwUrl).isEmpty())
+            assertEquals(listOf("sub_www_host"), store.loadForRequest(subWwwUrl).map { it.name })
         }
 
         withStore(file) { restarted ->
             assertTrue(restarted.loadForRequest(wwwUrl).isEmpty())
-            assertEquals(setOf("apex_host", "img_host", "other"), restarted.snapshot().map { it.name }.toSet())
+            assertEquals(
+                setOf("apex_host", "img_host", "sub_www_host", "other"),
+                restarted.snapshot().map { it.name }.toSet(),
+            )
         }
     }
 
@@ -569,6 +590,220 @@ class DataStoreSiteCookieStoreTest {
             }
         } finally {
             job.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun saveFromResponse_rejectsMismatchedHost_andAllowsDifferentPathOnMatchingHost() = runBlocking {
+        val file = newCookieFile()
+        val exampleUrl = "https://example.com/".toHttpUrl()
+        val wwwRootUrl = "https://www.4d4y.com/".toHttpUrl()
+        val wwwForumUrl = "https://www.4d4y.com/forum/index.php".toHttpUrl()
+
+        withStore(file) { store ->
+            val forgedDomainCookie = Cookie.Builder()
+                .name("cdb_auth")
+                .value("forged")
+                .domain("4d4y.com")
+                .path("/")
+                .build()
+            val forgedApexHostOnly = Cookie.Builder()
+                .name("apex_only")
+                .value("forged_apex")
+                .hostOnlyDomain("4d4y.com")
+                .path("/")
+                .build()
+
+            store.saveFromResponse(exampleUrl, listOf(forgedDomainCookie))
+            store.saveFromResponse(wwwRootUrl, listOf(forgedApexHostOnly))
+            assertTrue(store.snapshot().isEmpty())
+            assertTrue(store.loadForRequest(wwwForumUrl).isEmpty())
+
+            val forumPathCookie = Cookie.Builder()
+                .name("cdb_sid")
+                .value("forum_sid")
+                .domain("4d4y.com")
+                .path("/forum")
+                .build()
+            val secureOverHttpCookie = Cookie.Builder()
+                .name("sec_cookie")
+                .value("s1")
+                .hostOnlyDomain("www.4d4y.com")
+                .path("/forum")
+                .secure()
+                .build()
+
+            store.saveFromResponse(wwwRootUrl, listOf(forumPathCookie))
+            store.saveFromResponse("http://www.4d4y.com/".toHttpUrl(), listOf(secureOverHttpCookie))
+
+            assertEquals(
+                mapOf("cdb_sid" to "forum_sid", "sec_cookie" to "s1"),
+                store.loadForRequest(wwwForumUrl).associate { it.name to it.value },
+            )
+            store.flush()
+        }
+
+        withStore(file) { restarted ->
+            assertEquals(
+                mapOf("cdb_sid" to "forum_sid", "sec_cookie" to "s1"),
+                restarted.loadForRequest(wwwForumUrl).associate { it.name to it.value },
+            )
+        }
+    }
+
+    @Test
+    fun unexpectedWriteException_resetsDrainScheduledAndSubsequentSavePersists() = runBlocking {
+        val url = "https://www.4d4y.com/forum/".toHttpUrl()
+        val attempts = AtomicInteger(0)
+        val firstFailure = CompletableDeferred<Throwable>()
+        val secondWritePersisted = CompletableDeferred<StoredCookieStore>()
+        val lastPersisted = AtomicReference(StoredCookieStore())
+
+        val failingOnceStore = object : DataStore<StoredCookieStore> {
+            override val data: Flow<StoredCookieStore> = flow { emit(lastPersisted.get()) }
+
+            override suspend fun updateData(
+                transform: suspend (t: StoredCookieStore) -> StoredCookieStore,
+            ): StoredCookieStore {
+                if (attempts.incrementAndGet() == 1) {
+                    throw IllegalStateException("Simulated unexpected write error")
+                }
+                val updated = transform(lastPersisted.get())
+                lastPersisted.set(updated)
+                secondWritePersisted.complete(updated)
+                return updated
+            }
+        }
+
+        val job = SupervisorJob()
+        val handler = CoroutineExceptionHandler { _, throwable -> firstFailure.complete(throwable) }
+        val scope = CoroutineScope(Dispatchers.IO + job + handler)
+        try {
+            val store = DataStoreSiteCookieStore(failingOnceStore, scope, clockMillis::get)
+
+            store.saveFromResponse(url, listOf(requireNotNull(Cookie.parse(url, "cdb_sid=first; Path=/"))))
+            val thrown = withTimeout(5_000) { firstFailure.await() }
+            assertTrue(thrown is IllegalStateException)
+
+            // Subsequent async save (without calling flush()) must still schedule and persist.
+            store.saveFromResponse(url, listOf(requireNotNull(Cookie.parse(url, "cdb_auth=second; Path=/"))))
+            val persisted = withTimeout(5_000) { secondWritePersisted.await() }
+
+            assertEquals(2, attempts.get())
+            assertEquals(
+                mapOf("cdb_sid" to "first", "cdb_auth" to "second"),
+                persisted.cookies.associate { it.name to it.value },
+            )
+        } finally {
+            job.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun slowColdStart_concurrentReadSaveAndClear_waitForDiskLoadWithoutLosingCookies() = runBlocking {
+        val url = "https://www.4d4y.com/forum/".toHttpUrl()
+        val persistedLogin = requireNotNull(
+            Cookie.parse(url, "cdb_auth=persisted_login; Domain=.4d4y.com; Path=/"),
+        )
+        val initialPayload = StoredCookieStore(cookies = listOf(persistedLogin.toStoredCookie()))
+
+        // Phase 1: Concurrent loadForRequest + saveFromResponse while cold-start disk read is delayed.
+        val readStarted1 = CompletableDeferred<Unit>()
+        val allowRead1 = CompletableDeferred<Unit>()
+        val persisted1 = AtomicReference(initialPayload)
+        val slowStore1 = object : DataStore<StoredCookieStore> {
+            override val data: Flow<StoredCookieStore> = flow {
+                readStarted1.complete(Unit)
+                allowRead1.await()
+                emit(persisted1.get())
+            }
+
+            override suspend fun updateData(
+                transform: suspend (t: StoredCookieStore) -> StoredCookieStore,
+            ): StoredCookieStore {
+                val updated = transform(persisted1.get())
+                persisted1.set(updated)
+                return updated
+            }
+        }
+
+        val job1 = SupervisorJob()
+        val scope1 = CoroutineScope(Dispatchers.IO + job1)
+        try {
+            val store = DataStoreSiteCookieStore(slowStore1, scope1, clockMillis::get)
+            val writerStarted = CompletableDeferred<Unit>()
+            val reader = async(Dispatchers.Default) { store.loadForRequest(url) }
+            withTimeout(5_000) { readStarted1.await() }
+
+            val writer = async(Dispatchers.Default) {
+                writerStarted.complete(Unit)
+                store.saveFromResponse(url, listOf(requireNotNull(Cookie.parse(url, "cf_clearance=fresh; Path=/"))))
+            }
+            withTimeout(5_000) { writerStarted.await() }
+            delay(30)
+            allowRead1.complete(Unit)
+
+            val loaded = withTimeout(5_000) { reader.await() }
+            withTimeout(5_000) { writer.await() }
+            store.flush()
+
+            assertTrue(loaded.any { it.name == "cdb_auth" && it.value == "persisted_login" })
+            assertEquals(
+                mapOf("cdb_auth" to "persisted_login", "cf_clearance" to "fresh"),
+                store.loadForRequest(url).associate { it.name to it.value },
+            )
+            assertEquals(
+                mapOf("cdb_auth" to "persisted_login", "cf_clearance" to "fresh"),
+                persisted1.get().cookies.associate { it.name to it.value },
+            )
+        } finally {
+            job1.cancelAndJoin()
+        }
+
+        // Phase 2: Concurrent clear() while cold-start disk read is delayed must not resurrect old cookies.
+        val readStarted2 = CompletableDeferred<Unit>()
+        val allowRead2 = CompletableDeferred<Unit>()
+        val persisted2 = AtomicReference(initialPayload)
+        val slowStore2 = object : DataStore<StoredCookieStore> {
+            override val data: Flow<StoredCookieStore> = flow {
+                readStarted2.complete(Unit)
+                allowRead2.await()
+                emit(persisted2.get())
+            }
+
+            override suspend fun updateData(
+                transform: suspend (t: StoredCookieStore) -> StoredCookieStore,
+            ): StoredCookieStore {
+                val updated = transform(persisted2.get())
+                persisted2.set(updated)
+                return updated
+            }
+        }
+
+        val job2 = SupervisorJob()
+        val scope2 = CoroutineScope(Dispatchers.IO + job2)
+        try {
+            val store = DataStoreSiteCookieStore(slowStore2, scope2, clockMillis::get)
+            val clearStarted = CompletableDeferred<Unit>()
+            val reader = async(Dispatchers.Default) { store.loadForRequest(url) }
+            withTimeout(5_000) { readStarted2.await() }
+
+            val clearer = async(Dispatchers.Default) {
+                clearStarted.complete(Unit)
+                store.clear()
+            }
+            withTimeout(5_000) { clearStarted.await() }
+            delay(30)
+            allowRead2.complete(Unit)
+
+            withTimeout(5_000) { reader.await() }
+            withTimeout(5_000) { clearer.await() }
+
+            assertTrue(store.snapshot().isEmpty())
+            assertTrue(store.loadForRequest(url).isEmpty())
+            assertTrue(persisted2.get().cookies.isEmpty())
+        } finally {
+            job2.cancelAndJoin()
         }
     }
 

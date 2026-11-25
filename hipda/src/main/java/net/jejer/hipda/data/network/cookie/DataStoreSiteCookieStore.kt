@@ -8,6 +8,7 @@ import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -45,9 +46,11 @@ class DataStoreSiteCookieStore internal constructor(
         if (cookies.isEmpty()) return
         ensureInitializedBlocking()
         val now = clock()
+        val requestHost = url.host
         val dirty = synchronized(stateLock) {
             var changed = this.cookies.entries.removeAll { it.value.isExpiredAt(now) }
             for (cookie in cookies) {
+                if (!cookie.matchesHost(requestHost)) continue
                 val key = cookie.toKey()
                 if (cookie.isExpiredAt(now)) {
                     if (this.cookies.remove(key) != null) changed = true
@@ -135,17 +138,21 @@ class DataStoreSiteCookieStore internal constructor(
             }
         }
         if (!shouldLaunch) return
-        val job = persistScope.launch { drainPersistQueue(isScheduledWorker = true) }
-        if (job.isCancelled) synchronized(stateLock) { drainScheduled = false }
+        persistScope.launch { drainPersistQueue(isScheduledWorker = true) }
+        if (!persistScope.isActive) synchronized(stateLock) { drainScheduled = false }
     }
 
     private suspend fun drainPersistQueue(isScheduledWorker: Boolean) {
+        var resetByNormalDrain = false
         try {
             persistMutex.withLock {
                 while (true) {
                     val (targetVersion, payload) = synchronized(stateLock) {
                         if (completedVersion >= mutationVersion) {
-                            if (isScheduledWorker) drainScheduled = false
+                            if (isScheduledWorker) {
+                                drainScheduled = false
+                                resetByNormalDrain = true
+                            }
                             return@withLock
                         }
                         mutationVersion to StoredCookieStore(cookies = cookies.values.map(Cookie::toStoredCookie))
@@ -160,9 +167,12 @@ class DataStoreSiteCookieStore internal constructor(
                     synchronized(stateLock) { completedVersion = maxOf(completedVersion, targetVersion) }
                 }
             }
-        } catch (e: CancellationException) {
-            if (isScheduledWorker) synchronized(stateLock) { drainScheduled = false } else scheduleDrainIfNeeded()
-            throw e
+        } finally {
+            if (isScheduledWorker) {
+                if (!resetByNormalDrain) synchronized(stateLock) { drainScheduled = false }
+            } else if (synchronized(stateLock) { completedVersion < mutationVersion }) {
+                scheduleDrainIfNeeded()
+            }
         }
     }
 

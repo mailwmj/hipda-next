@@ -8,6 +8,7 @@ import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.RegistryConfiguration
 import com.google.crypto.tink.aead.PredefinedAeadParameters
 import dagger.Provides
+import java.io.File
 import javax.inject.Singleton
 import kotlinx.coroutines.runBlocking
 import net.jejer.hipda.data.security.AeadProvider
@@ -41,10 +42,9 @@ class CookieStoreModuleTest {
     @Test
     fun provideSiteCookieStore_usesHxEncryptedFileInDataStoreDir() = runBlocking {
         val context: Context = ApplicationProvider.getApplicationContext()
-        val expectedFile = CookieStoreModule.cookieStoreFile(context, aeadProvider)
+        val expectedFile = File(context.filesDir, "datastore/hx_site_cookies")
 
-        assertEquals("hx_site_cookies", expectedFile.name)
-        assertEquals("datastore", expectedFile.parentFile?.name)
+        assertEquals(expectedFile, CookieStoreModule.cookieStoreFile(context, aeadProvider))
 
         val store = CookieStoreModule.provideSiteCookieStore(context, aeadProvider) as DataStoreSiteCookieStore
         val url = "https://www.4d4y.com/forum/".toHttpUrl()
@@ -62,7 +62,7 @@ class CookieStoreModuleTest {
     @Test
     fun provideSiteCookieStore_recoversFromCorruptedFileOnDisk() = runBlocking {
         val context: Context = ApplicationProvider.getApplicationContext()
-        val file = CookieStoreModule.cookieStoreFile(context, aeadProvider)
+        val file = File(context.filesDir, "datastore/hx_site_cookies")
         file.parentFile?.mkdirs()
         file.writeBytes(byteArrayOf(0x11, 0x22, 0x33, 0x44, 0x55))
 
