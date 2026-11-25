@@ -1,6 +1,10 @@
 package net.jejer.hipda.ui.designsystem.feedback
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.foundation.IndicationNodeFactory
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.material3.LocalContentColor
@@ -18,10 +22,13 @@ import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.node.CompositionLocalConsumerModifierNode
+import androidx.compose.ui.node.DelegatableNode
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.currentValueOf
+import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.node.invalidatePlacement
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Constraints
@@ -30,7 +37,7 @@ import kotlinx.coroutines.launch
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.LocalHiMotionDurationScale
 
-/** 反馈组件按压与状态层常量（对齐 `product-design.md` §6.3）。 */
+/** 按压与状态层常量（§6.3）。 */
 @Immutable
 object HiFeedbackTokens {
     const val PressScalePressed: Float = 0.97f
@@ -40,35 +47,22 @@ object HiFeedbackTokens {
     const val StateLayerVisibilityThreshold: Float = 0.001f
 }
 
-/**
- * 按钮、图标按钮、标签与导航项的按压缩放反馈（对齐 `product-design.md` §6.3）：
- * 按下立即无延迟缩至 0.97，松开弹回 1.0，使用 [HiMotion.spatialFast] 弹簧。
- */
-fun Modifier.hiPressScale(
-    interactionSource: InteractionSource,
-): Modifier = this then HiPressScaleElement(interactionSource)
+/** 按钮/标签/导航项按压缩放：按下立即缩至 0.97，松开弹回 1.0（[HiMotion.spatialFast]）。 */
+fun Modifier.hiPressScale(interactionSource: InteractionSource): Modifier =
+    this then HiPressScaleElement(interactionSource)
 
-/**
- * 列表项按压反馈（对齐 `product-design.md` §6.3）：
- * 按下立即显示状态层（[HiMotion.effectsFast]），始终保持 1.0 缩放、不缩放变形。
- */
-fun Modifier.hiListItemPress(
-    interactionSource: InteractionSource,
-    color: Color = Color.Unspecified,
-): Modifier = this then HiListItemPressElement(interactionSource, color)
+/** 列表项按压状态层 [IndicationNodeFactory]，可直接传给 `clickable(indication = ...)`，不缩放。 */
+fun hiListItemPressIndication(color: Color = Color.Unspecified): IndicationNodeFactory =
+    HiListItemPressIndication(color)
 
-/**
- * 确认类操作的轻量触感封装（收藏、发送成功、长按出菜单等，对齐 `product-design.md` §6.3）。
- * 当前 Compose UI 版本（1.13.0）已提供 [HapticFeedbackType.Confirm]。
- */
+/** 列表项按压反馈：仅显示状态层（[HiMotion.effectsFast]），不缩放。 */
+fun Modifier.hiListItemPress(interactionSource: InteractionSource, color: Color = Color.Unspecified): Modifier =
+    indication(interactionSource, hiListItemPressIndication(color))
+
+/** 确认类操作触感封装（Compose UI 1.13.0 使用 [HapticFeedbackType.Confirm]）。 */
 @Stable
-class HiHaptics internal constructor(
-    private val hapticFeedback: HapticFeedback,
-) {
-    /** 触发确认类触感反馈（[HapticFeedbackType.Confirm]）。 */
-    fun confirm() {
-        hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
-    }
+class HiHaptics internal constructor(private val hapticFeedback: HapticFeedback) {
+    fun confirm() = hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
 }
 
 /** 获取绑定当前 [LocalHapticFeedback] 的 [HiHaptics]。 */
@@ -78,209 +72,108 @@ fun rememberHiHaptics(): HiHaptics {
     return remember(hapticFeedback) { HiHaptics(hapticFeedback) }
 }
 
-private data class HiPressScaleElement(
-    val interactionSource: InteractionSource,
-) : ModifierNodeElement<HiPressScaleNode>() {
-    override fun create(): HiPressScaleNode = HiPressScaleNode(interactionSource)
+private abstract class HiPressFeedbackNode(
+    protected var interactionSource: InteractionSource,
+    private val restingValue: Float,
+    private val visibilityThreshold: Float,
+) : Modifier.Node(), CompositionLocalConsumerModifierNode {
+    private var anim: Animatable<Float, AnimationVector1D>? = null
+    private var collectJob: Job? = null
+    private var animJob: Job? = null
 
-    override fun update(node: HiPressScaleNode) {
-        node.updateInteractionSource(interactionSource)
+    protected val currentValue: Float get() = anim?.value ?: restingValue
+    protected abstract fun targetValue(pressed: Boolean): Float
+    protected abstract fun animationSpec(pressed: Boolean): FiniteAnimationSpec<Float>
+    protected abstract fun onAnimatorAllocated()
+
+    override fun onAttach() = startCollecting()
+    override fun onDetach() {
+        collectJob?.cancel(); collectJob = null
+        animJob?.cancel(); animJob = null
     }
 
+    fun updateInteractionSource(newSource: InteractionSource) {
+        if (interactionSource === newSource) return
+        interactionSource = newSource
+        if (isAttached) {
+            startCollecting()
+            if (anim != null) animateToPressed(false)
+        }
+    }
+
+    private fun startCollecting() {
+        collectJob?.cancel()
+        collectJob = coroutineScope.launch {
+            var pressCount = 0
+            interactionSource.interactions.collect { interaction ->
+                when (interaction) {
+                    is PressInteraction.Press -> if (pressCount++ == 0) animateToPressed(true)
+                    is PressInteraction.Release, is PressInteraction.Cancel -> {
+                        pressCount = (pressCount - 1).coerceAtLeast(0)
+                        if (pressCount == 0) animateToPressed(false)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun animateToPressed(pressed: Boolean) {
+        val target = targetValue(pressed)
+        val animator = anim ?: Animatable(restingValue, visibilityThreshold).also { anim = it; onAnimatorAllocated() }
+        val reducedMotion = currentValueOf(LocalHiMotionDurationScale).scaleFactor == 0f
+        animJob?.cancel()
+        animJob = coroutineScope.launch {
+            if (reducedMotion) animator.snapTo(target)
+            else animator.animateTo(targetValue = target, animationSpec = animationSpec(pressed))
+        }
+    }
+}
+
+private data class HiPressScaleElement(val interactionSource: InteractionSource) : ModifierNodeElement<HiPressScaleNode>() {
+    override fun create() = HiPressScaleNode(interactionSource)
+    override fun update(node: HiPressScaleNode) = node.updateInteractionSource(interactionSource)
     override fun InspectorInfo.inspectableProperties() {
         name = "hiPressScale"
         properties["interactionSource"] = interactionSource
     }
 }
 
-private class HiPressScaleNode(
-    private var interactionSource: InteractionSource,
-) : Modifier.Node(), LayoutModifierNode, CompositionLocalConsumerModifierNode {
-
-    private val scaleAnim = Animatable(
-        initialValue = HiFeedbackTokens.PressScaleResting,
-        visibilityThreshold = HiFeedbackTokens.PressScaleVisibilityThreshold,
-    )
-    private var collectJob: Job? = null
-    private var animJob: Job? = null
-
-    override fun onAttach() {
-        startCollecting()
-    }
-
-    override fun onDetach() {
-        collectJob?.cancel()
-        collectJob = null
-        animJob?.cancel()
-        animJob = null
-    }
-
-    fun updateInteractionSource(newSource: InteractionSource) {
-        if (interactionSource === newSource) return
-        interactionSource = newSource
-        if (isAttached) {
-            startCollecting()
-            animateToPressed(false)
-        }
-    }
-
-    private fun startCollecting() {
-        collectJob?.cancel()
-        collectJob = coroutineScope.launch {
-            var pressCount = 0
-            interactionSource.interactions.collect { interaction ->
-                when (interaction) {
-                    is PressInteraction.Press -> {
-                        val wasPressed = pressCount > 0
-                        pressCount++
-                        if (!wasPressed) animateToPressed(true)
-                    }
-                    is PressInteraction.Release, is PressInteraction.Cancel -> {
-                        pressCount = (pressCount - 1).coerceAtLeast(0)
-                        if (pressCount == 0) animateToPressed(false)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun animateToPressed(pressed: Boolean) {
-        val target = if (pressed) {
-            HiFeedbackTokens.PressScalePressed
-        } else {
-            HiFeedbackTokens.PressScaleResting
-        }
-        val reducedMotion = currentValueOf(LocalHiMotionDurationScale).scaleFactor == 0f
-        animJob?.cancel()
-        animJob = coroutineScope.launch {
-            if (reducedMotion) {
-                scaleAnim.snapTo(target)
-            } else {
-                scaleAnim.animateTo(
-                    targetValue = target,
-                    animationSpec = HiMotion.spatialFast(
-                        visibilityThreshold = HiFeedbackTokens.PressScaleVisibilityThreshold,
-                    ),
-                )
-            }
-        }
-    }
-
-    override fun MeasureScope.measure(
-        measurable: Measurable,
-        constraints: Constraints,
-    ): MeasureResult {
+private class HiPressScaleNode(interactionSource: InteractionSource) : HiPressFeedbackNode(
+    interactionSource, HiFeedbackTokens.PressScaleResting, HiFeedbackTokens.PressScaleVisibilityThreshold,
+), LayoutModifierNode {
+    override fun targetValue(pressed: Boolean) =
+        if (pressed) HiFeedbackTokens.PressScalePressed else HiFeedbackTokens.PressScaleResting
+    override fun animationSpec(pressed: Boolean) =
+        HiMotion.spatialFast<Float>(visibilityThreshold = HiFeedbackTokens.PressScaleVisibilityThreshold)
+    override fun onAnimatorAllocated() = invalidatePlacement()
+    override fun MeasureScope.measure(measurable: Measurable, constraints: Constraints): MeasureResult {
         val placeable = measurable.measure(constraints)
         return layout(placeable.width, placeable.height) {
-            placeable.placeWithLayer(0, 0) {
-                val scale = scaleAnim.value
-                scaleX = scale
-                scaleY = scale
-            }
+            placeable.placeWithLayer(0, 0) { currentValue.let { scaleX = it; scaleY = it } }
         }
     }
 }
 
-private data class HiListItemPressElement(
-    val interactionSource: InteractionSource,
-    val color: Color,
-) : ModifierNodeElement<HiListItemPressNode>() {
-    override fun create(): HiListItemPressNode = HiListItemPressNode(interactionSource, color)
-
-    override fun update(node: HiListItemPressNode) {
-        node.color = color
-        node.updateInteractionSource(interactionSource)
-    }
-
-    override fun InspectorInfo.inspectableProperties() {
-        name = "hiListItemPress"
-        properties["interactionSource"] = interactionSource
-        properties["color"] = color
-    }
+private data class HiListItemPressIndication(val color: Color) : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode =
+        HiListItemPressNode(interactionSource, color)
 }
 
-private class HiListItemPressNode(
-    private var interactionSource: InteractionSource,
-    var color: Color,
-) : Modifier.Node(), DrawModifierNode, CompositionLocalConsumerModifierNode {
-
-    private val alphaAnim = Animatable(
-        initialValue = 0f,
-        visibilityThreshold = HiFeedbackTokens.StateLayerVisibilityThreshold,
-    )
-    private var collectJob: Job? = null
-    private var animJob: Job? = null
-
-    override fun onAttach() {
-        startCollecting()
+private class HiListItemPressNode(interactionSource: InteractionSource, private val color: Color) : HiPressFeedbackNode(
+    interactionSource, 0f, HiFeedbackTokens.StateLayerVisibilityThreshold,
+), DrawModifierNode {
+    override fun targetValue(pressed: Boolean) = if (pressed) HiFeedbackTokens.PressStateLayerAlpha else 0f
+    override fun animationSpec(pressed: Boolean): FiniteAnimationSpec<Float> {
+        val fast = HiMotion.effectsFast<Float>(visibilityThreshold = HiFeedbackTokens.StateLayerVisibilityThreshold)
+        return if (pressed) fast else HiMotion.exit(fast)
     }
-
-    override fun onDetach() {
-        collectJob?.cancel()
-        collectJob = null
-        animJob?.cancel()
-        animJob = null
-    }
-
-    fun updateInteractionSource(newSource: InteractionSource) {
-        if (interactionSource === newSource) return
-        interactionSource = newSource
-        if (isAttached) {
-            startCollecting()
-            animateToPressed(false)
-        }
-    }
-
-    private fun startCollecting() {
-        collectJob?.cancel()
-        collectJob = coroutineScope.launch {
-            var pressCount = 0
-            interactionSource.interactions.collect { interaction ->
-                when (interaction) {
-                    is PressInteraction.Press -> {
-                        val wasPressed = pressCount > 0
-                        pressCount++
-                        if (!wasPressed) animateToPressed(true)
-                    }
-                    is PressInteraction.Release, is PressInteraction.Cancel -> {
-                        pressCount = (pressCount - 1).coerceAtLeast(0)
-                        if (pressCount == 0) animateToPressed(false)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun animateToPressed(pressed: Boolean) {
-        val target = if (pressed) HiFeedbackTokens.PressStateLayerAlpha else 0f
-        val reducedMotion = currentValueOf(LocalHiMotionDurationScale).scaleFactor == 0f
-        animJob?.cancel()
-        animJob = coroutineScope.launch {
-            if (reducedMotion) {
-                alphaAnim.snapTo(target)
-            } else {
-                val spec = if (pressed) {
-                    HiMotion.effectsFast<Float>(
-                        visibilityThreshold = HiFeedbackTokens.StateLayerVisibilityThreshold,
-                    )
-                } else {
-                    HiMotion.exit(
-                        HiMotion.effectsFast<Float>(
-                            visibilityThreshold = HiFeedbackTokens.StateLayerVisibilityThreshold,
-                        ),
-                    )
-                }
-                alphaAnim.animateTo(targetValue = target, animationSpec = spec)
-            }
-        }
-    }
-
+    override fun onAnimatorAllocated() = invalidateDraw()
     override fun ContentDrawScope.draw() {
         drawContent()
-        val alpha = alphaAnim.value.coerceIn(0f, 1f)
+        val alpha = currentValue.coerceIn(0f, 1f)
         if (alpha > 0f) {
-            val resolvedColor = if (color.isSpecified) color else currentValueOf(LocalContentColor)
-            drawRect(color = resolvedColor.copy(alpha = alpha))
+            val resolved = if (color.isSpecified) color else currentValueOf(LocalContentColor)
+            drawRect(color = resolved.copy(alpha = alpha))
         }
     }
 }
