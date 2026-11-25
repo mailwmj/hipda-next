@@ -41,4 +41,6 @@ interface SettingsRepository {
     // 界面状态
     suspend fun setPaneSplitPortrait(split: PaneSplit)
     suspend fun setPaneSplitLandscape(split: PaneSplit)
+    suspend fun setSidebarCollapsedPortrait(collapsed: Boolean)
+    suspend fun setSidebarCollapsedLandscape(collapsed: Boolean)
 }

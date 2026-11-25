@@ -181,8 +181,8 @@ class HiShellScrollAndPressTest {
     }
 
     @Test
-    @Config(qualifiers = "w900dp-h1120dp-xhdpi")
-    fun scrollLinked_rail_neverHidesOnScroll() = withAnimatorDurationScale(1f) {
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun scrollLinked_sidebar_neverHidesOnScroll() = withAnimatorDurationScale(1f) {
         var touchSlop = 0f
         setContent {
             touchSlop = LocalViewConfiguration.current.touchSlop
@@ -197,7 +197,7 @@ class HiShellScrollAndPressTest {
         }
         waitForIdle()
 
-        val baseBounds = onNodeWithTag(HiShellTestTags.NavigationRail).fetchSemanticsNode().boundsInRoot
+        val baseBounds = onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot
         onNodeWithTag("scroll_list").performTouchInput {
             down(center)
             moveBy(Offset(0f, -touchSlop))
@@ -206,8 +206,8 @@ class HiShellScrollAndPressTest {
             up()
         }
         waitForIdle()
-        assertEquals(baseBounds, onNodeWithTag(HiShellTestTags.NavigationRail).fetchSemanticsNode().boundsInRoot)
-        onNodeWithTag(HiShellTestTags.NavigationRail).assertIsDisplayed()
+        assertEquals(baseBounds, onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot)
+        onNodeWithTag(HiShellTestTags.NavigationSidebar).assertIsDisplayed()
     }
 
     // ---- (b) > 50% 吸附到全隐，<= 50% 吸附到全显；逐帧连续；减少动态效果一帧到位 ----
@@ -688,8 +688,8 @@ class HiShellScrollAndPressTest {
         verifyLastItemAbovePill(navBarInsetDp = 24)
 
     @Test
-    @Config(qualifiers = "w700dp-h900dp-xhdpi")
-    fun contentPadding_bottomPill_w700_lastItemCompletelyVisibleAbovePill() =
+    @Config(qualifiers = "w559dp-h749dp-xhdpi")
+    fun contentPadding_bottomPill_w559_lastItemCompletelyVisibleAbovePill() =
         verifyLastItemAbovePill(navBarInsetDp = 24)
 
     private fun verifyLastItemAbovePill(navBarInsetDp: Int) = withAnimatorDurationScale(1f) {
@@ -752,11 +752,12 @@ class HiShellScrollAndPressTest {
     }
 
     @Test
-    @Config(qualifiers = "w900dp-h1120dp-xhdpi")
-    fun contentPadding_rail_w900_lastItemAboveNavigationBarInset() = withAnimatorDurationScale(1f) {
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun contentPadding_sidebar_w933_lastItemAboveNavigationBarInset() = withAnimatorDurationScale(1f) {
         var hostView: View? = null
         var listState: LazyListState? = null
         var scope: CoroutineScope? = null
+        var observedBottomPaddingDp = 0f
         setContent {
             hostView = LocalView.current
             scope = rememberCoroutineScope()
@@ -765,6 +766,7 @@ class HiShellScrollAndPressTest {
                     selected = ShellDestination.Forum,
                     onSelect = {},
                 ) { _, contentPadding ->
+                    observedBottomPaddingDp = contentPadding.calculateBottomPadding().value
                     val state = rememberLazyListState()
                     listState = state
                     ScrollableItems(count = 60, contentPadding = contentPadding, listState = state)
@@ -782,6 +784,7 @@ class HiShellScrollAndPressTest {
         }
         waitForIdle()
 
+        assertEquals("侧栏态内容底部留白应仅等于 navigationBars inset", 48f, observedBottomPaddingDp, 0.5f)
         requireNotNull(scope).launch {
             requireNotNull(listState).scrollToItem(59)
         }
@@ -790,7 +793,7 @@ class HiShellScrollAndPressTest {
         val rootBottom = onRoot().fetchSemanticsNode().boundsInRoot.bottom
         val lastItemBottom = onNodeWithTag("item_59").fetchSemanticsNode().boundsInRoot.bottom
         assertTrue(
-            "Rail 下滚到底最后一项底边 ($lastItemBottom) 应 <= 窗口底边 - 底部手势区 (${rootBottom - navBarInsetPx})",
+            "侧栏态滚到底最后一项底边 ($lastItemBottom) 应 <= 窗口底边 - 底部手势区 (${rootBottom - navBarInsetPx})",
             lastItemBottom <= rootBottom - navBarInsetPx + 1f,
         )
     }
@@ -808,11 +811,14 @@ class HiShellScrollAndPressTest {
         verifyNavItemPressScale(ShellDestination.Search)
 
     @Test
-    @Config(qualifiers = "w900dp-h1120dp-xhdpi")
-    fun navItemPress_rail_scalesTo097AndReboundsTo1WithoutHaptics() =
-        verifyNavItemPressScale(ShellDestination.Mine)
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun navItemPress_sidebar_scalesTo097AndReboundsTo1WithoutHaptics() =
+        verifyItemPressScale(itemTag = HiShellTestTags.sidebarEntry(ShellSidebarEntry.Search))
 
-    private fun verifyNavItemPressScale(target: ShellDestination) = withAnimatorDurationScale(1f) {
+    private fun verifyNavItemPressScale(target: ShellDestination) =
+        verifyItemPressScale(itemTag = HiShellTestTags.navItem(target))
+
+    private fun verifyItemPressScale(itemTag: String) = withAnimatorDurationScale(1f) {
         var hapticCalls = 0
         val fakeHaptics = object : HapticFeedback {
             override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
@@ -834,12 +840,12 @@ class HiShellScrollAndPressTest {
         }
         waitForIdle()
 
-        val itemTag = HiShellTestTags.navItem(target)
         val restingNode = onNodeWithTag(itemTag).fetchSemanticsNode()
         assertTrue("导航项基线宽度应 > 0", restingNode.size.width > 0)
         assertEquals(1.0f, restingNode.boundsInRoot.width / restingNode.size.width, 0.001f)
 
         onNodeWithTag(itemTag).performTouchInput { down(center) }
+        mainClock.advanceTimeBy(150L)
         waitForIdle()
         val pressedNode = onNodeWithTag(itemTag).fetchSemanticsNode()
         val pressedScaleX = pressedNode.boundsInRoot.width / pressedNode.size.width
@@ -1058,7 +1064,7 @@ class HiShellScrollAndPressTest {
     }
 
     @Test
-    fun navigationRail_surfaceContainer_styleSpecAndWcagContrast() {
+    fun navigationSidebar_surfaceContainerLow_wcagContrast() {
         val cases = listOf(
             Triple("Light", false, false),
             Triple("Dark", true, false),
@@ -1070,30 +1076,16 @@ class HiShellScrollAndPressTest {
                 darkTheme = darkTheme,
                 pureBlack = pureBlack,
             )
-            val blurSpec = resolveHiGlassStyleSpec(
-                colorScheme = cs,
-                darkTheme = darkTheme,
-                blurEnabled = true,
-                floating = false,
-                surfaceColor = cs.surfaceContainer,
-            )
-            val degradedSpec = resolveHiGlassStyleSpec(
-                colorScheme = cs,
-                darkTheme = darkTheme,
-                blurEnabled = false,
-                floating = false,
-                surfaceColor = cs.surfaceContainer,
-            )
-            assertEquals(cs.surfaceContainer, blurSpec.surfaceColor)
-            assertEquals(cs.surfaceContainer.copy(alpha = HiGlassTokens.DegradedSurfaceAlpha), degradedSpec.degradedSurfaceColor)
-
-            // 实色 surfaceContainer 与 94% 降级底色下，文字均 >= 4.5:1、图标 >= 3:1
-            listOf("Active" to blurSpec.surfaceColor, "Degraded" to degradedSpec.degradedSurfaceColor).forEach { (mode, railBg) ->
-                assertWcagContrastAtLeast(4.5f, railBg, cs.onSurface, "$label/$mode selected label", cs.background)
-                assertWcagContrastAtLeast(4.5f, railBg, cs.onSurfaceVariant, "$label/$mode unselected label/icon", cs.background)
-                assertWcagContrastAtLeast(4.5f, cs.secondaryContainer, cs.onSecondaryContainer, "$label/$mode selected icon")
+            // 纯色侧栏底色 surfaceContainerLow 与滚动后顶栏 surfaceContainer 下，文字均 >= 4.5:1
+            listOf("Body" to cs.surfaceContainerLow, "ScrolledTopBar" to cs.surfaceContainer).forEach { (part, bg) ->
+                assertWcagContrastAtLeast(4.5f, bg, cs.onSurface, "$label/$part primary label", cs.background)
+                assertWcagContrastAtLeast(4.5f, bg, cs.onSurfaceVariant, "$label/$part secondary label/icon", cs.background)
             }
-            assertTrue("$label 指示器相对轨底对比度应 > 1.0", wcagContrastRatio(cs.secondaryContainer, cs.surfaceContainer) > 1.0f)
+            assertWcagContrastAtLeast(4.5f, cs.secondaryContainer, cs.onSecondaryContainer, "$label selected pill")
+            assertTrue(
+                "$label 选中胶囊相对侧栏底色对比度应 > 1.0",
+                wcagContrastRatio(cs.secondaryContainer, cs.surfaceContainerLow) > 1.0f,
+            )
         }
     }
 

@@ -35,7 +35,7 @@ class ShellBarState internal constructor(
     private val scope: CoroutineScope,
     private val isReducedMotion: () -> Boolean,
 ) {
-    /** 底部胶囊可隐藏的最大纵向位移（像素），等于胶囊高度 + 8dp + 底部手势区 + 阴影半径（4dp）；导航轨形态下为 `0f`。 */
+    /** 底部胶囊可隐藏的最大纵向位移（像素），等于胶囊高度 + 8dp + 底部手势区 + 阴影半径（4dp）；侧栏形态下为 `0f`。 */
     var maxHiddenOffsetPx: Float by mutableFloatStateOf(0f)
         private set
 

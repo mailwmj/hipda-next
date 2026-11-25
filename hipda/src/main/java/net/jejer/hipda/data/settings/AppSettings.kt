@@ -56,6 +56,8 @@ data class AppSettings(
     // 界面状态
     val paneSplitPortrait: PaneSplit = PaneSplit.DEFAULT,
     val paneSplitLandscape: PaneSplit = PaneSplit.DEFAULT,
+    val sidebarCollapsedPortrait: Boolean = false,
+    val sidebarCollapsedLandscape: Boolean = false,
 ) {
     fun isSortByPostTime(fid: Int): Boolean = sortByPostTime[fid] == true
 

@@ -54,11 +54,13 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 private const val QUALIFIER_PHONE_411_891 = "w411dp-h891dp-xhdpi"
+private const val QUALIFIER_SIDEBAR_749_559 = "w749dp-h559dp-xhdpi"
 
 /**
- * 导航随滚动隐藏与底部留白的 2 张 Roborazzi 截图基线（前缀 `shell_scroll_`）：
- * - 411×891 浅色滚到底（最后一项完全露出、胶囊可见）
- * - 411×891 浅色胶囊已隐藏的中间状态（滚动后静止于全隐）
+ * 导航随滚动隐藏与底部留白的 3 张 Roborazzi 截图基线（前缀 `shell_scroll_`）：
+ * - 411×891 浅色滚到底（最后一项完全露出、胶囊可见、1 块毛玻璃）
+ * - 411×891 浅色胶囊已隐藏的中间状态（滚动后静止于全隐、1 块毛玻璃）
+ * - 749×559 浅色侧栏态滚到底（底部无胶囊重叠、最后一项完整露出、0 块毛玻璃）
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -102,7 +104,7 @@ class HiShellScrollScreenshotTest {
         val pillTop = composeRule.onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
         val lastBottom = composeRule.onNodeWithTag("scroll_specimen_59").fetchSemanticsNode().boundsInRoot.bottom
         assertTrue("滚到底最后一项底边 ($lastBottom) 应 <= 胶囊顶边 ($pillTop)", lastBottom <= pillTop + 1f)
-        assertSingleGlassSurface()
+        assertGlassCount(expected = 1)
 
         composeRule.onRoot().captureHiSnapshot("shell_scroll_w411_h891_bottom_light")
     }
@@ -139,18 +141,63 @@ class HiShellScrollScreenshotTest {
         composeRule.waitForIdle()
 
         composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertIsNotDisplayed()
-        assertSingleGlassSurface()
+        assertGlassCount(expected = 1)
 
         composeRule.onRoot().captureHiSnapshot("shell_scroll_w411_h891_hidden_light")
     }
 
-    private fun assertSingleGlassSurface() {
+    @Test
+    @Config(qualifiers = QUALIFIER_SIDEBAR_749_559)
+    fun shell_scroll_w749_h559_sidebar_bottom_light() {
+        var listState: LazyListState? = null
+        var scope: CoroutineScope? = null
+        composeRule.setContent {
+            scope = rememberCoroutineScope()
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                    sidebarState = HiSidebarState(
+                        selectedEntry = ShellSidebarEntry.Forum(2),
+                        unreadSmsCount = 3,
+                    ),
+                ) { destination, contentPadding ->
+                    val state = rememberLazyListState()
+                    listState = state
+                    ShellScrollSpecimenContent(
+                        destination = destination,
+                        contentPadding = contentPadding,
+                        listState = state,
+                        badge = "749×559 · 侧栏滚底",
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        requireNotNull(scope).launch {
+            requireNotNull(listState).scrollToItem(59)
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag(HiShellTestTags.NavigationSidebar).assertIsDisplayed()
+        composeRule.onNodeWithTag(HiShellTestTags.BottomPill).assertDoesNotExist()
+        composeRule.onNodeWithTag(HiShellTestTags.CompactPill).assertDoesNotExist()
+        val rootBottom = composeRule.onRoot().fetchSemanticsNode().boundsInRoot.bottom
+        val lastBottom = composeRule.onNodeWithTag("scroll_specimen_59").fetchSemanticsNode().boundsInRoot.bottom
+        assertTrue("侧栏态滚到底最后一项底边 ($lastBottom) 应 <= 窗口底边 ($rootBottom)", lastBottom <= rootBottom + 1f)
+        assertGlassCount(expected = 0)
+
+        composeRule.onRoot().captureHiSnapshot("shell_scroll_w749_h559_sidebar_bottom_light")
+    }
+
+    private fun assertGlassCount(expected: Int) {
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
         val count = composeRule.onAllNodes(
             matcher = SemanticsMatcher.expectValue(HiGlassMarker, true),
             useUnmergedTree = true,
         ).fetchSemanticsNodes().size
-        assertEquals("外壳截图应恰好包含 1 块毛玻璃", 1, count)
+        assertEquals("外壳截图毛玻璃计数不符合预期", expected, count)
     }
 }
 
@@ -251,7 +298,7 @@ private fun ShellScrollSpecimenContent(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            text = "内容延伸至底部毛玻璃导航胶囊下方滚动，滚到底时末项完整露出。",
+                            text = "验证底部无遮挡、滚到底时最后一项完整露出。",
                             style = MaterialTheme.typography.bodySmall,
                             color = cs.onSurfaceVariant,
                             maxLines = 1,
