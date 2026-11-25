@@ -91,7 +91,7 @@
             android:launchMode="singleTask" />
         <activity
             android:name=".ui.challenge.ChallengeActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode|keyboard|keyboardHidden|navigation|fontScale|locale|layoutDirection"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTop"

@@ -1,6 +1,7 @@
 package net.jejer.hipda.ui.challenge
 
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -10,6 +11,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -97,6 +99,7 @@ internal class ChallengeSolveStateMachine(
             cookieBridge.primeWebView(triggerUrl)
 
             val userAgent = userAgentProvider.userAgent()
+            currentCoroutineContext().ensureActive()
             val acquired = withTimeoutOrNull(hostAcquireTimeout) {
                 handle = webViewHost.acquire(triggerUrl, userAgent)
                 Unit
@@ -119,14 +122,16 @@ internal class ChallengeSolveStateMachine(
             result
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            SolveResult.Failed(e)
+        } catch (t: Throwable) {
+            SolveResult.Failed(t)
         } finally {
             withContext(NonCancellable) {
+                // Always finish tearing down the hosted WebView and Activity before touching
+                // process-global CookieManager or releasing solveMutex for a subsequent solve.
+                runCatching { handle?.closeAndAwait() }
                 if (!cleared) {
                     runCatching { cookieBridge.restoreClearance(triggerUrl, backup) }
                 }
-                runCatching { handle?.close() }
             }
         }
     }
@@ -263,12 +268,17 @@ internal class ChallengeSolveStateMachine(
             return terminalEvent.await().toSolveResult()
         }
 
+        val syncedInPresenter = AtomicBoolean(false)
         val session = ChallengeInteractionSession(
             triggerUrl = triggerUrl,
             reason = reason,
             webViewHandle = handle,
             activityBinding = handle.activityBinding,
-            clearanceChecker = { tryCheckAndSyncClearance(triggerUrl, snapshot, handle) },
+            clearanceChecker = {
+                tryCheckAndSyncClearance(triggerUrl, snapshot, handle).also { synced ->
+                    if (synced) syncedInPresenter.set(true)
+                }
+            },
         )
 
         val presentedResult = coroutineScope {
@@ -303,16 +313,25 @@ internal class ChallengeSolveStateMachine(
 
         return when (presentedResult) {
             SolveResult.Cleared -> {
-                val syncResult = cookieBridge.syncFromWebView(
-                    url = triggerUrl,
-                    excludeClearanceValues = snapshot,
-                )
-                if (syncResult.freshClearance != null) {
+                if (syncedInPresenter.get()) {
                     SolveResult.Cleared
                 } else {
-                    SolveResult.Failed(
-                        IllegalStateException("Interactive challenge returned Cleared without fresh cf_clearance"),
-                    )
+                    val hasFreshClearance = (cookieBridge.snapshotClearances(triggerUrl) - snapshot).isNotEmpty()
+                    val syncResult = if (hasFreshClearance) {
+                        cookieBridge.syncFromWebView(
+                            url = triggerUrl,
+                            excludeClearanceValues = snapshot,
+                        )
+                    } else {
+                        null
+                    }
+                    if (syncResult?.freshClearance != null) {
+                        SolveResult.Cleared
+                    } else {
+                        SolveResult.Failed(
+                            IllegalStateException("Interactive challenge returned Cleared without fresh cf_clearance"),
+                        )
+                    }
                 }
             }
             SolveResult.Cancelled, is SolveResult.Failed -> presentedResult
@@ -327,6 +346,8 @@ internal class ChallengeSolveStateMachine(
         val mainFrame = handle.mainFrameState()
         if (!mainFrame.isReadyNonChallengePage) return false
         if (handle.isDomInChallengeState()) return false
+        val currentClearances = cookieBridge.snapshotClearances(triggerUrl)
+        if ((currentClearances - snapshot).isEmpty()) return false
         val syncResult = cookieBridge.syncFromWebView(
             url = triggerUrl,
             excludeClearanceValues = snapshot,
