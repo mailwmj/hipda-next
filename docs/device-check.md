@@ -1,15 +1,17 @@
 # 真机操作清单：M1 验收、样本导出、M4 外壳验收
 
-适用版本：`main` @ `f7e0bcf`（A 线 Cloudflare 通道 + B1b 样本导出页已合入）。
+适用版本：`main` @ `15d3e32`（A 线 Cloudflare 通道 + B1b 样本导出页 + A5c 桌面站点 UA 修复）。
 
 ## 0. 取安装包
 
 debug 包在 CI 产物里（私有仓库，需登录 GitHub）：
 
-- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45578432700> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
-- 命令行：`gh run download 45578432700 -R mailwmj/hipda-next -n debug-apk`
+- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45589518983> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
+- 命令行：`gh run download 45589518983 -R mailwmj/hipda-next -n debug-apk`
 
 安装：`adb install -r hipda-debug.apk`。包名 `net.jejer.hipda.next`，可与旧版并存。
+
+> 2026-11-25 第一次实测因 UA 含 `Android` 拿到手机版模板而全部失败，已由 A5c 修复。请先卸载旧的 debug 包（或直接覆盖安装），重新登录后再抓取；遇到 Cloudflare 验证时留意能否在 WebView 里正常通过。
 
 ## 一、样本导出 + M1 验收（约 10 分钟）
 
