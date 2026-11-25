@@ -14,6 +14,8 @@ import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
 import java.io.File
 import java.nio.charset.Charset
+import java.security.GeneralSecurityException
+import java.security.ProviderException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -21,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,8 +34,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -75,7 +81,9 @@ import okhttp3.OkHttpClient
 import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -153,6 +161,7 @@ class NotificationPollingWorkerTest {
             lastLoginAt = 1_000L,
         ),
         waitForAuthHydration: Boolean = true,
+        authCredentialsStore: CredentialsStore = credentialsStore,
         solver: ChallengeSolver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected solver call")) },
     ): WorkerTestStack {
         if (seedLoggedInAccount != null) {
@@ -189,7 +198,7 @@ class NotificationPollingWorkerTest {
             solveTimeout = 5.seconds,
         )
         val authRepo = DefaultAuthRepository(
-            credentialsStore = credentialsStore,
+            credentialsStore = authCredentialsStore,
             siteCookieStore = cookieStore,
             settingsRepository = settingsRepository,
             siteAccessGateway = primaryGateway,
@@ -230,6 +239,7 @@ class NotificationPollingWorkerTest {
     private fun buildWorker(
         stack: WorkerTestStack,
         notifyRepository: NotifyRepository = stack.notifyRepo,
+        workerCredentialsStore: CredentialsStore = credentialsStore,
         poster: NotificationPoster = stack.poster,
         appVisible: () -> Boolean = { false },
         currentMinutesOfDay: () -> Int = { QuietHoursChecker.minutesOfDay(12, 0) },
@@ -245,7 +255,7 @@ class NotificationPollingWorkerTest {
                     workerParams = workerParameters,
                     settingsRepository = settingsRepository,
                     authRepository = stack.authRepo,
-                    credentialsStore = credentialsStore,
+                    credentialsStore = workerCredentialsStore,
                     notifyRepository = notifyRepository,
                     notificationPoster = poster,
                     appVisibilityProvider = AppVisibilityProvider { appVisible() },
@@ -338,11 +348,54 @@ class NotificationPollingWorkerTest {
 
     @Test
     fun coldStartBackgroundPoll_hydratesSavedActiveAccountAndPostsSingleSmsPreviewNotification() = runBlocking {
-        // Do NOT wait for authRepo.currentAccount beforehand; worker must handle cold-start hydration.
-        val stack = createStack(waitForAuthHydration = false)
+        // R-D9 S1: Gate DefaultAuthRepository's initial credentials stream with a latch so cold-start
+        // hydration waiting in NotificationPollingWorker.hasActiveAccount() is 100% deterministic.
+        val savedAccount = SavedAccount(
+            uid = "10000",
+            username = "HiUser",
+            passwordMd5 = computeLegacyPasswordMd5("secret_pw"),
+            lastLoginAt = 1_000L,
+        )
+        credentialsStore.upsert(savedAccount)
+        credentialsStore.setActive(savedAccount.uid)
+
+        val authHydrationStarted = CompletableDeferred<Unit>()
+        val releaseAuthHydration = CompletableDeferred<Unit>()
+        val gatedAuthCredentialsStore = object : CredentialsStore by credentialsStore {
+            override val accounts: Flow<List<SavedAccount>> = flow {
+                authHydrationStarted.complete(Unit)
+                releaseAuthHydration.await()
+                emitAll(credentialsStore.accounts)
+            }
+        }
+        val workerCheckedCredentials = CompletableDeferred<Unit>()
+        val observingWorkerCredentialsStore = object : CredentialsStore by credentialsStore {
+            override val accounts: Flow<List<SavedAccount>> = credentialsStore.accounts.onEach {
+                workerCheckedCredentials.complete(Unit)
+            }
+        }
+
+        val stack = createStack(
+            seedLoggedInAccount = null,
+            waitForAuthHydration = false,
+            authCredentialsStore = gatedAuthCredentialsStore,
+        )
+        withTimeout(5.seconds) { authHydrationStarted.await() }
+        assertNull("authRepo.currentAccount must be null before releasing initial credentials latch", stack.authRepo.currentAccount.value)
+
         server.enqueue(gbkHtmlResponse(singleSmsPollHtml()))
 
-        val result = buildWorker(stack = stack).doWork()
+        val workDeferred = async(Dispatchers.Default) {
+            buildWorker(stack = stack, workerCredentialsStore = observingWorkerCredentialsStore).doWork()
+        }
+        // Worker has passed currentAccount == null check, read credentialsStore, and is awaiting hydration
+        withTimeout(5.seconds) { workerCheckedCredentials.await() }
+        assertNull("Auth hydration must still be gated while worker awaits currentAccount", stack.authRepo.currentAccount.value)
+        assertFalse("Worker must suspend awaiting auth hydration instead of exiting early", workDeferred.isCompleted)
+        assertEquals("Zero network requests before auth hydration finishes", 0, server.requestCount)
+
+        releaseAuthHydration.complete(Unit)
+        val result = withTimeout(5.seconds) { workDeferred.await() }
 
         assertEquals(ListenableWorker.Result.success(), result)
         assertEquals(1, server.requestCount)
@@ -555,6 +608,54 @@ class NotificationPollingWorkerTest {
             caughtCancellation = true
         }
         assertTrue("CancellationException must propagate out of doWork()", caughtCancellation)
+    }
+
+    @Test
+    fun preGate4_keystoreSecurityAndProviderExceptions_returnSuccessWithZeroRequestsWhileCancellationRethrows() = runBlocking {
+        val stack = createStack(seedLoggedInAccount = null)
+        assertNull(stack.authRepo.currentAccount.value)
+
+        fun throwingStore(throwable: Throwable): CredentialsStore = object : CredentialsStore {
+            override val accounts: Flow<List<SavedAccount>> = flow { throw throwable }
+            override val activeUid: Flow<String?> = flow { throw throwable }
+            override val manuallyLoggedOut: Flow<Boolean> = flow { throw throwable }
+            override suspend fun upsert(account: SavedAccount) = Unit
+            override suspend fun setActive(uid: String) = Unit
+            override suspend fun markManualLogout() = Unit
+            override suspend fun remove(uid: String) = Unit
+        }
+
+        // 1. Keystore GeneralSecurityException during background wakeup -> gracefully skip with Result.success()
+        val securityExWorker = buildWorker(
+            stack = stack,
+            workerCredentialsStore = throwingStore(GeneralSecurityException("AndroidKeyStore locked")),
+        )
+        assertEquals(ListenableWorker.Result.success(), securityExWorker.doWork())
+        assertEquals(0, server.requestCount)
+        assertTrue(shadowOf(notificationManager).allNotifications.isEmpty())
+
+        // 2. Keystore ProviderException -> gracefully skip with Result.success()
+        val providerExWorker = buildWorker(
+            stack = stack,
+            workerCredentialsStore = throwingStore(ProviderException("Keystore provider unavailable")),
+        )
+        assertEquals(ListenableWorker.Result.success(), providerExWorker.doWork())
+        assertEquals(0, server.requestCount)
+        assertTrue(shadowOf(notificationManager).allNotifications.isEmpty())
+
+        // 3. CancellationException while reading credentials -> must still propagate out of doWork()
+        val cancelWorker = buildWorker(
+            stack = stack,
+            workerCredentialsStore = throwingStore(CancellationException("Cancelled reading credentials")),
+        )
+        var caughtCancellation = false
+        try {
+            cancelWorker.doWork()
+        } catch (_: CancellationException) {
+            caughtCancellation = true
+        }
+        assertTrue("CancellationException in hasActiveAccount must propagate", caughtCancellation)
+        assertEquals(0, server.requestCount)
     }
 
     private fun singleSmsPollHtml(): String = """

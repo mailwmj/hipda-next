@@ -1,5 +1,6 @@
 package net.jejer.hipda.data.auth
 
+import android.util.Log
 import java.io.IOException
 import java.util.Locale
 import javax.inject.Inject
@@ -18,9 +19,12 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -194,9 +198,9 @@ class DefaultAuthRepository internal constructor(
                 credentialsStore.manuallyLoggedOut,
             ) { _, _, _ -> Unit }
                 .conflate()
-                .collect {
+                .onEach {
                     val genBeforeRead = synchronized(stateLock) {
-                        if (explicitOperationCount > 0) return@collect
+                        if (explicitOperationCount > 0) return@onEach
                         authGeneration
                     }
                     val latest = readPersistentSnapshotFromStore()
@@ -206,6 +210,11 @@ class DefaultAuthRepository internal constructor(
                         }
                     }
                 }
+                .catch { e ->
+                    if (e is CancellationException || e !is Exception) throw e
+                    handleCredentialsObservationFailure(e)
+                }
+                .collect()
         }
     }
 
@@ -1280,6 +1289,19 @@ class DefaultAuthRepository internal constructor(
         return raw.takeIf { runCatching { buildForumUrl(it, "") }.isSuccess }
     }
 
+    private fun handleCredentialsObservationFailure(e: Exception) {
+        val errorType = e::class.java.simpleName.ifEmpty { "Exception" }
+        Log.w(
+            TAG,
+            "Failed to observe credentials store ($errorType); degrading to signed-out state",
+        )
+        synchronized(stateLock) {
+            if (explicitOperationCount == 0) {
+                applyPersistentSnapshotLocked(PersistentSnapshot())
+            }
+        }
+    }
+
     private fun applyPersistentSnapshotLocked(snapshot: PersistentSnapshot) {
         persistentSnapshot = snapshot
         val activeUid = snapshot.activeAccount?.uid
@@ -1325,6 +1347,7 @@ class DefaultAuthRepository internal constructor(
     }
 
     companion object {
+        private const val TAG = "DefaultAuthRepository"
         private const val LOGIN_PAGE_PATH = "logging.php?action=login"
         private const val LOGIN_SUBMIT_PATH = "logging.php?action=login&loginsubmit=yes&inajax=1"
         private const val INDEX_PATH = "index.php"
