@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -21,16 +20,22 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
@@ -42,8 +47,8 @@ import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
  *
  * - 内容区作为 Haze 源铺满窗口（胶囊浮在内容上方不占布局高度；导航轨占左侧 80dp），
  *   通过 [content] 的第二个参数 `PaddingValues` 提供恒定的底部留白（按胶囊完全可见时计算，不随滚动收起变化）；
- * - 底部胶囊与紧凑胶囊通过 [barState] 接收内容滚动并经 `graphicsLayer` 跟手滑出/吸附，键盘可见时立即隐藏；
- * - 切换一级目的地时原地交叉淡入淡出（无位移），并恢复被滚动收起的胶囊。
+ * - 底部胶囊与紧凑胶囊通过 [barState] 接收当前选中目的地的滚动并经 `graphicsLayer` 跟手滑出/吸附，键盘可见时立即隐藏；
+ * - 切换一级目的地时原地交叉淡入淡出（无位移），隔离退场页残余惯性滚动并恢复被滚动收起的胶囊。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -67,10 +72,12 @@ fun HiAdaptiveShell(
     val showUnselectedLabels = showLabelForUnselected(widthDp)
     val glassState = rememberHiGlassState()
     val density = LocalDensity.current
+    val currentSelected by rememberUpdatedState(selected)
 
     var measuredPillHeightPx by remember(mode) { mutableIntStateOf(0) }
     val navBarsBottomPx = WindowInsets.navigationBars.getBottom(density)
     val bottomGapPx = with(density) { HiNavigationPillBottomGap.roundToPx() }
+    val shadowClearancePx = with(density) { HiGlassTokens.FloatingShadowElevation.roundToPx() }
     val minPillHeightPx = with(density) {
         val minHeight = if (mode == ShellNavigationMode.CompactPill) {
             HiNavigationPillCompactMinHeight
@@ -81,8 +88,12 @@ fun HiAdaptiveShell(
     }
     val effectivePillHeightPx = if (measuredPillHeightPx > 0) measuredPillHeightPx else minPillHeightPx
     val isRail = mode == ShellNavigationMode.Rail
-    val maxHiddenOffsetPx = if (isRail) 0f else (effectivePillHeightPx + bottomGapPx + navBarsBottomPx).toFloat()
-    val imeVisible = WindowInsets.isImeVisible || WindowInsets.ime.getBottom(density) > 0
+    val maxHiddenOffsetPx = if (isRail) {
+        0f
+    } else {
+        (effectivePillHeightPx + bottomGapPx + navBarsBottomPx + shadowClearancePx).toFloat()
+    }
+    val imeVisible = WindowInsets.isImeVisible
 
     SideEffect {
         barState.syncLayout(newMaxHiddenOffsetPx = maxHiddenOffsetPx, imeVisible = imeVisible)
@@ -106,7 +117,6 @@ fun HiAdaptiveShell(
                 .testTag(HiShellTestTags.ContentContainer)
                 .fillMaxSize()
                 .padding(start = if (isRail) HiNavigationRailWidth else 0.dp)
-                .then(if (isRail) Modifier else Modifier.nestedScroll(barState.nestedScrollConnection))
                 .hiGlassSource(glassState),
         ) {
             AnimatedContent(
@@ -120,7 +130,18 @@ fun HiAdaptiveShell(
                 },
                 label = "HiAdaptiveShellContent",
             ) { destination ->
-                content(destination, contentPadding)
+                val destinationScrollConnection = remember(barState, destination) {
+                    gatedNestedScrollConnection(barState.nestedScrollConnection) {
+                        currentSelected == destination
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (isRail) Modifier else Modifier.nestedScroll(destinationScrollConnection)),
+                ) {
+                    content(destination, contentPadding)
+                }
             }
         }
 
@@ -149,8 +170,24 @@ fun HiAdaptiveShell(
                         end = HiNavigationPillHorizontalMargin,
                         bottom = HiNavigationPillBottomGap,
                     )
-                    .onSizeChanged { measuredPillHeightPx = it.height },
+                    .onSizeChanged {
+                        if (it.height != effectivePillHeightPx) measuredPillHeightPx = it.height
+                    },
             )
         }
     }
+}
+
+private fun gatedNestedScrollConnection(
+    delegate: NestedScrollConnection,
+    isActive: () -> Boolean,
+): NestedScrollConnection = object : NestedScrollConnection {
+    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset =
+        if (isActive()) delegate.onPreScroll(available, source) else Offset.Zero
+
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
+        if (isActive()) delegate.onPostScroll(consumed, available, source) else Offset.Zero
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity =
+        if (isActive()) delegate.onPostFling(consumed, available) else Velocity.Zero
 }

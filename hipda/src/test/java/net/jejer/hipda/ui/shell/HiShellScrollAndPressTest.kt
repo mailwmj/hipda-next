@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.hapticfeedback.HapticFeedback
@@ -40,20 +41,27 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import net.jejer.hipda.testing.RecompositionCounter
 import net.jejer.hipda.testing.assertFrameContinuity
 import net.jejer.hipda.testing.withAnimatorDurationScale
 import net.jejer.hipda.ui.designsystem.HiColorPresets
+import net.jejer.hipda.ui.designsystem.HiFontSizeStep
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
 import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
+import net.jejer.hipda.ui.designsystem.glass.assertWcagContrastAtLeast
+import net.jejer.hipda.ui.designsystem.glass.resolveHiGlassStyleSpec
+import net.jejer.hipda.ui.designsystem.glass.wcagContrastRatio
+import net.jejer.hipda.ui.designsystem.hiColorSchemeFromSeed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -229,9 +237,11 @@ class HiShellScrollAndPressTest {
 
             val rootBottom = onRoot().fetchSemanticsNode().boundsInRoot.bottom
             val baseTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
-            val hideDistance = rootBottom - baseTop
+            val shadowClearancePx = with(density) { HiGlassTokens.FloatingShadowElevation.roundToPx() }
+            val hiddenTop = rootBottom + shadowClearancePx
+            val hideDistance = hiddenTop - baseTop
 
-            // > 50%（65%）松手且无 fling → 连续吸附到全隐
+            // > 50%（65%）松手且无 fling → 连续吸附到全隐（含 4dp 阴影净空）
             onNodeWithTag("scroll_list").performTouchInput {
                 down(center)
                 moveBy(Offset(0f, -touchSlop))
@@ -257,7 +267,7 @@ class HiShellScrollAndPressTest {
             )
             assertEquals("确认无 fling：松手后列表不应继续惯性滚动", listOffsetBeforeHideUp, requireNotNull(listState).firstVisibleItemScrollOffset)
             assertTrue("吸附动画应跨越多个中间帧", hideSnap.positionsPx.map { it.y }.distinct().size >= 5)
-            assertEquals("超过 50% 松手应吸附到全隐", rootBottom, hideSnap.positionsPx.last().y, 1.5f)
+            assertEquals("超过 50% 松手应吸附到全隐（含 4dp 阴影净空）", hiddenTop, hideSnap.positionsPx.last().y, 1.5f)
             onNodeWithTag(HiShellTestTags.BottomPill).assertIsNotDisplayed()
 
             // 切目的地复位至全显
@@ -315,7 +325,9 @@ class HiShellScrollAndPressTest {
 
             val rootBottom = onRoot().fetchSemanticsNode().boundsInRoot.bottom
             val baseTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
-            val hideDistance = rootBottom - baseTop
+            val shadowClearancePx = with(density) { HiGlassTokens.FloatingShadowElevation.roundToPx() }
+            val hiddenTop = rootBottom + shadowClearancePx
+            val hideDistance = hiddenTop - baseTop
 
             onNodeWithTag("scroll_list").performTouchInput {
                 down(center)
@@ -331,7 +343,7 @@ class HiShellScrollAndPressTest {
                 onNodeWithTag("scroll_list").performTouchInput { up() }
                 mainClock.advanceTimeByFrame()
                 val snappedTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
-                assertEquals("减少动态效果下 > 50% 松手应在一帧内到位至全隐", rootBottom, snappedTop, 1.5f)
+                assertEquals("减少动态效果下 > 50% 松手应在一帧内到位至全隐", hiddenTop, snappedTop, 1.5f)
             } finally {
                 mainClock.autoAdvance = true
             }
@@ -480,17 +492,20 @@ class HiShellScrollAndPressTest {
 
         val rootBottom = onRoot().fetchSemanticsNode().boundsInRoot.bottom
         val baseTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
-        val hideDistance = rootBottom - baseTop
+        val shadowClearancePx = with(density) { HiGlassTokens.FloatingShadowElevation.roundToPx() }
+        val hiddenTop = rootBottom + shadowClearancePx
+        val hideDistance = hiddenTop - baseTop
 
         onNodeWithTag("scroll_list").performTouchInput {
             down(center)
             moveBy(Offset(0f, -touchSlop))
             moveBy(Offset(0f, -(hideDistance + 60f)))
             advanceEventTime(200L)
+            moveBy(Offset.Zero)
             up()
         }
         waitForIdle()
-        assertEquals(rootBottom, onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top, 1.5f)
+        assertEquals(hiddenTop, onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top, 1.5f)
         onNodeWithTag(HiShellTestTags.BottomPill).assertIsNotDisplayed()
 
         val restoreResult = assertFrameContinuity(
@@ -503,6 +518,64 @@ class HiShellScrollAndPressTest {
             },
         )
         assertEquals("切换一级目的地后胶囊应回到可见", baseTop, restoreResult.positionsPx.last().y, 1.5f)
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun destinationSwitch_duringExitingListFling_keepsPillVisible() = withAnimatorDurationScale(1f) {
+        var selected by mutableStateOf(ShellDestination.Forum)
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = selected,
+                    onSelect = { selected = it },
+                ) { destination, contentPadding ->
+                    if (destination == ShellDestination.Forum) {
+                        ScrollableItems(count = 60, contentPadding = contentPadding)
+                    } else {
+                        // 新目的地无滚动容器：若退场页残余 fling 把胶囊推回隐藏，用户将无法手势拉回
+                        Box(Modifier.fillMaxSize().testTag("static_dest_${destination.name}")) {
+                            Text(destination.name)
+                        }
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        val baseTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
+
+        mainClock.autoAdvance = false
+        try {
+            // 触发高速向下 fling，使列表在随后多帧持续惯性滚动
+            onNodeWithTag("scroll_list").performTouchInput {
+                down(Offset(center.x, bottom * 0.8f))
+                moveBy(Offset(0f, -240f), delayMillis = 16L)
+                moveBy(Offset(0f, -240f), delayMillis = 16L)
+                up()
+            }
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
+
+            // 在旧列表 fling 尚未结束时切换一级目的地
+            selected = ShellDestination.Messages
+            Snapshot.sendApplyNotifications()
+            repeat(40) {
+                mainClock.advanceTimeByFrame()
+            }
+        } finally {
+            mainClock.autoAdvance = true
+        }
+        waitForIdle()
+
+        onNodeWithTag("static_dest_Messages").assertIsDisplayed()
+        assertEquals(
+            "退场目的地的残余 fling 不得取消 show() 并把胶囊推回隐藏",
+            baseTop,
+            onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top,
+            1.5f,
+        )
         onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
     }
 
@@ -527,6 +600,7 @@ class HiShellScrollAndPressTest {
 
         val rootBottom = onRoot().fetchSemanticsNode().boundsInRoot.bottom
         val baseTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
+        val expectedHiddenTop = rootBottom + with(density) { HiGlassTokens.FloatingShadowElevation.roundToPx() }
         val imeHeightPx = with(density) { 280.dp.roundToPx() }
         val view = requireNotNull(hostView)
 
@@ -541,7 +615,7 @@ class HiShellScrollAndPressTest {
             }
             mainClock.advanceTimeByFrame()
             val hiddenTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
-            assertEquals("注入 IME insets 时胶囊应在同一帧内完全隐藏（0ms）", rootBottom, hiddenTop, 1.5f)
+            assertEquals("注入 IME insets 时胶囊应在同一帧内完全隐藏（0ms，含 4dp 阴影净空）", expectedHiddenTop, hiddenTop, 1.5f)
             onNodeWithTag(HiShellTestTags.BottomPill).assertIsNotDisplayed()
         } finally {
             mainClock.autoAdvance = true
@@ -567,27 +641,43 @@ class HiShellScrollAndPressTest {
         )
         assertEquals("移除 IME insets 后胶囊应回到可见", baseTop, restoreResult.positionsPx.last().y, 1.5f)
         onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+    }
 
-        // 仅注入非零 WindowInsets.ime（不显式调 setVisible）也应在同一帧内隐藏
-        mainClock.autoAdvance = false
-        try {
-            val imeHeightOnlyInsets = WindowInsetsCompat.Builder()
-                .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, imeHeightPx))
-                .build()
-            runOnUiThread {
-                ViewCompat.dispatchApplyWindowInsets(view, imeHeightOnlyInsets)
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun imeInsets_nonZeroBottomWithImeNotVisible_keepsPillVisible() = withAnimatorDurationScale(1f) {
+        var hostView: View? = null
+        setContent {
+            hostView = LocalView.current
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _, contentPadding ->
+                    ScrollableItems(count = 60, contentPadding = contentPadding)
+                }
             }
-            mainClock.advanceTimeByFrame()
-            assertEquals(
-                "非零 WindowInsets.ime 应在同一帧内隐藏胶囊",
-                rootBottom,
-                onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top,
-                1.5f,
-            )
-            onNodeWithTag(HiShellTestTags.BottomPill).assertIsNotDisplayed()
-        } finally {
-            mainClock.autoAdvance = true
         }
+        waitForIdle()
+
+        val baseTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
+        val imeHeightPx = with(density) { 280.dp.roundToPx() }
+        val residualImeInsets = WindowInsetsCompat.Builder()
+            .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, imeHeightPx))
+            .setVisible(WindowInsetsCompat.Type.ime(), false)
+            .build()
+        runOnUiThread {
+            ViewCompat.dispatchApplyWindowInsets(requireNotNull(hostView), residualImeInsets)
+        }
+        waitForIdle()
+
+        assertEquals(
+            "ime 底部非零但 isImeVisible 为 false 时胶囊应保持可见",
+            baseTop,
+            onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top,
+            1.5f,
+        )
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
     }
 
     // ---- (f) 60 项列表滚到底，最后一项底边 <= 胶囊顶边（411、700）与 Rail 底边 ----
@@ -796,6 +886,215 @@ class HiShellScrollAndPressTest {
         }
         waitForIdle()
         assertExactOneGlassSurface()
+    }
+
+    // ---- 防变异断言：fontScale=1.3 滚到底（守住 onSizeChanged）、真实 fling 停滚吸附、滚动零重组 ----
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w411dp-h891dp-xhdpi", fontScale = 1.3f)
+    fun contentPadding_bottomPill_fontScale130_lastItemAboveGrownPill() = withAnimatorDurationScale(1f) {
+        var listState: LazyListState? = null
+        var scope: CoroutineScope? = null
+        setContent {
+            scope = rememberCoroutineScope()
+            HiTheme(
+                themeMode = HiThemeMode.LIGHT,
+                seed = HiColorPresets.Brand.toSeed(),
+                fontSizeStep = HiFontSizeStep.STEP_5,
+            ) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _, contentPadding ->
+                    val state = rememberLazyListState()
+                    listState = state
+                    ScrollableItems(count = 60, contentPadding = contentPadding, listState = state)
+                }
+            }
+        }
+        waitForIdle()
+
+        val pillBounds = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot
+        val pillHeightDp = with(density) { pillBounds.height.toDp() }
+        assertTrue(
+            "fontScale=1.3 下胶囊应长高超过 64dp 最小高度以验证 onSizeChanged，实际 $pillHeightDp",
+            pillHeightDp > HiNavigationPillMinHeight,
+        )
+
+        requireNotNull(scope).launch {
+            requireNotNull(listState).scrollToItem(59)
+        }
+        waitForIdle()
+
+        val lastItemBottom = onNodeWithTag("item_59").fetchSemanticsNode().boundsInRoot.bottom
+        assertTrue(
+            "大字号下滚到底最后一项底边 ($lastItemBottom) 应 <= 长高后的胶囊顶边 (${pillBounds.top})",
+            lastItemBottom <= pillBounds.top + 1f,
+        )
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun scrollLinked_realFlingWithVelocity_settlesCleanly() = withAnimatorDurationScale(1f) {
+        var listState: LazyListState? = null
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _, contentPadding ->
+                    val state = rememberLazyListState()
+                    listState = state
+                    ScrollableItems(count = 60, contentPadding = contentPadding, listState = state)
+                }
+            }
+        }
+        waitForIdle()
+
+        val state = requireNotNull(listState)
+        val rootBottom = onRoot().fetchSemanticsNode().boundsInRoot.bottom
+        val baseTop = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top
+        val hiddenTop = rootBottom + with(density) { HiGlassTokens.FloatingShadowElevation.roundToPx() }
+
+        // 1) 带初速度的向下 fling：松手后列表继续惯性前进，且胶囊最终停在全隐
+        mainClock.autoAdvance = false
+        val indexAndOffsetAtDownFlingUp: Pair<Int, Int>
+        try {
+            onNodeWithTag("scroll_list").performTouchInput {
+                down(Offset(center.x, bottom * 0.75f))
+                moveBy(Offset(0f, -60f), delayMillis = 16L)
+                moveBy(Offset(0f, -60f), delayMillis = 16L)
+                up()
+            }
+            indexAndOffsetAtDownFlingUp = state.firstVisibleItemIndex to state.firstVisibleItemScrollOffset
+        } finally {
+            mainClock.autoAdvance = true
+        }
+        waitForIdle()
+        val afterDownFling = state.firstVisibleItemIndex to state.firstVisibleItemScrollOffset
+        assertTrue(
+            "应触发带初速度的真实向下 fling（松手时=$indexAndOffsetAtDownFlingUp，停滚后=$afterDownFling）",
+            afterDownFling.first > indexAndOffsetAtDownFlingUp.first ||
+                (afterDownFling.first == indexAndOffsetAtDownFlingUp.first &&
+                    afterDownFling.second > indexAndOffsetAtDownFlingUp.second + 20),
+        )
+        assertEquals("真实向下 fling 停滚后胶囊应吸附到全隐", hiddenTop, onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top, 1.5f)
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsNotDisplayed()
+
+        // 2) 带初速度的向上 fling：松手后列表继续惯性回滚，且胶囊最终吸附到全显
+        mainClock.autoAdvance = false
+        val indexAndOffsetAtUpFlingUp: Pair<Int, Int>
+        try {
+            onNodeWithTag("scroll_list").performTouchInput {
+                down(Offset(center.x, top + 200f))
+                moveBy(Offset(0f, 60f), delayMillis = 16L)
+                moveBy(Offset(0f, 60f), delayMillis = 16L)
+                up()
+            }
+            indexAndOffsetAtUpFlingUp = state.firstVisibleItemIndex to state.firstVisibleItemScrollOffset
+        } finally {
+            mainClock.autoAdvance = true
+        }
+        waitForIdle()
+        val afterUpFling = state.firstVisibleItemIndex to state.firstVisibleItemScrollOffset
+        assertTrue(
+            "应触发带初速度的真实向上 fling（松手时=$indexAndOffsetAtUpFlingUp，停滚后=$afterUpFling）",
+            afterUpFling.first < indexAndOffsetAtUpFlingUp.first ||
+                (afterUpFling.first == indexAndOffsetAtUpFlingUp.first &&
+                    afterUpFling.second < indexAndOffsetAtUpFlingUp.second - 20),
+        )
+        assertEquals("真实向上 fling 停滚后胶囊应吸附到全显", baseTop, onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot.top, 1.5f)
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun scrollLinked_firstFrameAndScrollDragAndSnap_zeroContentRecompositions() = withAnimatorDurationScale(1f) {
+        val contentCounter = RecompositionCounter("ShellScrollContent")
+        var touchSlop = 0f
+        setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _, contentPadding ->
+                    contentCounter.Track()
+                    ScrollableItems(count = 60, contentPadding = contentPadding)
+                }
+            }
+        }
+        waitForIdle()
+        // 守住第 3 项：标准字号下首帧 onSizeChanged 高度与默认最小高度一致，不得多触发一次重组
+        contentCounter.assertEquals(1)
+        contentCounter.assertRecompositionsAtMost(0)
+
+        // 拖动隐藏 → 停滚吸附全隐 → 拖回全显：全程内容零重组
+        onNodeWithTag("scroll_list").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, -touchSlop))
+            moveBy(Offset(0f, -110f))
+            advanceEventTime(200L)
+            moveBy(Offset.Zero)
+            up()
+        }
+        waitForIdle()
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsNotDisplayed()
+
+        onNodeWithTag("scroll_list").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, touchSlop))
+            moveBy(Offset(0f, 110f))
+            advanceEventTime(200L)
+            moveBy(Offset.Zero)
+            up()
+        }
+        waitForIdle()
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+
+        contentCounter.assertEquals(1)
+        contentCounter.assertRecompositionsAtMost(0)
+    }
+
+    @Test
+    fun navigationRail_surfaceContainer_styleSpecAndWcagContrast() {
+        val cases = listOf(
+            Triple("Light", false, false),
+            Triple("Dark", true, false),
+            Triple("PureBlack", true, true),
+        )
+        cases.forEach { (label, darkTheme, pureBlack) ->
+            val cs = hiColorSchemeFromSeed(
+                seedColor = HiColorPresets.Brand.color,
+                darkTheme = darkTheme,
+                pureBlack = pureBlack,
+            )
+            val blurSpec = resolveHiGlassStyleSpec(
+                colorScheme = cs,
+                darkTheme = darkTheme,
+                blurEnabled = true,
+                floating = false,
+                surfaceColor = cs.surfaceContainer,
+            )
+            val degradedSpec = resolveHiGlassStyleSpec(
+                colorScheme = cs,
+                darkTheme = darkTheme,
+                blurEnabled = false,
+                floating = false,
+                surfaceColor = cs.surfaceContainer,
+            )
+            assertEquals(cs.surfaceContainer, blurSpec.surfaceColor)
+            assertEquals(cs.surfaceContainer.copy(alpha = HiGlassTokens.DegradedSurfaceAlpha), degradedSpec.degradedSurfaceColor)
+
+            // 实色 surfaceContainer 与 94% 降级底色下，文字均 >= 4.5:1、图标 >= 3:1
+            listOf("Active" to blurSpec.surfaceColor, "Degraded" to degradedSpec.degradedSurfaceColor).forEach { (mode, railBg) ->
+                assertWcagContrastAtLeast(4.5f, railBg, cs.onSurface, "$label/$mode selected label", cs.background)
+                assertWcagContrastAtLeast(4.5f, railBg, cs.onSurfaceVariant, "$label/$mode unselected label/icon", cs.background)
+                assertWcagContrastAtLeast(4.5f, cs.secondaryContainer, cs.onSecondaryContainer, "$label/$mode selected icon")
+            }
+            assertTrue("$label 指示器相对轨底对比度应 > 1.0", wcagContrastRatio(cs.secondaryContainer, cs.surfaceContainer) > 1.0f)
+        }
     }
 
     private fun ComposeUiTest.assertExactOneGlassSurface() {

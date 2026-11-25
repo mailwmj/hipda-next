@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -225,7 +226,6 @@ class HiAdaptiveShellTest {
                 ShellIndicatorLayout(
                     selected = selected,
                     mode = ShellNavigationMode.CompactPill,
-                    animatorKey = "width_continuity_test",
                 ) {
                     ShellDestination.entries.forEachIndexed { idx, dest ->
                         Box(
@@ -447,35 +447,47 @@ class HiAdaptiveShellTest {
     @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
     fun destinationSwitch_unselectedNavItemsDoNotRecompose_bottomPill() =
-        verifyUnselectedItemsSkipRecomposition()
+        verifyUnselectedItemsSkipRecomposition(ShellNavigationMode.BottomPill)
 
     @Test
     @Config(qualifiers = "w891dp-h411dp-xhdpi")
     fun destinationSwitch_unselectedNavItemsDoNotRecompose_compactPill() =
-        verifyUnselectedItemsSkipRecomposition()
+        verifyUnselectedItemsSkipRecomposition(ShellNavigationMode.CompactPill)
 
     @Test
     @Config(qualifiers = "w900dp-h1120dp-xhdpi")
     fun destinationSwitch_unselectedNavItemsDoNotRecompose_rail() =
-        verifyUnselectedItemsSkipRecomposition()
+        verifyUnselectedItemsSkipRecomposition(ShellNavigationMode.Rail)
 
-    private fun verifyUnselectedItemsSkipRecomposition() = withAnimatorDurationScale(1f) {
+    private fun verifyUnselectedItemsSkipRecomposition(mode: ShellNavigationMode) = withAnimatorDurationScale(1f) {
         val counters = ShellDestination.entries.associateWith { RecompositionCounter("NavItem_${it.name}") }
         var selected by mutableStateOf(ShellDestination.Forum)
         val onSelectStable: (ShellDestination) -> Unit = { selected = it }
 
         setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                CompositionLocalProvider(
-                    LocalShellItemCompositionObserver provides { destination ->
-                        counters.getValue(destination).record()
+                Box(
+                    modifier = if (mode == ShellNavigationMode.Rail) {
+                        Modifier.width(HiNavigationRailWidth).height(400.dp)
+                    } else {
+                        Modifier.width(411.dp).height(64.dp)
                     },
                 ) {
-                    HiAdaptiveShell(
+                    ShellIndicatorLayout(
                         selected = selected,
-                        onSelect = onSelectStable,
-                    ) { destination, _ ->
-                        Box(Modifier.fillMaxSize().testTag("content_${destination.name}"))
+                        mode = mode,
+                    ) {
+                        ShellDestination.entries.forEach { destination ->
+                            val isSelected = destination == selected
+                            ObservedShellNavItem(
+                                destination = destination,
+                                selected = isSelected,
+                                showLabel = if (mode == ShellNavigationMode.CompactPill) isSelected else true,
+                                mode = mode,
+                                onSelect = onSelectStable,
+                                counter = counters.getValue(destination),
+                            )
+                        }
                     }
                 }
             }
@@ -504,6 +516,25 @@ class HiAdaptiveShellTest {
         counters.getValue(ShellDestination.Messages).assertRecompositionsAtMost(0)
         counters.getValue(ShellDestination.Search).assertEquals(3)
         counters.getValue(ShellDestination.Mine).assertEquals(2)
+    }
+
+    @Composable
+    private fun ObservedShellNavItem(
+        destination: ShellDestination,
+        selected: Boolean,
+        showLabel: Boolean,
+        mode: ShellNavigationMode,
+        onSelect: (ShellDestination) -> Unit,
+        counter: RecompositionCounter,
+    ) {
+        counter.Track()
+        ShellNavItem(
+            destination = destination,
+            selected = selected,
+            showLabel = showLabel,
+            mode = mode,
+            onSelect = onSelect,
+        )
     }
 
     // ---- (e) 无障碍与形态几何断言 + 视觉打磨验证 ----

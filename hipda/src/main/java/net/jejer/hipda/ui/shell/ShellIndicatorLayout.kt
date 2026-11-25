@@ -19,7 +19,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,11 +63,10 @@ internal fun ShellIndicatorLayout(
     selected: ShellDestination,
     mode: ShellNavigationMode,
     modifier: Modifier = Modifier,
-    animatorKey: Any = mode,
     itemsContent: @Composable () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val indicatorAnimator = remember(animatorKey, scope) { ShellIndicatorAnimator(scope) }
+    val indicatorAnimator = remember(mode, scope) { ShellIndicatorAnimator(scope) }
     val reducedMotion = HiTheme.isReducedMotion
     val selectedIndex = ShellDestination.entries.indexOf(selected)
 
@@ -184,8 +182,6 @@ internal fun ShellNavItem(
     onSelect: (ShellDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LocalShellItemCompositionObserver.current?.let { observer -> SideEffect { observer(destination) } }
-
     val cs = MaterialTheme.colorScheme
     val label = stringResource(destination.labelRes)
     val isRail = mode == ShellNavigationMode.Rail

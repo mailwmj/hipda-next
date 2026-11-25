@@ -105,8 +105,8 @@ fun resolveHiGlassStyleSpec(
     darkTheme: Boolean,
     blurEnabled: Boolean,
     floating: Boolean = true,
+    surfaceColor: Color = colorScheme.surface,
 ): HiGlassStyleSpec {
-    val surface = colorScheme.surface
     val tintAlpha = if (darkTheme) HiGlassTokens.DarkBlurTintAlpha else HiGlassTokens.LightBlurTintAlpha
     val borderColor = if (blurEnabled) {
         Color.White.copy(alpha = if (darkTheme) HiGlassTokens.DarkHighlightBorderAlpha else HiGlassTokens.LightHighlightBorderAlpha)
@@ -117,9 +117,9 @@ fun resolveHiGlassStyleSpec(
     return HiGlassStyleSpec(
         blurEnabled = blurEnabled,
         blurRadius = HiGlassTokens.BlurRadius,
-        surfaceColor = surface,
-        activeTintColor = surface.copy(alpha = tintAlpha),
-        degradedSurfaceColor = surface.copy(alpha = HiGlassTokens.DegradedSurfaceAlpha),
+        surfaceColor = surfaceColor,
+        activeTintColor = surfaceColor.copy(alpha = tintAlpha),
+        degradedSurfaceColor = surfaceColor.copy(alpha = HiGlassTokens.DegradedSurfaceAlpha),
         borderWidth = HiGlassTokens.BorderWidth,
         borderColor = borderColor,
         shadowElevation = if (floating) HiGlassTokens.FloatingShadowElevation else 0.dp,
@@ -146,13 +146,14 @@ fun HiGlassSurface(
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
     contentAlignment: Alignment = Alignment.Center,
     borderMode: HiGlassBorderMode = HiGlassBorderMode.AllSides,
+    surfaceColor: Color = MaterialTheme.colorScheme.surface,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val darkTheme = HiTheme.state.darkTheme
     val blurEnabled = environment.blurEnabled
-    val styleSpec = remember(colorScheme, darkTheme, blurEnabled, floating) {
-        resolveHiGlassStyleSpec(colorScheme, darkTheme, blurEnabled, floating)
+    val styleSpec = remember(colorScheme, darkTheme, blurEnabled, floating, surfaceColor) {
+        resolveHiGlassStyleSpec(colorScheme, darkTheme, blurEnabled, floating, surfaceColor)
     }
     val surfaceModifier = if (styleSpec.blurEnabled) {
         val hazeStyle = remember(styleSpec) {
