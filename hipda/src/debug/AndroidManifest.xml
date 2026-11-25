@@ -13,5 +13,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".debug.sampleexport.SampleExportActivity"
+            android:exported="false"
+            android:label="@string/sample_export_title"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+
+        <provider
+            android:name=".debug.sampleexport.SampleExportFileProvider"
+            android:authorities="${applicationId}.debug.sampleexport.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/sample_export_provider_paths" />
+        </provider>
     </application>
 </manifest>
