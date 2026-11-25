@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -20,10 +19,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,8 +36,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
@@ -53,17 +51,23 @@ val HiNavigationPillHorizontalMargin: Dp = 16.dp
 val HiNavigationPillBottomGap: Dp = 8.dp
 
 private val PillOuterPadding: Dp = 4.dp
-private val CompactItemSpacing: Dp = 4.dp
+private val CompactSelectedAdjacentGap: Dp = 12.dp
 private val MinTouchTarget: Dp = 48.dp
 private val StandardItemMinHeight: Dp = 56.dp
+private val RailTopPadding: Dp = 20.dp
+private val RailBottomPadding: Dp = 16.dp
+private val RailItemSpacing: Dp = 12.dp
+private val RailItemMinHeight: Dp = 56.dp
+private val RailIndicatorWidth: Dp = 56.dp
+private val RailIndicatorHeight: Dp = 32.dp
+private val RailItemTopPadding: Dp = 4.dp
 
 /**
- * 底部悬浮毛玻璃导航胶囊（支持标准 [BottomPill] 与紧凑 [CompactPill] 两种形态）。
+ * 底部悬浮毛玻璃导航胶囊（标准 [BottomPill] 与紧凑 [CompactPill] 两种形态）。
  *
  * - 标准态最小高 64dp、最宽 420dp；窄窗（`< 360dp`）下仅选中项显示文字。
- * - 紧凑态最小高 48dp，图标横排，仅选中项在图标旁显示文字。
- * - 选中指示器位置与宽度通过 [HiMotion.spatialFast] 连续驱动、可随时打断。
- * - 内部文字经 [HiCappedFontScale] 限制在 1.25 倍以内，字号放大时胶囊随内容长高不裁切。
+ * - 紧凑态最小高 48dp，选中项横向展示图标与文字，选中胶囊边缘到相邻图标的视觉间距与其余图标一致（24dp）。
+ * - 选中指示器位置与宽度通过 [HiMotion.spatialFast] 连续驱动且可打断，形态切换时通过 `remember(compact)` 隔离状态。
  */
 @Composable
 fun HiNavigationPill(
@@ -74,12 +78,13 @@ fun HiNavigationPill(
     compact: Boolean = false,
     showUnselectedLabels: Boolean = true,
 ) {
-    val indicatorAnimator = rememberShellIndicatorAnimator()
     val pillModifier = modifier
         .testTag(if (compact) HiShellTestTags.CompactPill else HiShellTestTags.BottomPill)
         .widthIn(max = HiNavigationPillMaxWidth)
         .then(if (compact) Modifier else Modifier.fillMaxWidth())
         .heightIn(min = if (compact) HiNavigationPillCompactMinHeight else HiNavigationPillMinHeight)
+    val arrangement = if (compact) ShellLayoutArrangement.CompactHorizontal else ShellLayoutArrangement.EqualHorizontal
+    val itemStyle = if (compact) ShellNavItemStyle.CompactPill else ShellNavItemStyle.BottomPill
 
     HiCappedFontScale {
         HiGlassSurface(
@@ -88,145 +93,165 @@ fun HiNavigationPill(
             shape = HiShapeTokens.Full,
             floating = true,
         ) {
-            val destinations = ShellDestination.entries
-            val selectedIndex = destinations.indexOf(selected)
-            val horizontalPadding = PillOuterPadding
-            val verticalPadding = if (compact) 0.dp else PillOuterPadding
-            Layout(
-                content = {
-                    ShellSelectionIndicator()
-                    destinations.forEach { destination ->
-                        val isSelected = destination == selected
-                        ShellNavItem(
-                            destination = destination,
-                            selected = isSelected,
-                            showLabel = if (compact) isSelected else (showUnselectedLabels || isSelected),
-                            horizontalLayout = compact,
-                            onSelect = onSelect,
-                        )
-                    }
-                },
+            ShellIndicatorLayout(
+                selected = selected,
+                arrangement = arrangement,
+                animatorKey = compact,
                 modifier = Modifier
                     .then(if (compact) Modifier else Modifier.fillMaxWidth())
-                    .padding(horizontal = horizontalPadding, vertical = verticalPadding),
-            ) { measurables, constraints ->
-                val indicatorMeasurable = measurables[0]
-                val itemMeasurables = measurables.subList(1, measurables.size)
-                val itemCount = itemMeasurables.size
-                val minTouchPx = MinTouchTarget.roundToPx()
-
-                val itemPlaceables: List<androidx.compose.ui.layout.Placeable>
-                val itemOffsetsX: IntArray
-                val layoutWidth: Int
-                val layoutHeight: Int
-                val indicatorInsetVerticalPx: Float
-
-                if (!compact) {
-                    val minItemHeightPx = StandardItemMinHeight.roundToPx()
-                    val totalWidth = constraints.maxWidth
-                    val baseWidth = totalWidth / itemCount
-                    val remainder = totalWidth - baseWidth * itemCount
-                    itemOffsetsX = IntArray(itemCount)
-                    var cursorX = 0
-                    itemPlaceables = itemMeasurables.mapIndexed { index, measurable ->
-                        val width = baseWidth + if (index == itemCount - 1) remainder else 0
-                        itemOffsetsX[index] = cursorX
-                        cursorX += width
-                        measurable.measure(
-                            Constraints(
-                                minWidth = width,
-                                maxWidth = width,
-                                minHeight = minItemHeightPx,
-                                maxHeight = constraints.maxHeight,
-                            ),
-                        )
-                    }
-                    layoutWidth = totalWidth
-                    layoutHeight = maxOf(minItemHeightPx, itemPlaceables.maxOf { it.height })
-                    indicatorInsetVerticalPx = 0f
-                } else {
-                    val gapPx = CompactItemSpacing.roundToPx()
-                    val totalGaps = gapPx * (itemCount - 1)
-                    val availableForItems = (constraints.maxWidth - totalGaps).coerceAtLeast(0)
-                    val intrinsicItemConstraints = Constraints(
-                        minWidth = minTouchPx.coerceAtMost(availableForItems / itemCount),
-                        maxWidth = availableForItems,
-                        minHeight = minTouchPx,
-                        maxHeight = constraints.maxHeight,
+                    .padding(horizontal = PillOuterPadding, vertical = if (compact) 0.dp else PillOuterPadding),
+            ) {
+                ShellDestination.entries.forEach { destination ->
+                    val isSelected = destination == selected
+                    ShellNavItem(
+                        destination = destination,
+                        selected = isSelected,
+                        showLabel = if (compact) isSelected else (showUnselectedLabels || isSelected),
+                        style = itemStyle,
+                        onSelect = onSelect,
                     )
-                    val naturalPlaceables = itemMeasurables.map { it.measure(intrinsicItemConstraints) }
-                    val naturalSum = naturalPlaceables.sumOf { it.width }
-                    itemPlaceables = if (naturalSum <= availableForItems) {
-                        naturalPlaceables
-                    } else {
-                        val scale = availableForItems.toFloat() / naturalSum.coerceAtLeast(1)
-                        itemMeasurables.mapIndexed { idx, measurable ->
-                            val clampedW = (naturalPlaceables[idx].width * scale).roundToInt().coerceAtLeast(1)
-                            measurable.measure(
-                                Constraints(
-                                    minWidth = clampedW,
-                                    maxWidth = clampedW,
-                                    minHeight = minTouchPx,
-                                    maxHeight = constraints.maxHeight,
-                                ),
-                            )
-                        }
-                    }
-                    itemOffsetsX = IntArray(itemCount)
-                    var cursorX = 0
-                    itemPlaceables.forEachIndexed { index, placeable ->
-                        itemOffsetsX[index] = cursorX
-                        cursorX += placeable.width + if (index < itemCount - 1) gapPx else 0
-                    }
-                    layoutWidth = cursorX.coerceAtMost(constraints.maxWidth)
-                    layoutHeight = maxOf(minTouchPx, itemPlaceables.maxOf { it.height })
-                    indicatorInsetVerticalPx = PillOuterPadding.toPx()
-                }
-
-                val selectedX = itemOffsetsX[selectedIndex].toFloat()
-                val selectedWidth = itemPlaceables[selectedIndex].width.toFloat()
-                val targetRect = Rect(
-                    left = selectedX,
-                    top = indicatorInsetVerticalPx,
-                    right = selectedX + selectedWidth,
-                    bottom = (layoutHeight - indicatorInsetVerticalPx).coerceAtLeast(indicatorInsetVerticalPx),
-                )
-                val animatedRect = indicatorAnimator.resolveRect(
-                    selectedKey = selected,
-                    target = targetRect,
-                )
-                val indicatorPlaceable = indicatorMeasurable.measure(
-                    Constraints.fixed(
-                        width = animatedRect.width.roundToInt().coerceAtLeast(0),
-                        height = animatedRect.height.roundToInt().coerceAtLeast(0),
-                    ),
-                )
-
-                layout(layoutWidth, layoutHeight) {
-                    indicatorPlaceable.placeRelative(
-                        x = animatedRect.left.roundToInt(),
-                        y = animatedRect.top.roundToInt(),
-                    )
-                    itemPlaceables.forEachIndexed { index, placeable ->
-                        placeable.placeRelative(
-                            x = itemOffsetsX[index],
-                            y = (layoutHeight - placeable.height) / 2,
-                        )
-                    }
                 }
             }
         }
     }
 }
 
+internal enum class ShellLayoutArrangement {
+    EqualHorizontal,
+    CompactHorizontal,
+    VerticalRail,
+}
+
+internal enum class ShellNavItemStyle {
+    BottomPill,
+    CompactPill,
+    Rail,
+}
+
+/**
+ * 胶囊与导航轨共用的单遍指示器布局：每个子 `Measurable` 严格只 `measure` 一次，
+ * 所有最小宽高约束均钳制至父级 `maxWidth`/`maxHeight`，极端窄窗与低高度下不崩溃。
+ */
 @Composable
-internal fun ShellSelectionIndicator() {
-    Box(
-        modifier = Modifier
-            .testTag(HiShellTestTags.SelectionIndicator)
-            .clip(HiShapeTokens.Full)
-            .background(MaterialTheme.colorScheme.secondaryContainer),
-    )
+internal fun ShellIndicatorLayout(
+    selected: ShellDestination,
+    arrangement: ShellLayoutArrangement,
+    animatorKey: Any,
+    modifier: Modifier = Modifier,
+    itemsContent: @Composable () -> Unit,
+) {
+    val indicatorAnimator = rememberShellIndicatorAnimator(key = animatorKey)
+    val selectedIndex = ShellDestination.entries.indexOf(selected)
+
+    Layout(
+        content = {
+            Box(
+                modifier = Modifier
+                    .testTag(HiShellTestTags.SelectionIndicator)
+                    .clip(HiShapeTokens.Full)
+                    .background(MaterialTheme.colorScheme.secondaryContainer),
+            )
+            itemsContent()
+        },
+        modifier = modifier,
+    ) { measurables, constraints ->
+        val indicatorMeasurable = measurables[0]
+        val itemMeasurables = measurables.subList(1, measurables.size)
+        val count = itemMeasurables.size
+        val maxW = constraints.maxWidth.coerceAtLeast(0)
+        val maxH = constraints.maxHeight.coerceAtLeast(0)
+        val minTouchPx = MinTouchTarget.roundToPx()
+
+        val offsetsX = IntArray(count)
+        val offsetsY = IntArray(count)
+        val itemPlaceables: List<androidx.compose.ui.layout.Placeable>
+        val layoutWidth: Int
+        val layoutHeight: Int
+        val targetRect: Rect
+
+        when (arrangement) {
+            ShellLayoutArrangement.EqualHorizontal -> {
+                val minItemH = StandardItemMinHeight.roundToPx().coerceAtMost(maxH)
+                val widths = splitEvenly(maxW, count)
+                var cursorX = 0
+                itemPlaceables = itemMeasurables.mapIndexed { i, m ->
+                    offsetsX[i] = cursorX
+                    cursorX += widths[i]
+                    m.measure(Constraints(widths[i], widths[i], minItemH, maxH))
+                }
+                layoutWidth = maxW
+                layoutHeight = maxOf(minItemH, itemPlaceables.maxOf { it.height }).coerceAtMost(maxH)
+                itemPlaceables.forEachIndexed { i, p -> offsetsY[i] = ((layoutHeight - p.height) / 2).coerceAtLeast(0) }
+                val selX = offsetsX[selectedIndex].toFloat()
+                targetRect = Rect(selX, 0f, selX + itemPlaceables[selectedIndex].width, layoutHeight.toFloat())
+            }
+
+            ShellLayoutArrangement.CompactHorizontal -> {
+                val minItemH = minTouchPx.coerceAtMost(maxH)
+                val naturalW = IntArray(count) { i -> maxOf(minTouchPx, itemMeasurables[i].maxIntrinsicWidth(maxH)) }
+                val adjGap = CompactSelectedAdjacentGap.roundToPx()
+                val gaps = IntArray((count - 1).coerceAtLeast(0)) { i ->
+                    if (i == selectedIndex || i + 1 == selectedIndex) adjGap else 0
+                }
+                val finalW = fitAxis(naturalW, gaps, maxW, minTouchPx, selectedIndex)
+                var cursorX = 0
+                itemPlaceables = itemMeasurables.mapIndexed { i, m ->
+                    val w = finalW[i].coerceAtLeast(0)
+                    offsetsX[i] = cursorX
+                    cursorX += w + if (i < gaps.size) gaps[i] else 0
+                    m.measure(Constraints(w, w, minItemH, maxH))
+                }
+                layoutWidth = cursorX.coerceAtMost(maxW)
+                layoutHeight = maxOf(minItemH, itemPlaceables.maxOf { it.height }).coerceAtMost(maxH)
+                itemPlaceables.forEachIndexed { i, p -> offsetsY[i] = ((layoutHeight - p.height) / 2).coerceAtLeast(0) }
+                val insetV = PillOuterPadding.toPx().coerceAtMost(layoutHeight / 4f)
+                val selX = offsetsX[selectedIndex].toFloat()
+                targetRect = Rect(selX, insetV, selX + itemPlaceables[selectedIndex].width, (layoutHeight - insetV).coerceAtLeast(insetV))
+            }
+
+            ShellLayoutArrangement.VerticalRail -> {
+                val minItemH = RailItemMinHeight.roundToPx()
+                val naturalH = IntArray(count) { i -> maxOf(minItemH, itemMeasurables[i].maxIntrinsicHeight(maxW)) }
+                val extras = intArrayOf(RailTopPadding.roundToPx(), RailBottomPadding.roundToPx()) +
+                    IntArray((count - 1).coerceAtLeast(0)) { RailItemSpacing.roundToPx() }
+                val finalH = fitAxis(naturalH, extras, maxH, minTouchPx = 0, selectedIndex = -1)
+                var cursorY = extras[0]
+                itemPlaceables = itemMeasurables.mapIndexed { i, m ->
+                    val h = finalH[i].coerceIn(0, maxH)
+                    offsetsY[i] = cursorY
+                    cursorY += h + if (i < count - 1) extras[i + 2] else 0
+                    m.measure(Constraints(maxW, maxW, h, h))
+                }
+                layoutWidth = maxW
+                layoutHeight = (cursorY + extras[1]).coerceAtMost(maxH)
+                val selY = offsetsY[selectedIndex].toFloat()
+                val selH = itemPlaceables[selectedIndex].height.toFloat()
+                val indW = RailIndicatorWidth.toPx().coerceAtMost(maxW.toFloat())
+                val indH = RailIndicatorHeight.toPx().coerceAtMost(selH)
+                val indLeft = (maxW - indW) / 2f
+                val indTop = selY + RailItemTopPadding.toPx().coerceAtMost(((selH - indH) / 2f).coerceAtLeast(0f))
+                targetRect = Rect(indLeft, indTop, indLeft + indW, indTop + indH)
+            }
+        }
+
+        val animatedRect = indicatorAnimator.resolveRect(selectedKey = selected, target = targetRect)
+        val indicatorPlaceable = indicatorMeasurable.measure(
+            Constraints.fixed(
+                width = animatedRect.width.roundToInt().coerceIn(0, layoutWidth),
+                height = animatedRect.height.roundToInt().coerceIn(0, layoutHeight),
+            ),
+        )
+
+        layout(layoutWidth, layoutHeight) {
+            indicatorPlaceable.placeRelative(
+                x = animatedRect.left.roundToInt(),
+                y = animatedRect.top.roundToInt(),
+            )
+            itemPlaceables.forEachIndexed { i, placeable ->
+                placeable.placeRelative(x = offsetsX[i], y = offsetsY[i])
+            }
+        }
+    }
 }
 
 @Composable
@@ -234,7 +259,7 @@ internal fun ShellNavItem(
     destination: ShellDestination,
     selected: Boolean,
     showLabel: Boolean,
-    horizontalLayout: Boolean,
+    style: ShellNavItemStyle,
     onSelect: (ShellDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -244,91 +269,93 @@ internal fun ShellNavItem(
     }
 
     val label = stringResource(destination.labelRes)
-    val contentColor = if (selected) {
+    val iconColor = if (selected) {
         MaterialTheme.colorScheme.onSecondaryContainer
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val labelColor = when {
+        !selected -> MaterialTheme.colorScheme.onSurfaceVariant
+        style == ShellNavItemStyle.Rail -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.onSecondaryContainer
     }
     val icon = if (selected) destination.selectedIcon else destination.unselectedIcon
     val iconContentDescription = if (showLabel) null else label
     val onClick = remember(destination, onSelect) { { onSelect(destination) } }
 
+    val itemContent: @Composable () -> Unit = {
+        val iconNode: @Composable () -> Unit = {
+            Icon(
+                imageVector = icon,
+                contentDescription = iconContentDescription,
+                tint = iconColor,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        if (style == ShellNavItemStyle.Rail) {
+            Box(
+                modifier = Modifier.size(width = RailIndicatorWidth, height = RailIndicatorHeight),
+                contentAlignment = Alignment.Center,
+            ) {
+                iconNode()
+            }
+        } else {
+            iconNode()
+        }
+        if (showLabel) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = labelColor,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
     Box(
         modifier = modifier
             .testTag(HiShellTestTags.navItem(destination))
-            .defaultMinSize(minWidth = MinTouchTarget, minHeight = MinTouchTarget)
             .clip(HiShapeTokens.Full)
             .selectable(
                 selected = selected,
                 onClick = onClick,
                 role = Role.Tab,
             ),
-        contentAlignment = Alignment.Center,
+        contentAlignment = if (style == ShellNavItemStyle.Rail) Alignment.TopCenter else Alignment.Center,
     ) {
-        if (horizontalLayout) {
+        if (style == ShellNavItemStyle.CompactPill) {
             Row(
-                modifier = Modifier.padding(
-                    horizontal = if (showLabel) 14.dp else 12.dp,
-                    vertical = 8.dp,
-                ),
+                modifier = Modifier.padding(horizontal = if (showLabel) 16.dp else 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = iconContentDescription,
-                    tint = contentColor,
-                    modifier = Modifier.size(22.dp),
-                )
-                if (showLabel) {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = contentColor,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Visible,
-                    )
-                }
+                itemContent()
             }
         } else {
             Column(
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                modifier = Modifier.padding(
+                    horizontal = 4.dp,
+                    vertical = if (style == ShellNavItemStyle.Rail) RailItemTopPadding else 6.dp,
+                ),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(if (style == ShellNavItemStyle.Rail) 4.dp else 2.dp),
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = iconContentDescription,
-                    tint = contentColor,
-                    modifier = Modifier.size(24.dp),
-                )
-                if (showLabel) {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = contentColor,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Visible,
-                    )
-                }
+                itemContent()
             }
         }
     }
 }
 
-private data class IndicatorCommand(
-    val target: Rect,
-    val animate: Boolean,
-)
-
 @Stable
-internal class ShellIndicatorAnimator {
+internal class ShellIndicatorAnimator(
+    private val scope: CoroutineScope,
+) {
     private var animatable: Animatable<Rect, AnimationVector4D>? = null
     private var lastTarget: Rect? = null
     private var lastSelectedKey: Any? = null
-    private val commands = Channel<IndicatorCommand>(Channel.UNLIMITED)
+    private var pendingSnap: Rect? = null
 
     fun resolveRect(selectedKey: Any, target: Rect): Rect {
         val current = animatable
@@ -342,47 +369,64 @@ internal class ShellIndicatorAnimator {
             val selectionChanged = selectedKey != lastSelectedKey
             lastTarget = target
             lastSelectedKey = selectedKey
-            val shouldAnimate = selectionChanged || current.isRunning
-            commands.trySend(IndicatorCommand(target = target, animate = shouldAnimate))
-            if (!shouldAnimate) {
-                return target
-            }
-        }
-        return current.value
-    }
-
-    suspend fun runCommandLoop() {
-        coroutineScope {
-            for (command in commands) {
-                var latest = command
-                while (true) {
-                    val next = commands.tryReceive().getOrNull() ?: break
-                    if (!latest.animate && next.animate) {
-                        animatable?.snapTo(latest.target)
-                    }
-                    latest = next
+            if (selectionChanged || current.isRunning) {
+                pendingSnap = null
+                scope.launch {
+                    current.animateTo(
+                        targetValue = target,
+                        animationSpec = HiMotion.spatialFast(),
+                    )
                 }
-                val targetAnimatable = animatable ?: continue
-                if (latest.animate) {
-                    launch {
-                        targetAnimatable.animateTo(
-                            targetValue = latest.target,
-                            animationSpec = HiMotion.spatialFast(),
-                        )
-                    }
-                } else {
-                    targetAnimatable.snapTo(latest.target)
+            } else {
+                pendingSnap = target
+                scope.launch {
+                    current.snapTo(target)
+                    if (pendingSnap == target) pendingSnap = null
                 }
             }
         }
+        return pendingSnap ?: current.value
     }
 }
 
 @Composable
-internal fun rememberShellIndicatorAnimator(): ShellIndicatorAnimator {
-    val animator = remember { ShellIndicatorAnimator() }
-    LaunchedEffect(animator) {
-        animator.runCommandLoop()
+internal fun rememberShellIndicatorAnimator(key: Any = Unit): ShellIndicatorAnimator {
+    val scope = rememberCoroutineScope()
+    return remember(key, scope) { ShellIndicatorAnimator(scope) }
+}
+
+private fun splitEvenly(total: Int, count: Int): IntArray {
+    if (count <= 0) return IntArray(0)
+    val base = total / count
+    val rem = total - base * count
+    return IntArray(count) { i -> base + if (i == count - 1) rem else 0 }
+}
+
+/** 单遍主轴尺寸分配：优先满足自然尺寸与间距，空间不足时先压缩间距，再按最小触摸目标或等分兜底。 */
+private fun fitAxis(
+    natural: IntArray,
+    spacings: IntArray,
+    maxTotal: Int,
+    minTouchPx: Int,
+    selectedIndex: Int,
+): IntArray {
+    val count = natural.size
+    val sumNatural = natural.sum()
+    val sumSpacings = spacings.sum()
+    return when {
+        sumNatural + sumSpacings <= maxTotal -> natural.copyOf()
+        sumNatural <= maxTotal -> {
+            val scale = (maxTotal - sumNatural).toFloat() / sumSpacings.coerceAtLeast(1)
+            for (i in spacings.indices) spacings[i] = (spacings[i] * scale).roundToInt()
+            natural.copyOf()
+        }
+        minTouchPx > 0 && selectedIndex >= 0 && maxTotal >= count * minTouchPx -> {
+            spacings.fill(0)
+            IntArray(count) { i -> if (i == selectedIndex) maxTotal - (count - 1) * minTouchPx else minTouchPx }
+        }
+        else -> {
+            spacings.fill(0)
+            splitEvenly(maxTotal, count)
+        }
     }
-    return animator
 }

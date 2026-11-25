@@ -24,13 +24,12 @@ import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 
 /**
- * HiPDA Next 自适应主外壳：按实时窗口尺寸与物理铰链状态在底部悬浮胶囊、紧凑胶囊与左侧 80dp 导航轨之间切换。
+ * HiPDA Next 自适应主外壳：按实时窗口尺寸与竖直物理铰链分隔状态在底部悬浮胶囊、紧凑胶囊与左侧 80dp 导航轨之间切换。
  *
  * 窗口信息选型说明：
- * - 使用 [LocalWindowInfo.current] 的 `containerDpSize` 获取精确窗口宽高（dp），因为 360dp（窄窗隐藏未选中标签）
- *   等阈值细于 `WindowSizeClass` 的三档离散分桶；
- * - 使用 [currentWindowAdaptiveInfoV2] 的 `windowPosture.hingeList` 读取 Jetpack WindowManager 的实时 `isSeparating`
- *   铰链分隔信号，避免重复收集 `WindowInfoTracker`。
+ * - 使用 [LocalWindowInfo.current] 的 `containerDpSize` 获取精确窗口宽高（dp），满足 360dp 等细粒度阈值；
+ * - 使用 [currentWindowAdaptiveInfoV2] 的 `windowPosture.hingeList` 读取实时 `isVertical && isSeparating`
+ *   信号（product-design.md §4.1：半折横放的桌面姿态不做特殊布局）。
  *
  * 内容区作为 Haze 源铺满窗口（胶囊浮在内容上方不占布局高度；导航轨占左侧 80dp），
  * 切换一级目的地时原地交叉淡入淡出（无位移）。
@@ -46,33 +45,13 @@ fun HiAdaptiveShell(
     val windowPosture = currentWindowAdaptiveInfoV2().windowPosture
     val widthDp = windowDpSize.width.value
     val heightDp = windowDpSize.height.value
-    val hingeSeparating = windowPosture.hingeList.any { it.isSeparating }
+    val hingeSeparating = windowPosture.hingeList.any { it.isVertical && it.isSeparating }
     val mode = shellNavigationMode(
         widthDp = widthDp,
         heightDp = heightDp,
         hingeSeparating = hingeSeparating,
     )
     val showUnselectedLabels = showLabelForUnselected(widthDp)
-
-    HiAdaptiveShellLayout(
-        selected = selected,
-        onSelect = onSelect,
-        mode = mode,
-        showUnselectedLabels = showUnselectedLabels,
-        modifier = modifier,
-        content = content,
-    )
-}
-
-@Composable
-internal fun HiAdaptiveShellLayout(
-    selected: ShellDestination,
-    onSelect: (ShellDestination) -> Unit,
-    mode: ShellNavigationMode,
-    showUnselectedLabels: Boolean,
-    modifier: Modifier = Modifier,
-    content: @Composable (ShellDestination) -> Unit,
-) {
     val glassState = rememberHiGlassState()
 
     Box(

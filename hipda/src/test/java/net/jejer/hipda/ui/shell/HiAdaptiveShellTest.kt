@@ -1,8 +1,14 @@
 package net.jejer.hipda.ui.shell
 
+import android.app.Activity
 import android.app.Application
+import android.content.Context
+import android.graphics.Rect as AndroidRect
+import android.view.View
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -10,24 +16,43 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.StateRestorationTester
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.window.layout.FoldingFeature
+import androidx.window.layout.WindowInfoTracker
+import androidx.window.layout.WindowInfoTrackerDecorator
+import androidx.window.layout.WindowLayoutInfo
 import kotlin.math.abs
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import net.jejer.hipda.testing.RecompositionCounter
 import net.jejer.hipda.testing.assertFrameContinuity
 import net.jejer.hipda.testing.withAnimatorDurationScale
+import net.jejer.hipda.ui.designsystem.HI_CHROME_MAX_FONT_SCALE
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
+import net.jejer.hipda.ui.designsystem.PreviewRootContent
 import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
 import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
@@ -92,7 +117,7 @@ class HiAdaptiveShellTest {
         assertEquals("外壳自身应恰好有 1 块毛玻璃", 1, shellGlassCount)
     }
 
-    // ---- (b) 选中指示器可打断：中途切回原目的地，逐帧位置连续 ----
+    // ---- (b) 选中指示器可打断：位置与宽度逐帧连续 ----
 
     @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
@@ -104,9 +129,7 @@ class HiAdaptiveShellTest {
                     selected = selected,
                     onSelect = { selected = it },
                 ) { destination ->
-                    Box(Modifier.fillMaxSize()) {
-                        Text(destination.name)
-                    }
+                    Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
         }
@@ -117,11 +140,7 @@ class HiAdaptiveShellTest {
             frameCount = 24,
             maxStepDp = 120.dp,
             minTotalTravelDp = 100.dp,
-            onFrame = { frame ->
-                if (frame == 0) {
-                    selected = ShellDestination.Mine
-                }
-            },
+            onFrame = { frame -> if (frame == 0) selected = ShellDestination.Mine },
         )
         assertTrue("正常切换单帧应有有效位移", normalResult.maxStepDp > 2.dp)
 
@@ -137,11 +156,8 @@ class HiAdaptiveShellTest {
             maxStepDp = normalResult.maxStepDp + 0.5.dp,
             minTotalTravelDp = 40.dp,
             onFrame = { frame ->
-                if (frame == 0) {
-                    selected = ShellDestination.Mine
-                } else if (frame == 4) {
-                    selected = ShellDestination.Forum
-                }
+                if (frame == 0) selected = ShellDestination.Mine
+                else if (frame == 4) selected = ShellDestination.Forum
             },
         )
         val peakX = reversalResult.positionsPx.maxOf { it.x }
@@ -152,7 +168,7 @@ class HiAdaptiveShellTest {
 
     @Test
     @Config(qualifiers = "w891dp-h411dp-xhdpi")
-    fun selectionIndicator_compactPill_positionAndWidthInterruptibleAndContinuous() = withAnimatorDurationScale(1f) {
+    fun selectionIndicator_compactPill_interruptibleAndContinuous() = withAnimatorDurationScale(1f) {
         var selected by mutableStateOf(ShellDestination.Forum)
         setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
@@ -160,9 +176,7 @@ class HiAdaptiveShellTest {
                     selected = selected,
                     onSelect = { selected = it },
                 ) { destination ->
-                    Box(Modifier.fillMaxSize()) {
-                        Text(destination.name)
-                    }
+                    Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
         }
@@ -173,11 +187,7 @@ class HiAdaptiveShellTest {
             frameCount = 24,
             maxStepDp = 120.dp,
             minTotalTravelDp = 60.dp,
-            onFrame = { frame ->
-                if (frame == 0) {
-                    selected = ShellDestination.Mine
-                }
-            },
+            onFrame = { frame -> if (frame == 0) selected = ShellDestination.Mine },
         )
 
         mainClock.autoAdvance = true
@@ -192,17 +202,81 @@ class HiAdaptiveShellTest {
             maxStepDp = normalResult.maxStepDp + 0.5.dp,
             minTotalTravelDp = 30.dp,
             onFrame = { frame ->
-                if (frame == 0) {
-                    selected = ShellDestination.Mine
-                } else if (frame == 4) {
-                    selected = ShellDestination.Forum
-                }
+                if (frame == 0) selected = ShellDestination.Mine
+                else if (frame == 4) selected = ShellDestination.Forum
             },
         )
         val peakX = reversalResult.positionsPx.maxOf { it.x }
         val finalX = reversalResult.positionsPx.last().x
         assertTrue("紧凑胶囊打断前应已明显右移（start=$startX, peak=$peakX）", peakX > startX + with(density) { 15.dp.toPx() })
         assertTrue("紧凑胶囊打断后应回落向起点（peak=$peakX, final=$finalX）", finalX < peakX - with(density) { 10.dp.toPx() })
+    }
+
+    // ---- S7.3：选中指示器宽度逐帧连续且可打断 ----
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun selectionIndicator_widthAnimatesContinuouslyAndIsInterruptible() = withAnimatorDurationScale(1f) {
+        var selected by mutableStateOf(ShellDestination.Forum)
+        val itemWidths = listOf(56.dp, 80.dp, 64.dp, 148.dp)
+
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ShellIndicatorLayout(
+                    selected = selected,
+                    arrangement = ShellLayoutArrangement.CompactHorizontal,
+                    animatorKey = "width_continuity_test",
+                ) {
+                    ShellDestination.entries.forEachIndexed { idx, dest ->
+                        Box(
+                            modifier = Modifier
+                                .width(itemWidths[idx])
+                                .height(48.dp)
+                                .testTag(HiShellTestTags.navItem(dest)),
+                        )
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        // 单程 Forum(56dp) -> Mine(148dp)：记录宽度变化与单帧最大宽度步长
+        val normalWidths = sampleIndicatorWidths(
+            nodeProvider = { onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true) },
+            frameCount = 24,
+            onFrame = { frame -> if (frame == 0) selected = ShellDestination.Mine },
+        )
+        val normalMaxWidthStepDp = maxAdjacentDeltaDp(normalWidths)
+        val normalTotalWidthTravelDp = totalDeltaDp(normalWidths)
+        assertTrue(
+            "正常切换宽度累计变化应 > 80dp，实际 $normalTotalWidthTravelDp",
+            normalTotalWidthTravelDp > 80.dp,
+        )
+        assertTrue("正常切换单帧宽度变化应平滑（> 2dp 且 < 60dp），实际 $normalMaxWidthStepDp", normalMaxWidthStepDp in 2.dp..60.dp)
+
+        // 复位后中途反向：Forum(56dp) -> Mine(148dp)，第 4 帧切回 Forum(56dp)
+        mainClock.autoAdvance = true
+        selected = ShellDestination.Forum
+        waitForIdle()
+
+        val reversalWidths = sampleIndicatorWidths(
+            nodeProvider = { onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true) },
+            frameCount = 30,
+            onFrame = { frame ->
+                if (frame == 0) selected = ShellDestination.Mine
+                else if (frame == 4) selected = ShellDestination.Forum
+            },
+        )
+        val reversalMaxWidthStepDp = maxAdjacentDeltaDp(reversalWidths)
+        assertTrue(
+            "打断反向时单帧宽度跳变 $reversalMaxWidthStepDp 超过正常上限 ${normalMaxWidthStepDp + 0.5.dp}",
+            reversalMaxWidthStepDp <= normalMaxWidthStepDp + 0.5.dp,
+        )
+        val startWidthPx = reversalWidths.first()
+        val peakWidthPx = reversalWidths.max()
+        val finalWidthPx = reversalWidths.last()
+        assertTrue("打断前宽度应显著增大（start=$startWidthPx, peak=$peakWidthPx）", peakWidthPx > startWidthPx + with(density) { 20.dp.toPx() })
+        assertTrue("打断后宽度应平滑回缩（peak=$peakWidthPx, final=$finalWidthPx）", finalWidthPx < peakWidthPx - with(density) { 15.dp.toPx() })
     }
 
     @Test
@@ -215,9 +289,7 @@ class HiAdaptiveShellTest {
                     selected = selected,
                     onSelect = { selected = it },
                 ) { destination ->
-                    Box(Modifier.fillMaxSize()) {
-                        Text(destination.name)
-                    }
+                    Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
         }
@@ -228,11 +300,7 @@ class HiAdaptiveShellTest {
             frameCount = 24,
             maxStepDp = 120.dp,
             minTotalTravelDp = 100.dp,
-            onFrame = { frame ->
-                if (frame == 0) {
-                    selected = ShellDestination.Mine
-                }
-            },
+            onFrame = { frame -> if (frame == 0) selected = ShellDestination.Mine },
         )
 
         mainClock.autoAdvance = true
@@ -247,11 +315,8 @@ class HiAdaptiveShellTest {
             maxStepDp = normalResult.maxStepDp + 0.5.dp,
             minTotalTravelDp = 40.dp,
             onFrame = { frame ->
-                if (frame == 0) {
-                    selected = ShellDestination.Mine
-                } else if (frame == 4) {
-                    selected = ShellDestination.Forum
-                }
+                if (frame == 0) selected = ShellDestination.Mine
+                else if (frame == 4) selected = ShellDestination.Forum
             },
         )
         val peakY = reversalResult.positionsPx.maxOf { it.y }
@@ -260,12 +325,57 @@ class HiAdaptiveShellTest {
         assertTrue("导航轨打断后应回落向起点（peak=$peakY, final=$finalY）", finalY < peakY - with(density) { 15.dp.toPx() })
     }
 
+    // ---- S7.2：目的地切换过程中内容容器与页面零位移 ----
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun destinationSwitch_contentHasZeroDisplacementAcrossAllFrames() = withAnimatorDurationScale(1f) {
+        var selected by mutableStateOf(ShellDestination.Forum)
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = selected,
+                    onSelect = { selected = it },
+                ) { destination ->
+                    Box(Modifier.fillMaxSize().testTag("page_${destination.name}")) {
+                        Text(destination.name)
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        val initialContainerPos = onNodeWithTag(HiShellTestTags.ContentContainer).fetchSemanticsNode().positionInRoot
+        val initialPagePos = onNodeWithTag("page_Forum").fetchSemanticsNode().positionInRoot
+
+        mainClock.autoAdvance = false
+        try {
+            selected = ShellDestination.Mine
+            Snapshot.sendApplyNotifications()
+            repeat(24) { frame ->
+                mainClock.advanceTimeByFrame()
+                val containerPos = onNodeWithTag(HiShellTestTags.ContentContainer).fetchSemanticsNode().positionInRoot
+                assertEquals("帧 $frame 内容容器 X 不应发生位移", initialContainerPos.x, containerPos.x, 0.01f)
+                assertEquals("帧 $frame 内容容器 Y 不应发生位移", initialContainerPos.y, containerPos.y, 0.01f)
+                onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.TestTag, "page_Mine"))
+                    .fetchSemanticsNodes()
+                    .firstOrNull()
+                    ?.let { mineNode ->
+                        assertEquals("帧 $frame 新目的地 X 应零位移", initialPagePos.x, mineNode.positionInRoot.x, 0.01f)
+                        assertEquals("帧 $frame 新目的地 Y 应零位移", initialPagePos.y, mineNode.positionInRoot.y, 0.01f)
+                    }
+            }
+        } finally {
+            mainClock.autoAdvance = true
+        }
+        onNodeWithTag("page_Mine").assertIsDisplayed()
+    }
+
     // ---- (c) 减少动态效果：scale=0f 时指示器与内容一帧到位 ----
 
     @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
     fun reducedMotion_indicatorAndContentFinishImmediately() {
-        // 对照组（scale = 1f）：推进首帧动画后，指示器仍在途中，旧内容仍在退场
         withAnimatorDurationScale(1f) {
             var selected by mutableStateOf(ShellDestination.Forum)
             setContent {
@@ -285,9 +395,9 @@ class HiAdaptiveShellTest {
             mainClock.autoAdvance = false
             selected = ShellDestination.Mine
             Snapshot.sendApplyNotifications()
-            mainClock.advanceTimeByFrame() // 重组并派发动画命令
-            mainClock.advanceTimeByFrame() // 动画首帧（t=0）
-            mainClock.advanceTimeByFrame() // 动画次帧（t=16ms）
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
             waitForIdle()
 
             val indicatorX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
@@ -298,7 +408,6 @@ class HiAdaptiveShellTest {
             )
         }
 
-        // 减少动态效果（scale = 0f）：指示器和内容在首动画帧一步到位，无残留中间节点
         withAnimatorDurationScale(0f) {
             var selected by mutableStateOf(ShellDestination.Forum)
             setContent {
@@ -319,9 +428,9 @@ class HiAdaptiveShellTest {
             mainClock.autoAdvance = false
             selected = ShellDestination.Mine
             Snapshot.sendApplyNotifications()
-            mainClock.advanceTimeByFrame() // 重组并派发动画命令
-            mainClock.advanceTimeByFrame() // 动画首帧：scale=0 直接跳到终点
-            mainClock.advanceTimeByFrame() // 提交最终布局状态
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
             waitForIdle()
 
             val indicatorNode = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
@@ -377,7 +486,6 @@ class HiAdaptiveShellTest {
             counters.getValue(dest).assertRecompositionsAtMost(0)
         }
 
-        // Forum -> Search：Messages 与 Mine 均保持未选中，不应发生任何重组
         selected = ShellDestination.Search
         waitForIdle()
 
@@ -388,7 +496,6 @@ class HiAdaptiveShellTest {
         counters.getValue(ShellDestination.Mine).assertEquals(1)
         counters.getValue(ShellDestination.Mine).assertRecompositionsAtMost(0)
 
-        // Search -> Mine：Forum 与 Messages 均保持未选中，不应发生任何重组
         selected = ShellDestination.Mine
         waitForIdle()
 
@@ -399,7 +506,7 @@ class HiAdaptiveShellTest {
         counters.getValue(ShellDestination.Mine).assertEquals(2)
     }
 
-    // ---- (e) 无障碍与形态几何断言 ----
+    // ---- (e) 无障碍与形态几何断言 + 视觉打磨验证 ----
 
     @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
@@ -428,11 +535,50 @@ class HiAdaptiveShellTest {
         val centerOffsetPx = abs(pillBounds.center.x - rootBounds.center.x)
         assertTrue("标准胶囊应相对窗口水平居中，偏差 $centerOffsetPx px", centerOffsetPx <= with(density) { 1.dp.toPx() })
 
-        // 点击“搜索”应切换选中语义
         onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search)).performClick()
         waitForIdle()
         assertEquals(ShellDestination.Search, selected)
         assertNavItemsAccessible(selected = ShellDestination.Search, expectUnselectedLabels = true)
+    }
+
+    // ---- S7.1：非零 navigationBars inset 下，胶囊底边 = 窗口底 − inset − 8dp ----
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun bottomPill_respectsNonZeroNavigationBarsInset() = withAnimatorDurationScale(1f) {
+        var hostView: View? = null
+        setContent {
+            hostView = LocalView.current
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _ ->
+                    Box(Modifier.fillMaxSize())
+                }
+            }
+        }
+        waitForIdle()
+
+        val navBarInsetPx = with(density) { 48.dp.roundToPx() }
+        val insetsCompat = WindowInsetsCompat.Builder()
+            .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.of(0, 0, 0, navBarInsetPx))
+            .build()
+        runOnUiThread {
+            val view = requireNotNull(hostView)
+            ViewCompat.dispatchApplyWindowInsets(view, insetsCompat)
+        }
+        waitForIdle()
+
+        val rootBounds = onRoot().fetchSemanticsNode().boundsInRoot
+        val pillBounds = onNodeWithTag(HiShellTestTags.BottomPill).fetchSemanticsNode().boundsInRoot
+        val expectedBottomPx = rootBounds.bottom - navBarInsetPx - with(density) { HiNavigationPillBottomGap.toPx() }
+        assertEquals(
+            "胶囊底边应等于窗口底边减去 navigationBars inset 与 8dp",
+            expectedBottomPx,
+            pillBounds.bottom,
+            1.5f,
+        )
     }
 
     @Test
@@ -479,7 +625,7 @@ class HiAdaptiveShellTest {
 
     @Test
     @Config(qualifiers = "w891dp-h411dp-xhdpi")
-    fun accessibilityAndGeometry_compactPill() = withAnimatorDurationScale(1f) {
+    fun accessibilityAndGeometry_compactPill_symmetricVisualIconSpacing() = withAnimatorDurationScale(1f) {
         setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 HiAdaptiveShell(
@@ -496,11 +642,28 @@ class HiAdaptiveShellTest {
         val pillHeightDp = with(density) { pillBounds.height.toDp() }
         assertTrue("紧凑胶囊最小高度应 ≥ 48dp，实际 $pillHeightDp", pillHeightDp >= 47.5.dp)
         assertNavItemsAccessible(selected = ShellDestination.Forum, expectUnselectedLabels = false)
+
+        // 视觉打磨 3：选中指示器右缘到相邻图标的视觉间距与其余未选中图标间距一致（均为 24dp）
+        val indicatorBounds = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val messagesBounds = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Messages))
+            .fetchSemanticsNode().boundsInRoot
+        val searchBounds = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search))
+            .fetchSemanticsNode().boundsInRoot
+        val halfIconPx = with(density) { 12.dp.toPx() }
+        val indicatorToMessagesIconPx = (messagesBounds.center.x - halfIconPx) - indicatorBounds.right
+        val messagesToSearchIconPx = (searchBounds.center.x - halfIconPx) - (messagesBounds.center.x + halfIconPx)
+        assertEquals(
+            "选中指示器右缘到相邻图标的视觉间距应与未选中图标间距一致",
+            messagesToSearchIconPx,
+            indicatorToMessagesIconPx,
+            with(density) { 1.dp.toPx() },
+        )
     }
 
     @Test
     @Config(qualifiers = "w900dp-h1120dp-xhdpi")
-    fun accessibilityAndGeometry_navigationRailDockedLeft80dp() = withAnimatorDurationScale(1f) {
+    fun accessibilityAndGeometry_navigationRailDockedLeft80dpWithIconCapsuleIndicator() = withAnimatorDurationScale(1f) {
         setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 HiAdaptiveShell(
@@ -519,10 +682,223 @@ class HiAdaptiveShellTest {
         assertEquals("导航轨应贴左", 0f, railLeftDp.value, 0.5f)
         assertEquals("导航轨宽度应为 80dp", 80f, railWidthDp.value, 1f)
 
+        // 视觉打磨 1：导航轨选中指示器为包裹图标的横向小胶囊（56×32dp）
+        val indicatorBounds = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertEquals("导航轨指示器宽应为 56dp", 56f, with(density) { indicatorBounds.width.toDp().value }, 1f)
+        assertEquals("导航轨指示器高应为 32dp", 32f, with(density) { indicatorBounds.height.toDp().value }, 1f)
+
         assertNavItemsAccessible(selected = ShellDestination.Mine, expectUnselectedLabels = true)
     }
 
-    private fun androidx.compose.ui.test.ComposeUiTest.assertNavItemsAccessible(
+    // ---- S7.4：Rail 形态下 fontScale = 2.0 被钳制到 1.25 ----
+
+    @Test
+    @Config(qualifiers = "w900dp-h1120dp-xhdpi")
+    fun navigationRail_clampsFontScaleAt125PercentWhenSystemScaleIs200() = withAnimatorDurationScale(1f) {
+        var fontScaleState by mutableStateOf(1.25f)
+        var observedOuterScale = 0f
+
+        setContent {
+            CompositionLocalProvider(LocalDensity provides Density(density = 2f, fontScale = fontScaleState)) {
+                observedOuterScale = LocalDensity.current.fontScale
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(
+                        selected = ShellDestination.Forum,
+                        onSelect = {},
+                    ) { _ ->
+                        Box(Modifier.fillMaxSize()) {
+                            Text(
+                                text = "对照组正文文字",
+                                modifier = Modifier.testTag("uncapped_body_text"),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        assertEquals(HI_CHROME_MAX_FONT_SCALE, observedOuterScale, 0.001f)
+        val railItemHeightAt125 = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum))
+            .fetchSemanticsNode().size.height
+        val uncappedHeightAt125 = onNodeWithTag("uncapped_body_text").fetchSemanticsNode().size.height
+
+        fontScaleState = 2.0f
+        waitForIdle()
+
+        assertEquals(2.0f, observedOuterScale, 0.001f)
+        val railItemHeightAt200 = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum))
+            .fetchSemanticsNode().size.height
+        val uncappedHeightAt200 = onNodeWithTag("uncapped_body_text").fetchSemanticsNode().size.height
+
+        assertTrue(
+            "对照组正文在 2.0 倍缩放下应明显高于 1.25 倍（1.25x=$uncappedHeightAt125, 2.0x=$uncappedHeightAt200）",
+            uncappedHeightAt200 > uncappedHeightAt125,
+        )
+        assertEquals(
+            "Rail 导航项在 2.0 倍系统缩放下应被钳制到与 1.25 倍完全一致的高度",
+            railItemHeightAt125,
+            railItemHeightAt200,
+        )
+    }
+
+    // ---- S7.5 + 阻断 2：StateRestorationTester 证明预览外壳演示态与选中目的地重建后保持 ----
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun previewShellDemo_restoresVisibilityAndSelectedDestinationAfterStateRestoration() = withAnimatorDurationScale(1f) {
+        val restorationTester = StateRestorationTester(this)
+        restorationTester.setContent {
+            PreviewRootContent()
+        }
+        waitForIdle()
+
+        // 进入外壳演示并切换选中目的地到“搜索”
+        onNodeWithText("外壳").performClick()
+        waitForIdle()
+        onNodeWithText("返回样张").assertIsDisplayed()
+        onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search)).performClick()
+        waitForIdle()
+        assertEquals(
+            true,
+            onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search))
+                .fetchSemanticsNode().config.getOrNull(SemanticsProperties.Selected),
+        )
+
+        // 模拟配置变化 / 进程回收重建
+        restorationTester.emulateSaveAndRestore()
+        waitForIdle()
+
+        onNodeWithText("返回样张").assertIsDisplayed()
+        assertEquals(
+            "重建后仍应保持在“搜索”目的地",
+            true,
+            onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Search))
+                .fetchSemanticsNode().config.getOrNull(SemanticsProperties.Selected),
+        )
+        assertEquals(
+            "重建后“论坛”不应被重置为选中",
+            false,
+            onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Forum))
+                .fetchSemanticsNode().config.getOrNull(SemanticsProperties.Selected),
+        )
+    }
+
+    // ---- S6 + S7.6：真实 FoldingFeature 替身验证竖直分隔铰链 → 紧凑胶囊、水平桌面姿态 → 不变 ----
+
+    @Test
+    @Config(qualifiers = "w700dp-h900dp-xhdpi")
+    fun foldingFeature_verticalSeparatingHingeUsesCompactPill() = withFakeFoldingFeature(
+        FakeFoldingFeature(
+            bounds = AndroidRect(700, 0, 700, 1800),
+            orientation = FoldingFeature.Orientation.VERTICAL,
+            state = FoldingFeature.State.HALF_OPENED,
+            isSeparating = true,
+        ),
+    ) {
+        withAnimatorDurationScale(1f) {
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                        Box(Modifier.fillMaxSize())
+                    }
+                }
+            }
+            waitForIdle()
+            onNodeWithTag(HiShellTestTags.CompactPill).assertIsDisplayed()
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w700dp-h900dp-xhdpi")
+    fun foldingFeature_horizontalTabletopHingeKeepsBottomPill() = withFakeFoldingFeature(
+        FakeFoldingFeature(
+            bounds = AndroidRect(0, 900, 1400, 900),
+            orientation = FoldingFeature.Orientation.HORIZONTAL,
+            state = FoldingFeature.State.HALF_OPENED,
+            isSeparating = true,
+        ),
+    ) {
+        withAnimatorDurationScale(1f) {
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                        Box(Modifier.fillMaxSize())
+                    }
+                }
+            }
+            waitForIdle()
+            onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w900dp-h1120dp-xhdpi")
+    fun foldingFeature_horizontalTabletopHingeKeepsRailOnExpandedWidth() = withFakeFoldingFeature(
+        FakeFoldingFeature(
+            bounds = AndroidRect(0, 1120, 1800, 1120),
+            orientation = FoldingFeature.Orientation.HORIZONTAL,
+            state = FoldingFeature.State.HALF_OPENED,
+            isSeparating = true,
+        ),
+    ) {
+        withAnimatorDurationScale(1f) {
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                        Box(Modifier.fillMaxSize())
+                    }
+                }
+            }
+            waitForIdle()
+            onNodeWithTag(HiShellTestTags.NavigationRail).assertIsDisplayed()
+        }
+    }
+
+    // ---- 局部辅助 ----
+
+    private fun ComposeUiTest.sampleIndicatorWidths(
+        nodeProvider: () -> SemanticsNodeInteraction,
+        frameCount: Int,
+        onFrame: (Int) -> Unit,
+    ): List<Float> {
+        val prev = mainClock.autoAdvance
+        mainClock.autoAdvance = false
+        val widths = ArrayList<Float>(frameCount + 1)
+        try {
+            for (frame in 0..frameCount) {
+                widths += nodeProvider().fetchSemanticsNode().size.width.toFloat()
+                if (frame < frameCount) {
+                    onFrame(frame)
+                    Snapshot.sendApplyNotifications()
+                    mainClock.advanceTimeByFrame()
+                }
+            }
+        } finally {
+            mainClock.autoAdvance = prev
+        }
+        return widths
+    }
+
+    private fun ComposeUiTest.maxAdjacentDeltaDp(samplesPx: List<Float>): Dp {
+        var maxPx = 0f
+        for (i in 1 until samplesPx.size) {
+            val delta = abs(samplesPx[i] - samplesPx[i - 1])
+            if (delta > maxPx) maxPx = delta
+        }
+        return with(density) { maxPx.toDp() }
+    }
+
+    private fun ComposeUiTest.totalDeltaDp(samplesPx: List<Float>): Dp {
+        var totalPx = 0f
+        for (i in 1 until samplesPx.size) {
+            totalPx += abs(samplesPx[i] - samplesPx[i - 1])
+        }
+        return with(density) { totalPx.toDp() }
+    }
+
+    private fun ComposeUiTest.assertNavItemsAccessible(
         selected: ShellDestination,
         expectUnselectedLabels: Boolean,
     ) {
@@ -564,4 +940,29 @@ class HiAdaptiveShellTest {
             }
         }
     }
+
+    @Suppress("RestrictedApi")
+    private fun withFakeFoldingFeature(feature: FoldingFeature, block: () -> Unit) {
+        val layoutInfo = WindowLayoutInfo(listOf(feature))
+        val decorator = object : WindowInfoTrackerDecorator {
+            override fun decorate(tracker: WindowInfoTracker): WindowInfoTracker = object : WindowInfoTracker {
+                override fun windowLayoutInfo(activity: Activity): Flow<WindowLayoutInfo> = flowOf(layoutInfo)
+                override fun windowLayoutInfo(context: Context): Flow<WindowLayoutInfo> = flowOf(layoutInfo)
+            }
+        }
+        WindowInfoTracker.overrideDecorator(decorator)
+        try {
+            block()
+        } finally {
+            WindowInfoTracker.reset()
+        }
+    }
+
+    private class FakeFoldingFeature(
+        override val bounds: AndroidRect,
+        override val orientation: FoldingFeature.Orientation,
+        override val state: FoldingFeature.State,
+        override val isSeparating: Boolean,
+        override val occlusionType: FoldingFeature.OcclusionType = FoldingFeature.OcclusionType.NONE,
+    ) : FoldingFeature
 }

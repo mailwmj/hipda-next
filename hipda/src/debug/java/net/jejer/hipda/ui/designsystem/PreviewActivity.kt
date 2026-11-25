@@ -45,6 +45,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,28 +74,33 @@ class PreviewActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            var state by remember { mutableStateOf(ThemeSpecimenState()) }
-            var showShellDemo by remember { mutableStateOf(false) }
-            HiTheme(
-                themeMode = state.themeMode,
-                pureBlack = state.pureBlack,
-                seed = state.seed,
-                fontSizeStep = state.fontSizeStep,
-                lineHeightPreset = state.lineHeightPreset,
-            ) {
-                if (showShellDemo) {
-                    ShellPreviewScreen(
-                        onBack = { showShellDemo = false },
-                    )
-                } else {
-                    ThemeSpecimenScreen(
-                        state = state,
-                        onStateChange = { state = it },
-                        onOpenShellDemo = { showShellDemo = true },
-                        modifier = Modifier.safeDrawingPadding(),
-                    )
-                }
-            }
+            PreviewRootContent()
+        }
+    }
+}
+
+@Composable
+internal fun PreviewRootContent() {
+    var state by remember { mutableStateOf(ThemeSpecimenState()) }
+    var showShellDemo by rememberSaveable { mutableStateOf(false) }
+    HiTheme(
+        themeMode = state.themeMode,
+        pureBlack = state.pureBlack,
+        seed = state.seed,
+        fontSizeStep = state.fontSizeStep,
+        lineHeightPreset = state.lineHeightPreset,
+    ) {
+        if (showShellDemo) {
+            ShellPreviewScreen(
+                onBack = { showShellDemo = false },
+            )
+        } else {
+            ThemeSpecimenScreen(
+                state = state,
+                onStateChange = { state = it },
+                onOpenShellDemo = { showShellDemo = true },
+                modifier = Modifier.safeDrawingPadding(),
+            )
         }
     }
 }
@@ -211,34 +217,27 @@ private fun SpecimenHeader(
                         Text(text = "外壳", style = MaterialTheme.typography.labelMedium)
                     }
                 }
-                HiCappedFontScale {
-                    Surface(
-                        shape = HiShapeTokens.Full,
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                    ) {
-                        Text(
-                            text = if (HiTheme.state.pureBlack) "OLED" else if (HiTheme.state.darkTheme) "DARK" else "LIGHT",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        )
-                    }
-                }
+                ThemeModeBadge()
             }
         } else {
-            HiCappedFontScale {
-                Surface(
-                    shape = HiShapeTokens.Full,
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                ) {
-                    Text(
-                        text = if (HiTheme.state.pureBlack) "OLED" else if (HiTheme.state.darkTheme) "DARK" else "LIGHT",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
-                }
-            }
+            ThemeModeBadge()
+        }
+    }
+}
+
+@Composable
+private fun ThemeModeBadge() {
+    HiCappedFontScale {
+        Surface(
+            shape = HiShapeTokens.Full,
+            color = MaterialTheme.colorScheme.primaryContainer,
+        ) {
+            Text(
+                text = if (HiTheme.state.pureBlack) "OLED" else if (HiTheme.state.darkTheme) "DARK" else "LIGHT",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
         }
     }
 }
@@ -762,7 +761,7 @@ fun ShellPreviewScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var selected by remember { mutableStateOf(ShellDestination.Forum) }
+    var selected by rememberSaveable { mutableStateOf(ShellDestination.Forum) }
     val cs = MaterialTheme.colorScheme
     HiAdaptiveShell(
         selected = selected,
