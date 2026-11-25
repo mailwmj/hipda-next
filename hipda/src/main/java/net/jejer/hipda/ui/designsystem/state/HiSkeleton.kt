@@ -21,7 +21,7 @@ import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 
-/** 骨架屏呼吸透明度令牌（基于当前 `LocalContentColor` 叠色，自动适配浅色、深色与纯黑表面）。 */
+/** 骨架屏呼吸透明度令牌（基于 `MaterialTheme.colorScheme.onSurface` 叠色，自动适配浅色、深色与纯黑表面）。 */
 @Immutable
 object HiSkeletonTokens {
     const val MinAlpha: Float = 0.07f

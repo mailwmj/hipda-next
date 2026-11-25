@@ -277,26 +277,79 @@ class ForumViewModelTest {
         advanceUntilIdle()
         assertEquals(listOf("2001", "2002"), vm.uiState.value.items.map(ThreadListItem::tid))
 
-        // 跨号切换到 B 账号：B 请求版块 2 返回 SiteError，仓库内存仍保留旧 items，界面必须屏蔽 A 的任何帖子
+        // 跨号切换到 B 账号：B 请求版块 2 返回 SiteError，仓库内存仍保留旧 items，界面必须屏蔽 A 的任何帖子与 hasMore
+        assertTrue("切号前 A 账号版块 2 应有 hasMore=true", vm.uiState.value.hasMore)
         authRepo.signIn(accountB)
         advanceUntilIdle()
         assertTrue("切号后 SiteError 分支严禁泄露 A 账号在版块 2 的缓存帖子", vm.uiState.value.items.isEmpty())
+        assertFalse("切号后 staleUidCache 未就绪时 hasMore 必须为 false", vm.uiState.value.hasMore)
         assertFalse(vm.uiState.value.isLoading)
         assertEquals(R.string.common_error_no_forum_permission, vm.uiState.value.error?.messageRes)
+        vm.loadMore()
+        advanceUntilIdle()
+        assertTrue("staleUidCache 下 hasMore=false 应阻断 loadMore 请求", threadRepo.loadMoreQueries.isEmpty())
 
-        // B 切换到此前 A 缓存过的版块 6 且同样返回 SiteError：同样不得泄露 A 的 6001
+        // B 切换到此前 A 缓存过的版块 6 且同样返回 SiteError：同样不得泄露 A 的 6001 与 hasMore
         vm.bindSource(ForumListSource.Forum(6))
         advanceUntilIdle()
         assertTrue("切号后 SiteError 分支严禁泄露 A 账号在版块 6 的缓存帖子", vm.uiState.value.items.isEmpty())
+        assertFalse("切号后版块 6 staleUidCache 下 hasMore 必须为 false", vm.uiState.value.hasMore)
         assertFalse(vm.uiState.value.isLoading)
         assertEquals(R.string.common_error_no_forum_permission, vm.uiState.value.error?.messageRes)
 
-        // B 切换到有权限的版块 7：正常展示 B 自己的帖子
+        // B 切换到有权限的版块 7：正常展示 B 自己的帖子与 hasMore
         vm.bindSource(ForumListSource.Forum(7))
         advanceUntilIdle()
         assertEquals(listOf("7001"), vm.uiState.value.items.map(ThreadListItem::tid))
+        assertTrue("B 账号已就绪版块应正常暴露 hasMore=true", vm.uiState.value.hasMore)
         assertNull(vm.uiState.value.error)
         collector.cancel()
+    }
+
+    /** 闭合 R-E1 备注 2：跨号切换新账号在途请求未就绪期间（staleUidCache=true），uiState.hasMore 必须立即屏蔽为 false。 */
+    @Test
+    fun accountSwitch_whileNewAccountRefreshInFlight_masksHasMoreFalseUntilSettled() = runTest {
+        val standardDispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(standardDispatcher)
+        try {
+            val accountA = SavedAccount(uid = "42", username = "UserA", passwordMd5 = "a".repeat(32), lastLoginAt = 100L)
+            val accountB = SavedAccount(uid = "99", username = "UserB", passwordMd5 = "b".repeat(32), lastLoginAt = 200L)
+            val authRepo = TestAuthRepository(initialAccount = accountA)
+            val gateAccountB = CompletableDeferred<Unit>()
+            val threadRepo = TestThreadListRepository { query ->
+                if (authRepo.currentAccount.value?.uid == accountA.uid) {
+                    successBatch(query, listOf(summary("2001", "账号A帖子")))
+                } else {
+                    gateAccountB.await()
+                    successBatch(query, listOf(summary("2002", "账号B帖子")))
+                }
+            }
+            val vm = ForumViewModel(threadRepo, TestSearchRepository(), TestSettingsRepository(), authRepo, idleGateway())
+            val collector = backgroundScope.launch { vm.uiState.collect {} }
+            advanceUntilIdle()
+
+            assertEquals(listOf("2001"), vm.uiState.value.items.map(ThreadListItem::tid))
+            assertTrue("切号前账号 A 加载完成时 hasMore 应为 true", vm.uiState.value.hasMore)
+
+            // 切到账号 B，B 的刷新在途挂起（staleUidCache == true，仓库内存 load.hasMore 仍为 true）
+            authRepo.signIn(accountB)
+            advanceUntilIdle()
+
+            assertTrue("跨号切换在途未就绪时应隐藏旧列表", vm.uiState.value.items.isEmpty())
+            assertTrue("跨号切换在途未就绪时应展示加载态", vm.uiState.value.isLoading)
+            assertFalse("跨号切换在途未就绪时 hasMore 必须为 false", vm.uiState.value.hasMore)
+
+            // 放行账号 B 刷新后恢复新账号数据与 hasMore
+            gateAccountB.complete(Unit)
+            advanceUntilIdle()
+
+            assertEquals(listOf("2002"), vm.uiState.value.items.map(ThreadListItem::tid))
+            assertFalse(vm.uiState.value.isLoading)
+            assertTrue("账号 B 就绪后 hasMore 应恢复为 true", vm.uiState.value.hasMore)
+            collector.cancel()
+        } finally {
+            Dispatchers.setMain(testDispatcher)
+        }
     }
 
     /** 验收 3（B4-E1 ③）+ R-E0 R2-S1：今日新帖翻页原样携带 searchId，中间页省略 searchId 时仍保留旧值。 */

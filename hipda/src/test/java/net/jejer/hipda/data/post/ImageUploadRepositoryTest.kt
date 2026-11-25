@@ -578,6 +578,127 @@ class ImageUploadRepositoryTest {
         assertEquals(0, workDir.listFiles()?.size ?: 0)
     }
 
+    @Test
+    fun uploadImage_umenuLoggedInErrorPageWithLoginKeywords_neverReloginsWhileLoggedOutUmenuDoes() = runBlocking {
+        // Direct unit guard for R-D6 S3: #umenu header is authoritative over loose substring markers
+        val loggedInDoubleQuote = PostTestFixtures.loggedInHtml(
+            uid = "10000",
+            username = "HiUser",
+            body = "<div class=\"alert_error\">附件配额异常，请先登录网页版检查（您还未登录桌面端）</div>",
+        )
+        val loggedInSingleQuote = loggedInDoubleQuote.replace("id=\"umenu\"", "id='umenu'")
+        val loggedOutWithoutKeywords = PostTestFixtures.loggedOutHtml("操作受限")
+
+        assertFalse(
+            "Logged-in #umenu page containing login keywords must NOT be treated as unauthenticated",
+            DefaultImageUploadRepository.isUploadResponseUnauthenticated(loggedInDoubleQuote),
+        )
+        assertFalse(
+            "Single-quoted logged-in #umenu page containing login keywords must NOT be treated as unauthenticated",
+            DefaultImageUploadRepository.isUploadResponseUnauthenticated(loggedInSingleQuote),
+        )
+        assertTrue(
+            "Logged-out #umenu page must be treated as unauthenticated even without loose keywords",
+            DefaultImageUploadRepository.isUploadResponseUnauthenticated(loggedOutWithoutKeywords),
+        )
+        assertTrue(
+            "Plain text without #umenu containing login marker must still be treated as unauthenticated",
+            DefaultImageUploadRepository.isUploadResponseUnauthenticated("您还未登录，无法上传"),
+        )
+        assertFalse(
+            DefaultImageUploadRepository.isUploadResponseUnauthenticated("DISCUZUPLOAD|0|0|1"),
+        )
+
+        val stack = createStack()
+        val smallJpg = TestImageFactory.writeSolidJpeg(
+            file = File(tempFolder.root, "umenu_control.jpg"),
+            width = 64,
+            height = 64,
+        )
+
+        // Control A: Logged-in #umenu error page with "请先登录"/"您还未登录" in body -> 0 relogins, SiteRejected
+        val loggedInUploadAttempts = AtomicInteger(0)
+        val loggedInReloginAttempts = AtomicInteger(0)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val target = request.target.orEmpty()
+                return when {
+                    target.contains("misc.php?action=swfupload") -> {
+                        loggedInUploadAttempts.incrementAndGet()
+                        gbkHtmlResponse(loggedInDoubleQuote)
+                    }
+
+                    target.contains("logging.php?action=login") -> {
+                        loggedInReloginAttempts.incrementAndGet()
+                        MockResponse.Builder().code(500).body("Must not relogin").build()
+                    }
+
+                    else -> MockResponse.Builder().code(404).build()
+                }
+            }
+        }
+
+        val loggedInEvents = stack.uploadRepo.uploadImage(
+            input = ImageUploadInput.LocalFile(smallJpg),
+            uid = "10000",
+            hash = "hash_umenu_in",
+        ).toList()
+        val loggedInFail = loggedInEvents.last() as ImageUploadProgress.Failed
+        assertTrue(
+            "Logged-in #umenu error page must fail as SiteRejected, got ${loggedInFail.error}",
+            loggedInFail.error is ImageUploadError.SiteRejected,
+        )
+        assertEquals(1, loggedInUploadAttempts.get())
+        assertEquals("Logged-in #umenu error page must trigger 0 relogins", 0, loggedInReloginAttempts.get())
+        assertEquals(0, workDir.listFiles()?.size ?: 0)
+
+        // Control B: Logged-out #umenu page (without loose keywords) -> triggers silent relogin and succeeds on retry
+        val loggedOutUploadAttempts = AtomicInteger(0)
+        val loggedOutLoginPostAttempts = AtomicInteger(0)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val target = request.target.orEmpty()
+                return when {
+                    target.contains("misc.php?action=swfupload") -> {
+                        val attempt = loggedOutUploadAttempts.incrementAndGet()
+                        if (attempt == 1) {
+                            gbkHtmlResponse(loggedOutWithoutKeywords)
+                        } else {
+                            assertTrue(request.body!!.utf8().contains("name=\"Filedata\""))
+                            MockResponse.Builder().code(200).body("DISCUZUPLOAD|0|887766|1").build()
+                        }
+                    }
+
+                    target.contains("logging.php?action=login&loginsubmit=yes") -> {
+                        loggedOutLoginPostAttempts.incrementAndGet()
+                        MockResponse.Builder()
+                            .code(200)
+                            .addHeader("Content-Type", "text/xml; charset=gbk")
+                            .body(PostTestFixtures.gbkBuffer("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，HiUser]]></root>"""))
+                            .build()
+                    }
+
+                    target.contains("logging.php?action=login") -> {
+                        gbkHtmlResponse(PostTestFixtures.loginPageHtml("loginfh_umenu"))
+                    }
+
+                    else -> MockResponse.Builder().code(404).build()
+                }
+            }
+        }
+
+        val loggedOutEvents = stack.uploadRepo.uploadImage(
+            input = ImageUploadInput.LocalFile(smallJpg),
+            uid = "10000",
+            hash = "hash_umenu_out",
+        ).toList()
+        val loggedOutSuccess = loggedOutEvents.last() as ImageUploadProgress.Succeeded
+        assertEquals("887766", loggedOutSuccess.imageId)
+        assertEquals(2, loggedOutUploadAttempts.get())
+        assertEquals(1, loggedOutLoginPostAttempts.get())
+        assertEquals(0, workDir.listFiles()?.size ?: 0)
+    }
+
     companion object {
         private const val TEST_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

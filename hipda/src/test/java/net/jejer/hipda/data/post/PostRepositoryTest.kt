@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
@@ -36,6 +37,7 @@ import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRequiredReason
 import net.jejer.hipda.data.auth.DefaultAuthRepository
 import net.jejer.hipda.data.auth.ForumHttpClient
+import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.data.auth.computeLegacyPasswordMd5
 import net.jejer.hipda.data.local.DraftDao
 import net.jejer.hipda.data.local.DraftEntity
@@ -1059,6 +1061,181 @@ class PostRepositoryTest {
             "看 ([url]https://example.com/a?x=1[/url]), 维基 [url]https://en.wikipedia.org/wiki/Foo_(bar)[/url]. " +
                 "[URL]https://already.wrapped[/URL] [img]https://a.com/1.png[/img] [推荐] [url]https://after.tag[/url]"
         assertEquals(expected, DefaultPostRepository.wrapBareUrlsWithBbcode(input))
+    }
+
+    @Test
+    fun fetchPrePost_andSubmitPost_expiredSessionTriggersSilentReloginAndRetriesSuccessfully() = runBlocking {
+        val stack = createStack()
+        withTimeout(3.seconds) {
+            stack.authRepo.currentAccount.first { it?.uid == "10000" }
+        }
+
+        val prePostAttempts = AtomicInteger(0)
+        val submitPostAttempts = AtomicInteger(0)
+        val loginSubmitAttempts = AtomicInteger(0)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val target = request.target.orEmpty()
+                return when {
+                    request.method == "GET" && target.contains("post.php?action=newthread&fid=2") -> {
+                        if (prePostAttempts.incrementAndGet() == 1) {
+                            gbkHtmlResponse(PostTestFixtures.loggedOutHtml("请先登录"))
+                        } else {
+                            gbkHtmlResponse(PostTestFixtures.prePostHtml(formhash = "refetched_fh"))
+                        }
+                    }
+
+                    request.method == "POST" && target.contains("post.php?action=reply&tid=555&replysubmit=yes") -> {
+                        if (submitPostAttempts.incrementAndGet() == 1) {
+                            gbkHtmlResponse(PostTestFixtures.loggedOutHtml("您还未登录"))
+                        } else {
+                            val pairs = decodeGbkFormPairs(request.body?.utf8().orEmpty()).toMap()
+                            assertEquals("重登后重试正文", pairs["message"])
+                            MockResponse.Builder()
+                                .code(302)
+                                .addHeader("Location", "/forum/viewthread.php?tid=555&page=1")
+                                .build()
+                        }
+                    }
+
+                    request.method == "GET" && target.contains("viewthread.php?tid=555") -> {
+                        gbkHtmlResponse(PostTestFixtures.loggedInHtml("10000", "HiUser", "<div id=\"postlist\"></div>"))
+                    }
+
+                    request.method == "POST" && target.contains("logging.php?action=login&loginsubmit=yes") -> {
+                        loginSubmitAttempts.incrementAndGet()
+                        MockResponse.Builder()
+                            .code(200)
+                            .addHeader("Content-Type", "text/xml; charset=gbk")
+                            .body(PostTestFixtures.gbkBuffer("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，HiUser]]></root>"""))
+                            .build()
+                    }
+
+                    request.method == "GET" && target.contains("logging.php?action=login") -> {
+                        gbkHtmlResponse(PostTestFixtures.loginPageHtml("relogin_fh"))
+                    }
+
+                    else -> MockResponse.Builder().code(404).build()
+                }
+            }
+        }
+
+        // 1) fetchPrePost: expired session triggers silent relogin and retries GET (locks requireAuth = true)
+        val prePostResult = stack.postRepo.fetchPrePost(PrePostRequest.NewThread(fid = 2))
+        assertTrue("Expected fetchPrePost Success after silent relogin, got $prePostResult", prePostResult is PrePostResult.Success)
+        val info = (prePostResult as PrePostResult.Success).info
+        assertEquals("refetched_fh", info.formhash)
+        assertEquals(2, prePostAttempts.get())
+        assertEquals(1, loginSubmitAttempts.get())
+
+        // 2) submitPost (with pre-supplied prePostInfo): expired session triggers silent relogin and retries POST (locks requireAuth = true)
+        val submitResult = stack.postRepo.submitPost(
+            PostSubmitRequest.ReplyThread(
+                tid = "555",
+                content = "重登后重试正文",
+                prePostInfo = info,
+            ),
+        )
+        assertTrue("Expected submitPost Success after silent relogin, got $submitResult", submitResult is PostSubmitResult.Success)
+        assertEquals("555", (submitResult as PostSubmitResult.Success).tid)
+        assertEquals(2, submitPostAttempts.get())
+        assertEquals(2, loginSubmitAttempts.get())
+    }
+
+    @Test
+    fun cooldownUntilMs_flowAutomaticallyEmitsZeroOnAccountSwitchAndLogoutWithoutPollingGetter() = runBlocking {
+        val accountA = SavedAccount(
+            uid = "10000",
+            username = "HiUser",
+            passwordMd5 = computeLegacyPasswordMd5("secret_pw"),
+            lastLoginAt = 1_000L,
+        )
+        val accountB = SavedAccount(
+            uid = "20000",
+            username = "HiUserB",
+            passwordMd5 = computeLegacyPasswordMd5("secret_pw_b"),
+            lastLoginAt = 900L,
+        )
+        credentialsStore.upsert(accountB)
+        val stack = createStack(seedLoggedInAccount = accountA)
+        withTimeout(3.seconds) {
+            stack.authRepo.currentAccount.first { it?.uid == accountA.uid }
+        }
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val target = request.target.orEmpty()
+                return when {
+                    request.method == "POST" && target.contains("post.php?action=reply") -> {
+                        MockResponse.Builder()
+                            .code(302)
+                            .addHeader("Location", "/forum/viewthread.php?tid=666")
+                            .build()
+                    }
+
+                    request.method == "GET" && target.contains("viewthread.php?tid=666") -> {
+                        val active = stack.authRepo.currentAccount.value ?: accountA
+                        gbkHtmlResponse(PostTestFixtures.loggedInHtml(active.uid, active.username))
+                    }
+
+                    request.method == "GET" && target.contains("logging.php?action=login") -> {
+                        gbkHtmlResponse(PostTestFixtures.loginPageHtml("switch_fh"))
+                    }
+
+                    request.method == "POST" && target.contains("logging.php?action=login&loginsubmit=yes") -> {
+                        MockResponse.Builder()
+                            .code(200)
+                            .addHeader("Content-Type", "text/xml; charset=gbk")
+                            .body(PostTestFixtures.gbkBuffer("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，HiUserB]]></root>"""))
+                            .build()
+                    }
+
+                    else -> MockResponse.Builder().code(404).build()
+                }
+            }
+        }
+
+        val info = minimalPrePostInfo(formhash = "flowfh")
+        stack.postRepo.cooldownUntilMs.test(timeout = 5.seconds) {
+            assertEquals(0L, awaitItem())
+
+            // Submit under account A -> cooldown starts
+            val firstRes = stack.postRepo.submitPost(
+                PostSubmitRequest.ReplyThread(tid = "666", content = "账号A回复", prePostInfo = info),
+            )
+            assertTrue("Expected Success under account A, got $firstRes", firstRes is PostSubmitResult.Success)
+            val cooldownA = awaitItem()
+            assertEquals(virtualClockMs.get() + DefaultPostRepository.POST_COOLDOWN_MS, cooldownA)
+
+            // Switch to account B WITHOUT calling getRemainingCooldownSeconds() -> background collector MUST push 0L
+            val switchRes = stack.authRepo.switchAccount(accountB.uid)
+            assertTrue("Expected switchAccount Success, got $switchRes", switchRes is LoginResult.Success)
+            assertEquals(
+                "Account switch must automatically push 0L to cooldownUntilMs via background collector",
+                0L,
+                awaitItem(),
+            )
+
+            // Submit under account B -> fresh cooldown starts
+            virtualClockMs.addAndGet(1_000L)
+            val secondRes = stack.postRepo.submitPost(
+                PostSubmitRequest.ReplyThread(tid = "666", content = "账号B回复", prePostInfo = info),
+            )
+            assertTrue("Expected Success under account B, got $secondRes", secondRes is PostSubmitResult.Success)
+            val cooldownB = awaitItem()
+            assertEquals(virtualClockMs.get() + DefaultPostRepository.POST_COOLDOWN_MS, cooldownB)
+
+            // Logout WITHOUT calling getRemainingCooldownSeconds() -> background collector MUST push 0L
+            stack.authRepo.logout()
+            assertEquals(
+                "Logout must automatically push 0L to cooldownUntilMs via background collector",
+                0L,
+                awaitItem(),
+            )
+
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 
     private fun minimalPrePostInfo(formhash: String): PrePostInfo = PrePostInfo(
