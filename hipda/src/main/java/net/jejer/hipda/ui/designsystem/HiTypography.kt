@@ -11,7 +11,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 
-/** 导航胶囊、导航轨与底部工具条文字的最大系统缩放倍数（product-design.md §4.1）。 */
+/** 导航胶囊、左侧栏与底部工具条文字的最大系统缩放倍数（product-design.md §4.1）。 */
 const val HI_CHROME_MAX_FONT_SCALE: Float = 1.25f
 
 /** 帖子列表标题行高倍率（product-design.md §5）。 */
@@ -149,7 +149,7 @@ fun hiTypographyTokens(
     )
 }
 
-/** 将整个导航胶囊、导航轨或底部工具条子树内的字体缩放上限钳制到 [maxFontScale]（默认 1.25 倍）。 */
+/** 将整个导航胶囊、左侧栏或底部工具条子树内的字体缩放上限钳制到 [maxFontScale]（默认 1.25 倍）。 */
 @Composable
 fun HiCappedFontScale(
     maxFontScale: Float = HI_CHROME_MAX_FONT_SCALE,

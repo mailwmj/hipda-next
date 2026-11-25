@@ -15,15 +15,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
@@ -127,11 +124,8 @@ fun resolveHiGlassStyleSpec(
     )
 }
 
-/** 控制 [HiGlassSurface] 0.5dp 描边的绘制范围：默认四边闭合，贴边导航轨仅画朝向内容的一侧。 */
-enum class HiGlassBorderMode { AllSides, EndEdgeOnly }
-
 /**
- * 毛玻璃表面组件，仅用于主导航（底部胶囊、导航轨）与帖子详情底部工具条（同屏最多 2 块）。
+ * 毛玻璃表面组件，仅用于底部导航胶囊与帖子详情底部工具条（同屏最多 2 块）。
  *
  * 激活态挂载 Haze 2.x 实时模糊；降级态不挂载 `hazeBlur`，直接绘制 94% 不透明纯色背景与细描边，
  * 使底层 `HazeSourceNode` 在省电或降级模式下释放离屏 `GraphicsLayer`、不再每帧录制背景。
@@ -145,7 +139,6 @@ fun HiGlassSurface(
     environment: GlassEnvironmentState = LocalGlassEnvironmentState.current ?: rememberGlassEnvironmentState().value,
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
     contentAlignment: Alignment = Alignment.Center,
-    borderMode: HiGlassBorderMode = HiGlassBorderMode.AllSides,
     surfaceColor: Color = MaterialTheme.colorScheme.surface,
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -171,15 +164,7 @@ fun HiGlassSurface(
     } else {
         Modifier.background(styleSpec.degradedSurfaceColor)
     }
-    val borderModifier = when (borderMode) {
-        HiGlassBorderMode.AllSides -> Modifier.border(styleSpec.borderWidth, styleSpec.borderColor, shape)
-        HiGlassBorderMode.EndEdgeOnly -> Modifier.drawWithContent {
-            drawContent()
-            val strokePx = styleSpec.borderWidth.toPx()
-            val x = if (layoutDirection == LayoutDirection.Rtl) strokePx / 2f else size.width - strokePx / 2f
-            drawLine(styleSpec.borderColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = strokePx)
-        }
-    }
+    val borderModifier = Modifier.border(styleSpec.borderWidth, styleSpec.borderColor, shape)
 
     Box(
         modifier = modifier

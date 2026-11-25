@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -46,17 +45,10 @@ internal val PillOuterPadding: Dp = 4.dp
 private val CompactSelectedAdjacentGap: Dp = 12.dp
 private val MinTouchTarget: Dp = 48.dp
 private val StandardItemMinHeight: Dp = 56.dp
-private val RailTopPadding: Dp = 20.dp
-private val RailBottomPadding: Dp = 16.dp
-private val RailItemSpacing: Dp = 12.dp
-private val RailItemMinHeight: Dp = 56.dp
-private val RailIndicatorWidth: Dp = 56.dp
-private val RailIndicatorHeight: Dp = 32.dp
-private val RailItemTopPadding: Dp = 4.dp
 
 /**
- * 胶囊与导航轨共用的单遍指示器布局：每个子 `Measurable` 严格只 `measure` 一次，
- * 所有最小宽高约束均钳制至父级上限，极端窄窗与低高度下不崩溃。
+ * 底部胶囊（[ShellNavigationMode.BottomPill] 与 [ShellNavigationMode.CompactPill]）的单遍横向指示器布局：
+ * 每个子 `Measurable` 严格只 `measure` 一次，所有最小宽高约束均钳制至父级上限，极端窄窗与低高度下不崩溃。
  */
 @Composable
 internal fun ShellIndicatorLayout(
@@ -87,20 +79,12 @@ internal fun ShellIndicatorLayout(
         val maxW = constraints.maxWidth.coerceAtLeast(0)
         val maxH = constraints.maxHeight.coerceAtLeast(0)
         val minTouchPx = MinTouchTarget.roundToPx()
-        val isVertical = mode == ShellNavigationMode.Rail
         val gapCount = (count - 1).coerceAtLeast(0)
 
-        var startPad = 0
-        var endPad = 0
         val gaps: IntArray
         val mainSizes: IntArray
         val minCrossPx: Int
         when (mode) {
-            ShellNavigationMode.BottomPill -> {
-                gaps = IntArray(gapCount)
-                mainSizes = splitEvenly(maxW, count)
-                minCrossPx = StandardItemMinHeight.roundToPx().coerceAtMost(maxH)
-            }
             ShellNavigationMode.CompactPill -> {
                 val adjGap = CompactSelectedAdjacentGap.roundToPx()
                 gaps = IntArray(gapCount) { i -> if (i == selectedIndex || i + 1 == selectedIndex) adjGap else 0 }
@@ -108,52 +92,31 @@ internal fun ShellIndicatorLayout(
                 mainSizes = fitAxis(natural, gaps, maxW, minTouchPx, selectedIndex)
                 minCrossPx = minTouchPx.coerceAtMost(maxH)
             }
-            ShellNavigationMode.Rail -> {
-                val extras = intArrayOf(RailTopPadding.roundToPx(), RailBottomPadding.roundToPx()) +
-                    IntArray(gapCount) { RailItemSpacing.roundToPx() }
-                val minH = RailItemMinHeight.roundToPx()
-                val natural = IntArray(count) { i -> maxOf(minH, itemMeasurables[i].maxIntrinsicHeight(maxW)) }
-                mainSizes = fitAxis(natural, extras, maxH, minTouchPx = 0, selectedIndex = -1)
-                startPad = extras[0]
-                endPad = extras[1]
-                gaps = IntArray(gapCount) { i -> extras[i + 2] }
-                minCrossPx = maxW
+            else -> {
+                gaps = IntArray(gapCount)
+                mainSizes = splitEvenly(maxW, count)
+                minCrossPx = StandardItemMinHeight.roundToPx().coerceAtMost(maxH)
             }
         }
 
-        val maxMain = if (isVertical) maxH else maxW
         val mainOffsets = IntArray(count)
-        var cursor = startPad
+        var cursor = 0
         val itemPlaceables = itemMeasurables.mapIndexed { i, m ->
-            val main = mainSizes[i].coerceIn(0, maxMain)
+            val main = mainSizes[i].coerceIn(0, maxW)
             mainOffsets[i] = cursor
             cursor += main + if (i < gapCount) gaps[i] else 0
-            val c = if (isVertical) Constraints(maxW, maxW, main, main) else Constraints(main, main, minCrossPx, maxH)
-            m.measure(c)
+            m.measure(Constraints(main, main, minCrossPx, maxH))
         }
 
         val layoutWidth = if (mode == ShellNavigationMode.CompactPill) cursor.coerceAtMost(maxW) else maxW
-        val layoutHeight = if (isVertical) {
-            (cursor + endPad).coerceAtMost(maxH)
-        } else {
-            maxOf(minCrossPx, itemPlaceables.maxOf { it.height }).coerceAtMost(maxH)
-        }
+        val layoutHeight = maxOf(minCrossPx, itemPlaceables.maxOf { it.height }).coerceAtMost(maxH)
         val selMain = mainOffsets[selectedIndex].toFloat()
         val selPlaceable = itemPlaceables[selectedIndex]
-        val targetRect = when (mode) {
-            ShellNavigationMode.BottomPill -> Rect(selMain, 0f, selMain + selPlaceable.width, layoutHeight.toFloat())
-            ShellNavigationMode.CompactPill -> {
-                val insetV = PillOuterPadding.toPx().coerceAtMost(layoutHeight / 4f)
-                Rect(selMain, insetV, selMain + selPlaceable.width, (layoutHeight - insetV).coerceAtLeast(insetV))
-            }
-            ShellNavigationMode.Rail -> {
-                val selH = selPlaceable.height.toFloat()
-                val indW = RailIndicatorWidth.toPx().coerceAtMost(maxW.toFloat())
-                val indH = RailIndicatorHeight.toPx().coerceAtMost(selH)
-                val indLeft = (maxW - indW) / 2f
-                val indTop = selMain + RailItemTopPadding.toPx().coerceAtMost(((selH - indH) / 2f).coerceAtLeast(0f))
-                Rect(indLeft, indTop, indLeft + indW, indTop + indH)
-            }
+        val targetRect = if (mode == ShellNavigationMode.CompactPill) {
+            val insetV = PillOuterPadding.toPx().coerceAtMost(layoutHeight / 4f)
+            Rect(selMain, insetV, selMain + selPlaceable.width, (layoutHeight - insetV).coerceAtLeast(insetV))
+        } else {
+            Rect(selMain, 0f, selMain + selPlaceable.width, layoutHeight.toFloat())
         }
 
         val animatedRect = indicatorAnimator.resolveRect(selected, targetRect, reducedMotion)
@@ -166,8 +129,8 @@ internal fun ShellIndicatorLayout(
         layout(layoutWidth, layoutHeight) {
             indicatorPlaceable.placeRelative(animatedRect.left.roundToInt(), animatedRect.top.roundToInt())
             itemPlaceables.forEachIndexed { i, p ->
-                val cross = if (isVertical) 0 else ((layoutHeight - p.height) / 2).coerceAtLeast(0)
-                p.placeRelative(x = if (isVertical) cross else mainOffsets[i], y = if (isVertical) mainOffsets[i] else cross)
+                val cross = ((layoutHeight - p.height) / 2).coerceAtLeast(0)
+                p.placeRelative(x = mainOffsets[i], y = cross)
             }
         }
     }
@@ -184,25 +147,15 @@ internal fun ShellNavItem(
 ) {
     val cs = MaterialTheme.colorScheme
     val label = stringResource(destination.labelRes)
-    val isRail = mode == ShellNavigationMode.Rail
     val iconColor = if (selected) cs.onSecondaryContainer else cs.onSurfaceVariant
-    val labelColor = when {
-        !selected -> cs.onSurfaceVariant
-        isRail -> cs.onSurface
-        else -> cs.onSecondaryContainer
-    }
+    val labelColor = if (selected) cs.onSecondaryContainer else cs.onSurfaceVariant
     val onClick = remember(destination, onSelect) { { onSelect(destination) } }
     val content: @Composable () -> Unit = {
-        val iconModifier = if (isRail) {
-            Modifier.size(RailIndicatorWidth, RailIndicatorHeight).wrapContentSize(Alignment.Center).size(24.dp)
-        } else {
-            Modifier.size(24.dp)
-        }
         Icon(
             imageVector = if (selected) destination.selectedIcon else destination.unselectedIcon,
             contentDescription = if (showLabel) null else label,
             tint = iconColor,
-            modifier = iconModifier,
+            modifier = Modifier.size(24.dp),
         )
         if (showLabel) {
             Text(
@@ -231,7 +184,7 @@ internal fun ShellNavItem(
                 onClick = onClick,
                 role = Role.Tab,
             ),
-        contentAlignment = if (isRail) Alignment.TopCenter else Alignment.Center,
+        contentAlignment = Alignment.Center,
     ) {
         if (mode == ShellNavigationMode.CompactPill) {
             Row(
@@ -241,9 +194,9 @@ internal fun ShellNavItem(
             ) { content() }
         } else {
             Column(
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = if (isRail) RailItemTopPadding else 6.dp),
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(if (isRail) 4.dp else 2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) { content() }
         }
     }

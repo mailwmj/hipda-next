@@ -91,6 +91,8 @@ class DataStoreSettingsRepositoryTest {
             // 界面状态
             assertEquals(PaneSplit.DEFAULT, settings.paneSplitPortrait)
             assertEquals(PaneSplit.DEFAULT, settings.paneSplitLandscape)
+            assertFalse(settings.sidebarCollapsedPortrait)
+            assertFalse(settings.sidebarCollapsedLandscape)
 
             cancelAndIgnoreRemainingEvents()
         }
@@ -204,6 +206,15 @@ class DataStoreSettingsRepositoryTest {
             repository.setPaneSplitLandscape(PaneSplit.BALANCED)
             assertEquals(PaneSplit.BALANCED, awaitItem().paneSplitLandscape)
 
+            repository.setSidebarCollapsedPortrait(true)
+            assertTrue(awaitItem().sidebarCollapsedPortrait)
+
+            repository.setSidebarCollapsedLandscape(true)
+            assertTrue(awaitItem().sidebarCollapsedLandscape)
+
+            repository.setSidebarCollapsedPortrait(false)
+            assertFalse(awaitItem().sidebarCollapsedPortrait)
+
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -235,6 +246,8 @@ class DataStoreSettingsRepositoryTest {
             repo1.setImageCacheLimitMb(300)
             repo1.setPaneSplitPortrait(PaneSplit.COLLAPSED)
             repo1.setPaneSplitLandscape(PaneSplit.BALANCED)
+            repo1.setSidebarCollapsedPortrait(true)
+            repo1.setSidebarCollapsedLandscape(true)
 
             repo1.settings.first()
         } finally {
@@ -252,6 +265,8 @@ class DataStoreSettingsRepositoryTest {
             assertEquals(mapOf(2 to true, 7 to false), restored.sortByPostTime)
             assertEquals(PaneSplit.COLLAPSED, restored.paneSplitPortrait)
             assertEquals(PaneSplit.BALANCED, restored.paneSplitLandscape)
+            assertTrue(restored.sidebarCollapsedPortrait)
+            assertTrue(restored.sidebarCollapsedLandscape)
         } finally {
             scope2.cancel()
             advanceUntilIdle()
@@ -344,6 +359,8 @@ class DataStoreSettingsRepositoryTest {
             prefs[stringPreferencesKey(SettingsPreferenceKeys.FONT_STEP.name)] = "corrupt_int"
             prefs[intPreferencesKey(SettingsPreferenceKeys.THEME_MODE.name)] = 999
             prefs[stringPreferencesKey(SettingsPreferenceKeys.PURE_BLACK.name)] = "true"
+            prefs[stringPreferencesKey(SettingsPreferenceKeys.SIDEBAR_COLLAPSED_PORTRAIT.name)] = "yes"
+            prefs[intPreferencesKey(SettingsPreferenceKeys.SIDEBAR_COLLAPSED_LANDSCAPE.name)] = 1
         }
 
         val repository: SettingsRepository = DataStoreSettingsRepository(dataStore)

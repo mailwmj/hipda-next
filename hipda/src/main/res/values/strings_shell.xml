@@ -1,7 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 一级导航（docs/design/copy.md） -->
     <string name="shell_nav_forum">论坛</string>
     <string name="shell_nav_messages">消息</string>
     <string name="shell_nav_search">搜索</string>
     <string name="shell_nav_mine">我的</string>
+
+    <!-- 宽屏左侧栏操作与功能入口（docs/design/copy.md） -->
+    <string name="shell_sidebar_collapse">收起侧栏</string>
+    <string name="shell_sidebar_expand">展开侧栏</string>
+    <string name="shell_sidebar_today_new">今日新帖</string>
+    <string name="shell_sidebar_search">搜索</string>
+    <string name="shell_sidebar_sms">短消息</string>
+    <string name="shell_sidebar_notify">提醒</string>
+    <string name="shell_sidebar_mine">我的</string>
+    <string name="shell_sidebar_favorites_and_attention">收藏与关注</string>
+    <string name="shell_sidebar_my_threads">我的帖子</string>
+    <string name="shell_sidebar_my_replies">我的回复</string>
+    <string name="shell_sidebar_history">浏览历史</string>
+    <string name="shell_sidebar_settings">设置</string>
+    <string name="shell_sidebar_forums_title">版块</string>
+    <string name="shell_sidebar_manage_forums">管理版块</string>
+    <string name="shell_sidebar_login">登录</string>
+    <string name="shell_sidebar_account">账号</string>
+    <string name="shell_sidebar_empty_forums">去管理版块添加关注的版块</string>
+    <string name="shell_sidebar_unread_cd">%1$s，%2$d 条未读</string>
+
+    <!-- 多栏无障碍标题、分隔线动作与空占位（docs/design/copy.md） -->
+    <string name="shell_pane_sidebar_title">导航</string>
+    <string name="shell_pane_content_title">内容</string>
+    <string name="shell_pane_list_title">列表</string>
+    <string name="shell_pane_detail_title">正文</string>
+    <string name="shell_pane_action_default_width">默认宽度</string>
+    <string name="shell_pane_action_balanced">均衡</string>
+    <string name="shell_pane_action_collapse_list">收起列表</string>
+    <string name="shell_detail_fullscreen">全屏阅读</string>
+    <string name="shell_detail_show_list">显示列表</string>
+    <string name="shell_empty_select_thread">选一篇帖子开始阅读</string>
+    <string name="shell_empty_select_sms">选一条短消息开始查看</string>
+    <string name="shell_empty_select_notify">选一条提醒查看对应帖子</string>
 </resources>

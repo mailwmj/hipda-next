@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,9 +25,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -43,6 +46,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -55,6 +59,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -67,8 +73,15 @@ import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberGlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
+import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 import net.jejer.hipda.ui.shell.HiAdaptiveShell
+import net.jejer.hipda.ui.shell.HiSidebarAccount
+import net.jejer.hipda.ui.shell.HiSidebarState
 import net.jejer.hipda.ui.shell.ShellDestination
+import net.jejer.hipda.ui.shell.ShellSidebarEntry
+import net.jejer.hipda.ui.shell.ShellSidebarEntrySaver
+import net.jejer.hipda.ui.shell.mapDestinationToSidebarEntry
+import net.jejer.hipda.ui.shell.toShellDestination
 
 /** Debug 预览入口（仅注册在 `src/debug/AndroidManifest.xml`，不进入 release 包）。 */
 class PreviewActivity : ComponentActivity() {
@@ -777,106 +790,257 @@ fun ShellPreviewScreen(
     modifier: Modifier = Modifier,
 ) {
     var selected by rememberSaveable { mutableStateOf(ShellDestination.Forum) }
+    var selectedSidebarEntry by rememberSaveable(stateSaver = ShellSidebarEntrySaver) {
+        mutableStateOf<ShellSidebarEntry>(ShellSidebarEntry.Forum(2))
+    }
+    var lastMineEntry by rememberSaveable(stateSaver = ShellSidebarEntrySaver) {
+        mutableStateOf<ShellSidebarEntry>(ShellSidebarEntry.FavoritesAndAttention)
+    }
+    var selectedItemIndex by rememberSaveable { mutableIntStateOf(0) }
+    val previewForums = remember { listOf(2, 6, 7, 59, 60) }
     val cs = MaterialTheme.colorScheme
+    val listPaneTitle = stringResource(R.string.shell_pane_list_title)
+    val detailPaneTitle = stringResource(R.string.shell_pane_detail_title)
+
+    val sidebarState = HiSidebarState(
+        selectedEntry = selectedSidebarEntry,
+        followedForumIds = previewForums,
+        unreadSmsCount = 3,
+        unreadNotifyCount = 12,
+        account = HiSidebarAccount(username = "HiPDA 样张"),
+    )
+
     HiAdaptiveShell(
         selected = selected,
-        onSelect = { selected = it },
+        onSelect = { dest ->
+            selected = dest
+            val activeFid = (selectedSidebarEntry as? ShellSidebarEntry.Forum)?.fid
+            selectedSidebarEntry = mapDestinationToSidebarEntry(
+                destination = dest,
+                activeForumFid = activeFid,
+                lastVisitedMineEntry = lastMineEntry,
+            )
+        },
+        sidebarState = sidebarState,
+        onSelectSidebarEntry = { entry ->
+            selectedSidebarEntry = entry
+            if (entry.isMineGroupChild || entry == ShellSidebarEntry.Settings) {
+                lastMineEntry = entry
+            }
+            selected = entry.toShellDestination()
+            selectedItemIndex = 0
+        },
+        hasDetailContent = true,
         modifier = modifier,
     ) { destination, contentPadding ->
-        val items = remember(destination) {
-            val prefix = when (destination) {
-                ShellDestination.Forum -> "Discovery · 帖子示例"
-                ShellDestination.Messages -> "消息列表 · 对话与提醒示例"
-                ShellDestination.Search -> "搜索结果 · 标题与正文匹配示例"
-                ShellDestination.Mine -> "我的空间 · 收藏与历史条目示例"
+        val headerTitle = if (paneLayout.isSidebar) {
+            sidebarEntryTitle(selectedSidebarEntry)
+        } else {
+            stringResource(destination.labelRes)
+        }
+        val items = remember(destination, selectedSidebarEntry, paneLayout.isSidebar) {
+            val prefix = if (paneLayout.isSidebar) {
+                "$headerTitle · 示例条目"
+            } else {
+                when (destination) {
+                    ShellDestination.Forum -> "Discovery · 帖子示例"
+                    ShellDestination.Messages -> "消息列表 · 对话与提醒示例"
+                    ShellDestination.Search -> "搜索结果 · 标题与正文匹配示例"
+                    ShellDestination.Mine -> "我的空间 · 收藏与历史条目示例"
+                }
             }
             List(40) { index -> "$prefix #${index + 1}" }
         }
-        Column(modifier = Modifier.fillMaxSize()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(cs.surfaceContainer)
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(destination.labelRes),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = cs.onSurface,
-                )
-                TextButton(onClick = onBack, shape = HiShapeTokens.Small) {
-                    Text(text = "返回样张")
+        val activeRow = items.getOrElse(selectedItemIndex) { items.first() }
+
+        val listColumn: @Composable (Modifier) -> Unit = { listModifier ->
+            Column(modifier = listModifier) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cs.surfaceContainer)
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = headerTitle,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = cs.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onBack, shape = HiShapeTokens.Small) {
+                        Text(text = "返回样张")
+                    }
                 }
-            }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    top = 12.dp,
-                    end = 16.dp,
-                    bottom = 12.dp + contentPadding.calculateBottomPadding(),
-                ),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                items(items) { rowTitle ->
-                    val hash = rowTitle.hashCode() and 0x7fffffff
-                    val accentBg = when (hash % 3) {
-                        0 -> cs.primaryContainer
-                        1 -> cs.tertiaryContainer
-                        else -> cs.secondaryContainer
-                    }
-                    val accentFg = when (hash % 3) {
-                        0 -> cs.onPrimaryContainer
-                        1 -> cs.onTertiaryContainer
-                        else -> cs.onSecondaryContainer
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(HiShapeTokens.Medium)
-                            .background(cs.surfaceContainerLow)
-                            .padding(14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(HiShapeTokens.Full)
-                                .background(accentBg),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = stringResource(destination.labelRes).take(1),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = accentFg,
-                            )
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 12.dp,
+                        top = 12.dp,
+                        end = 12.dp,
+                        bottom = 12.dp + contentPadding.calculateBottomPadding(),
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    itemsIndexed(items) { index, rowTitle ->
+                        val isSelectedRow = paneLayout.isThreePane && index == selectedItemIndex
+                        val hash = rowTitle.hashCode() and 0x7fffffff
+                        val accentBg = when (hash % 3) {
+                            0 -> cs.primaryContainer
+                            1 -> cs.tertiaryContainer
+                            else -> cs.secondaryContainer
                         }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        val accentFg = when (hash % 3) {
+                            0 -> cs.onPrimaryContainer
+                            1 -> cs.onTertiaryContainer
+                            else -> cs.onSecondaryContainer
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(HiShapeTokens.Medium)
+                                .background(if (isSelectedRow) cs.secondaryContainer else cs.surfaceContainerLow)
+                                .clickable { selectedItemIndex = index }
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = rowTitle,
-                                style = HiTheme.typography.threadTitle,
-                                color = cs.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = "向下滚动可观察底部毛玻璃导航胶囊对内容色彩与层次的实时折射效果。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            if (!paneLayout.isThreePane || paneLayout.middlePaneWidthDp >= 300) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(HiShapeTokens.Full)
+                                        .background(accentBg),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = headerTitle.take(1),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = accentFg,
+                                    )
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = rowTitle,
+                                    style = HiTheme.typography.threadTitle,
+                                    color = if (isSelectedRow) cs.onSecondaryContainer else cs.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = if (paneLayout.isSidebar) {
+                                        "三栏预览：左 ${paneLayout.sidebarWidthDp}dp · 中 ${paneLayout.middlePaneWidthDp}dp · 右 ${paneLayout.rightPaneWidthDp}dp"
+                                    } else {
+                                        "向下滚动可观察底部毛玻璃导航胶囊对内容色彩与层次的实时折射效果。"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isSelectedRow) cs.onSecondaryContainer else cs.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+
+        if (paneLayout.isThreePane) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                listColumn(
+                    Modifier
+                        .width(paneLayout.middlePaneWidthDp.dp)
+                        .fillMaxHeight()
+                        .semantics {
+                            isTraversalGroup = true
+                            paneTitle = listPaneTitle
+                        },
+                )
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .fillMaxHeight()
+                        .background(cs.outlineVariant),
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(cs.surface)
+                        .semantics {
+                            isTraversalGroup = true
+                            paneTitle = detailPaneTitle
+                        },
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(cs.surfaceContainer)
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = activeRow,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = cs.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .widthIn(max = 680.dp)
+                                .fillMaxWidth()
+                                .clip(HiShapeTokens.Medium)
+                                .background(cs.surfaceContainerLow)
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "右栏正文占位（宽 ${paneLayout.rightPaneWidthDp}dp）",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = cs.primary,
+                            )
+                            Text(
+                                text = "当前入口：$headerTitle · 已选中：$activeRow。正文阅读区硬底线 ≥ 360dp，最大行宽 680dp 居中留白。",
+                                style = HiTheme.typography.postBody,
+                                color = cs.onSurface,
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            listColumn(Modifier.fillMaxSize())
+        }
     }
+}
+
+@Composable
+private fun sidebarEntryTitle(entry: ShellSidebarEntry): String = when (entry) {
+    ShellSidebarEntry.TodayNew -> stringResource(R.string.shell_sidebar_today_new)
+    ShellSidebarEntry.Search -> stringResource(R.string.shell_sidebar_search)
+    ShellSidebarEntry.Sms -> stringResource(R.string.shell_sidebar_sms)
+    ShellSidebarEntry.Notify -> stringResource(R.string.shell_sidebar_notify)
+    ShellSidebarEntry.FavoritesAndAttention -> stringResource(R.string.shell_sidebar_favorites_and_attention)
+    ShellSidebarEntry.MyThreads -> stringResource(R.string.shell_sidebar_my_threads)
+    ShellSidebarEntry.MyReplies -> stringResource(R.string.shell_sidebar_my_replies)
+    ShellSidebarEntry.History -> stringResource(R.string.shell_sidebar_history)
+    ShellSidebarEntry.Settings -> stringResource(R.string.shell_sidebar_settings)
+    is ShellSidebarEntry.Forum -> ForumMetadataRegistry.resolve(entry.fid).fullName
 }

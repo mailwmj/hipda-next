@@ -52,6 +52,8 @@ internal object SettingsPreferenceKeys {
     // 界面状态
     val PANE_SPLIT_PORTRAIT = stringPreferencesKey("pane_split_portrait")
     val PANE_SPLIT_LANDSCAPE = stringPreferencesKey("pane_split_landscape")
+    val SIDEBAR_COLLAPSED_PORTRAIT = booleanPreferencesKey("sidebar_collapsed_portrait")
+    val SIDEBAR_COLLAPSED_LANDSCAPE = booleanPreferencesKey("sidebar_collapsed_landscape")
 }
 
 class DataStoreSettingsRepository(
@@ -133,6 +135,12 @@ class DataStoreSettingsRepository(
     override suspend fun setPaneSplitLandscape(split: PaneSplit) =
         setPreference(SettingsPreferenceKeys.PANE_SPLIT_LANDSCAPE, split.name)
 
+    override suspend fun setSidebarCollapsedPortrait(collapsed: Boolean) =
+        setPreference(SettingsPreferenceKeys.SIDEBAR_COLLAPSED_PORTRAIT, collapsed)
+
+    override suspend fun setSidebarCollapsedLandscape(collapsed: Boolean) =
+        setPreference(SettingsPreferenceKeys.SIDEBAR_COLLAPSED_LANDSCAPE, collapsed)
+
     private suspend fun <T> setPreference(key: Preferences.Key<T>, value: T) {
         dataStore.edit { prefs -> prefs[key] = value }
     }
@@ -188,6 +196,10 @@ class DataStoreSettingsRepository(
             entries = PaneSplit.entries,
             default = PaneSplit.DEFAULT,
         ),
+        sidebarCollapsedPortrait =
+            prefs.safeBoolean(SettingsPreferenceKeys.SIDEBAR_COLLAPSED_PORTRAIT) ?: false,
+        sidebarCollapsedLandscape =
+            prefs.safeBoolean(SettingsPreferenceKeys.SIDEBAR_COLLAPSED_LANDSCAPE) ?: false,
     )
 
     private fun Preferences.safeInt(key: Preferences.Key<Int>): Int? = asMap()[key] as? Int
