@@ -63,7 +63,18 @@ class MotionTokenScanTest {
          */
         private val ALLOWLIST: List<AllowlistEntry> = emptyList()
 
-        private val BANNED_CALLS = setOf("tween", "spring", "keyframes", "keyframesWithSpline", "snap")
+        private val BANNED_CALLS = setOf(
+            "tween",
+            "spring",
+            "keyframes",
+            "keyframesWithSpline",
+            "snap",
+            "repeatable",
+            "TweenSpec",
+            "SpringSpec",
+            "SnapSpec",
+            "KeyframesSpec",
+        )
 
         private val TRANSITION_CALLS_REQUIRING_SPEC = setOf(
             "fadeIn",
@@ -134,17 +145,19 @@ class MotionTokenScanTest {
                 allViolations += scanKotlinSource(relPath, rawContent)
             }
 
-            val matchedAllowlist = mutableSetOf<AllowlistEntry>()
+            val remainingAllowlist = allowlist.toMutableList()
             val unexpected = mutableListOf<Violation>()
             for (v in allViolations) {
-                val entry = allowlist.firstOrNull { it.relativePath == v.relativePath && it.rule == v.rule }
-                if (entry != null) {
-                    matchedAllowlist += entry
+                val idx = remainingAllowlist.indexOfFirst {
+                    it.relativePath == v.relativePath && it.rule == v.rule
+                }
+                if (idx >= 0) {
+                    remainingAllowlist.removeAt(idx)
                 } else {
                     unexpected += v
                 }
             }
-            val stale = allowlist.filter { it !in matchedAllowlist }
+            val stale = remainingAllowlist.toList()
             return ScanReport(
                 scannedFileCount = sources.size,
                 exemptTokenFileFound = exemptTokenFileFound,
@@ -153,8 +166,24 @@ class MotionTokenScanTest {
             )
         }
 
+        private val IMPORT_ALIAS_REGEX = Regex(
+            "^\\s*import\\s+(?:[A-Za-z0-9_`]+\\.)*`?([A-Za-z_][A-Za-z0-9_]*)`?\\s+as\\s+`?([A-Za-z_][A-Za-z0-9_]*)`?\\s*;?\\s*$",
+        )
+
+        private fun collectImportAliases(cleaned: String): Map<String, String> {
+            val aliases = mutableMapOf<String, String>()
+            for (rawLine in cleaned.lineSequence()) {
+                val match = IMPORT_ALIAS_REGEX.matchEntire(rawLine) ?: continue
+                val original = match.groupValues[1]
+                val alias = match.groupValues[2]
+                aliases[alias] = original
+            }
+            return aliases
+        }
+
         internal fun scanKotlinSource(relativePath: String, rawSource: String): List<Violation> {
             val cleaned = stripCommentsAndStringsPreservingLines(rawSource)
+            val importAliases = collectImportAliases(cleaned)
             val lineStarts = computeLineStarts(cleaned)
             val violations = mutableListOf<Violation>()
 
@@ -170,12 +199,15 @@ class MotionTokenScanTest {
                 while (i < n && isIdentPart(cleaned[i])) {
                     i++
                 }
-                val ident = cleaned.substring(start, i)
+                val rawIdent = cleaned.substring(start, i)
                 val line = lineNumberAt(lineStarts, start)
 
                 if (isOnImportOrPackageLine(cleaned, lineStarts, line)) {
                     continue
                 }
+
+                val ident = importAliases[rawIdent] ?: rawIdent
+                val aliasSuffix = if (ident != rawIdent) "（通过别名 $rawIdent 导入）" else ""
 
                 // 1) durationMillis 任意位置禁止出现
                 if (ident == "durationMillis") {
@@ -183,7 +215,7 @@ class MotionTokenScanTest {
                         relativePath = relativePath,
                         line = line,
                         rule = "durationMillis",
-                        detail = "直接硬编码动画时长",
+                        detail = "直接硬编码动画时长$aliasSuffix",
                     )
                     continue
                 }
@@ -193,7 +225,7 @@ class MotionTokenScanTest {
                     continue
                 }
 
-                // 2) tween( / spring( / keyframes( / keyframes { / snap(
+                // 2) tween( / spring( / keyframes( / keyframes { / snap( / repeatable( / *Spec(
                 if (ident in BANNED_CALLS) {
                     val afterTypeArgs = skipWhitespaceAndOptionalTypeArgs(cleaned, i)
                     val isInvocation = afterTypeArgs < n && (
@@ -206,7 +238,7 @@ class MotionTokenScanTest {
                             relativePath = relativePath,
                             line = line,
                             rule = ruleLabel,
-                            detail = "禁止在令牌文件外直接构造动画规格",
+                            detail = "禁止在令牌文件外直接构造动画规格$aliasSuffix",
                         )
                     }
                     continue
@@ -227,7 +259,7 @@ class MotionTokenScanTest {
                                     relativePath = relativePath,
                                     line = line,
                                     rule = "$ident(",
-                                    detail = "无参或仅传非动画参数，缺少显式 animationSpec 令牌",
+                                    detail = "无参或仅传非动画参数，缺少显式 animationSpec 令牌$aliasSuffix",
                                 )
                             }
                         }
@@ -237,7 +269,7 @@ class MotionTokenScanTest {
                             relativePath = relativePath,
                             line = line,
                             rule = "$ident(",
-                            detail = "仅传尾随 lambda，缺少显式 animationSpec 令牌",
+                            detail = "仅传尾随 lambda，缺少显式 animationSpec 令牌$aliasSuffix",
                         )
                     }
                     continue
@@ -262,7 +294,7 @@ class MotionTokenScanTest {
                                     relativePath = relativePath,
                                     line = line,
                                     rule = "$ident(",
-                                    detail = "调用缺少 animationSpec 参数",
+                                    detail = "调用缺少 animationSpec 参数$aliasSuffix",
                                 )
                             }
                         }
@@ -273,97 +305,165 @@ class MotionTokenScanTest {
             return violations
         }
 
-        private fun stripCommentsAndStringsPreservingLines(src: String): String {
-            val out = StringBuilder(src.length)
-            var i = 0
-            val n = src.length
-            while (i < n) {
-                val c = src[i]
-                // 行注释 // ...
-                if (c == '/' && i + 1 < n && src[i + 1] == '/') {
-                    out.append("  ")
-                    i += 2
-                    while (i < n && src[i] != '\n') {
-                        out.append(' ')
-                        i++
-                    }
-                    continue
-                }
-                // 嵌套块注释 /* ... */
-                if (c == '/' && i + 1 < n && src[i + 1] == '*') {
-                    var depth = 1
-                    out.append("  ")
-                    i += 2
-                    while (i < n && depth > 0) {
-                        if (src[i] == '/' && i + 1 < n && src[i + 1] == '*') {
-                            depth++
-                            out.append("  ")
-                            i += 2
-                        } else if (src[i] == '*' && i + 1 < n && src[i + 1] == '/') {
-                            depth--
-                            out.append("  ")
-                            i += 2
-                        } else {
-                            out.append(if (src[i] == '\n') '\n' else ' ')
+        private class KotlinSourceStripper(private val src: String) {
+            private val out = StringBuilder(src.length)
+            private val n = src.length
+            private var i = 0
+
+            fun strip(): String {
+                scanCode(stopAtClosingBrace = false)
+                return out.toString()
+            }
+
+            private fun scanCode(stopAtClosingBrace: Boolean) {
+                var braceDepth = 0
+                while (i < n) {
+                    val c = src[i]
+                    if (stopAtClosingBrace) {
+                        if (c == '{') {
+                            braceDepth++
+                            out.append('{')
                             i++
+                            continue
+                        }
+                        if (c == '}') {
+                            if (braceDepth == 0) {
+                                return
+                            }
+                            braceDepth--
+                            out.append('}')
+                            i++
+                            continue
                         }
                     }
-                    continue
+                    if (c == '/' && i + 1 < n && src[i + 1] == '/') {
+                        scanLineComment()
+                        continue
+                    }
+                    if (c == '/' && i + 1 < n && src[i + 1] == '*') {
+                        scanBlockComment()
+                        continue
+                    }
+                    if (c == '"' && i + 2 < n && src[i + 1] == '"' && src[i + 2] == '"') {
+                        scanRawString()
+                        continue
+                    }
+                    if (c == '"') {
+                        scanRegularString()
+                        continue
+                    }
+                    if (c == '\'') {
+                        scanCharLiteral()
+                        continue
+                    }
+                    out.append(c)
+                    i++
                 }
-                // 原始三引号字符串 """..."""
-                if (c == '"' && i + 2 < n && src[i + 1] == '"' && src[i + 2] == '"') {
-                    out.append("   ")
-                    i += 3
-                    while (i < n) {
-                        if (src[i] == '"' && i + 2 < n && src[i + 1] == '"' && src[i + 2] == '"') {
-                            out.append("   ")
-                            i += 3
-                            break
-                        }
+            }
+
+            private fun scanLineComment() {
+                out.append("  ")
+                i += 2
+                while (i < n && src[i] != '\n') {
+                    out.append(' ')
+                    i++
+                }
+            }
+
+            private fun scanBlockComment() {
+                var depth = 1
+                out.append("  ")
+                i += 2
+                while (i < n && depth > 0) {
+                    if (src[i] == '/' && i + 1 < n && src[i + 1] == '*') {
+                        depth++
+                        out.append("  ")
+                        i += 2
+                    } else if (src[i] == '*' && i + 1 < n && src[i + 1] == '/') {
+                        depth--
+                        out.append("  ")
+                        i += 2
+                    } else {
                         out.append(if (src[i] == '\n') '\n' else ' ')
                         i++
                     }
-                    continue
                 }
-                // 普通字符串 "..."
-                if (c == '"') {
-                    out.append(' ')
-                    i++
-                    while (i < n) {
-                        val sc = src[i]
-                        if (sc == '\\' && i + 1 < n) {
-                            out.append(if (src[i + 1] == '\n') " \n" else "  ")
-                            i += 2
-                            continue
-                        }
-                        out.append(if (sc == '\n') '\n' else ' ')
-                        i++
-                        if (sc == '"' || sc == '\n') break
-                    }
-                    continue
-                }
-                // 字符字面量 '...'
-                if (c == '\'') {
-                    out.append(' ')
-                    i++
-                    while (i < n) {
-                        val cc = src[i]
-                        if (cc == '\\' && i + 1 < n) {
-                            out.append("  ")
-                            i += 2
-                            continue
-                        }
-                        out.append(if (cc == '\n') '\n' else ' ')
-                        i++
-                        if (cc == '\'' || cc == '\n') break
-                    }
-                    continue
-                }
-                out.append(c)
-                i++
             }
-            return out.toString()
+
+            private fun scanRegularString() {
+                out.append(' ')
+                i++
+                while (i < n) {
+                    val sc = src[i]
+                    if (sc == '\\' && i + 1 < n) {
+                        out.append(if (src[i + 1] == '\n') " \n" else "  ")
+                        i += 2
+                        continue
+                    }
+                    if (sc == '$' && i + 1 < n && src[i + 1] == '{') {
+                        out.append("  ")
+                        i += 2
+                        scanCode(stopAtClosingBrace = true)
+                        if (i < n && src[i] == '}') {
+                            out.append(' ')
+                            i++
+                        }
+                        continue
+                    }
+                    out.append(if (sc == '\n') '\n' else ' ')
+                    i++
+                    if (sc == '"' || sc == '\n') break
+                }
+            }
+
+            private fun scanRawString() {
+                out.append("   ")
+                i += 3
+                while (i < n) {
+                    val rc = src[i]
+                    if (rc == '"' && i + 2 < n && src[i + 1] == '"' && src[i + 2] == '"') {
+                        while (i + 3 < n && src[i + 3] == '"') {
+                            out.append(' ')
+                            i++
+                        }
+                        out.append("   ")
+                        i += 3
+                        break
+                    }
+                    if (rc == '$' && i + 1 < n && src[i + 1] == '{') {
+                        out.append("  ")
+                        i += 2
+                        scanCode(stopAtClosingBrace = true)
+                        if (i < n && src[i] == '}') {
+                            out.append(' ')
+                            i++
+                        }
+                        continue
+                    }
+                    out.append(if (rc == '\n') '\n' else ' ')
+                    i++
+                }
+            }
+
+            private fun scanCharLiteral() {
+                out.append(' ')
+                i++
+                while (i < n) {
+                    val cc = src[i]
+                    if (cc == '\\' && i + 1 < n) {
+                        out.append(if (src[i + 1] == '\n') " \n" else "  ")
+                        i += 2
+                        continue
+                    }
+                    out.append(if (cc == '\n') '\n' else ' ')
+                    i++
+                    if (cc == '\'' || cc == '\n') break
+                }
+            }
         }
+
+        private fun stripCommentsAndStringsPreservingLines(src: String): String =
+            KotlinSourceStripper(src).strip()
 
         private fun computeLineStarts(text: String): IntArray {
             val starts = ArrayList<Int>(128)
@@ -414,22 +514,61 @@ class MotionTokenScanTest {
             return start == 0 || !isIdentPart(text[start - 1])
         }
 
+        /**
+         * 前瞻匹配合法泛型实参片段 `<...>`（支持跨行与嵌套泛型，支持函数类型 `->`）；
+         * 若内部出现非法类型字符（运算符/分号/花括号等）或未闭合，立即回退返回 -1（按比较符号 `<` 处理）。
+         */
+        private fun tryMatchTypeArgList(
+            text: String,
+            openAngleIndex: Int,
+            requireValidFollow: Boolean,
+        ): Int {
+            if (openAngleIndex >= text.length || text[openAngleIndex] != '<') return -1
+            var depth = 1
+            var i = openAngleIndex + 1
+            while (i < text.length && depth > 0) {
+                val c = text[i]
+                when {
+                    c == '<' -> {
+                        depth++
+                        i++
+                    }
+                    c == '-' && i + 1 < text.length && text[i + 1] == '>' -> {
+                        // 函数类型箭头 -> 不消耗泛型深度
+                        i += 2
+                    }
+                    c == '>' -> {
+                        depth--
+                        i++
+                    }
+                    c.isWhitespace() || isIdentPart(c) || c == '.' || c == ',' || c == '?' ||
+                        c == '*' || c == '@' || c == '(' || c == ')' || c == ':' || c == '`' -> {
+                        i++
+                    }
+                    else -> return -1
+                }
+            }
+            if (depth != 0) return -1
+            if (requireValidFollow) {
+                val next = skipWhitespace(text, i)
+                if (next < text.length) {
+                    val follow = text[next]
+                    val validFollow = follow == '(' || follow == '{' || follow == '.' ||
+                        follow == ':' || follow == ',' || follow == ')' || follow == '>' ||
+                        follow == ']' || follow == '?' || follow == '&' || follow == '|'
+                    if (!validFollow) return -1
+                }
+            }
+            return i
+        }
+
         private fun skipWhitespaceAndOptionalTypeArgs(text: String, start: Int): Int {
             var i = skipWhitespace(text, start)
             if (i < text.length && text[i] == '<') {
-                val saved = i
-                var depth = 1
-                i++
-                while (i < text.length && depth > 0) {
-                    when (text[i]) {
-                        '<' -> depth++
-                        '>' -> depth--
-                        '\n', ';', '{', '}' -> return saved
-                    }
-                    i++
+                val afterAngles = tryMatchTypeArgList(text, i, requireValidFollow = false)
+                if (afterAngles > i) {
+                    i = skipWhitespace(text, afterAngles)
                 }
-                if (depth != 0) return saved
-                i = skipWhitespace(text, i)
             }
             return i
         }
@@ -459,23 +598,53 @@ class MotionTokenScanTest {
             var paren = 0
             var bracket = 0
             var brace = 0
-            var angle = 0
             var argStart = 0
-            for (i in argsText.indices) {
+            var i = 0
+            while (i < argsText.length) {
                 when (argsText[i]) {
-                    '(' -> paren++
-                    ')' -> if (paren > 0) paren--
-                    '[' -> bracket++
-                    ']' -> if (bracket > 0) bracket--
-                    '{' -> brace++
-                    '}' -> if (brace > 0) brace--
-                    '<' -> if (paren == 0 && bracket == 0 && brace == 0) angle++
-                    '>' -> if (paren == 0 && bracket == 0 && brace == 0 && angle > 0) angle--
-                    ',' -> if (paren == 0 && bracket == 0 && brace == 0 && angle == 0) {
-                        val token = argsText.substring(argStart, i).trim()
-                        if (token.isNotEmpty()) result += token
-                        argStart = i + 1
+                    '(' -> {
+                        paren++
+                        i++
                     }
+                    ')' -> {
+                        if (paren > 0) paren--
+                        i++
+                    }
+                    '[' -> {
+                        bracket++
+                        i++
+                    }
+                    ']' -> {
+                        if (bracket > 0) bracket--
+                        i++
+                    }
+                    '{' -> {
+                        brace++
+                        i++
+                    }
+                    '}' -> {
+                        if (brace > 0) brace--
+                        i++
+                    }
+                    '<' -> {
+                        if (paren == 0 && bracket == 0 && brace == 0) {
+                            val afterAngles = tryMatchTypeArgList(argsText, i, requireValidFollow = true)
+                            if (afterAngles > i) {
+                                i = afterAngles
+                                continue
+                            }
+                        }
+                        i++
+                    }
+                    ',' -> {
+                        if (paren == 0 && bracket == 0 && brace == 0) {
+                            val token = argsText.substring(argStart, i).trim()
+                            if (token.isNotEmpty()) result += token
+                            argStart = i + 1
+                        }
+                        i++
+                    }
+                    else -> i++
                 }
             }
             val tail = argsText.substring(argStart).trim()
@@ -602,5 +771,151 @@ class MotionTokenScanTest {
             allowlist = listOf(staleEntry),
         )
         assertEquals(listOf(staleEntry), staleReport.staleAllowlistEntries)
+    }
+
+    @Test
+    fun scanner_handlesStringTemplateInterpolationNestedQuotesAndMimeWildcard() {
+        // 阻断 1 触发用例 1：${...} 内嵌套双引号不应误报
+        val validWithTemplates = """
+            package test.sample
+
+            fun format(json: Any, enabled: Boolean) {
+                val raw = "dur=${'$'}{json.optString("durationMillis")}"
+                val label = "mode=${'$'}{if (enabled) "spring(1)" else "none"}"
+                val triple = ${"\"\"\""}
+                    outer ${'$'}{if (enabled) "fadeIn()" else "image/*"} tail
+                ${"\"\"\""}.trimIndent()
+            }
+        """.trimIndent()
+        val validViolations = scanKotlinSource("src/main/java/TemplateValid.kt", validWithTemplates)
+        assertEquals("字符串插值内的嵌套引号不应误报：$validViolations", emptyList<Violation>(), validViolations)
+
+        // 阻断 1 触发用例 2："image/*" 不能吞掉后续业务代码，且插值中的真实违规调用也应检出
+        val mimeFollowedByViolations = """
+            package test.sample
+
+            fun bindAttachment(mimeType: String?, target: Float) {
+                val desc = "支持格式：${'$'}{mimeType ?: "image/*"}"
+                val alpha = animateFloatAsState(target)
+                val enter = fadeIn()
+                val inTemplate = "v=${'$'}{animateDpAsState(target)}"
+            }
+        """.trimIndent()
+        val caught = scanKotlinSource("src/main/java/Attachment.kt", mimeFollowedByViolations)
+        val caughtRules = caught.map { it.rule }
+        assertTrue("image/* 后的 animateFloatAsState( 必须被检出：$caught", "animateFloatAsState(" in caughtRules)
+        assertTrue("image/* 后的 fadeIn( 必须被检出：$caught", "fadeIn(" in caughtRules)
+        assertTrue("插值内部的真实违规 animateDpAsState( 必须被检出：$caught", "animateDpAsState(" in caughtRules)
+    }
+
+    @Test
+    fun scanner_doesNotFalsePositiveOnLessThanComparisonInNamedArgs() {
+        // 阻断 2 触发用例：命名参数含不带括号的 < 比较表达式时不能吞掉后续 animationSpec
+        val validComparison = """
+            package test.sample
+
+            fun panel(itemCount: Int, maxVisibleItems: Int, a: Int, b: Int, c: Int, d: Int) {
+                val enter = expandVertically(
+                    clip = itemCount < maxVisibleItems,
+                    animationSpec = HiMotion.spatialDefault(IntSize.VisibilityThreshold),
+                )
+                val second = expandVertically(
+                    clip = a < b,
+                    expandFrom = if (c > d) Alignment.Top else Alignment.Bottom,
+                    animationSpec = HiMotion.spatialDefault(IntSize.VisibilityThreshold),
+                )
+            }
+        """.trimIndent()
+        val violations = scanKotlinSource("src/main/java/ComparisonArg.kt", validComparison)
+        assertEquals("命名参数含 < 比较表达式不应误报：$violations", emptyList<Violation>(), violations)
+    }
+
+    @Test
+    fun scanner_catchesImportAliasesAndMultilineGenericTypeArgs() {
+        // 阻断 3 触发用例 1：import ... as 别名绕过
+        val aliasSample = """
+            package test.sample
+            import androidx.compose.animation.core.tween as myTween
+            import androidx.compose.animation.fadeIn as myFadeIn
+            import androidx.compose.animation.animateContentSize as myResize
+
+            fun demo() {
+                val spec = myTween<Float>(300)
+                val enter = myFadeIn()
+                val mod = Modifier.myResize()
+            }
+        """.trimIndent()
+        val aliasViolations = scanKotlinSource("src/main/java/AliasBypass.kt", aliasSample)
+        val aliasRules = aliasViolations.map { it.rule }
+        assertTrue("别名 myTween 必须被检出：$aliasViolations", "tween(" in aliasRules)
+        assertTrue("别名 myFadeIn 必须被检出：$aliasViolations", "fadeIn(" in aliasRules)
+        assertTrue("扩展函数别名 myResize 必须被检出：$aliasViolations", "animateContentSize(" in aliasRules)
+
+        // 阻断 3 触发用例 2：跨行泛型实参绕过
+        val multilineGenericSample = """
+            package test.sample
+
+            fun demo(target: IntOffset) {
+                val offset by animateValueAsState<
+                    IntOffset,
+                    AnimationVector2D,
+                >(
+                    targetValue = target,
+                    typeConverter = IntOffset.VectorConverter,
+                )
+            }
+        """.trimIndent()
+        val genericViolations = scanKotlinSource("src/main/java/MultilineGeneric.kt", multilineGenericSample)
+        assertEquals(
+            "跨行泛型实参的 animateValueAsState( 必须被检出：$genericViolations",
+            listOf("animateValueAsState("),
+            genericViolations.map { it.rule },
+        )
+    }
+
+    @Test
+    fun scanner_catchesSpecConstructorsRepeatableAndConsumesAllowlistOneToOne() {
+        // 建议 4：*Spec 构造器与 repeatable
+        val specConstructors = """
+            package test.sample
+
+            fun rawSpecs() {
+                val a = TweenSpec<Float>(300)
+                val b = SpringSpec<Float>(stiffness = 200f)
+                val c = SnapSpec<Float>()
+                val d = KeyframesSpec(KeyframesSpec.KeyframesSpecConfig<Float>())
+                val e = repeatable<Float>(iterations = 2, animation = HiMotion.spinnerPeriod())
+            }
+        """.trimIndent()
+        val specRules = scanKotlinSource("src/main/java/RawSpecs.kt", specConstructors).map { it.rule }
+        assertTrue("应检出 TweenSpec(: $specRules", "TweenSpec(" in specRules)
+        assertTrue("应检出 SpringSpec(: $specRules", "SpringSpec(" in specRules)
+        assertTrue("应检出 SnapSpec(: $specRules", "SnapSpec(" in specRules)
+        assertTrue("应检出 KeyframesSpec(: $specRules", "KeyframesSpec(" in specRules)
+        assertTrue("应检出 repeatable(: $specRules", "repeatable(" in specRules)
+
+        // 建议 4：单条白名单只能放行 1 处违规，同文件新增第 2 处同类违规必须被检出
+        val twoFadeIns = """
+            package test.sample
+            fun two() {
+                val first = fadeIn()
+                val second = fadeIn()
+            }
+        """.trimIndent()
+        val singleEntry = AllowlistEntry(
+            relativePath = "src/main/java/TwoFadeIns.kt",
+            rule = "fadeIn(",
+            reason = "仅允许 1 处旧例",
+        )
+        val report = scanSources(
+            sources = mapOf("src/main/java/TwoFadeIns.kt" to twoFadeIns),
+            allowlist = listOf(singleEntry),
+        )
+        assertEquals(
+            "单条白名单只能消费 1 处，第 2 处 fadeIn() 必须报出：${report.unexpectedViolations}",
+            1,
+            report.unexpectedViolations.size,
+        )
+        assertEquals(emptyList<AllowlistEntry>(), report.staleAllowlistEntries)
     }
 }

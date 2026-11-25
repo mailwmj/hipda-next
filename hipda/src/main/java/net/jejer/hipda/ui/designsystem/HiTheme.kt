@@ -93,6 +93,9 @@ object HiTheme {
  * - Android 12+ 且 [seed] 为 [HiThemeSeed.Wallpaper] 时，使用系统动态配色；否则按 [seed] 生成 M3 配色。
  * - [pureBlack] 仅在深色模式下生效，将 `background` 与 `surface` 设为纯黑 `#000000` 并压暗其余容器色。
  * - 根部读取并监听系统 `Settings.Global.ANIMATOR_DURATION_SCALE`，通过 [LocalHiMotionDurationScale] 暴露。
+ * - 注意：[motionDurationScale] 仅覆盖 [LocalHiMotionDurationScale]（供主题消费方与 `rememberHiMotionCoroutineScope()` 读取），
+ *   不会改写宿主 `Recomposer` 的 `effectCoroutineContext`；在 Compose UI 测试中验证内置过渡（`animate*AsState`、
+ *   `AnimatedVisibility`、`hiAnimateContentSize`）的“减少动态效果”时，必须通过 `withAnimatorDurationScale` 注入 `effectContext`。
  */
 @Composable
 fun HiTheme(

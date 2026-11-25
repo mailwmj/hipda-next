@@ -2,6 +2,7 @@ package net.jejer.hipda.ui.designsystem.motion
 
 import android.app.Application
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.res.Configuration
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
@@ -249,27 +250,32 @@ class HiMotionBehaviorTest {
             }
         }
 
-        // 先测量正常单程动画的最大单帧位移
-        forward = true
+        // 先测量正常单程动画的最大单帧位移（在 onFrame 0 处触发，确保 autoAdvance 已关闭）
         val normalResult = assertFrameContinuity(
             nodeProvider = { onNodeWithTag("slider") },
             frameCount = 24,
             maxStepDp = 60.dp,
+            onFrame = { frame ->
+                if (frame == 0) {
+                    forward = true
+                }
+            },
         )
         assertTrue("正常动画应产生有效位移", normalResult.maxStepDp > 1.dp)
 
-        // 复位并测试中途反向：第 4 帧反向后，相邻两帧位移不超过正常单帧最大位移
+        // 复位并测试中途反向：第 0 帧触发正向、第 6 帧反向后，相邻两帧位移不超过正常单帧最大位移
         mainClock.autoAdvance = true
         forward = false
         waitForIdle()
 
-        forward = true
         val reversalResult = assertFrameContinuity(
             nodeProvider = { onNodeWithTag("slider") },
             frameCount = 30,
             maxStepDp = normalResult.maxStepDp + 0.5.dp,
             onFrame = { frame ->
-                if (frame == 4) {
+                if (frame == 0) {
+                    forward = true
+                } else if (frame == 6) {
                     forward = false
                 }
             },
@@ -278,6 +284,35 @@ class HiMotionBehaviorTest {
         val finalX = reversalResult.positionsPx.last().x
         assertTrue("反向前应已明显向右移动，峰值 $peakX px", peakX > with(density) { 20.dp.toPx() })
         assertTrue("反向后应向起点回落，末帧 $finalX px 应小于峰值 $peakX px", finalX < peakX)
+    }
+
+    @Test
+    fun assertFrameContinuity_failsWhenNodeStaysStationary() = withAnimatorDurationScale(1f) {
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                Box(Modifier.size(32.dp).testTag("stationary"))
+            }
+        }
+        waitForIdle()
+
+        var failed = false
+        try {
+            assertFrameContinuity(
+                nodeProvider = { onNodeWithTag("stationary") },
+                frameCount = 6,
+                maxStepDp = 60.dp,
+            )
+        } catch (_: AssertionError) {
+            failed = true
+        }
+        assertTrue("静止节点或提前跑完的动画应触发 minTotalTravelDp 失败，不能假通过", failed)
+    }
+
+    @Test
+    fun readAnimatorDurationScale_fallsBackSafelyOnBareContextWrapper() {
+        val bareContext = ContextWrapper(null)
+        assertEquals(1f, readAnimatorDurationScale(bareContext), 0.001f)
+        assertEquals(1f, HiSystemMotionDurationScale(bareContext).scaleFactor, 0.001f)
     }
 
     @Test
@@ -298,6 +333,7 @@ class HiMotionBehaviorTest {
         waitForIdle()
         parentCounter.assertEquals(1)
         childCounter.assertEquals(1)
+        childCounter.assertRecompositionsAtMost(0)
 
         repeat(5) {
             unrelatedTicks++
@@ -305,7 +341,9 @@ class HiMotionBehaviorTest {
         }
 
         parentCounter.assertEquals(6)
+        assertEquals(5, parentCounter.recompositionCount)
         childCounter.assertAtMost(1)
+        childCounter.assertRecompositionsAtMost(0)
     }
 
     @Test

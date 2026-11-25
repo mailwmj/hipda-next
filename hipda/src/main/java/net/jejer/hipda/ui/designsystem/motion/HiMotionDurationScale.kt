@@ -18,6 +18,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import kotlinx.coroutines.CoroutineScope
 
 private val DefaultMotionDurationScale: MotionDurationScale = object : MotionDurationScale {
@@ -36,16 +37,26 @@ val LocalHiMotionDurationScale = compositionLocalOf<MotionDurationScale> {
 }
 
 /**
- * 读取系统 [Settings.Global.ANIMATOR_DURATION_SCALE]，缺省或非法（负值/NaN/Infinity）时回退为 `1f`。
+ * 读取系统 [Settings.Global.ANIMATOR_DURATION_SCALE]；在无 `ContentResolver`、权限受限或值非法（负值/NaN/Infinity）时安全回退为 `1f`。
  */
 fun readAnimatorDurationScale(context: Context): Float {
-    val raw = Settings.Global.getFloat(
-        context.contentResolver,
-        Settings.Global.ANIMATOR_DURATION_SCALE,
-        1f,
-    )
+    val raw = runCatching {
+        val resolver = context.contentResolver
+        if (resolver == null) {
+            1f
+        } else {
+            Settings.Global.getFloat(
+                resolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            )
+        }
+    }.getOrDefault(1f)
     return if (raw.isFinite() && raw >= 0f) raw else 1f
 }
+
+private fun safeApplicationContext(context: Context): Context =
+    runCatching { context.applicationContext }.getOrNull() ?: context
 
 /**
  * 实时读取系统 [Settings.Global.ANIMATOR_DURATION_SCALE] 的 [MotionDurationScale]，
@@ -54,7 +65,7 @@ fun readAnimatorDurationScale(context: Context): Float {
 class HiSystemMotionDurationScale(
     context: Context,
 ) : MotionDurationScale {
-    private val appContext: Context = context.applicationContext ?: context
+    private val appContext: Context = safeApplicationContext(context)
 
     override val scaleFactor: Float
         get() = readAnimatorDurationScale(appContext)
@@ -72,27 +83,46 @@ private class ObservableHiMotionDurationScale(
 
 /**
  * 读取并持续监听系统 [Settings.Global.ANIMATOR_DURATION_SCALE] 变化的 [MotionDurationScale]。
+ * 在 Preview / [LocalInspectionMode] 下跳过系统监听直接返回默认 `1f`。
  */
 @Composable
 fun rememberSystemMotionDurationScale(): MotionDurationScale {
+    if (LocalInspectionMode.current) {
+        return DefaultMotionDurationScale
+    }
     val context = LocalContext.current
-    val appContext = remember(context) { context.applicationContext ?: context }
+    val appContext = remember(context) { safeApplicationContext(context) }
     val scaleState = remember(appContext) {
         ObservableHiMotionDurationScale(readAnimatorDurationScale(appContext))
     }
 
     DisposableEffect(appContext) {
-        val resolver = appContext.contentResolver
-        val uri = Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)
         scaleState.mutableScaleFactor = readAnimatorDurationScale(appContext)
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
-                scaleState.mutableScaleFactor = readAnimatorDurationScale(appContext)
+        val resolver = runCatching { appContext.contentResolver }.getOrNull()
+        val uri = runCatching {
+            Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)
+        }.getOrNull()
+        val observer = if (resolver != null && uri != null) {
+            object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    scaleState.mutableScaleFactor = readAnimatorDurationScale(appContext)
+                }
             }
+        } else {
+            null
         }
-        resolver.registerContentObserver(uri, false, observer)
+        val registered = if (resolver != null && uri != null && observer != null) {
+            runCatching {
+                resolver.registerContentObserver(uri, false, observer)
+                true
+            }.getOrDefault(false)
+        } else {
+            false
+        }
         onDispose {
-            resolver.unregisterContentObserver(observer)
+            if (registered && resolver != null && observer != null) {
+                runCatching { resolver.unregisterContentObserver(observer) }
+            }
         }
     }
 
