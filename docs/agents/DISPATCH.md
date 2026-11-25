@@ -16,7 +16,8 @@
 ## 2. 并发与工作目录
 - 每张卡一个 worktree：`git worktree add ../hipda-next.wt/<卡号> -b card/<卡号>-<简名> origin/main`。一个目录同时只有一个写入者；只读的审查、调研可以并行。
 - 编译以 GitHub Actions 为准：推送分支 → `gh run watch <id> --interval 60` → 失败时 `gh run view --log-failed`。不用默认间隔（3 秒），不写循环轮询：多个代理同时轮询会在一小时内耗尽 GitHub API 的 5000 次额度。遇到 `API rate limit exceeded` 时，用 `gh api rate_limit` 查重置时间，等到重置后再查，不要当成 CI 失败。
-- 本地编译只用于 CI 上复现不了的问题，必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
+- 先本地、后 CI：代理改完先在本地跑本卡相关的测试（按下一条的方式），本地变绿后才推送或 `gh workflow run`；CI 只作最终证据，不拿 CI 调试半成品（失败的运行会给负责人发邮件）。本机 SDK 路径见 `lesson.md`。
+- 本地编译必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
 - 同时运行的代理（含只读）最多 8 个；本地编译仍按上一条串行。
 
 ## 3. 模型路由
@@ -39,6 +40,7 @@
 - 敏感区（轻量卡也要审查）：`okhttp/`、`async/LoginHelper.java`、`utils/HiParser*`、`bean/HiSettingsHelper.java`、`db/`、`async/PostHelper.java`、`job/PostJob.java`、Cloudflare 验证相关代码。
 
 ## 5. 卡片约定
+- 流程强度（2026-11-25 起）：审查 APPROVE 即合并，只有阻断项或真机风险才开修改轮，纯简化建议带进下一张碰到同一区域的卡；修改轮的小改动由负责人对照审查项核对，大段重写或修阻断项才复核；独立探针验证（Hydrogen）只用于并发/状态机类卡（如 A4b、A5）和界面卡（视觉复验），其他卡只做 Carbon 审查；生产代码不足约 120 行的卡与相邻卡合并，不单独开卡。
 - 卡片大小按改动量和可验证性来定，不按时间：一个行为，2–5 条验收；生产代码约 150–400 行，最多 5 个文件；敏感区约 200 行以内；纯搬代码的卡例外。详见 `docs/design/backlog.md` 的拆分规则。
 - 卡号按阶段编：`M0-1`、`M0-2`……；分支 `card/<卡号>-<简名>`。
 - 提交用 Conventional Commits，类型用英文，描述可以写中文。
