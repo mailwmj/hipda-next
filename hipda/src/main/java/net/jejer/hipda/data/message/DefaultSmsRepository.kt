@@ -11,6 +11,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -73,14 +74,15 @@ class DefaultSmsRepository internal constructor(
             authRepository.currentAccount
                 .map { it?.uid }
                 .distinctUntilChanged()
-                .collect { newUid ->
-                    resetCooldownIfAccountChanged(newUid)
+                .conflate()
+                .collect {
+                    syncCooldownAccount()
                 }
         }
     }
 
     override fun getRemainingCooldownSeconds(): Int {
-        resetCooldownIfAccountChanged(authRepository.currentAccount.value?.uid)
+        syncCooldownAccount()
         return computeRemainingCooldownSeconds(
             nowMs = nowMs(),
             cooldownUntilMs = _cooldownUntilMs.value,
@@ -174,8 +176,7 @@ class DefaultSmsRepository internal constructor(
         }
 
         return sendMutex.withLock {
-            val activeUidAtStart = authRepository.currentAccount.value?.uid
-            resetCooldownIfAccountChanged(activeUidAtStart)
+            val activeUidAtStart = syncCooldownAccount()
 
             val remainingSeconds = computeRemainingCooldownSeconds(
                 nowMs = nowMs(),
@@ -303,16 +304,20 @@ class DefaultSmsRepository internal constructor(
         return currentUid == null || responseSessionUid == null || responseSessionUid == currentUid
     }
 
-    private fun resetCooldownIfAccountChanged(currentUid: String?) {
-        synchronized(cooldownLock) {
-            val previousUid = cooldownOwnerUid
-            if (previousUid == null) {
-                cooldownOwnerUid = currentUid
-            } else if (previousUid != currentUid) {
-                cooldownOwnerUid = currentUid
-                _cooldownUntilMs.value = 0L
-            }
+    /**
+     * Reads [AuthRepository.currentAccount] inside [cooldownLock] so a lagging collector frame
+     * from cold start (`null`) can never wipe an active cooldown after the account has hydrated.
+     */
+    private fun syncCooldownAccount(): String? = synchronized(cooldownLock) {
+        val currentUid = authRepository.currentAccount.value?.uid
+        val previousUid = cooldownOwnerUid
+        if (previousUid == null) {
+            cooldownOwnerUid = currentUid
+        } else if (previousUid != currentUid) {
+            cooldownOwnerUid = currentUid
+            _cooldownUntilMs.value = 0L
         }
+        currentUid
     }
 
     private fun mapExceptionToSendOutcome(e: Exception): SmsSendOutcome = when (e) {

@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -96,8 +97,9 @@ class DefaultNotifyRepository internal constructor(
             authRepository.currentAccount
                 .map { it?.uid }
                 .distinctUntilChanged()
-                .collect { newUid ->
-                    onAccountObserved(newUid)
+                .conflate()
+                .collect {
+                    onAccountObserved()
                 }
         }
     }
@@ -416,16 +418,15 @@ class DefaultNotifyRepository internal constructor(
         }
     }
 
-    private suspend fun onAccountObserved(newUid: String?) {
-        val (targetUid, gen, needsHydration) = switchAccountIfNeededLocked(newUid)
+    private suspend fun onAccountObserved() {
+        val (targetUid, gen, needsHydration) = syncActiveAccountLocked()
         if (needsHydration && targetUid != null) {
             hydrateAccount(targetUid, gen)
         }
     }
 
     private suspend fun ensureAccountSynchronized(): Pair<String?, Long> {
-        val currentUid = authRepository.currentAccount.value?.uid
-        val (targetUid, gen, needsHydration) = switchAccountIfNeededLocked(currentUid)
+        val (targetUid, gen, needsHydration) = syncActiveAccountLocked()
         if (needsHydration && targetUid != null) {
             hydrateAccount(targetUid, gen)
         }
@@ -433,20 +434,22 @@ class DefaultNotifyRepository internal constructor(
     }
 
     private fun syncAccountChangeIfNeeded() {
-        val currentUid = authRepository.currentAccount.value?.uid
-        switchAccountIfNeededLocked(currentUid)
+        syncActiveAccountLocked()
     }
 
     /**
-     * Transitions active account state:
+     * Reads [AuthRepository.currentAccount] inside [stateLock] so lagging collector frames can
+     * never move [state] backwards in time (e.g. a cold-start `null` arriving after `"10000"`
+     * causing a phantom logout):
      * - `A -> null` (logout) or `A -> B` (switch): increments generation and clears all in-memory
      *   counts and entries immediately so no data leaks across accounts or after logout.
-     * - `null -> A` (cold-start hydration before `AuthRepository` finishes reading storage, or
-     *   login after a logout that already cleared memory): binds `activeOwnerUid = A` without
-     *   discarding cold-start state and schedules persistence hydration for `A`.
+     * - `null -> A` (cold-start hydration before `AuthRepository` finishes reading storage): binds
+     *   `activeOwnerUid = A` without discarding cold-start state and schedules persistence
+     *   hydration for `A`.
      */
-    private fun switchAccountIfNeededLocked(newUid: String?): Triple<String?, Long, Boolean> =
+    private fun syncActiveAccountLocked(): Triple<String?, Long, Boolean> =
         synchronized(stateLock) {
+            val newUid = authRepository.currentAccount.value?.uid
             val previousUid = state.activeOwnerUid
             when {
                 previousUid == newUid -> Triple(
