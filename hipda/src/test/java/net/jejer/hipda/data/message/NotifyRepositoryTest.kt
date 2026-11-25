@@ -11,22 +11,30 @@ import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import net.jejer.hipda.data.account.SavedAccount
+import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.AuthRequiredReason
+import net.jejer.hipda.data.auth.AuthState
 import net.jejer.hipda.data.auth.DefaultAuthRepository
 import net.jejer.hipda.data.auth.ForumHttpClient
 import net.jejer.hipda.data.auth.computeLegacyPasswordMd5
@@ -93,6 +101,7 @@ class NotifyRepositoryTest {
     @After
     fun tearDown() {
         scope.cancel()
+        runBlocking { scope.coroutineContext[Job]?.join() }
         clientsToClose.forEach { client ->
             client.dispatcher.cancelAll()
             client.dispatcher.executorService.shutdownNow()
@@ -428,7 +437,7 @@ class NotifyRepositoryTest {
         """.trimIndent()
         server.enqueue(gbkHtmlResponse(zeroPromptPollHtml))
         val secondPoll = stack.notifyRepo.pollUnreadCounts(AccessPriority.BackgroundSilent)
-        assertTrue(secondPoll is NotificationPollResult.Success)
+        assertTrue("Expected Success, got $secondPoll", secondPoll is NotificationPollResult.Success)
         val secondSnapshot = (secondPoll as NotificationPollResult.Success).snapshot
         assertEquals(0, secondSnapshot.smsUnreadCount)
         assertNull(secondSnapshot.latestUnreadSms)
@@ -458,11 +467,110 @@ class NotifyRepositoryTest {
         server.enqueue(gbkHtmlResponse(multiPmHtml))
 
         val result = stack.notifyRepo.pollUnreadCounts()
-        assertTrue(result is NotificationPollResult.Success)
+        assertTrue("Expected Success, got $result", result is NotificationPollResult.Success)
         val snapshot = (result as NotificationPollResult.Success).snapshot
         assertEquals(2, snapshot.smsUnreadCount)
         assertNull("Single-SMS preview must be null when >1 unread SMS conversations", snapshot.latestUnreadSms)
         assertEquals(0, snapshot.notifyUnreadCount)
+    }
+
+    @OptIn(ExperimentalForInheritanceCoroutinesApi::class)
+    @Test
+    fun pollUnreadCounts_staleNullCollectorEmissionAfterColdStartHydration_doesNotTriggerPhantomLogout() = runBlocking {
+        val account = SavedAccount("10000", "HiUser", computeLegacyPasswordMd5("pw_10000"), lastLoginAt = 1_000L)
+        val backing = MutableStateFlow<SavedAccount?>(null)
+        val collectorCapturedNull = CountDownLatch(1)
+        val pollInFlight = CountDownLatch(1)
+        val staleNullDelivered = CountDownLatch(1)
+
+        val racingFlow = object : StateFlow<SavedAccount?> {
+            override val value: SavedAccount? get() = backing.value
+            override val replayCache: List<SavedAccount?> get() = backing.replayCache
+            override suspend fun collect(collector: FlowCollector<SavedAccount?>): Nothing {
+                val capturedInitial = backing.value
+                collectorCapturedNull.countDown()
+                pollInFlight.await(5, TimeUnit.SECONDS)
+                collector.emit(capturedInitial)
+                staleNullDelivered.countDown()
+                backing.collect(collector)
+            }
+        }
+
+        val fakeAuth = object : AuthRepository {
+            override val currentAccount: StateFlow<SavedAccount?> = racingFlow
+            override val savedAccounts: StateFlow<List<SavedAccount>> = MutableStateFlow(listOf(account))
+            override val authState: StateFlow<AuthState> = MutableStateFlow(AuthState.SignedIn(account))
+            override val sessionEpoch: Long = 1L
+            override suspend fun login(
+                username: String,
+                passwordOrMd5: String,
+                securityQuestionId: Int,
+                securityAnswer: String,
+            ) = error("unused")
+            override suspend fun switchAccount(uid: String) = error("unused")
+            override suspend fun logout() = Unit
+            override suspend fun removeAccount(uid: String) = Unit
+            override suspend fun trySilentRelogin(failedEpoch: Long, priority: AccessPriority) = error("unused")
+        }
+
+        val primaryClient = HttpClientModule.provideOkHttpClient(
+            siteCookieStore = cookieStore,
+            userAgentProvider = UserAgentProvider { TEST_UA },
+            transportInterceptor = TransportInterceptor(
+                delegateFactory = {
+                    okhttp3.Interceptor { chain ->
+                        pollInFlight.countDown()
+                        staleNullDelivered.await(5, TimeUnit.SECONDS)
+                        chain.proceed(chain.request())
+                    }
+                },
+                isMainThread = { false },
+            ),
+        ).also(clientsToClose::add)
+        val primaryGateway = SiteAccessGateway(
+            client = primaryClient,
+            detector = ChallengeDetector(),
+            solver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) },
+            clock = { virtualClockMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+        val forumClient = ForumHttpClient(primaryGateway, settingsRepository, fakeAuth)
+        val storeFile = File(tempFolder.newFolder(), "notify_read_state.preferences_pb")
+        val dataStore = PreferenceDataStoreFactory.create(
+            corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+            scope = scope,
+            produceFile = { storeFile },
+        )
+        val notifyRepo = DefaultNotifyRepository(
+            forumHttpClient = forumClient,
+            settingsRepository = settingsRepository,
+            authRepository = fakeAuth,
+            readStateStore = NotifyReadStateStore(dataStore),
+            nowMs = { virtualClockMs.get() },
+            scope = scope,
+        )
+
+        assertTrue(collectorCapturedNull.await(5, TimeUnit.SECONDS))
+        backing.value = account
+
+        val multiPmHtml = """
+            <html><head><meta http-equiv="Content-Type" content="text/html; charset=gbk"></head><body>
+              <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+              <ul class="pm_list">
+                <li><p class="cite"><cite><a href="space.php?uid=20001">Alice</a></cite> 10:00</p><div class="summary">msg 1</div></li>
+                <li><p class="cite"><cite><a href="space.php?uid=20002">Bob</a></cite> 10:05</p><div class="summary">msg 2</div></li>
+              </ul>
+            </body></html>
+        """.trimIndent()
+        server.enqueue(gbkHtmlResponse(multiPmHtml))
+
+        val result = notifyRepo.pollUnreadCounts()
+        assertTrue("Expected Success despite stale null collector emission, got $result", result is NotificationPollResult.Success)
+        val snapshot = (result as NotificationPollResult.Success).snapshot
+        assertEquals(2, snapshot.smsUnreadCount)
+        assertNull(snapshot.latestUnreadSms)
+        assertEquals(2, notifyRepo.smsUnreadCount.value)
     }
 
     @Test
