@@ -18,14 +18,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.jejer.hipda.data.auth.AuthRepository
+import net.jejer.hipda.data.auth.AuthRequiredException
 import net.jejer.hipda.data.auth.AuthRequiredReason
 import net.jejer.hipda.data.auth.ForumHtmlResponse
 import net.jejer.hipda.data.auth.ForumHttpClient
 import net.jejer.hipda.data.network.access.AccessPriority
-import net.jejer.hipda.parser.common.DiscuzCommonParser
 import net.jejer.hipda.parser.user.BlacklistParseResult
 import net.jejer.hipda.parser.user.UserParser
-import org.jsoup.Jsoup
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @Singleton
@@ -52,7 +51,8 @@ class DefaultBlacklistRepository internal constructor(
 
     private val operationMutex = Mutex()
     private val stateLock = Any()
-    private var mutationVersion: Long = 0L
+    private val accountMutationVersions = HashMap<String, Long>()
+    private var cachedFormhash: CachedFormhash? = null
 
     private val _activeSnapshot = MutableStateFlow(BlacklistSnapshot())
     private val _blockedUsernames = MutableStateFlow<Set<String>>(emptySet())
@@ -69,23 +69,26 @@ class DefaultBlacklistRepository internal constructor(
                 .collectLatest { uid ->
                     if (uid == null) {
                         synchronized(stateLock) {
-                            mutationVersion++
+                            cachedFormhash = null
                             publishSnapshotLocked(BlacklistSnapshot())
                         }
                     } else {
                         synchronized(stateLock) {
                             if (_activeSnapshot.value.ownerUid != uid) {
-                                mutationVersion++
+                                bumpAccountVersionLocked(uid)
+                                if (cachedFormhash?.ownerUid != uid) {
+                                    cachedFormhash = null
+                                }
                                 publishSnapshotLocked(BlacklistSnapshot(ownerUid = uid))
                             }
                         }
                         blacklistStore.observe(uid)
                             .conflate()
                             .collect {
-                                val versionBeforeRead = synchronized(stateLock) { mutationVersion }
+                                val versionBeforeRead = synchronized(stateLock) { accountVersionLocked(uid) }
                                 val latest = blacklistStore.read(uid)
                                 synchronized(stateLock) {
-                                    if (mutationVersion == versionBeforeRead && currentActiveUid() == uid) {
+                                    if (accountVersionLocked(uid) == versionBeforeRead && currentActiveUid() == uid) {
                                         publishSnapshotLocked(latest)
                                     }
                                 }
@@ -113,6 +116,9 @@ class DefaultBlacklistRepository internal constructor(
                     requireAuth = true,
                 )
             } catch (e: IOException) {
+                if (e is AuthRequiredException) {
+                    clearCachedFormhash(accountUidBefore)
+                }
                 return@withLock mapUserIoException(e)
             }
 
@@ -126,6 +132,7 @@ class DefaultBlacklistRepository internal constructor(
                 return@withLock UserError.SiteError(siteError.trim().ifEmpty { "黑名单同步失败" })
             }
 
+            val formhash = response.meta.formhash?.trim()?.takeIf { it.isNotEmpty() }
             when (val parsed = UserParser.parseBlacklist(response.html)) {
                 is BlacklistParseResult.InvalidPage -> UserError.InvalidPage(parsed.reason)
 
@@ -136,14 +143,22 @@ class DefaultBlacklistRepository internal constructor(
                         syncedAtMs = clock(),
                     )
                     synchronized(stateLock) {
-                        mutationVersion++
                         if (currentActiveUid() == targetUid) {
+                            bumpAccountVersionLocked(targetUid)
+                            if (formhash != null) {
+                                cachedFormhash = CachedFormhash(
+                                    ownerUid = targetUid,
+                                    sessionEpoch = authRepository.sessionEpoch,
+                                    value = formhash,
+                                )
+                            }
                             publishSnapshotLocked(updated)
                         }
                     }
                     BlacklistSyncResult.Success(
                         snapshot = updated,
                         isEmptyConfirmed = parsed.isEmptyConfirmed,
+                        formhash = formhash,
                     )
                 }
             }
@@ -186,37 +201,81 @@ class DefaultBlacklistRepository internal constructor(
         return operationMutex.withLock {
             val accountUidBefore = currentActiveUid()
             var expectedOwnerUid = accountUidBefore
-            val resolvedFormhash = providedFormhash?.trim()?.takeIf { it.isNotEmpty() }
-                ?: when (val fetched = fetchFormhash(accountUidBefore, priority)) {
-                    is FormhashFetchResult.Found -> {
-                        expectedOwnerUid = expectedOwnerUid ?: fetched.ownerUid
-                        fetched.formhash
-                    }
-                    is FormhashFetchResult.Failed -> return@withLock fetched.error
-                }
+            val explicitFormhash = providedFormhash?.trim()?.takeIf { it.isNotEmpty() }
+            var usedCachedFormhash = false
+            var resolvedFormhash = if (explicitFormhash != null) {
+                explicitFormhash
+            } else {
+                val cached = getCachedFormhash(accountUidBefore)
+                if (cached != null) {
+                    usedCachedFormhash = true
+                    cached
+                } else {
+                    when (val fetched = fetchFormhash(accountUidBefore, priority)) {
+                        is FormhashFetchResult.Found -> {
+                            expectedOwnerUid = expectedOwnerUid ?: fetched.ownerUid
+                            fetched.formhash
+                        }
 
-            val response = try {
-                forumHttpClient.postGbkForm(
-                    relativePath = actionPath,
-                    fields = listOf(
-                        FIELD_FORMHASH to resolvedFormhash,
-                        FIELD_USER to normalizedUsername,
-                    ),
+                        is FormhashFetchResult.Failed -> return@withLock fetched.error
+                    }
+                }
+            }
+
+            var response = try {
+                postBlacklistMutation(
+                    actionPath = actionPath,
+                    formhash = resolvedFormhash,
+                    username = normalizedUsername,
                     priority = priority,
-                    requireAuth = true,
                 )
             } catch (e: IOException) {
+                if (e is AuthRequiredException) {
+                    clearCachedFormhash(expectedOwnerUid)
+                }
                 return@withLock mapUserIoException(e)
             }
 
-            val targetUid = when (val ownership = verifySessionOwnership(expectedOwnerUid, response)) {
+            var targetUid = when (val ownership = verifySessionOwnership(expectedOwnerUid, response)) {
                 is SessionOwnership.Valid -> ownership.uid
                 is SessionOwnership.Invalid -> return@withLock ownership.error
             }
 
-            val siteError = response.meta.errorMessage
+            var siteError = response.meta.errorMessage
             if (siteError != null) {
-                return@withLock UserError.SiteError(siteError.trim().ifEmpty { "黑名单操作失败" })
+                val trimmedError = siteError.trim()
+                if (usedCachedFormhash && isFormhashInvalidError(trimmedError)) {
+                    clearCachedFormhash(targetUid)
+                    resolvedFormhash = when (val refetched = fetchFormhash(targetUid, priority)) {
+                        is FormhashFetchResult.Found -> refetched.formhash
+                        is FormhashFetchResult.Failed -> return@withLock refetched.error
+                    }
+                    response = try {
+                        postBlacklistMutation(
+                            actionPath = actionPath,
+                            formhash = resolvedFormhash,
+                            username = normalizedUsername,
+                            priority = priority,
+                        )
+                    } catch (e: IOException) {
+                        if (e is AuthRequiredException) {
+                            clearCachedFormhash(targetUid)
+                        }
+                        return@withLock mapUserIoException(e)
+                    }
+                    targetUid = when (val ownership = verifySessionOwnership(targetUid, response)) {
+                        is SessionOwnership.Valid -> ownership.uid
+                        is SessionOwnership.Invalid -> return@withLock ownership.error
+                    }
+                    siteError = response.meta.errorMessage
+                }
+                if (siteError != null) {
+                    val finalError = siteError.trim()
+                    if (isFormhashInvalidError(finalError)) {
+                        clearCachedFormhash(targetUid)
+                    }
+                    return@withLock UserError.SiteError(finalError.ifEmpty { "黑名单操作失败" })
+                }
             }
 
             val updated = if (isAdd) {
@@ -225,8 +284,8 @@ class DefaultBlacklistRepository internal constructor(
                 blacklistStore.remove(ownerUid = targetUid, username = normalizedUsername)
             }
             synchronized(stateLock) {
-                mutationVersion++
                 if (currentActiveUid() == targetUid) {
+                    bumpAccountVersionLocked(targetUid)
                     publishSnapshotLocked(updated)
                 }
             }
@@ -237,6 +296,21 @@ class DefaultBlacklistRepository internal constructor(
             )
         }
     }
+
+    private suspend fun postBlacklistMutation(
+        actionPath: String,
+        formhash: String,
+        username: String,
+        priority: AccessPriority,
+    ): ForumHtmlResponse = forumHttpClient.postGbkForm(
+        relativePath = actionPath,
+        fields = listOf(
+            FIELD_FORMHASH to formhash,
+            FIELD_USER to username,
+        ),
+        priority = priority,
+        requireAuth = true,
+    )
 
     private suspend fun fetchFormhash(
         accountUidBefore: String?,
@@ -249,6 +323,9 @@ class DefaultBlacklistRepository internal constructor(
                 requireAuth = true,
             )
         } catch (e: IOException) {
+            if (e is AuthRequiredException) {
+                clearCachedFormhash(accountUidBefore)
+            }
             return FormhashFetchResult.Failed(mapUserIoException(e))
         }
 
@@ -264,12 +341,19 @@ class DefaultBlacklistRepository internal constructor(
             )
         }
 
-        val doc = Jsoup.parse(response.html)
-        val formhash = DiscuzCommonParser.parseFormhash(doc)
-            ?: DiscuzCommonParser.parseLogoutFormhash(doc)
-        return if (formhash.isNullOrBlank()) {
+        val formhash = response.meta.formhash?.trim()?.takeIf { it.isNotEmpty() }
+        return if (formhash == null) {
             FormhashFetchResult.Failed(UserError.InvalidPage("无法获取黑名单操作令牌 formhash"))
         } else {
+            synchronized(stateLock) {
+                if (currentActiveUid() == ownerUid) {
+                    cachedFormhash = CachedFormhash(
+                        ownerUid = ownerUid,
+                        sessionEpoch = authRepository.sessionEpoch,
+                        value = formhash,
+                    )
+                }
+            }
             FormhashFetchResult.Found(formhash = formhash, ownerUid = ownerUid)
         }
     }
@@ -305,6 +389,33 @@ class DefaultBlacklistRepository internal constructor(
         return SessionOwnership.Valid(activeUidAfter)
     }
 
+    private fun getCachedFormhash(uid: String?): String? {
+        if (uid == null) return null
+        val epoch = authRepository.sessionEpoch
+        return synchronized(stateLock) {
+            cachedFormhash
+                ?.takeIf { it.ownerUid == uid && it.sessionEpoch == epoch }
+                ?.value
+        }
+    }
+
+    private fun clearCachedFormhash(uid: String?) {
+        synchronized(stateLock) {
+            if (uid == null || cachedFormhash?.ownerUid == uid) {
+                cachedFormhash = null
+            }
+        }
+    }
+
+    private fun accountVersionLocked(uid: String): Long =
+        accountMutationVersions[uid] ?: 0L
+
+    private fun bumpAccountVersionLocked(uid: String): Long {
+        val next = (accountMutationVersions[uid] ?: 0L) + 1L
+        accountMutationVersions[uid] = next
+        return next
+    }
+
     private fun currentActiveUid(): String? =
         authRepository.currentAccount.value?.uid?.trim()?.takeIf { it.isNotEmpty() }
 
@@ -313,6 +424,12 @@ class DefaultBlacklistRepository internal constructor(
         _blockedUsernames.value = snapshot.usernames
         _lastSyncedAtMs.value = snapshot.lastSyncedAtMs
     }
+
+    private data class CachedFormhash(
+        val ownerUid: String,
+        val sessionEpoch: Long,
+        val value: String,
+    )
 
     private sealed interface SessionOwnership {
         data class Valid(val uid: String) : SessionOwnership
@@ -330,5 +447,16 @@ class DefaultBlacklistRepository internal constructor(
         private const val REMOVE_BLACKLIST_PATH = "pm.php?action=delblack"
         private const val FIELD_FORMHASH = "formhash"
         private const val FIELD_USER = "user"
+
+        private val FORMHASH_INVALID_MARKERS = listOf(
+            "来路不正确",
+            "表单验证串",
+            "formhash",
+        )
+
+        private fun isFormhashInvalidError(message: String): Boolean =
+            message.isNotEmpty() && FORMHASH_INVALID_MARKERS.any { marker ->
+                message.contains(marker, ignoreCase = true)
+            }
     }
 }
