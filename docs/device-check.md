@@ -1,13 +1,13 @@
 # 真机操作清单
 
-适用版本：`main` @ `7cf0e70`（含 G1 毛玻璃调参与 debug 调参面板）。M1 与 M4 已于 2026-11-25 验收通过，第一、二节留作记录。
+适用版本：`main` @ `d45b6a2`（含 C4c 三栏外壳、G1 毛玻璃调参与 debug 调参面板）。M1 与 M4 已于 2026-11-25 验收通过，第一、二节留作记录。
 
 ## 0. 取安装包
 
 debug 包在 CI 产物里（私有仓库，需登录 GitHub）：
 
-- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45602043228> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
-- 命令行：`gh run download 45602043228 -R mailwmj/hipda-next -n debug-apk`
+- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45608688264> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
+- 命令行：`gh run download 45608688264 -R mailwmj/hipda-next -n debug-apk`
 
 安装：`adb install -r hipda-debug.apk`。包名 `net.jejer.hipda.next`，可与旧版并存。
 
@@ -20,6 +20,8 @@ debug 包在 CI 产物里（私有仓库，需登录 GitHub）：
 3. 先看默认效果：彩带背景从胶囊下滑过时，透色是否干净、字是否清楚；深色、浅色各看一次。
 4. 拖动滑杆调到满意（模糊、着色透明度亮/暗、饱和度、噪点、描边高光、指示器透明度）。
 5. 点「**复制当前参数**」，把复制出的那一行发给负责人；深色和浅色如果想要不同值，各复制一次。
+
+顺便看三栏外壳（同在「外壳」页）：内屏展开横拿应是左侧图标栏 + 列表 + 帖子三栏；点图标栏顶部按钮展开完整侧栏，按返回或点遮罩关闭；竖拿应是单栏 + 底部胶囊。有不顺手的地方一并告诉负责人。
 
 ## 一、样本导出 + M1 验收（约 10 分钟，已完成）
 
