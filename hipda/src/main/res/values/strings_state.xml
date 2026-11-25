@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="state_error_view_details">查看详情</string>
+    <string name="state_error_hide_details">收起详情</string>
+    <string name="state_error_copy_details">复制详情</string>
+    <string name="state_loading">正在加载…</string>
+    <string name="state_footer_load_failed">加载失败，点击重试</string>
+    <string name="state_footer_no_more">没有更多了</string>
+</resources>
