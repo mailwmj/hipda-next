@@ -1,6 +1,7 @@
 package net.jejer.hipda.data.auth
 
 import android.app.Application
+import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import dagger.Binds
 import dagger.Module
@@ -8,6 +9,8 @@ import dagger.Provides
 import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.Charset
+import java.security.GeneralSecurityException
+import java.security.ProviderException
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -22,9 +25,11 @@ import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
@@ -34,6 +39,9 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
@@ -86,6 +94,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34])
@@ -2010,6 +2019,374 @@ class AuthRepositoryTest {
         assertTrue(provideClient.isAnnotationPresent(Provides::class.java))
         assertTrue(provideClient.isAnnotationPresent(Singleton::class.java))
         assertEquals(ForumHttpClient::class.java, provideClient.returnType)
+    }
+
+    @Test
+    fun initCredentialsObservation_nonCancellationException_logsWithoutCredentialsAndDegradesWithoutCrashing() = runBlocking {
+        // Subcase A: Cold-start upstream combine throws GeneralSecurityException carrying fake sensitive text
+        ShadowLog.clear()
+        val uncaughtCold = CopyOnWriteArrayList<Throwable>()
+        val coldScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, throwable ->
+                uncaughtCold.add(throwable)
+            },
+        )
+        try {
+            val coldStarted = CompletableDeferred<Unit>()
+            val triggerColdError = CompletableDeferred<Unit>()
+            val coldSecretMarker = "passwordMd5=deadbeefcafebabe0011223344556677"
+            val failingColdStore = object : CredentialsStore {
+                override val accounts: Flow<List<SavedAccount>> = flow {
+                    coldStarted.complete(Unit)
+                    triggerColdError.await()
+                    throw GeneralSecurityException("Keystore decryption failed for $coldSecretMarker")
+                }
+                override val activeUid: Flow<String?> = flowOf("10000")
+                override val manuallyLoggedOut: Flow<Boolean> = flowOf(false)
+                override suspend fun upsert(account: SavedAccount) = Unit
+                override suspend fun setActive(uid: String) = Unit
+                override suspend fun markManualLogout() = Unit
+                override suspend fun remove(uid: String) = Unit
+            }
+
+            val primaryClient = createPrimaryClient()
+            val recoveryClient = createRecoveryClient(primaryClient)
+            val gateway = SiteAccessGateway(
+                client = primaryClient,
+                detector = ChallengeDetector(),
+                solver = ChallengeSolver { SolveResult.Cancelled },
+                clock = { nowMs.get() },
+                gatewayScope = scope,
+                solveTimeout = 5.seconds,
+            )
+            val recoveryGateway = SiteAccessGateway(
+                client = recoveryClient,
+                detector = ChallengeDetector(),
+                solver = ChallengeSolver { SolveResult.Cancelled },
+                clock = { nowMs.get() },
+                gatewayScope = scope,
+                solveTimeout = 5.seconds,
+            )
+
+            val coldRepo = DefaultAuthRepository(
+                credentialsStore = failingColdStore,
+                siteCookieStore = cookieStore,
+                settingsRepository = settingsRepository,
+                siteAccessGateway = gateway,
+                recoveryGateway = recoveryGateway,
+                clock = { nowMs.get() },
+                scope = coldScope,
+                webViewCookieAccess = webViewCookieAccess,
+                cookieDispatcher = cookieDispatcher,
+            )
+
+            withTimeout(5.seconds) { coldStarted.await() }
+            val coldInitJob = coldScope.coroutineContext[Job]!!.children.single()
+            val coldCompletedCause = CompletableDeferred<Throwable?>()
+            coldInitJob.invokeOnCompletion { cause -> coldCompletedCause.complete(cause) }
+
+            triggerColdError.complete(Unit)
+            val coldCause = withTimeout(5.seconds) { coldCompletedCause.await() }
+            coldInitJob.join()
+
+            assertTrue("Cold-start credentials error must never escape to CoroutineExceptionHandler: $uncaughtCold", uncaughtCold.isEmpty())
+            assertNull("Init collector should degrade cleanly instead of crashing with $coldCause", coldCause)
+            assertFalse(coldInitJob.isCancelled)
+            assertNull(coldRepo.currentAccount.value)
+            assertTrue(coldRepo.savedAccounts.value.isEmpty())
+            assertEquals(AuthState.SignedOut, coldRepo.authState.value)
+
+            val coldLogs = ShadowLog.getLogsForTag("DefaultAuthRepository")
+            assertTrue("Expected WARN log on cold-start credentials failure, got $coldLogs", coldLogs.any { it.type == Log.WARN })
+            coldLogs.forEach { entry ->
+                assertFalse("Log message must never leak credential payload: ${entry.msg}", entry.msg.contains(coldSecretMarker))
+                assertNull("Log must not attach raw throwable carrying credential payload", entry.throwable)
+            }
+        } finally {
+            coldScope.cancel()
+        }
+
+        // Subcase B: Mid-session failure inside readPersistentSnapshotFromStore() after hydration actively degrades to SignedOut
+        ShadowLog.clear()
+        val uncaughtMid = CopyOnWriteArrayList<Throwable>()
+        val midScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, throwable ->
+                uncaughtMid.add(throwable)
+            },
+        )
+        try {
+            val savedAccount = SavedAccount(
+                uid = "10000",
+                username = "HiUser",
+                passwordMd5 = computeLegacyPasswordMd5("secret_pw"),
+                securityQuestionId = 1,
+                securityAnswer = "secret_answer_xyz",
+                lastLoginAt = 1_000L,
+            )
+            val triggerSecondEmit = CompletableDeferred<Unit>()
+            val accountsCollectCount = AtomicInteger(0)
+            val midSecretMarker = savedAccount.passwordMd5
+            val midFailingStore = object : CredentialsStore {
+                override val accounts: Flow<List<SavedAccount>> = flow {
+                    val call = accountsCollectCount.incrementAndGet()
+                    when (call) {
+                        1 -> {
+                            // Combine subscription: emit initial value, then emit again after hydration to trigger failing read
+                            emit(listOf(savedAccount))
+                            triggerSecondEmit.await()
+                            emit(listOf(savedAccount))
+                        }
+
+                        2 -> {
+                            // First readPersistentSnapshotFromStore() succeeds so repo becomes SignedIn
+                            emit(listOf(savedAccount))
+                        }
+
+                        else -> {
+                            // Second readPersistentSnapshotFromStore() throws ProviderException (Keystore invalidated)
+                            throw ProviderException("Keystore invalidated while reading $midSecretMarker / ${savedAccount.securityAnswer}")
+                        }
+                    }
+                }
+                override val activeUid: Flow<String?> = flowOf(savedAccount.uid)
+                override val manuallyLoggedOut: Flow<Boolean> = flowOf(false)
+                override suspend fun upsert(account: SavedAccount) = Unit
+                override suspend fun setActive(uid: String) = Unit
+                override suspend fun markManualLogout() = Unit
+                override suspend fun remove(uid: String) = Unit
+            }
+
+            val primaryClient = createPrimaryClient()
+            val recoveryClient = createRecoveryClient(primaryClient)
+            val gateway = SiteAccessGateway(
+                client = primaryClient,
+                detector = ChallengeDetector(),
+                solver = ChallengeSolver { SolveResult.Cancelled },
+                clock = { nowMs.get() },
+                gatewayScope = scope,
+                solveTimeout = 5.seconds,
+            )
+            val recoveryGateway = SiteAccessGateway(
+                client = recoveryClient,
+                detector = ChallengeDetector(),
+                solver = ChallengeSolver { SolveResult.Cancelled },
+                clock = { nowMs.get() },
+                gatewayScope = scope,
+                solveTimeout = 5.seconds,
+            )
+
+            val midRepo = DefaultAuthRepository(
+                credentialsStore = midFailingStore,
+                siteCookieStore = cookieStore,
+                settingsRepository = settingsRepository,
+                siteAccessGateway = gateway,
+                recoveryGateway = recoveryGateway,
+                clock = { nowMs.get() },
+                scope = midScope,
+                webViewCookieAccess = webViewCookieAccess,
+                cookieDispatcher = cookieDispatcher,
+            )
+
+            withTimeout(5.seconds) {
+                midRepo.currentAccount.first { it?.uid == savedAccount.uid }
+            }
+            assertEquals(AuthState.SignedIn(savedAccount), midRepo.authState.value)
+            assertEquals(listOf(savedAccount), midRepo.savedAccounts.value)
+
+            val midInitJob = midScope.coroutineContext[Job]!!.children.single()
+            val midCompletedCause = CompletableDeferred<Throwable?>()
+            midInitJob.invokeOnCompletion { cause -> midCompletedCause.complete(cause) }
+
+            triggerSecondEmit.complete(Unit)
+            val midCause = withTimeout(5.seconds) { midCompletedCause.await() }
+            midInitJob.join()
+
+            assertTrue("Mid-session credentials error must never escape to CoroutineExceptionHandler: $uncaughtMid", uncaughtMid.isEmpty())
+            assertNull("Init collector should degrade cleanly instead of crashing with $midCause", midCause)
+            assertFalse(midInitJob.isCancelled)
+            assertNull("Hydrated currentAccount must degrade to null", midRepo.currentAccount.value)
+            assertTrue("Hydrated savedAccounts must degrade to empty", midRepo.savedAccounts.value.isEmpty())
+            assertEquals("Hydrated authState must degrade to SignedOut", AuthState.SignedOut, midRepo.authState.value)
+
+            val midLogs = ShadowLog.getLogsForTag("DefaultAuthRepository")
+            assertTrue("Expected WARN log on mid-session credentials failure, got $midLogs", midLogs.any { it.type == Log.WARN })
+            midLogs.forEach { entry ->
+                assertFalse("Log must not contain passwordMd5: ${entry.msg}", entry.msg.contains(midSecretMarker))
+                assertFalse("Log must not contain securityAnswer: ${entry.msg}", entry.msg.contains(savedAccount.securityAnswer))
+                assertFalse("Log must not contain username: ${entry.msg}", entry.msg.contains(savedAccount.username))
+                assertNull("Log must not attach raw throwable carrying credentials", entry.throwable)
+            }
+        } finally {
+            midScope.cancel()
+        }
+    }
+
+    @Test
+    fun initCredentialsObservation_cancellationException_propagatesWithoutDegradingOrLogging() = runBlocking {
+        val savedAccount = SavedAccount(
+            uid = "10000",
+            username = "HiUser",
+            passwordMd5 = computeLegacyPasswordMd5("secret_pw"),
+            lastLoginAt = 1_000L,
+        )
+
+        // Case 1: Upstream CancellationException must propagate out of .catch (never swallowed into degraded SignedOut)
+        ShadowLog.clear()
+        val uncaughtUpstream = CopyOnWriteArrayList<Throwable>()
+        val upstreamScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, throwable ->
+                uncaughtUpstream.add(throwable)
+            },
+        )
+        try {
+            val triggerUpstreamCancel = CompletableDeferred<Unit>()
+            val collectCount = AtomicInteger(0)
+            val cancellingStore = object : CredentialsStore {
+                override val accounts: Flow<List<SavedAccount>> = flow {
+                    if (collectCount.incrementAndGet() == 1) {
+                        emit(listOf(savedAccount))
+                        triggerUpstreamCancel.await()
+                        throw CancellationException("Upstream credentials flow cancelled")
+                    } else {
+                        emit(listOf(savedAccount))
+                    }
+                }
+                override val activeUid: Flow<String?> = flowOf(savedAccount.uid)
+                override val manuallyLoggedOut: Flow<Boolean> = flowOf(false)
+                override suspend fun upsert(account: SavedAccount) = Unit
+                override suspend fun setActive(uid: String) = Unit
+                override suspend fun markManualLogout() = Unit
+                override suspend fun remove(uid: String) = Unit
+            }
+
+            val primaryClient = createPrimaryClient()
+            val recoveryClient = createRecoveryClient(primaryClient)
+            val gateway = SiteAccessGateway(
+                client = primaryClient,
+                detector = ChallengeDetector(),
+                solver = ChallengeSolver { SolveResult.Cancelled },
+                clock = { nowMs.get() },
+                gatewayScope = scope,
+                solveTimeout = 5.seconds,
+            )
+            val recoveryGateway = SiteAccessGateway(
+                client = recoveryClient,
+                detector = ChallengeDetector(),
+                solver = ChallengeSolver { SolveResult.Cancelled },
+                clock = { nowMs.get() },
+                gatewayScope = scope,
+                solveTimeout = 5.seconds,
+            )
+
+            val repo = DefaultAuthRepository(
+                credentialsStore = cancellingStore,
+                siteCookieStore = cookieStore,
+                settingsRepository = settingsRepository,
+                siteAccessGateway = gateway,
+                recoveryGateway = recoveryGateway,
+                clock = { nowMs.get() },
+                scope = upstreamScope,
+                webViewCookieAccess = webViewCookieAccess,
+                cookieDispatcher = cookieDispatcher,
+            )
+
+            withTimeout(5.seconds) {
+                repo.currentAccount.first { it?.uid == savedAccount.uid }
+            }
+            val initJob = upstreamScope.coroutineContext[Job]!!.children.single()
+            val completionCause = CompletableDeferred<Throwable?>()
+            initJob.invokeOnCompletion { cause -> completionCause.complete(cause) }
+
+            triggerUpstreamCancel.complete(Unit)
+            val cause = withTimeout(5.seconds) { completionCause.await() }
+            initJob.join()
+
+            assertTrue("Init collector job must be cancelled when CancellationException is thrown", initJob.isCancelled)
+            assertTrue("Completion cause must be CancellationException, got $cause", cause is CancellationException)
+            assertTrue("CancellationException must not trigger CoroutineExceptionHandler", uncaughtUpstream.isEmpty())
+            assertEquals("Cancellation must NOT degrade currentAccount", savedAccount, repo.currentAccount.value)
+            assertEquals("Cancellation must NOT clear savedAccounts", listOf(savedAccount), repo.savedAccounts.value)
+            assertEquals("Cancellation must NOT degrade authState", AuthState.SignedIn(savedAccount), repo.authState.value)
+            assertTrue("Cancellation must NOT emit failure warning logs", ShadowLog.getLogsForTag("DefaultAuthRepository").isEmpty())
+        } finally {
+            upstreamScope.cancel()
+        }
+
+        // Case 2: Cancelling the repository scope propagates CancellationException cleanly without logging or degrading
+        ShadowLog.clear()
+        val uncaughtScopeCancel = CopyOnWriteArrayList<Throwable>()
+        val shutdownScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, throwable ->
+                uncaughtScopeCancel.add(throwable)
+            },
+        )
+        val neverComplete = CompletableDeferred<Unit>()
+        val collectCount2 = AtomicInteger(0)
+        val suspendingStore = object : CredentialsStore {
+            override val accounts: Flow<List<SavedAccount>> = flow {
+                if (collectCount2.incrementAndGet() == 1) {
+                    emit(listOf(savedAccount))
+                    neverComplete.await()
+                } else {
+                    emit(listOf(savedAccount))
+                }
+            }
+            override val activeUid: Flow<String?> = flowOf(savedAccount.uid)
+            override val manuallyLoggedOut: Flow<Boolean> = flowOf(false)
+            override suspend fun upsert(account: SavedAccount) = Unit
+            override suspend fun setActive(uid: String) = Unit
+            override suspend fun markManualLogout() = Unit
+            override suspend fun remove(uid: String) = Unit
+        }
+
+        val primaryClient = createPrimaryClient()
+        val recoveryClient = createRecoveryClient(primaryClient)
+        val gateway = SiteAccessGateway(
+            client = primaryClient,
+            detector = ChallengeDetector(),
+            solver = ChallengeSolver { SolveResult.Cancelled },
+            clock = { nowMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+        val recoveryGateway = SiteAccessGateway(
+            client = recoveryClient,
+            detector = ChallengeDetector(),
+            solver = ChallengeSolver { SolveResult.Cancelled },
+            clock = { nowMs.get() },
+            gatewayScope = scope,
+            solveTimeout = 5.seconds,
+        )
+
+        val repo2 = DefaultAuthRepository(
+            credentialsStore = suspendingStore,
+            siteCookieStore = cookieStore,
+            settingsRepository = settingsRepository,
+            siteAccessGateway = gateway,
+            recoveryGateway = recoveryGateway,
+            clock = { nowMs.get() },
+            scope = shutdownScope,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
+        )
+
+        withTimeout(5.seconds) {
+            repo2.currentAccount.first { it?.uid == savedAccount.uid }
+        }
+        val initJob2 = shutdownScope.coroutineContext[Job]!!.children.single()
+        val completionCause2 = CompletableDeferred<Throwable?>()
+        initJob2.invokeOnCompletion { cause -> completionCause2.complete(cause) }
+
+        shutdownScope.cancel(CancellationException("Scope shutdown"))
+        val cause2 = withTimeout(5.seconds) { completionCause2.await() }
+        initJob2.join()
+
+        assertTrue("Init collector job must be cancelled on scope shutdown", initJob2.isCancelled)
+        assertTrue("Completion cause must be CancellationException, got $cause2", cause2 is CancellationException)
+        assertTrue(uncaughtScopeCancel.isEmpty())
+        assertEquals(savedAccount, repo2.currentAccount.value)
+        assertEquals(AuthState.SignedIn(savedAccount), repo2.authState.value)
+        assertTrue(ShadowLog.getLogsForTag("DefaultAuthRepository").isEmpty())
     }
 
     companion object {
