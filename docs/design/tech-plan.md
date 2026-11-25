@@ -1,9 +1,9 @@
-# hipda-next 现代化技术方案（草案 v0.1）
+# hipda-next 现代化技术方案（v0.3）
 
-> 状态：v0.3，已按 Carbon 两轮评审（T1–T17，全部采纳）修订。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查（P1 的 32 个版本号都存在，而且都是稳定版；需要改的几处已在本文改正），最终以 M0-1 的实测为准。决策记录见 `docs/agents/decisions.md`。
+> 状态：v0.3，已按 Carbon 两轮评审（T1–T17，全部采纳）及 2026-11-25 大屏三栏定稿（D-3pane）同步修订。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查（P1 的 32 个版本号都存在，而且都是稳定版；需要改的几处已在本文改正），最终以 M0-1 的实测为准。决策记录见 `docs/agents/decisions.md`。
 
 ## 1. 目标
-- 用户看到的结果：一个现代、流畅的 HiPDA 客户端。手机、折叠屏的外屏和内屏、平板、分屏窄窗口、深色和浅色模式下都好用。导航是毛玻璃材质；展开后是列表和详情双栏；动效细腻，有交代。
+- 用户看到的结果：一个现代、流畅的 HiPDA 客户端。手机、折叠屏的外屏和内屏、平板、分屏窄窗口、深色和浅色模式下都好用。窄屏底部导航和帖子详情工具条是毛玻璃材质；大屏与展开后的折叠屏采用常驻左侧栏 + 列表 + 详情三栏布局；动效细腻，有交代。
 - 功能范围与现有应用一致，不扩张。只删除已经失效的功能（例如检查更新），以及可以由系统自动判断的设置项。
 - 不兼容老版本和老用户（用户决定）：不做数据迁移，不要求沿用原签名，不做覆盖安装测试。
 - 包名改为 `net.jejer.hipda.next`（用户决定），可以和旧版同时安装、对照使用。在 M0-2 中修改，连同 `shortcuts.xml`、provider authority 等写死包名的地方。
@@ -31,7 +31,7 @@
 | 构建 | AGP 9.5.2、Gradle 9.9.2（截至 2026-11-24 的最新稳定版，F2 已核实）；Kotlin DSL 加 version catalog；JDK 17 及以上。AGP 9 已内置 Kotlin，Android 模块不得再声明 `org.jetbrains.kotlin.android` 插件；注解处理统一用 KSP，不用 kapt |
 | SDK | minSdk 26（Compose 1.13 和同批 Jetpack 库要求至少 24）；compileSdk 37.1（Compose BOM 2026.11.01 要求 minor SDK 37.1）；targetSdk 在 M0–M6 保持 30，M7 删除旧界面后升到 36（T1：提前升级会让旧页面钻进系统栏、附件下载失效、通知被静默丢弃） |
 | 语言 | Kotlin；旧 Java 代码逐步删除，不做逐文件翻译 |
-| UI | Jetpack Compose（BOM）、Material 3（MotionScheme）、Material 3 Adaptive（`adaptive-layout` 里的 ListDetailPaneScaffold；导航外壳自己写，因为要做毛玻璃胶囊和中等宽度的双栏，不直接用 `material3-adaptive-navigation-suite`）、androidx.window |
+| UI | Jetpack Compose（BOM）、Material 3（MotionScheme）、Material 3 Adaptive（`adaptive-layout`）、androidx.window。导航外壳采用自研 `HiAdaptiveShell` + `HiNavigationSidebar`（因需支持 `< 600dp` 毛玻璃底部胶囊与 `≥ 600dp` 含关注版块列表的可收起侧栏，不直接用 `material3-adaptive-navigation-suite`）；内部与中右内容双栏优先复用 Compose / Material 3 现成组件（如 `Column`/`LazyColumn` + `ModalNavigationDrawer`/`ModalWideNavigationRail`、`Row` + `AnchoredDraggable` 或自定义 `PaneScaffoldDirective` 的 `ListDetailPaneScaffold`），确需自写 `Layout`/`Modifier.Node` 时须说明理由 |
 | 导航 | Navigation 3 1.2.2 加 adaptive-navigation3（F2 已确认是稳定版） |
 | 依赖注入 | Hilt（KSP） |
 | 异步 | 协程、StateFlow、ViewModel、WorkManager（通知轮询） |
@@ -65,12 +65,16 @@
 - 测试：用 MockWebServer 模拟验证页，覆盖检测、排队、冷却、重试和 Cookie 同步。
 
 ## 7. 大屏与折叠屏
-- 宽度断点用 Material 窗口尺寸类：紧凑（小于 600dp）、中等（600–839dp）、展开（840dp 及以上）。
-- 窗口高度小于 480dp（手机横屏）时，一律单栏加底部胶囊导航（T12）。
-- 何时分双栏由系统根据可用宽度决定，不提供开关。Material 默认的 `calculatePaneScaffoldDirective` 在中等宽度（600–839dp）只给单栏；我们用自定义的 `PaneScaffoldDirective`：宽度够放下“列表 300dp 加详情 380dp”时就分双栏（规则见产品设计 4.1）。
-- 铰链：默认的 `HingePolicy.AvoidSeparating` 只在铰链把屏幕物理分开时避让，内屏展平时不避让，这正是我们想要的。
-- 状态保持：选中的帖子、阅读位置（页码、楼层、偏移量）、正在输入的回复内容，都存在 SavedStateHandle 或数据库里。折叠、展开、旋转、进程被系统回收后都能恢复。
-- 详细的布局和动效规范见产品设计方案（`docs/design/product-design.md`）。
+- 统一按 **高度 → 竖向物理铰链 → 窗口宽度（`600 / 680 / 840dp`）** 通用分档，不按单机型特判（详见产品设计 §4.1）：
+  - 高度 `< 480dp`（手机横屏）：一律单栏 + 底部紧凑胶囊（T12）。
+  - 竖向物理铰链分隔（`isSeparating == true`）：满足 `leftW ≥ 280dp && rightW ≥ 360dp` 时强制启用铰链双栏（对齐 `hingeBounds`，列表侧居中紧凑胶囊，不启三栏）；任一侧不足时退回单栏铺满窗口，紧凑胶囊居中于铰链外较宽一侧（该侧 `< 280dp` 则整窗居中）。内屏完全展平时（`isSeparating == false`）不避让折痕（对齐 `HingePolicy.AvoidSeparating` 语义）。
+  - 宽度 `< 600dp`：单栏 + 底部悬浮毛玻璃胶囊。
+  - 宽度 `600–679dp`：2 栏（左侧 `64dp` 常驻图标轨 + 单栏内容，点击展开按钮或 `我的` 图标以 `240dp` 浮层展开完整文字侧栏）。
+  - 宽度 `680–839dp`：紧凑三栏（左 `64dp` 图标轨 + 中栏 `clamp(0.40×(W−64), 256, 380)` + 右栏 `≥ 360dp`，同上可 `240dp` 浮层展开）。
+  - 宽度 `≥ 840dp`：完整三栏（左栏常驻展开 `clamp(0.20×W, 176, 220)`，可主动原地收起为 `64dp` 并按方向记忆 + 中栏 + 右栏 `≥ 360dp`）。
+- 何时单栏、图标轨单栏、紧凑三栏或完整三栏完全由窗口尺寸与铰链状态决定，不提供手动强制开关。不使用 Material 默认在 `600–839dp` 退回单栏及 `1200dp` 才开三栏的策略，由 `calculateShellPaneLayout` 统一按整数 `dp` 计算（先 `L` → `S = W − L` → `M` → `R = S − M`）。
+- 状态保持：选中的版块/入口、帖子、阅读位置（页码、楼层、偏移量）、正在输入的回复内容、中右分隔线吸附偏好（`paneSplitPortrait/Landscape`）与左栏收起偏好（`sidebarCollapsedPortrait/Landscape`），均存在 SavedStateHandle、Room 或 DataStore 里，通过单一状态源 + `movableContentOf` 在折叠、展开、半折、旋转与进程回收后无损恢复。
+- 详细的布局、无障碍和动效规范见产品设计方案（`docs/design/product-design.md`）。
 
 ## 8. 分阶段与验收
 | 阶段 | 结果 | 证据 |
@@ -79,14 +83,14 @@
 | M1 验证通道 | 新的网络层能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测、排队、冷却、重试、逐跳 Cookie、跨域剥离、POST 改 GET）；B1b 完成后，用户在 debug 工具页登录并抓到版块页的截图 |
 | M2 安全网 | 样本导出（脱敏）→ 现有解析器的样本回归测试 → 分批抽到 `:core-parser` | 测试报告；故意改坏一个解析器，测试会失败；脱敏扫描测试 |
 | M3 数据层 | Kotlin Repository、Hilt、Room 和 DataStore（全新结构，不迁移旧数据）、提醒轮询 | 单元测试 |
-| M4 外壳 | 预览入口里的主题、毛玻璃导航、自适应外壳、动效系统 | Roborazzi 截图；动效逐帧测试；“减少动态效果”测试；重组次数断言 |
-| M5 阅读核心 | 版块、帖子列表、帖子详情（Compose 原生正文）、双栏；折叠和展开时状态保持 | 截图测试；状态恢复测试；重组次数断言 |
+| M4 外壳 | 预览入口里的主题、毛玻璃导航、三栏自适应外壳与左侧栏、动效系统 | Roborazzi 截图；动效逐帧测试；“减少动态效果”测试；重组次数断言 |
+| M5 阅读核心 | 版块、帖子列表、帖子详情（Compose 原生正文）、三栏与铰链双栏；折叠、半折和展开时状态保持 | 截图测试；状态恢复测试；重组次数断言 |
 | M6 其余页面 | 编辑器、表情、短消息、提醒、搜索、我的、设置、用户资料、看图、登录、外部链接 | 每页的截图测试和交互测试 |
 | M7 切换和清理 | 切换启动入口；删除旧代码和旧依赖；targetSdk 36（通知权限、MediaStore 下载、全面屏）；收紧 R8 规则；Baseline Profile | 依赖清单；全新安装后的冒烟测试；真机上的帧时间 |
 
 - **新的存储结构（T4 中仍然适用的部分）**：备份规则排除和 Keystore 绑定的加密文件和 Tink 密钥；草稿用业务键（`reply:<tid>`、`new:<fid>`、`edit:<pid>`，见产品设计 §7.2）。
 - **性能验证的分工（T9）**：日常 CI 用重组次数断言守住性能不退化；Roborazzi 只验证毛玻璃的降级分支和对比度；真实的模糊效果、API 31 的性能、P90 帧时间和卡顿率，在 M4、M5、M7 的阶段验收时用真机测（没有真机时用模拟器的硬件渲染，并注明数据不可靠）。
-- **截图矩阵分级（T9）**：外壳和双栏的核心页面跑 4 种宽度 × 深浅色；其他页面的主状态跑 3 种宽度；空、错、加载状态跑 2 种宽度。
+- **截图矩阵分级（T9）**：外壳和多栏核心页面跑 6 种窗口尺寸 × 深浅色（另加 5 种特殊窗口，见产品设计 §10.1）；其他页面的主状态跑 3 种宽度（`411`、`749`、`1280dp`）；空、错、加载状态跑 2 种宽度（`411`、`933dp`）。
 - **release 构建（T10）**：CI 每次都编 release；M7 清理 `proguard-rules.txt` 中过宽的 `-keep` 规则。
 
 ## 9. 风险
