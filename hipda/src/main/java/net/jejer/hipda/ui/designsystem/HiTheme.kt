@@ -20,6 +20,8 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
+import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassStyle
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.LocalHiMotionDurationScale
 import net.jejer.hipda.ui.designsystem.motion.ProvideHiMotionDurationScale
@@ -76,6 +78,11 @@ object HiTheme {
 
     val shapes: HiShapeTokens = HiShapeTokens
 
+    val glass: HiGlassStyle
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalHiGlassStyle.current
+
     val motionDurationScale: MotionDurationScale
         @Composable
         @ReadOnlyComposable
@@ -104,6 +111,7 @@ fun HiTheme(
     seed: HiThemeSeed = HiThemeSeed.Wallpaper,
     fontSizeStep: HiFontSizeStep = HiFontSizeStep.DEFAULT,
     lineHeightPreset: HiLineHeightPreset = HiLineHeightPreset.DEFAULT,
+    glassStyle: HiGlassStyle = HiGlassStyle.Navigation,
     motionDurationScale: MotionDurationScale? = null,
     content: @Composable () -> Unit,
 ) {
@@ -148,6 +156,7 @@ fun HiTheme(
         CompositionLocalProvider(
             LocalHiTypographyTokens provides typographyTokens,
             LocalHiThemeState provides themeState,
+            LocalHiGlassStyle provides glassStyle,
         ) {
             MaterialTheme(
                 colorScheme = colorScheme,

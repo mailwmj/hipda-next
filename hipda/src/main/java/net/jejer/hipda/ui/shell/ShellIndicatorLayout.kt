@@ -62,13 +62,17 @@ internal fun ShellIndicatorLayout(
     val reducedMotion = HiTheme.isReducedMotion
     val selectedIndex = ShellDestination.entries.indexOf(selected)
 
+    val indicatorColor = MaterialTheme.colorScheme.primary.copy(
+        alpha = HiTheme.glass.indicatorAlpha.coerceIn(0f, 1f),
+    )
+
     Layout(
         content = {
             Box(
                 modifier = Modifier
                     .testTag(HiShellTestTags.SelectionIndicator)
                     .clip(HiShapeTokens.Full)
-                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                    .background(indicatorColor),
             )
             itemsContent()
         },
@@ -147,8 +151,8 @@ internal fun ShellNavItem(
 ) {
     val cs = MaterialTheme.colorScheme
     val label = stringResource(destination.labelRes)
-    val iconColor = if (selected) cs.onSecondaryContainer else cs.onSurfaceVariant
-    val labelColor = if (selected) cs.onSecondaryContainer else cs.onSurfaceVariant
+    val iconColor = if (selected) cs.primary else cs.onSurfaceVariant
+    val labelColor = if (selected) cs.primary else cs.onSurfaceVariant
     val onClick = remember(destination, onSelect) { { onSelect(destination) } }
     val content: @Composable () -> Unit = {
         Icon(

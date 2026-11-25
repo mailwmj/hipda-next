@@ -49,14 +49,14 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
-import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
+import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 
-/** 内容槽位可读取的当前自适应分栏布局上下文（供 `PreviewActivity` 与 `E1`/`E3`/`E8–E12` 消费）。 */
+/** 内容槽位可读取的当前自适应分栏布局上下文（供多栏容器与业务页 `E1`/`E3`/`E8–E12` 消费）。 */
 @Immutable
 interface ShellContentScope {
     val paneLayout: ShellPaneLayout
@@ -178,7 +178,8 @@ fun HiAdaptiveShell(
     var measuredPillHeightPx by remember(mode) { mutableIntStateOf(0) }
     val navBarsBottomPx = WindowInsets.navigationBars.getBottom(density)
     val bottomGapPx = with(density) { HiNavigationPillBottomGap.roundToPx() }
-    val shadowClearancePx = with(density) { HiGlassTokens.FloatingShadowElevation.roundToPx() }
+    val floatingShadowElevation = HiTheme.glass.floatingShadowElevation
+    val shadowClearancePx = with(density) { floatingShadowElevation.roundToPx() }
     val minPillHeightPx = with(density) {
         val minHeight = if (mode == ShellNavigationMode.CompactPill) {
             HiNavigationPillCompactMinHeight

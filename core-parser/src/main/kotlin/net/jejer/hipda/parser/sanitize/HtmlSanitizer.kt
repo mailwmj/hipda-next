@@ -34,6 +34,9 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_USERNAME
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.POST_AUTHOR_LINK
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.POST_CONTAINER
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.POST_SIGNATURE
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SCRIPT_UID_ASSIGN_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SCRIPT_UID_CALL_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SCRIPT_UID_PROP_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_AUTHOR_CITE
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_AUTHOR_LINK
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_AVATAR_IMG
@@ -45,6 +48,8 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_POST_FORM
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_SUMMARY_IN_DOCUMENT
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_TITLE_PEER_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.STATS_LABEL_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.TEXT_UID_LABEL_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.UID_INPUT_NAMES
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.UID_QUERY_PARAM_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.UMENU_LINKS
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.UMENU_USER_LINK
@@ -53,10 +58,12 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.URL_USERNAME_PARAM_REGE
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.USERNAME_QUERY_PARAM_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.avatarPathToUid
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.buildSmsPlaceholder
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.buildStandaloneUidRegex
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.collectTextNodes
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.firstMatch
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.forEachNode
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isAllZeroMask
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isReplaceableUid
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSafeEmail
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSafeIpv4
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSafeIpv6
@@ -89,20 +96,12 @@ import java.util.IdentityHashMap
 object HtmlSanitizer {
 
     private val URL_ATTRIBUTES = setOf("href", "src", "action", "file", "poster", "data-src", "background", "cite")
-    private val UID_INPUT_NAMES = setOf("uid", "touid", "srchuid", "authorid")
     private val USERNAME_INPUT_NAMES = setOf("author", "username", "srchuname", "msgto", "user", "noticeauthor")
     private val FORUM_ACTION_URL_KEYWORDS = listOf(
         "post.php", "logging.php", "forumdisplay.php", "viewthread.php",
         "memcp.php", "notice.php", "pm.php", "misc.php", "search.php", "my.php",
     )
 
-    private val SCRIPT_UID_ASSIGN_REGEX =
-        Regex("""(?i)((?<![.\w$])(?:[a-z_]*uid|author_?id|user_?id)\s*=\s*)(['"]?)(\d+)\2(?![0-9A-Za-z_])""")
-    private val SCRIPT_UID_PROP_REGEX =
-        Regex("""(?i)((?<![.\w$])(['"]?)(?:[a-z_]*uid|author_?id|user_?id)\2\s*:\s*)(['"]?)(\d+)\3(?![0-9A-Za-z_])""")
-    private val SCRIPT_UID_CALL_REGEX =
-        Regex("""(?i)(\b(?:deletepm|showuser|sendpm)\s*\(\s*)(['"]?)(\d+)\2(?![0-9A-Za-z_])""")
-    private val TEXT_UID_LABEL_REGEX = Regex("""(?i)(\bUID\s*[:：=]?\s*)(\d+)(?!\d)""")
     private val SCRIPT_USERNAME_ASSIGN_REGEX =
         Regex("""(?i)((?<![.\w$])(?:currentUser|discuz_user|username|user_?name|author)\s*=\s*)(['"])([^'"]+)\2""")
     private val SCRIPT_USERNAME_PROP_REGEX =
@@ -152,7 +151,7 @@ object HtmlSanitizer {
             selfNames.forEach { put(it.lowercase(), PLACEHOLDER_USERNAME) }
             peerNames.forEach { putIfAbsent(it.lowercase(), PLACEHOLDER_PEER_USERNAME) }
         }
-        val ctx = buildReplaceContext(uidMap, nameMap)
+        val ctx = buildReplaceContext(selfUids, uidMap, nameMap)
 
         // 先按上下文脱敏结构化私有区域，记录已替换的 TextNode 避免后续重复改写
         val skippedTextNodes = Collections.newSetFromMap(IdentityHashMap<TextNode, Boolean>())
@@ -197,6 +196,13 @@ object HtmlSanitizer {
         for (link in doc.select(UMENU_USER_LINK)) {
             extractUidParam(link.attr("href"))?.takeIf(::isReplaceableUid)?.let(uids::add)
             link.text().trim().takeIf { it.isNotEmpty() && !it.equals(PLACEHOLDER_USERNAME, ignoreCase = true) }?.let(names::add)
+        }
+        doc.forEachNode { node ->
+            if (node is DataNode) {
+                for (m in DISCUZ_UID_REGEX.findAll(node.wholeData)) {
+                    m.groupValues[4].trim().takeIf(::isReplaceableUid)?.let(uids::add)
+                }
+            }
         }
         return uids to names
     }
@@ -347,7 +353,10 @@ object HtmlSanitizer {
             val author = match.groupValues[2].trim()
             val replacement = ctx.nameMap[author.lowercase()]
             if (replacement != null) {
-                replaceElementTextPreservingChildren(link, "${match.groupValues[1]}$replacement")
+                replaceElementTextPreservingChildren(link, "${replaceStandaloneSelfUids(match.groupValues[1], ctx)}$replacement")
+            } else {
+                val scrubbed = replaceStandaloneSelfUids(link.text(), ctx)
+                if (scrubbed != link.text()) replaceElementTextPreservingChildren(link, scrubbed)
             }
             skippedTextNodes.addAll(link.collectTextNodes())
         }
@@ -358,12 +367,12 @@ object HtmlSanitizer {
         if (whole.isBlank()) return
         val parent = node.parent()
         if (parent != null && isForumActionLink(parent)) {
-            val updated = sanitizeTokenAndPersonalInfo(whole)
+            val updated = sanitizeProtectedText(whole, ctx)
             if (updated != whole) node.text(updated)
             return
         }
         if (STATS_LABEL_REGEX.matches(whole.trim())) {
-            val updated = sanitizeTokenAndPersonalInfo(whole)
+            val updated = sanitizeProtectedText(whole, ctx)
             if (updated != whole) node.text(updated)
             return
         }
@@ -375,6 +384,16 @@ object HtmlSanitizer {
             transformText(whole, ctx, inScript = false)
         }
         if (updated != whole) node.text(updated)
+    }
+
+    private fun sanitizeProtectedText(input: String, ctx: ReplaceContext): String {
+        var out = sanitizeTokenAndPersonalInfo(input)
+        if (ctx.uidMap.isNotEmpty()) {
+            out = TEXT_UID_LABEL_REGEX.replace(out) { m ->
+                ctx.uidMap[m.groupValues[2]]?.let { "${m.groupValues[1]}$it" } ?: m.value
+            }
+        }
+        return replaceStandaloneSelfUids(out, ctx)
     }
 
     private fun transformPreservingMatches(input: String, protectedRegex: Regex, transform: (String) -> String): String =
@@ -414,9 +433,11 @@ object HtmlSanitizer {
             val updated = when {
                 (sensitiveInput && key == "value") || (sensitiveMeta && key == "content") -> maskSameLength(value)
                 isSensitiveFieldName(key) || key.endsWith("-formhash") -> maskSameLength(value)
-                tag == "input" && key == "value" && fieldName in UID_INPUT_NAMES -> ctx.uidMap[value.trim()] ?: value
-                tag == "input" && key == "value" && fieldName in USERNAME_INPUT_NAMES -> matchUsernameValue(value, ctx) ?: value
-                key == "data-uid" -> ctx.uidMap[value.trim()] ?: value
+                tag == "input" && key == "value" && fieldName in UID_INPUT_NAMES ->
+                    ctx.uidMap[value.trim()] ?: replaceStandaloneSelfUids(value, ctx)
+                tag == "input" && key == "value" && fieldName in USERNAME_INPUT_NAMES ->
+                    matchUsernameValue(value, ctx) ?: replaceStandaloneSelfUids(value, ctx)
+                key == "data-uid" -> ctx.uidMap[value.trim()] ?: replaceStandaloneSelfUids(value, ctx)
                 key in URL_ATTRIBUTES -> transformUrlAttribute(value, ctx)
                 key == "alt" -> ctx.nameMap[value.trim().lowercase()] ?: transformText(value, ctx, inScript = false)
                 else -> transformText(value, ctx, inScript = key.startsWith("on"))
@@ -432,6 +453,7 @@ object HtmlSanitizer {
         }
         out = replaceUrlUidParams(out, ctx.uidMap)
         out = replaceUrlUsernameParams(out, ctx)
+        out = replaceStandaloneSelfUids(out, ctx)
         return out
     }
 
@@ -458,6 +480,7 @@ object HtmlSanitizer {
                 }
             }
         }
+        out = replaceStandaloneSelfUids(out, ctx)
         if (inScript && ctx.nameMap.isNotEmpty()) {
             out = SCRIPT_USERNAME_ASSIGN_REGEX.replace(out) { m ->
                 matchUsernameValue(m.groupValues[3], ctx)?.let { "${m.groupValues[1]}${m.groupValues[2]}$it${m.groupValues[2]}" } ?: m.value
@@ -594,7 +617,15 @@ object HtmlSanitizer {
         if (updated != href) link.attr("href", updated)
     }
 
-    private fun buildReplaceContext(uidMap: Map<String, String>, nameMap: Map<String, String>): ReplaceContext {
+    private fun replaceStandaloneSelfUids(input: String, ctx: ReplaceContext): String =
+        ctx.standaloneSelfUidRegex?.replace(input, PLACEHOLDER_UID) ?: input
+
+    private fun buildReplaceContext(
+        selfUids: Set<String>,
+        uidMap: Map<String, String>,
+        nameMap: Map<String, String>,
+    ): ReplaceContext {
+        val standaloneSelfUidRegex = buildStandaloneUidRegex(selfUids)
         val avatarMap = buildMap {
             for ((uid, target) in uidMap) {
                 val from = uidToAvatarPath(uid) ?: continue
@@ -617,7 +648,16 @@ object HtmlSanitizer {
             }
             Regex(pattern, RegexOption.IGNORE_CASE)
         }
-        return ReplaceContext(uidMap, avatarMap, nameMap, boundedNameRegex, scriptSafeNameRegex, encodedNameMap, encodedNameRegex)
+        return ReplaceContext(
+            uidMap,
+            standaloneSelfUidRegex,
+            avatarMap,
+            nameMap,
+            boundedNameRegex,
+            scriptSafeNameRegex,
+            encodedNameMap,
+            encodedNameRegex,
+        )
     }
 
     private fun isPlaceholderCollidingName(name: String): Boolean =
@@ -663,7 +703,6 @@ object HtmlSanitizer {
     private fun isAsciiWord(c: Char): Boolean = c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_'
 
     private fun extractUidParam(url: String): String? = UID_QUERY_PARAM_REGEX.find(url)?.groupValues?.get(3)
-    private fun isReplaceableUid(uid: String): Boolean = uid.isNotEmpty() && uid != PLACEHOLDER_UID && !isAllZeroMask(uid)
 
     private fun replaceTextNodeWithPlaceholder(textNode: TextNode) {
         val whole = textNode.wholeText
@@ -691,6 +730,7 @@ object HtmlSanitizer {
 
     private data class ReplaceContext(
         val uidMap: Map<String, String>,
+        val standaloneSelfUidRegex: Regex?,
         val avatarMap: Map<String, String>,
         val nameMap: Map<String, String>,
         val boundedNameRegex: Regex?,

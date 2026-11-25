@@ -29,6 +29,7 @@ object SanitizeSelectors {
     const val PLACEHOLDER_EMAIL = "user@example.com"
     const val PLACEHOLDER_IPV4 = "127.0.0.1"
     const val PLACEHOLDER_IPV6 = "::1"
+    internal const val MIN_STANDALONE_SELF_UID_LENGTH = 4
 
     // 出处：LoginHelper.java:145；HiParserThreadList.java:30；HiParser.java:460,754
     const val UMENU = "div#umenu"
@@ -99,8 +100,17 @@ object SanitizeSelectors {
         Regex("""(?i)(attachment\.php\?(?:[^&#'"\s<>)]*&(?:amp;)?)*aid=)([^&#'"\s<>);,]+)""")
     internal val ATTACHMENT_AID_PAYLOAD_REGEX = Regex("""^(\d+)\|([0-9a-fA-F]{8})\|(\d+)\|(\d+)(\|\d+)?$""")
 
+    internal val UID_INPUT_NAMES = setOf("uid", "touid", "srchuid", "authorid", "userid", "buddyid", "newbuddyid")
+
     internal val UID_QUERY_PARAM_REGEX =
-        Regex("""(?i)(^|[?&;])((?:[a-z_]*uid|author_?id|user_?id)=)(\d+)(?![0-9A-Za-z_])""")
+        Regex("""(?i)(^|[?&;])((?:[a-z_]*uid|author_?id|user_?id|(?:new_?)?buddy_?id)=)(\d+)(?![0-9A-Za-z_])""")
+    internal val SCRIPT_UID_ASSIGN_REGEX =
+        Regex("""(?i)((?<![.\w$])(?:[a-z_]*uid|author_?id|user_?id|(?:new_?)?buddy_?id)\s*=\s*)(['"]?)(\d+)\2(?![0-9A-Za-z_])""")
+    internal val SCRIPT_UID_PROP_REGEX =
+        Regex("""(?i)((?<![.\w$])(['"]?)(?:[a-z_]*uid|author_?id|user_?id|(?:new_?)?buddy_?id)\2\s*:\s*)(['"]?)(\d+)\3(?![0-9A-Za-z_])""")
+    internal val SCRIPT_UID_CALL_REGEX =
+        Regex("""(?i)(\b(?:deletepm|showuser|sendpm)\s*\(\s*)(['"]?)(\d+)\2(?![0-9A-Za-z_])""")
+    internal val TEXT_UID_LABEL_REGEX = Regex("""(?i)(\bUID\s*[:：=]?\s*)(\d+)(?!\d)""")
     internal val URL_USERNAME_PARAM_REGEX =
         Regex("""(?i)(^|[?&;])((?:username|srchuname|msgto|user|author)=)([^&#'"\s<>);,\]]+)""")
     internal val USERNAME_QUERY_PARAM_REGEX = Regex("""(?i)(^|[?&;])(username=)([^&#'"\s<>);,\]]+)""")
@@ -142,6 +152,19 @@ object SanitizeSelectors {
     internal fun isSmsPlaceholder(text: String): Boolean = text.isEmpty() || text == buildSmsPlaceholder(text.length)
     internal fun maskSameLength(value: String): String = PLACEHOLDER_TOKEN_CHAR.toString().repeat(value.length)
     internal fun isAllZeroMask(value: String): Boolean = value.isNotEmpty() && value.all { it == PLACEHOLDER_TOKEN_CHAR }
+    internal fun isReplaceableUid(uid: String): Boolean =
+        uid.isNotEmpty() && uid.all(Char::isDigit) && uid != PLACEHOLDER_UID && !isAllZeroMask(uid)
+
+    internal fun buildStandaloneUidRegex(uids: Collection<String>): Regex? {
+        val eligible = uids
+            .map { it.trim() }
+            .filter { isReplaceableUid(it) && it.length >= MIN_STANDALONE_SELF_UID_LENGTH }
+            .distinct()
+            .sortedByDescending { it.length }
+        if (eligible.isEmpty()) return null
+        val alternation = eligible.joinToString("|", transform = Regex::escape)
+        return Regex("""(?<!\d)(?:$alternation)(?!\d)""")
+    }
 
     internal fun isSafeSmsHref(href: String): Boolean =
         href == PLACEHOLDER_SMS_URL || href == "#" || href.equals("javascript:;", ignoreCase = true) ||

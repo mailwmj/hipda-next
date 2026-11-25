@@ -156,7 +156,7 @@ data class HiSidebarAccount(
 }
 
 /**
- * 左侧栏展示状态（供 [HiAdaptiveShell]、`PreviewActivity` 及 `E1`/`E3`/`E8–E12` 接入）。
+ * 左侧栏展示状态（供 [HiAdaptiveShell] 与业务页 `E1`/`E3`/`E8–E12` 接入）。
  *
  * - [isCollapsedPref] 为 `null` 时由外壳按横竖屏内部记住收起偏好；非 `null` 时受外部设置驱动。
  */

@@ -64,7 +64,7 @@ class SampleExportEngine(
     private val exportDir: File,
     private val baseUrl: HttpUrl = SampleExportConstants.FORUM_BASE_URL,
     private val sanitizer: (html: String, pageType: PageType, identity: Identity) -> String = HtmlSanitizer::sanitize,
-    private val leakScanner: (html: String) -> List<Leak> = SampleLeakScanner::scan,
+    private val leakScanner: (html: String, selfUid: String?) -> List<Leak> = SampleLeakScanner::scan,
     private val clock: () -> Long = System::currentTimeMillis,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
@@ -284,7 +284,7 @@ class SampleExportEngine(
     ) {
         val (sanitized, leaks) = withContext(ioDispatcher) {
             val cleaned = sanitizer(rawHtml, spec.pageType, identity)
-            cleaned to leakScanner(cleaned)
+            cleaned to leakScanner(cleaned, identity.uid)
         }
 
         if (leaks.isNotEmpty()) {

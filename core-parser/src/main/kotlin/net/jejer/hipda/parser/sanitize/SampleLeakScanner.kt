@@ -18,6 +18,7 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.IPV6_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.JS_FORMHASH_ASSIGN_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.JS_OBJECT_PROP_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.JS_OTHER_TOKEN_ASSIGN_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.MIN_STANDALONE_SELF_UID_LENGTH
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.NOTIFY_SENSITIVE_ITEMS
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_PEER_AVATAR_PATH
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_PEER_UID
@@ -25,6 +26,9 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_PEER_USERNA
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_SELF_AVATAR_PATH
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_UID
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_USERNAME
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SCRIPT_UID_ASSIGN_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SCRIPT_UID_CALL_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SCRIPT_UID_PROP_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SENSITIVE_TOKEN_INPUT
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_AUTHOR_CITE
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_AUTHOR_LINK
@@ -36,15 +40,19 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_PEER_HEADER_LINKS
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_POST_FORM
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_SUMMARY_IN_DOCUMENT
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.SMS_TITLE_PEER_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.TEXT_UID_LABEL_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.UID_INPUT_NAMES
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.UID_QUERY_PARAM_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.UMENU_USER_LINK
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.URL_TOKEN_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.USERNAME_QUERY_PARAM_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.buildStandaloneUidRegex
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.collectTextNodes
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.decodeAttachmentAid
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.firstMatch
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.forEachNode
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isAllZeroMask
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isReplaceableUid
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSafeEmail
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSafeIpv4
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSafeIpv6
@@ -53,6 +61,7 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSafeSmsImgSrc
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSensitiveFieldName
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isSmsPlaceholder
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.isXmlDocument
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.uidToAvatarPath
 import org.jsoup.Jsoup
 import org.jsoup.nodes.CDataNode
 import org.jsoup.nodes.Comment
@@ -85,25 +94,25 @@ object SampleLeakScanner {
     private val ALLOWED_SMS_NAMES = setOf(PLACEHOLDER_USERNAME, PLACEHOLDER_PEER_USERNAME)
     private val ALLOWED_SMS_AVATARS = setOf(PLACEHOLDER_SELF_AVATAR_PATH, PLACEHOLDER_PEER_AVATAR_PATH)
 
-    fun scan(html: String): List<Leak> {
+    fun scan(html: String, selfUid: String? = null): List<Leak> {
         val leaks = mutableListOf<Leak>()
         if (isXmlDocument(html)) {
             val xmlDoc = Jsoup.parse(html, "", Parser.xmlParser())
             val cdataNodes = Collections.newSetFromMap(IdentityHashMap<TextNode, Boolean>())
             xmlDoc.forEachNode { node ->
                 if (node is CDataNode) {
-                    scanDocument(Jsoup.parseBodyFragment(node.text()), leaks)
+                    scanDocument(Jsoup.parseBodyFragment(node.text()), leaks, selfUid)
                     cdataNodes.add(node)
                 }
             }
-            scanDocument(xmlDoc, leaks, skippedTextNodes = cdataNodes)
+            scanDocument(xmlDoc, leaks, selfUid, skippedTextNodes = cdataNodes)
             return leaks
         }
-        scanDocument(Jsoup.parse(html), leaks)
+        scanDocument(Jsoup.parse(html), leaks, selfUid)
         return leaks
     }
 
-    fun scanDirectory(directory: Path): List<FileLeakReport> {
+    fun scanDirectory(directory: Path, selfUid: String? = null): List<FileLeakReport> {
         if (!Files.exists(directory) || !Files.isDirectory(directory)) return emptyList()
         val files = Files.walk(directory).use { stream ->
             stream.filter { path ->
@@ -112,11 +121,12 @@ object SampleLeakScanner {
             }.sorted().toList()
         }
         return files.mapNotNull { file ->
-            scan(readSampleFile(file)).takeIf { it.isNotEmpty() }?.let { FileLeakReport(file, it) }
+            scan(readSampleFile(file), selfUid).takeIf { it.isNotEmpty() }?.let { FileLeakReport(file, it) }
         }
     }
 
-    fun scanDirectories(directories: List<Path>): List<FileLeakReport> = directories.flatMap(::scanDirectory)
+    fun scanDirectories(directories: List<Path>, selfUid: String? = null): List<FileLeakReport> =
+        directories.flatMap { scanDirectory(it, selfUid) }
 
     fun formatLeakReport(reports: List<FileLeakReport>): String = buildString {
         appendLine("检测到未脱敏的样本文件，请用 HtmlSanitizer 重新导出：")
@@ -130,8 +140,11 @@ object SampleLeakScanner {
     private fun scanDocument(
         doc: Document,
         leaks: MutableList<Leak>,
+        selfUid: String? = null,
         skippedTextNodes: Set<TextNode> = emptySet(),
     ) {
+        val selfUidCtx = buildSelfUidScanContext(doc, selfUid)
+
         // 1. 表单中的 formhash 与其他敏感令牌（hash/sid/auth/seccode*）
         for (input in doc.select(FORMHASH_INPUT)) {
             val value = input.attr("value").trim()
@@ -162,15 +175,29 @@ object SampleLeakScanner {
         // 3. 遍历节点属性、脚本、注释、文本
         doc.forEachNode { node ->
             when (node) {
-                is Element -> node.attributes().asList().forEach { attr ->
-                    val key = attr.key.lowercase()
-                    if (attr.value.isNotEmpty() && key != "class" && key != "id") {
-                        scanString(attr.value, "attr[${attr.key}]", leaks)
+                is Element -> {
+                    val tag = node.tagName().lowercase()
+                    val fieldName = node.attr("name").lowercase()
+                    node.attributes().asList().forEach { attr ->
+                        val key = attr.key.lowercase()
+                        if (attr.value.isNotEmpty() && key != "class" && key != "id") {
+                            if (selfUidCtx.shortUids.isNotEmpty()) {
+                                val trimmed = attr.value.trim()
+                                if ((tag == "input" && key == "value" && fieldName in UID_INPUT_NAMES && trimmed in selfUidCtx.shortUids) ||
+                                    (key == "data-uid" && trimmed in selfUidCtx.shortUids)
+                                ) {
+                                    leaks.add(Leak(LeakType.SELF_UID, "attr[${attr.key}] 中残留本人 UID"))
+                                }
+                            }
+                            scanString(attr.value, "attr[${attr.key}]", leaks, selfUidCtx, inScript = key.startsWith("on"))
+                        }
                     }
                 }
-                is DataNode -> scanString(node.wholeData, "script", leaks)
-                is Comment -> scanString(node.data, "comment", leaks)
-                is TextNode -> if (node !in skippedTextNodes) scanString(node.wholeText, "text", leaks)
+                is DataNode -> scanString(node.wholeData, "script", leaks, selfUidCtx, inScript = true)
+                is Comment -> scanString(node.data, "comment", leaks, selfUidCtx, inScript = false)
+                is TextNode -> if (node !in skippedTextNodes) {
+                    scanString(node.wholeText, "text", leaks, selfUidCtx, inScript = false)
+                }
             }
         }
 
@@ -214,6 +241,47 @@ object SampleLeakScanner {
 
         // 6. 提醒页 f_buddy/f_manage 与黑名单页
         scanNotifyAndBlacklist(doc, leaks)
+
+        // 7. 个人资料页操作栏一致性校验（本人资料页中 addbuddy 等链接 UID 必须同为占位 UID）
+        scanSelfProfileActionBar(doc, leaks)
+    }
+
+    private fun buildSelfUidScanContext(doc: Document, selfUid: String?): SelfUidScanContext {
+        val uids = linkedSetOf<String>()
+        selfUid?.trim()?.takeIf(::isReplaceableUid)?.let(uids::add)
+        for (link in doc.select(UMENU_USER_LINK)) {
+            UID_QUERY_PARAM_REGEX.find(link.attr("href"))?.groupValues?.get(3)
+                ?.takeIf(::isReplaceableUid)?.let(uids::add)
+        }
+        doc.forEachNode { node ->
+            if (node is DataNode) {
+                for (m in DISCUZ_UID_REGEX.findAll(node.wholeData)) {
+                    m.groupValues[4].trim().takeIf(::isReplaceableUid)?.let(uids::add)
+                }
+            }
+        }
+        val standaloneRegex = buildStandaloneUidRegex(uids)
+        val shortUids = uids.filter { it.length < MIN_STANDALONE_SELF_UID_LENGTH }.toSet()
+        val avatarPaths = uids.mapNotNull(::uidToAvatarPath).toSet()
+        return SelfUidScanContext(standaloneRegex, shortUids, avatarPaths)
+    }
+
+    private fun scanSelfProfileActionBar(doc: Document, leaks: MutableList<Leak>) {
+        for (profileSide in doc.select("div.profile_side")) {
+            val isSelfProfile = profileSide.select("a#sendpm, a[href*=eccredit.php], a[href*=search.php]").any { link ->
+                UID_QUERY_PARAM_REGEX.find(link.attr("href"))?.groupValues?.get(3) == PLACEHOLDER_UID
+            } || profileSide.select("div.avatar img").any { img ->
+                AVATAR_PATH_REGEX.find(img.attr("src"))?.groupValues?.get(1) == PLACEHOLDER_SELF_AVATAR_PATH
+            }
+            if (!isSelfProfile) continue
+            for (link in profileSide.select("ul#profile_act a[href]")) {
+                for (m in UID_QUERY_PARAM_REGEX.findAll(link.attr("href"))) {
+                    if (m.groupValues[3] != PLACEHOLDER_UID) {
+                        leaks.add(Leak(LeakType.SELF_UID, "个人资料操作栏链接 ${m.groupValues[2]} 非 $PLACEHOLDER_UID"))
+                    }
+                }
+            }
+        }
     }
 
     private fun scanSmsPeerIdentity(doc: Document, smsItems: List<Element>, smsForms: List<Element>, leaks: MutableList<Leak>) {
@@ -287,7 +355,13 @@ object SampleLeakScanner {
         }
     }
 
-    private fun scanString(text: String, source: String, leaks: MutableList<Leak>) {
+    private fun scanString(
+        text: String,
+        source: String,
+        leaks: MutableList<Leak>,
+        selfUidCtx: SelfUidScanContext,
+        inScript: Boolean,
+    ) {
         // 内嵌 <input> 标签（脚本模板等）
         for (tagMatch in EMBEDDED_INPUT_TAG_REGEX.findAll(text)) {
             val tagHtml = tagMatch.value
@@ -374,7 +448,56 @@ object SampleLeakScanner {
                 leaks.add(Leak(LeakType.PERSONAL_INFO, "$source 中发现未脱敏 IPv6 地址"))
             }
         }
+
+        // 本人 UID（独立数字记号 + 头像路径 + 短 UID 语境）
+        if (selfUidCtx.standaloneRegex != null) {
+            selfUidCtx.standaloneRegex.findAll(text).forEach {
+                leaks.add(Leak(LeakType.SELF_UID, "$source 中残留本人 UID"))
+            }
+        }
+        if (selfUidCtx.avatarPaths.isNotEmpty()) {
+            for (m in AVATAR_PATH_REGEX.findAll(text)) {
+                if (m.groupValues[1] in selfUidCtx.avatarPaths) {
+                    leaks.add(Leak(LeakType.SELF_UID, "$source 中头像路径残留本人 UID"))
+                }
+            }
+        }
+        if (selfUidCtx.shortUids.isNotEmpty()) {
+            for (m in UID_QUERY_PARAM_REGEX.findAll(text)) {
+                if (m.groupValues[3] in selfUidCtx.shortUids) {
+                    leaks.add(Leak(LeakType.SELF_UID, "$source 中 URL 参数 ${m.groupValues[2]} 残留本人 UID"))
+                }
+            }
+            for (m in TEXT_UID_LABEL_REGEX.findAll(text)) {
+                if (m.groupValues[2] in selfUidCtx.shortUids) {
+                    leaks.add(Leak(LeakType.SELF_UID, "$source 中 UID 标签残留本人 UID"))
+                }
+            }
+            if (inScript) {
+                for (m in SCRIPT_UID_ASSIGN_REGEX.findAll(text)) {
+                    if (m.groupValues[3] in selfUidCtx.shortUids) {
+                        leaks.add(Leak(LeakType.SELF_UID, "$source 中脚本变量残留本人 UID"))
+                    }
+                }
+                for (m in SCRIPT_UID_PROP_REGEX.findAll(text)) {
+                    if (m.groupValues[4] in selfUidCtx.shortUids) {
+                        leaks.add(Leak(LeakType.SELF_UID, "$source 中脚本属性残留本人 UID"))
+                    }
+                }
+                for (m in SCRIPT_UID_CALL_REGEX.findAll(text)) {
+                    if (m.groupValues[3] in selfUidCtx.shortUids) {
+                        leaks.add(Leak(LeakType.SELF_UID, "$source 中脚本调用参数残留本人 UID"))
+                    }
+                }
+            }
+        }
     }
+
+    private data class SelfUidScanContext(
+        val standaloneRegex: Regex?,
+        val shortUids: Set<String>,
+        val avatarPaths: Set<String>,
+    )
 
     private fun readSampleFile(path: Path): String {
         val bytes = Files.readAllBytes(path)

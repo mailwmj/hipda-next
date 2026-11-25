@@ -118,6 +118,33 @@ class SamplesAreSanitizedTest {
         assertDirectoriesSanitized(listOf(tempDir))
     }
 
+    @Test
+    fun scanDirectoryDetectsLeakedSelfUidAndPassesAfterSanitization(@TempDir tempDir: Path) {
+        val fakeUid = "424242"
+        val rawProfile = """
+            <!DOCTYPE html>
+            <html>
+            <body>
+              <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+              <a href="my.php?item=buddylist&amp;newbuddyid=$fakeUid&amp;buddysubmit=yes" id="addbuddy">加为好友</a>
+              <a href="viewthread.php?tid=9${fakeUid}0">无关长数字</a>
+            </body>
+            </html>
+        """.trimIndent()
+        val file = tempDir.resolve("user_profile.html")
+        Files.writeString(file, rawProfile, StandardCharsets.UTF_8)
+
+        val leakedReports = SampleLeakScanner.scanDirectory(tempDir, selfUid = fakeUid)
+        assertTrue(leakedReports.size == 1)
+        assertTrue(leakedReports.single().leaks.any { it.type == LeakType.SELF_UID })
+
+        val scrubbed = HtmlSanitizer.sanitize(rawProfile, PageType.USER_INFO, Identity(uid = fakeUid, username = ""))
+        Files.writeString(file, scrubbed, StandardCharsets.UTF_8)
+
+        assertTrue(SampleLeakScanner.scanDirectory(tempDir, selfUid = fakeUid).isEmpty())
+        assertDirectoriesSanitized(listOf(tempDir))
+    }
+
     private fun assertDirectoriesSanitized(directories: List<Path>) {
         val reports = SampleLeakScanner.scanDirectories(directories)
         if (reports.isNotEmpty()) {
