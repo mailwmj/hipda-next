@@ -5,6 +5,7 @@
 ## 站点
 - 用 curl 访问 `https://www.4d4y.com/forum/` 会得到 Cloudflare 验证页（HTTP 403，`cf-mitigated: challenge`），直接用 OkHttp 抓页面会被拦。（2026-11-24）
 - Discuz! 7.2 很可能将 6 位十进制实体（如补充平面 Emoji `&#128512;`）二次转义为 `&amp;#128512;`，新解析器和正文渲染需在 jsoup 解码后再做一次实体解码（需真机确认）。（2026-11-25）
+- 统一 UA 采用移动版 Chrome UA 后，4d4y.com 因 UA 含 `Android` 下发手机版模板（无 `#umenu`，`pm.php`/`notice.php` 返回 500），真机 M1 全部失败。根因是改动对站点可见行为（UA、请求头）的设计没有先对真实站点做一次只读对照（换不同 UA 抓同一页比模板），只验证了 Cloudflare 维度。规则：任何改变站点可见身份的设计（UA、Client Hints、Cookie 策略、请求头），落地前先用只读 GET 对比新旧取值下的响应模板/状态码，把结果写进卡片背景。（2026-11-25）
 
 ## 构建
 - `gradle.properties` 已经进仓库（M0-1 把它移出了 `.gitignore`）；Gradle 配置写在里面 CI 才读得到。（2026-11-24）
