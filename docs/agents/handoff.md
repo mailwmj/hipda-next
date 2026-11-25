@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-25 20:30 +07）
+# 负责人交接说明（2026-11-25 21:48 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -7,10 +7,10 @@
 ## 1. 全局进度总览
 
 - 设计文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4（大屏三栏方案 `b4ab916` + kudo 液态玻璃与交互设计修订 `bba139c`，经 R-Dkudo 审查与修订轮 APPROVE `@6f139c4`）；`docs/agents/decisions.md` 已记录 2026-11-25 用户拍板（参考 `kudo-android`、毛玻璃换用 Kyant `backdrop`、同屏上限 `2→3` 等，`0895b83`）。
-- **已合并进 `main`**（当前代码 `HEAD`：`db5857d`，**main CI 绿 `@db5857d`**）：
+- **已合并进 `main`**（当前代码 `HEAD`：`18dfa80`；`G2 @5ce63dc` **main CI 绿**）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
-  - 第三批与 M1/M2/M4/三栏/kudo 设计收口：
+  - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
     - A3a 拦截器链（`26bb6bf`：R-A3a APPROVE + V-A3a 11 探针 PASS）→ `03d2f01`
     - C5b 反馈组件（R-C5b APPROVE，简化 1120→686 行后复核 APPROVE `dd89039`）→ `3ed1f9e`
     - C4a 自适应外壳（修复后复核 APPROVE + V-C4a PASS `dbb97ae`）→ `92e01d3`
@@ -33,20 +33,24 @@
     - D-kudo kudo 液态玻璃与交互设计修订至 v0.4（基于 G-kudo 调研，R-Dkudo 复审修订轮 APPROVE `@6f139c4`）→ `bba139c`
     - B8 帖子详情 + 内容块 + 1 楼投票解析器（R-B8 APPROVE + V-B8 PASS `@178e548`；修复轮 1 闭合 S1/S2/S3/S5 核心项经 `B8-fixcheck` PASS `@9a360c8`）→ `cf59951`
     - B7 帖子列表解析器与样本等价测试 + 授权闭合 R-B9b S1/S2/S4（R-B7 APPROVE `@822969a`）→ `db5857d`（main CI 绿 `@db5857d`）
+    - D2 `AuthRepository` + `ForumHttpClient` + 代际 Cookie 写门控（R-D2 `@df1c12d` 阻断修复后复审复验 V-D2 PASS `@85ac8b1`）→ `0e5fb57`
+    - G2 毛玻璃底层由 Haze 2.1 迁移至 Kyant `backdrop`（API 33+ 折射 / 31–32 纯模糊 / ≤30 降级、上限 3 区域、API 36 release 模拟器冒烟绿；R-G2 APPROVE + V-G2 PASS `@74c1c8c`）→ `5ce63dc`（**main CI 绿 `@5ce63dc`**；真机包清单同步至 `c3344e9`）
+    - D8b 用户资料与黑名单 Repository + 分账号本地缓存（R-D8b APPROVE `@040e6e2`）→ `5c71b35`
+    - D7 短消息与提醒 Repository + 15s 冷却 + 分离未读流与本地已读状态（R-D7 APPROVE `@437ca88`）→ `18dfa80`
 - **阶段验收状态**：
   - **M1 真机验收通过**：用户已在真机使用 A5c 构建完成登录、抓取全部 16 个页面并导出脱敏样本入仓（`d5ed2ce`）。
   - **M2 解析器安全网与 `:core-parser` 全部合入完成**：`B9a`（`d45b6a2`）、`B9b`（`c0b8c8c`）、`B8`（`cf59951`）、`B7`（`db5857d`）全部合入 `main` 且 main CI 绿（`@db5857d`）。
-  - **M4 真机验收通过**：外壳、导航与折叠屏功能在 Galaxy Z Fold8 真机验收通过；用户随后拍板参考 `kudo-android` 将毛玻璃底层由 Haze 2.1 换为 Kyant `backdrop`（`0895b83`），设计稿修订已合入 `bba139c`，由 `G2`（及后续 `C4d`）实施并在完成后用 debug 实时调参面板实测定值、回写 §5。
-- 已合并卡的卡片与报告均已归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已同步 `B9b`、`R-B9b`、`B8`、`R-B8`、`V-B8`、`B8-fixcheck`、`B7`、`R-B7`、`G-kudo`、`D-kudo`、`R-Dkudo`）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`。
+  - **M4 真机验收通过 + Kyant `backdrop` 底层已落地**：`G2` 已合入 `5ce63dc`（main CI 绿），`C4d` 正在落地 `TopBar`/`Sheet` 档位、`hiGlassSource` 下放与底部胶囊拖拽；待用户用真机 debug 实时调参面板实测定值后回写 §5。
+- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `G2`、`R-G2`、`V-G2`、`D8b`、`R-D8b`、`D7`、`R-D7`；`D2`/`R-D2`/`V-D2` 待下轮补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`。
 
 ## 2. 进行中与待派发
 
 | 卡号 | 分支 / worktree | 状态 |
 |---|---|---|
-| D2（BATCH-4 Wave 2）`AuthRepository` + `ForumHttpClient` | `card/D2-auth-repository` / `../hipda-next.wt/D2` | 修复轮 1 `@85ac8b1` 复审（R-D2）与复验（V-D2）中 |
-| G2 毛玻璃底层迁移至 Kyant `backdrop`（含四路降级与调参） | `card/G2-kyant-backdrop` / `../hipda-next.wt/G2` | 实现中（基于 `0895b83`；审查卡 `R-G2.md`、验证卡 `V-G2.md` 已起草） |
-| D8b（BATCH-4 Wave 3）用户资料与黑名单 Repository | `card/D8b-user-blacklist-repo` / `../hipda-next.wt/D8b` | 卡片 `D8b.md` 与 `R-D8b.md` 已起草（Medium 档，无 V 卡），待 `D2` 合入后派发 |
-| D7（BATCH-4 Wave 3）短消息与提醒 Repository | `card/D7-sms-notify-repo` / `../hipda-next.wt/D7` | 卡片 `D7.md` 与 `R-D7.md` 已起草（Medium 档，无 V 卡），待 `D2` 合入后派发 |
+| C4d 外壳玻璃拓扑下放、`TopBar`/`Sheet` 档位、底部胶囊拖拽与 R-G2/R-C4c 收口 | `card/C4d-shell-glass-polish` / `../hipda-next.wt/C4d` | 实现中（审查卡 `R-C4d.md`、验证卡 `V-C4d.md` 已起草） |
+| D4（BATCH-4 Wave 4）帖子列表 Repository + R-B7 S1 + 授权 R-D8b S1–S3 | `card/D4-thread-list-repo` / `../hipda-next.wt/D4` | 实现中（审查卡 `R-D4.md` 已起草，Medium 档无 V 卡） |
+| D5（BATCH-4 Wave 4）帖子详情 Repository（浏览历史、阅读位置、1 楼投票、黑名单遮蔽） | `card/D5-thread-detail-repo` / `../hipda-next.wt/D5` | 实现中（审查卡 `R-D5.md` 已起草，Medium 档无 V 卡） |
+| D6（BATCH-4 Wave 4）发帖/回复/编辑/上传 Repository（草稿、小尾巴、30s 冷却、R-B9b S3） | `card/D6-post-upload-repo` / `../hipda-next.wt/D6` | 卡片 `D6.md`、`R-D6.md`、`V-D6.md` 已就绪（Complex 档），待槽位空出后派发 |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线。
@@ -55,10 +59,10 @@
 
 - **BATCH-4 计划**（已批准并归档至 `docs/agents/cards/BATCH-4.md`，工作副本 `/home/mir/Documents/hipda-next.wt/_cards/BATCH-4.md`）：按 DISPATCH §5 第一性原理收拢为 **12 张卡**、**5 波**推进（同时在跑的实现卡 ≤ 3）：
   1. **Wave 1（已合入）**：`B9a` [Complex] → `d45b6a2`
-  2. **Wave 2（收尾中）**：`B9b` [Medium] 已合入 → `c0b8c8c`；`B8` [Complex] 已合入 → `cf59951`；`D2` [Complex] 修复轮 1 `@85ac8b1` 复审复验中（另并行 `G2` 换用 `backdrop`）
-  3. **Wave 3（M2 已收官，D 线待 `D2` 合入齐发）**：`B7` [Medium] 已合入 → `db5857d`（**M2 收官**）；`D8b` [Medium]（用户资料+黑名单缓存）、`D7` [Medium]（短消息+提醒 Repository，独立双未读数）卡片均已预起草
-  4. **Wave 4（3 并行 → 解锁 M5 阅读核心）**：`D4` [Medium]（帖子列表 Repository）、`D5` [Medium]（帖子详情 Repository）、`D6` [Complex]（发帖/回复/编辑/上传 Repository）
-  5. **Wave 5（2 并行 + 1 槽可启 `E1`/`E2a`）**：`D8a` [Medium]（合并 `D3d`：搜索/今日新帖/收藏与关注 + 独立缓存 DataStore）、`D9` [Complex]（WorkManager 提醒轮询，唯一授权修改 `HiApplication`/`AndroidManifest.xml`）
+  2. **Wave 2（全部合入）**：`B9b` [Medium] → `c0b8c8c`、`B8` [Complex] → `cf59951`、`D2` [Complex] → `0e5fb57`（同期 `G2` 换用 `backdrop` → `5ce63dc`）
+  3. **Wave 3（全部合入）**：`B7` [Medium] → `db5857d`（**M2 收官**）、`D8b` [Medium] → `5c71b35`、`D7` [Medium] → `18dfa80`
+  4. **Wave 4（进行中 → 解锁 M5 阅读核心）**：`D4` [Medium]、`D5` [Medium] 实现中（与 `C4d` 占满 3 并行槽位）；`D6` [Complex] 卡片已就绪待空位
+  5. **Wave 5（2 并行 + 1 槽可启 `E1`/`E2a`）**：`D8a` [Medium]（合并 `D3d`：搜索/今日新帖/收藏与关注 + 独立缓存 DataStore）、`D9` [Complex]（WorkManager 提醒轮询，唯一授权修改 `HiApplication`/`AndroidManifest.xml`，并授权顺带修改 `data/message/` 闭合 R-D7 S1–S4）
 - **待观察风险**：
   - **Cloudflare 桌面 UA 下 WebView 过验证尚未在真机触发**：A5c 切换为桌面 Linux Chrome UA + Client Hints（`platform=Linux`、`mobile=false`）后，真机 M1 请求均直接 200 通过、未触发 Cloudflare 人机验证；该 UA 组合下的 WebView 自动/人工过盾与 `cf_clearance` 同步路径尚未经真机实测，列为待观察风险，后续真机首次触发验证时重点核实。
   - **Kyant `backdrop` 同屏 3 块液态玻璃 120Hz 帧率**：用户决定将同屏实时玻璃上限由 `2` 放宽至 `3`（`0895b83`），须在真机 120Hz 实测帧率并验证无掉帧。
@@ -66,27 +70,30 @@
 
 ## 4. 派发后续卡时必须带入的审查遗留建议（尚待处理项）
 
-> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4 `DiscuzTextDecoder`、B9a 遗留 4 条小修、R-B9b S1/S2/S4、R-B8 S1/S2/S3/S5 核心项）已移除，下面为**进行中或尚未落地**的条目：
+> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4 `DiscuzTextDecoder`、B9a 遗留 4 条小修、R-B9b S1/S2/S4、R-B8 S1/S2/S3/S5 核心项、D2 密码转义、R-G1 2 条小修）已移除，下面为**进行中或尚未落地**的条目：
 
 - **→ 解析器小修（等下一张碰 `core-parser` 的卡顺带）**：
   - R-B7 S2：为 `ThreadListParserTest` 补两处页码回退防御分支的合成夹具与变异断言（`ThreadListParser.kt:169` 无 `page=` 的伪静态分页链接如 `<a href="forum-2-5.html">5</a>`，以及 `ThreadListParser.kt:136` 带符号参数 `page=+5` 回退 `1`）。
-- **→ D4（帖子列表 Repository）**：
-  - R-B7 S1：`ThreadListParser.kt:61` 为对齐旧实现在缺失 `tid=` 时返回 `""`；`D4` 组装列表状态与写入浏览历史前须用 `DiscuzUrlHelper.isValidId(tid)` 过滤空 `tid`，防止 Compose `LazyColumn` 重复空主键崩溃。
-- **→ D6（发帖、回复、编辑与图片上传 Repository）**：
+- **→ D4（实现中，已写入卡片）**：
+  - R-B7 S1：`ThreadListParser.kt:61` 为对齐旧实现在缺失 `tid=` 时返回 `""`；`D4` 用 `DiscuzUrlHelper.isValidId(tid)` 过滤空 `tid`，防止 Compose `LazyColumn` 重复空主键崩溃。
+  - R-D8b S1/S2/S3（已授权改 `data/user/` 对应文件）：S1 `mutationVersion++` 切号窗口修复；S2 `viewblack` `formhash` 透出与按账号缓存复用并去掉二次 `Jsoup.parse`；S3 补齐 4 处单行变异盲区单测。
+- **→ D6（卡片已就绪待空位，已写入卡片）**：
   - R-B9b S3：`PrePostParser` 为对齐旧实现保留原始实体；`D6` 回填编辑器时须对 `subject` / `text` / `quoteText` 做二次数字实体解码还原真实 Emoji，并在 GBK 表单提交时统一重编码为十进制数字实体（闭合编辑/引用态 Emoji 往返）。
-- **→ D2（修复轮 1 `@85ac8b1` 复审复验中，已写入卡片）**：
-  - 旧 `LoginHelper.java:175-177` 密码转义 `.replace("'", "\'")` 在 Java 字面量中实际不转义单引号（仅转义 `\` 与 `"`），`D2` 须用对照测试锁定精确 MD5 语义。
-- **→ C4d（外壳玻璃源下放、底部胶囊拖拽与 `TopBar`/`Sheet` 档位补齐）**：
-  - R-Dkudo 实现提示：① `HiAdaptiveShell` 的 `AnimatedContent` 切页过渡期存在进出场两个目的地并存，须门控 `shellGlassState` 仅对当前目标页暴露非空（避免双 `LazyColumn` 同时写入同一 `LayerBackdrop`）；② 保留默认挂源回退（页面未声明自管透明顶栏时仍由内层默认槽位挂 `shellGlassState`），防止占位预览页与纯色顶栏页漏挂导致底部胶囊无采样内容。
-- **→ “毛玻璃定稿”小卡（待用户用 `G2` 升级后的 debug 实时调参面板给出最终参数后派发）**：
-  - R-G1 2 条建议：① 浅色双层 `Modifier.border` 叠放顺序对调（已同步写入 `G2` 顺带收口，届时复核）；② `EndEdgeOnly` `Brush` 缓存（C4c 已删该分支，`GlassTuningPanel` 彩虹 `Brush` 缓存同步写入 `G2` 收口）。
-  - 将用户拍板的最终液态玻璃参数与同屏上限 `3` 回写 `docs/design/product-design.md` §5（并按需补降级态半透明指示器叠层对比度单测）。
+- **→ D9（提醒轮询，授权改 `data/message/` 对应文件）**：
+  - R-D7 S1：收紧 `DefaultSmsRepository.kt:359-366, 393-395` `UNAUTH_AJAX_MARKERS` 中的 `"无权进行当前操作"`（排除含 `"您已经登录"` 的组受限 `NOPERM`），防止已登录无发信权限时误触发静默重登并错映射为 `AuthRequired`。
+  - R-D7 S2：`DefaultNotifyRepository.kt:355-368` `updateFromPageMeta` 在 `promptCounts.notifyTotal == 0` 时同步清理持久化的 `suppressedServerNotifyCount` 水位（与 `pollUnreadCounts` 对齐），防止进程重启后误压制同数量新提醒。
+  - R-D7 S3：`DefaultNotifyRepository.kt:302-325` `pollUnreadCounts` 补齐 `!hasContainer && errorMessage`（`alert_error`）守卫，并对 `:320`/`:142` 的 `readStateStore` 写盘加 `IOException` 兜底，防止磁盘异常向 `D9` Worker 抛出未捕获异常。
+  - R-D7 S4：补齐 3 处单行变异单测（切号/退登重置 15s 冷却、冷启动未调 `getNotifications()` 即校验 `hydrateAccount` 恢复水位与计数、重登重试成功回显含 `"您还未登录"` 锁死短路分支），并顺带修正 `_reports/D7.md:169` 行号笔误（`:349` → `:354`）。
+- **→ C4d（实现中，已写入卡片）**：
+  - R-Dkudo 实现提示：① `HiAdaptiveShell` 的 `AnimatedContent` 切页过渡期按 `currentSelected == destination` 门控 `shellGlassState`；② 纯色顶栏页与占位预览页保留默认挂源回退。
+  - R-G2 S1/S2/S3：`remember` 缓存 `drawBackdrop` 修饰链、对齐 `Toolbar` 浅色着色 `0.62–0.72` + 补激活态对比度单测 (b)、评估 `vibrancy` 与 `saturation` 双层 `ColorFilter` 合并。
+  - R-C4c 4 条建议：① 浮层底层容器补 `.focusGroup()` + `Key.Tab` 单测；② 左滑关闭 `snapTo(0f)` 跳帧修复；③ 常驻侧栏 `AnimatedContent` 不共用 `LazyListState`；④ 临界浮点宽（`599.6f`/`679.6f`/`839.6f`）与非零 `12dp` 折痕宽单测。
+- **→ “毛玻璃定稿”小卡（待用户用 `G2`/`C4d` debug 实时调参面板给出最终参数后派发）**：
+  - 将用户拍板的最终液态玻璃参数与同屏上限 `3` 回写 `docs/design/product-design.md` §5。
 - **→ E2a（帖子详情正文渲染）**：
   - C1b#2：`B8` 已通过 `InlineSpan.Emoji.normalizedKey` 完成表情键归一化（如 `default_smile`），`E2a` 渲染直接传给 `EmojiMap.drawableForImageSrc` / `codeForImageSrc`。
 - **→ E2c（引用展开、楼层高亮、长按菜单与 1 楼投票）**：
   - R-B8 S4：`ThreadPoll`（`PollModels.kt:26-41`）当前仅提供 `titleHtml`/`timerHtml`；`E2c` 接入时补充纯文本 `titleText` / `timerText`，避免 UI 层解析 HTML 字符串。
-- **→ E3（三栏内容容器）**：
-  - R-C4c 4 条建议：① `240dp` 浮层底层容器补 `.focusGroup()` 彻底锁定外接键盘 `Tab` 焦点；② 浮层左滑关闭 `snapTo` 跳帧收口；③ `AnimatedContent` 切换形态时共用 `LazyListState` 避免状态冲突；④ `calculateShellPaneLayout` 补临界点下沿浮点宽（如 `599.6f`/`679.6f`/`839.6f`）单测。
 - **→ E4b（底部三段式工具条与内联跳页条）**：
   - R-Dkudo 实现提示：内联跳页条滑块使用 `Modifier.weight(1f)` 自适应填充，**勿写死最小宽（如 `widthIn(min = 140.dp)`）**，确保 `340dp` 分屏窄窗 + `1.25×` 字体缩放下零挤压通过。
 - **→ E 线接入验证提示与面板**：
@@ -103,7 +110,7 @@
 
 ## 5. 用户要做的事
 
-1. **液态玻璃参数定值**：待 `G2` 合入后，安装真机 debug 包在「HiPDA 预览 → 外壳」调参面板选定最终液态玻璃（含折射/模糊）参数并点“复制当前参数”发回负责人，用于“毛玻璃定稿”小卡与 §5 回写。
+1. **液态玻璃参数定值**：`G2` 已合入 `5ce63dc`（真机清单包 `c3344e9`），可安装真机 debug 包（或待 `C4d` 合入含 `TopBar`/`Sheet` 档位后）在「HiPDA 预览 → 外壳」调参面板选定最终液态玻璃参数并点“复制当前参数”发回负责人，用于“毛玻璃定稿”小卡与 §5 回写。
 2. **待观察核实**：真机后续首次遇到 Cloudflare 人机验证时，确认桌面 UA 下的 WebView 自动/人工过盾与 `cf_clearance` 同步正常。
 3. **阶段验收（M5、M7）**：在折叠屏真机核验 3 块液态玻璃 120Hz 帧率、三栏/半折铰链双栏连续性，以及真实 Android Keystore 下的 Tink 凭据/Cookie 加密读写与恢复。
 
