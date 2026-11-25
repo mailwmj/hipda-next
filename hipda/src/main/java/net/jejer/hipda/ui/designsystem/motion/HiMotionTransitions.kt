@@ -117,3 +117,23 @@ fun Modifier.hiAnimateContentSize(
     alignment = alignment,
     finishedListener = finishedListener,
 )
+
+/** 带 [HiMotion.spatialDefault] 默认令牌的纵向滑入过渡。 */
+fun hiSlideInVertically(
+    animationSpec: FiniteAnimationSpec<IntOffset> = HiMotion.spatialDefault(IntOffset.VisibilityThreshold),
+    initialOffsetY: (fullHeight: Int) -> Int = { -it / 2 },
+): EnterTransition = androidx.compose.animation.slideInVertically(
+    animationSpec = animationSpec,
+    initialOffsetY = initialOffsetY,
+)
+
+/** 带 `HiMotion.exit(HiMotion.spatialDefault())` 默认令牌的纵向滑出过渡。 */
+fun hiSlideOutVertically(
+    animationSpec: FiniteAnimationSpec<IntOffset> = HiMotion.exit(
+        HiMotion.spatialDefault(IntOffset.VisibilityThreshold),
+    ),
+    targetOffsetY: (fullHeight: Int) -> Int = { -it / 2 },
+): ExitTransition = androidx.compose.animation.slideOutVertically(
+    animationSpec = animationSpec,
+    targetOffsetY = targetOffsetY,
+)
