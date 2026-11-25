@@ -141,7 +141,19 @@ class DefaultNotifyRepository internal constructor(
             }
 
             val persisted = if (!effectiveOwnerUid.isNullOrBlank()) {
-                readStateStore.syncLoadedFeed(effectiveOwnerUid, keyedItems.map { it.first })
+                try {
+                    readStateStore.syncLoadedFeed(effectiveOwnerUid, keyedItems.map { it.first })
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: IOException) {
+                    val currentRead = synchronized(stateLock) { state.readKeys }
+                    AccountNotifyReadState(
+                        readKeys = currentRead.toList(),
+                        unreadKeys = keyedItems.map { it.first }
+                            .distinct()
+                            .filterNot { it in currentRead },
+                    )
+                }
             } else {
                 AccountNotifyReadState(
                     readKeys = emptyList(),
@@ -200,7 +212,13 @@ class DefaultNotifyRepository internal constructor(
 
             val effectiveUid = ownerUid ?: synchronized(stateLock) { state.activeOwnerUid }
             val persisted = if (!effectiveUid.isNullOrBlank()) {
-                readStateStore.markRead(effectiveUid, trimmedKey)
+                try {
+                    readStateStore.markRead(effectiveUid, trimmedKey)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: IOException) {
+                    null
+                }
             } else {
                 null
             }
@@ -243,12 +261,18 @@ class DefaultNotifyRepository internal constructor(
             val serverCountToSuppress = snapshot.lastServerNotifyCount
             val effectiveUid = ownerUid ?: snapshot.activeOwnerUid
             val persisted = if (!effectiveUid.isNullOrBlank()) {
-                readStateStore.markAllRead(
-                    ownerUid = effectiveUid,
-                    knownKeys = knownKeys,
-                    suppressedServerCount = serverCountToSuppress,
-                    timestampMs = nowMs(),
-                )
+                try {
+                    readStateStore.markAllRead(
+                        ownerUid = effectiveUid,
+                        knownKeys = knownKeys,
+                        suppressedServerCount = serverCountToSuppress,
+                        timestampMs = nowMs(),
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: IOException) {
+                    null
+                }
             } else {
                 null
             }
@@ -302,6 +326,9 @@ class DefaultNotifyRepository internal constructor(
         }
 
         val smsPage = SmsParser.parseSmsList(response.html)
+        if (!smsPage.hasContainer && !smsPage.meta.errorMessage.isNullOrBlank()) {
+            return NotificationPollResult.Failed(message = smsPage.meta.errorMessage!!)
+        }
         val unreadSmsItems = smsPage.items
         val smsCount = unreadSmsItems.size
         val unreadSmsUids = unreadSmsItems.mapNotNull { it.uid.trim().ifEmpty { null } }.toSet()
@@ -317,10 +344,16 @@ class DefaultNotifyRepository internal constructor(
         if (promptCounts.notifyTotal == 0 && !effectiveOwnerUid.isNullOrBlank()) {
             val needsClear = synchronized(stateLock) { state.suppressedServerNotifyCount > 0 }
             if (needsClear) {
-                storeMutex.withLock {
-                    if (isGenerationCurrent(currentGen)) {
-                        readStateStore.clearSuppressedServerCount(effectiveOwnerUid)
+                try {
+                    storeMutex.withLock {
+                        if (isGenerationCurrent(currentGen)) {
+                            readStateStore.clearSuppressedServerCount(effectiveOwnerUid)
+                        }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: IOException) {
+                    // Best-effort persistence cleanup; proceed with updated in-memory snapshot.
                 }
             }
         }
@@ -351,9 +384,15 @@ class DefaultNotifyRepository internal constructor(
 
     override fun updateFromPageMeta(promptCounts: PromptCounts) {
         syncAccountChangeIfNeeded()
+        var clearRequest: Pair<String, Long>? = null
         synchronized(stateLock) {
             if (state.activeOwnerUid == null && state.hasSignedOut) return
             val serverNotify = promptCounts.notifyTotal.coerceAtLeast(0)
+            val shouldClearPersisted = serverNotify == 0 && state.suppressedServerNotifyCount > 0
+            val ownerUid = state.activeOwnerUid
+            if (shouldClearPersisted && !ownerUid.isNullOrBlank()) {
+                clearRequest = ownerUid to state.accountGeneration
+            }
             val nextSuppressed = if (serverNotify == 0) 0 else state.suppressedServerNotifyCount
             val nextSmsCount = if (promptCounts.pm > 0) {
                 maxOf(state.smsUnreadCount, promptCounts.pm)
@@ -367,6 +406,33 @@ class DefaultNotifyRepository internal constructor(
                     smsUnreadCount = nextSmsCount,
                 ),
             )
+        }
+        clearRequest?.let { (ownerUid, expectedGen) ->
+            scope.launch {
+                clearSuppressedServerCountSafely(ownerUid = ownerUid, expectedGen = expectedGen)
+            }
+        }
+    }
+
+    private suspend fun clearSuppressedServerCountSafely(
+        ownerUid: String,
+        expectedGen: Long,
+    ) {
+        try {
+            storeMutex.withLock {
+                val stillShouldClear = synchronized(stateLock) {
+                    state.accountGeneration == expectedGen &&
+                        state.activeOwnerUid == ownerUid &&
+                        state.suppressedServerNotifyCount == 0
+                }
+                if (stillShouldClear) {
+                    readStateStore.clearSuppressedServerCount(ownerUid)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: IOException) {
+            // Best-effort disk watermark cleanup; in-memory state is already cleared.
         }
     }
 
