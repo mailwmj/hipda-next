@@ -2,6 +2,7 @@ package net.jejer.hipda.ui.designsystem.glass
 
 import android.app.Application
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -26,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.text.style.TextOverflow
@@ -149,6 +152,39 @@ class HiGlassScreenshotTest {
         environment = GlassEnvironmentState(setOf(GlassDegradationReason.REDUCE_TRANSPARENCY)),
         statusLabel = "降低透明度降级",
     )
+
+    @Test
+    @Config(sdk = [35])
+    fun glass_light_topbar_sheet() = captureTopBarSheetSpecimen(
+        name = "glass_specimen_light_topbar_sheet",
+        themeMode = HiThemeMode.LIGHT,
+    )
+
+    @Test
+    @Config(sdk = [35])
+    fun glass_dark_topbar_sheet() = captureTopBarSheetSpecimen(
+        name = "glass_specimen_dark_topbar_sheet",
+        themeMode = HiThemeMode.DARK,
+    )
+
+    private fun captureTopBarSheetSpecimen(
+        name: String,
+        themeMode: HiThemeMode,
+    ) {
+        composeRule.setContent {
+            HiTheme(
+                themeMode = themeMode,
+                seed = HiColorPresets.Brand.toSeed(),
+            ) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    TopBarAndSheetGlassSpecimenScreen(darkTheme = themeMode == HiThemeMode.DARK)
+                }
+            }
+        }
+        composeRule.assertGlassSurfaceCountAtMost(2)
+        composeRule.assertAllGlassSurfacesBlurActive(true)
+        composeRule.onRoot().captureHiSnapshot(name)
+    }
 
     private fun captureGlassVariant(
         name: String,
@@ -421,6 +457,159 @@ private fun GlassScrollSpecimenScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopBarAndSheetGlassSpecimenScreen(darkTheme: Boolean) {
+    val cs = MaterialTheme.colorScheme
+    val glassState = rememberHiGlassState()
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = 1, initialFirstVisibleItemScrollOffset = 32)
+    val buttonAlpha = if (darkTheme) {
+        HiGlassTokens.TopBarActionButtonDarkAlpha
+    } else {
+        HiGlassTokens.TopBarActionButtonLightAlpha
+    }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = cs.background) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .hiGlassSource(glassState),
+                contentPadding = PaddingValues(start = 16.dp, top = 76.dp, end = 16.dp, bottom = 220.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(10) { idx ->
+                    val accentBg = when (idx % 3) {
+                        0 -> cs.primaryContainer
+                        1 -> cs.tertiaryContainer
+                        else -> cs.secondaryContainer
+                    }
+                    val accentFg = when (idx % 3) {
+                        0 -> cs.onPrimaryContainer
+                        1 -> cs.onTertiaryContainer
+                        else -> cs.onSecondaryContainer
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(HiShapeTokens.Medium)
+                            .background(cs.surfaceContainerLow)
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "第 ${idx + 1} 楼 · 透明 TopBar 与 Sheet 高隔离毛玻璃兄弟拓扑样张",
+                            style = HiTheme.typography.threadTitle,
+                            color = cs.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(42.dp)
+                                .clip(HiShapeTokens.Small)
+                                .background(accentBg.copy(alpha = 0.7f))
+                                .padding(horizontal = 10.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text(
+                                text = "正文从顶栏与回复面板下方滚过，验证兄弟节点零循环采样与护读对比度。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = accentFg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 区域 1：TopBar 透明液态玻璃顶栏（内含非玻璃轻底圆形按钮）
+            HiGlassSurface(
+                state = glassState,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(64.dp),
+                shape = RectangleShape,
+                floating = false,
+                style = HiGlassStyle.TopBar,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(HiShapeTokens.Full)
+                            .background(cs.surfaceContainerHigh.copy(alpha = buttonAlpha))
+                            .border(HiGlassTokens.TopBarActionButtonBorderWidth, cs.outlineVariant, HiShapeTokens.Full),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("返回", style = MaterialTheme.typography.labelSmall, color = cs.onSurface)
+                    }
+                    Text(
+                        text = "Discovery · TopBar 档样张",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = cs.onSurface,
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(HiShapeTokens.Full)
+                            .background(cs.surfaceContainerHigh.copy(alpha = buttonAlpha))
+                            .border(HiGlassTokens.TopBarActionButtonBorderWidth, cs.outlineVariant, HiShapeTokens.Full),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("楼主", style = MaterialTheme.typography.labelSmall, color = cs.primary)
+                    }
+                }
+            }
+
+            // 淡暗罩 + 区域 2：Sheet 高隔离毛玻璃快速回复面板
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(cs.scrim.copy(alpha = HiGlassTokens.SheetScrimAlpha))
+                    .padding(top = 18.dp),
+            ) {
+                HiGlassSurface(
+                    state = glassState,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                    floating = true,
+                    style = HiGlassStyle.Sheet,
+                    contentAlignment = Alignment.TopStart,
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "回复 第 1 楼 · Sheet 高隔离护读档",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = cs.onSurface,
+                        )
+                        Text(
+                            text = "亮 18dp / 暗 12dp 模糊 · 浅 0.76 / 深 0.74 着色 · 1dp 描边 · 0.35 暗罩",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant,
+                        )
                     }
                 }
             }

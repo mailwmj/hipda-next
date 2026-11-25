@@ -205,4 +205,80 @@ class GlassTuningPanelTest {
         composeRule.waitForIdle()
         assertEquals(expectedUpdated, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
     }
+
+    @Test
+    fun presetChips_switchBetweenAllFourGroups_tuneAndResetToActiveGroupDefault() {
+        var currentStyle by mutableStateOf(HiGlassStyle.Navigation)
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+
+        composeRule.setContent {
+            HiTheme(
+                themeMode = HiThemeMode.LIGHT,
+                seed = HiColorPresets.Brand.toSeed(),
+                glassStyle = currentStyle,
+            ) {
+                ShellPreviewScreen(
+                    onBack = {},
+                    glassStyle = currentStyle,
+                    onGlassStyleChange = { currentStyle = it },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("调参").performClick()
+        composeRule.waitForIdle()
+
+        // 1) 切到“顶栏档” → 调参 → 恢复默认应回到 HiGlassStyle.TopBar
+        composeRule.onNodeWithText("顶栏档").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals(HiGlassStyle.TopBar, currentStyle)
+
+        composeRule.onNodeWithContentDescription("模糊半径")
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(20f) }
+        composeRule.waitForIdle()
+        assertEquals(20.dp, currentStyle.blurRadius)
+
+        composeRule.onNodeWithText("恢复默认").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals("恢复默认应回到当前顶栏档预设", HiGlassStyle.TopBar, currentStyle)
+
+        // 2) 切到“工具条档” → 调参 → 恢复默认应回到 HiGlassStyle.Toolbar
+        composeRule.onNodeWithText("工具条档").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals(HiGlassStyle.Toolbar, currentStyle)
+        composeRule.onNodeWithContentDescription("浅色着色透明度")
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(0.70f) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("恢复默认").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals(HiGlassStyle.Toolbar, currentStyle)
+
+        // 3) 切到“面板档” → 应展示深色模糊半径滑杆与面板预览、支持单行复制并恢复 HiGlassStyle.Sheet
+        composeRule.onNodeWithText("面板档").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals(HiGlassStyle.Sheet, currentStyle)
+        composeRule.onNodeWithText("快速回复面板（Sheet 档）").assertIsDisplayed()
+
+        val sheetFormatted = formatGlassStyleParams(HiGlassStyle.Sheet)
+        assertTrue("Sheet 参数单行应包含 darkBlur=12.0dp：$sheetFormatted", "darkBlur=12.0dp" in sheetFormatted)
+        assertFalse("Sheet 参数应为单行文本", sheetFormatted.contains('\n'))
+
+        composeRule.onNodeWithContentDescription("深色模糊半径")
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(14f) }
+        composeRule.waitForIdle()
+        assertEquals(14.dp, currentStyle.darkBlurRadius)
+
+        composeRule.onNodeWithText("复制当前参数").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals(formatGlassStyleParams(currentStyle), clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+
+        composeRule.onNodeWithText("恢复默认").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals("恢复默认应回到当前面板档预设", HiGlassStyle.Sheet, currentStyle)
+    }
 }

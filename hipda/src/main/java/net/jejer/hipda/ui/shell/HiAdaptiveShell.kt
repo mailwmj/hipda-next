@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,9 +19,11 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,22 +53,68 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.glass.HiGlassState
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 
-/** 内容槽位可读取的当前自适应分栏布局上下文（供多栏容器与业务页 `E1`/`E3`/`E8–E12` 消费）。 */
+/**
+ * 内容槽位可读取的当前自适应分栏布局与玻璃采样上下文（供多栏容器与业务页 `E1`/`E3`/`E8–E12` 消费）。
+ *
+ * - [shellGlassState] 在底部胶囊态（`!paneLayout.isSidebar`）且当前目的地为活跃选中页时非空，
+ *   侧栏态与切页退场过渡期内恒为 `null`（避免双页同时向同一 `LayerBackdrop` 写入）；
+ * - 带透明顶栏的页面应通过 `managesGlassSource` 或 [Modifier.shellGlassSource] 将采样源仅挂在纯滚动
+ *   `LazyColumn` 上，使透明顶栏与底部胶囊同为该列表体的严格兄弟节点（0 循环采样）；未声明接管的纯色顶栏页
+ *   由外壳自动按活跃页回退挂源。
+ */
 @Immutable
 interface ShellContentScope {
     val paneLayout: ShellPaneLayout
+
+    val shellGlassState: HiGlassState?
+        get() = null
+
+    @Composable
+    fun Modifier.shellGlassSource(): Modifier =
+        shellGlassState?.let { hiGlassSource(it) } ?: this
 }
 
-@Immutable
+@Stable
+private class ShellGlassSourceClaim {
+    private var activeClaims by mutableIntStateOf(0)
+
+    val isClaimed: Boolean
+        get() = activeClaims > 0
+
+    fun acquire() {
+        activeClaims += 1
+    }
+
+    fun release() {
+        activeClaims = (activeClaims - 1).coerceAtLeast(0)
+    }
+}
+
+@Stable
 private data class ShellContentScopeImpl(
     override val paneLayout: ShellPaneLayout,
-) : ShellContentScope
+    override val shellGlassState: HiGlassState?,
+    private val sourceClaim: ShellGlassSourceClaim,
+    private val explicitlyManaged: Boolean,
+) : ShellContentScope {
+    @Composable
+    override fun Modifier.shellGlassSource(): Modifier {
+        val state = shellGlassState
+        DisposableEffect(sourceClaim) {
+            sourceClaim.acquire()
+            onDispose { sourceClaim.release() }
+        }
+        val ready = explicitlyManaged || sourceClaim.isClaimed
+        return if (state != null && ready) hiGlassSource(state) else this
+    }
+}
 
 /**
  * HiPDA Next 自适应主外壳：按实时窗口尺寸与竖直物理铰链分隔状态，在底部悬浮毛玻璃胶囊、
@@ -89,6 +138,7 @@ fun HiAdaptiveShell(
     onAccountClick: () -> Unit = {},
     onManageForumsClick: () -> Unit = {},
     hasDetailContent: Boolean = false,
+    managesGlassSource: (ShellDestination) -> Boolean = { false },
     content: @Composable ShellContentScope.(ShellDestination, PaddingValues) -> Unit,
 ) {
     val windowDpSize = LocalWindowInfo.current.containerDpSize
@@ -219,7 +269,6 @@ fun HiAdaptiveShell(
         if (isSidebar) navBarsBottomPx.toDp() else (effectivePillHeightPx + bottomGapPx + navBarsBottomPx).toDp()
     }
     val contentPadding = remember(bottomPaddingDp) { PaddingValues(bottom = bottomPaddingDp) }
-    val contentScope = remember(paneLayout) { ShellContentScopeImpl(paneLayout) }
     val contentPaneTitle = stringResource(R.string.shell_pane_content_title)
 
     val underlyingInteractionGuard = Modifier
@@ -227,6 +276,7 @@ fun HiAdaptiveShell(
             canFocus = !isModalDrawerOpen
             onEnter = { if (isModalDrawerOpen) cancelFocusChange() }
         }
+        .focusGroup()
         .then(
             if (isModalDrawerOpen) {
                 Modifier.clearAndSetSemantics { hideFromAccessibility() }
@@ -250,7 +300,6 @@ fun HiAdaptiveShell(
                     .testTag(HiShellTestTags.ContentContainer)
                     .fillMaxSize()
                     .padding(start = effectiveSidebarWidthDp)
-                    .then(if (isSidebar) Modifier else Modifier.hiGlassSource(glassState))
                     .semantics {
                         isTraversalGroup = true
                         paneTitle = contentPaneTitle
@@ -267,17 +316,35 @@ fun HiAdaptiveShell(
                     },
                     label = "HiAdaptiveShellContent",
                 ) { destination ->
+                    val isActiveDestination = currentSelected == destination
+                    val gatedGlassState = if (!isSidebar && isActiveDestination) glassState else null
+                    val sourceClaim = remember(destination) { ShellGlassSourceClaim() }
+                    val explicitlyManaged = managesGlassSource(destination)
+                    val destinationScope = remember(paneLayout, gatedGlassState, sourceClaim, explicitlyManaged) {
+                        ShellContentScopeImpl(
+                            paneLayout = paneLayout,
+                            shellGlassState = gatedGlassState,
+                            sourceClaim = sourceClaim,
+                            explicitlyManaged = explicitlyManaged,
+                        )
+                    }
                     val destinationScrollConnection = remember(barState, destination) {
                         gatedNestedScrollConnection(barState.nestedScrollConnection) {
                             currentSelected == destination
                         }
                     }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .then(if (isSidebar) Modifier else Modifier.nestedScroll(destinationScrollConnection)),
+                    ShellDestinationHost(
+                        fallbackGlassState = gatedGlassState,
+                        explicitlyManaged = explicitlyManaged,
+                        sourceClaim = sourceClaim,
+                        nestedScrollConnection = if (isSidebar) null else destinationScrollConnection,
                     ) {
-                        contentScope.content(destination, contentPadding)
+                        ShellDestinationContent(
+                            scope = destinationScope,
+                            destination = destination,
+                            contentPadding = contentPadding,
+                            content = content,
+                        )
                     }
                 }
             }
@@ -355,6 +422,35 @@ fun HiAdaptiveShell(
             )
         }
     }
+}
+
+@Composable
+private fun ShellDestinationHost(
+    fallbackGlassState: HiGlassState?,
+    explicitlyManaged: Boolean,
+    sourceClaim: ShellGlassSourceClaim,
+    nestedScrollConnection: NestedScrollConnection?,
+    content: @Composable () -> Unit,
+) {
+    val useFallback = fallbackGlassState != null && !explicitlyManaged && !sourceClaim.isClaimed
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(if (useFallback) Modifier.hiGlassSource(fallbackGlassState) else Modifier)
+            .then(if (nestedScrollConnection != null) Modifier.nestedScroll(nestedScrollConnection) else Modifier),
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun ShellDestinationContent(
+    scope: ShellContentScope,
+    destination: ShellDestination,
+    contentPadding: PaddingValues,
+    content: @Composable ShellContentScope.(ShellDestination, PaddingValues) -> Unit,
+) {
+    scope.content(destination, contentPadding)
 }
 
 private fun gatedNestedScrollConnection(
