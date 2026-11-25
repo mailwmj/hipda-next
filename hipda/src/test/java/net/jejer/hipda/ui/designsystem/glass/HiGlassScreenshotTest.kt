@@ -340,6 +340,7 @@ private fun GlassScrollSpecimenScreen(
                         state = glassState,
                         shape = HiShapeTokens.Full,
                         floating = true,
+                        style = HiGlassStyle.Toolbar,
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
@@ -382,8 +383,8 @@ private fun GlassScrollSpecimenScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             listOf("论坛", "消息", "搜索", "我的").forEachIndexed { idx, label ->
-                                val bg = if (idx == 0) cs.secondaryContainer else Color.Transparent
-                                val fg = if (idx == 0) cs.onSecondaryContainer else cs.onSurfaceVariant
+                                val bg = if (idx == 0) cs.primary.copy(alpha = HiGlassTokens.IndicatorAlpha) else Color.Transparent
+                                val fg = if (idx == 0) cs.primary else cs.onSurfaceVariant
                                 Box(
                                     modifier = Modifier
                                         .clip(HiShapeTokens.Full)
