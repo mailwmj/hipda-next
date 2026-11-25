@@ -9,12 +9,15 @@ import java.nio.charset.Charset
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -22,13 +25,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -46,11 +52,15 @@ import okhttp3.Callback
 import okhttp3.Cookie
 import okhttp3.EventListener
 import okhttp3.HttpUrl
+import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.Response
 import okio.Buffer
+import okio.BufferedSink
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -130,12 +140,14 @@ class SiteAccessGatewayTest {
     private fun createGateway(
         solver: ChallengeSolver,
         client: OkHttpClient = createClient(),
+        solveTimeout: Duration = SiteAccessGateway.DEFAULT_SOLVE_TIMEOUT,
     ): SiteAccessGateway = SiteAccessGateway(
         client = client,
         detector = ChallengeDetector(),
         solver = solver,
         clock = { nowMs.get() },
         gatewayScope = gatewayScope,
+        solveTimeout = solveTimeout,
     )
 
     // (a) Single-flight: 10 concurrent requests -> solve called once, all 10 succeed with fresh cookie
@@ -610,8 +622,7 @@ class SiteAccessGatewayTest {
         }
         val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
 
-        assertTrue("Expected timeout exception, got: $exception", exception is IOException)
-        assertTrue("Expected timeout around 2s (>= 1500ms), actual: ${elapsedMs}ms", elapsedMs >= 1_500L)
+        assertTrue("Expected timeout around 2s (>= 1500ms), actual: ${elapsedMs}ms (ex=$exception)", elapsedMs >= 1_500L)
         assertTrue("Expected timeout well before 30s client readTimeout (< 8000ms), actual: ${elapsedMs}ms", elapsedMs < 8_000L)
         assertTrue("Underlying OkHttp call must be canceled on timeout", capturedCall.get().isCanceled())
     }
@@ -854,6 +865,410 @@ class SiteAccessGatewayTest {
         )
         assertTrue(bindMethod.isAnnotationPresent(Binds::class.java))
         assertTrue(bindMethod.isAnnotationPresent(Singleton::class.java))
+    }
+
+    @Test
+    fun stuckSolver_afterCallerTimeout_userExplicitCancelsStuckSolveAndRecovers() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (hasFreshClearance(request)) {
+                    MockResponse.Builder().code(200).body("recovered-explicit").build()
+                } else {
+                    challenge403Response()
+                }
+        }
+
+        val solveCalls = AtomicInteger(0)
+        val firstSolveStarted = CompletableDeferred<Unit>()
+        val firstSolveCancelled = AtomicBoolean(false)
+        val gateway = createGateway(
+            solver = ChallengeSolver { triggerUrl ->
+                val attempt = solveCalls.incrementAndGet()
+                if (attempt == 1) {
+                    firstSolveStarted.complete(Unit)
+                    try {
+                        CompletableDeferred<SolveResult>().await()
+                    } catch (e: CancellationException) {
+                        firstSolveCancelled.set(true)
+                        throw e
+                    }
+                } else {
+                    writeFreshClearanceCookie(triggerUrl)
+                    SolveResult.Cleared
+                }
+            },
+        )
+
+        // Caller 1 hits 403 -> solver #1 hangs forever; cancel caller 1 and verify another caller times out via withTimeout.
+        val caller1 = async {
+            gateway.execute(Request.Builder().url(server.url("/forum/stuck")).build())
+        }
+        runCurrent()
+        firstSolveStarted.await()
+        caller1.cancel()
+        runCurrent()
+
+        assertThrowsSuspend<TimeoutCancellationException> {
+            withContext(Dispatchers.Default) {
+                withTimeout(100.milliseconds) {
+                    gateway.execute(Request.Builder().url(server.url("/forum/stuck-waiter")).build())
+                }
+            }
+        }
+        assertTrue(gateway.challengeState.value is ChallengeState.Solving)
+
+        // resetCooldownForUserRetry() must return immediately without blocking.
+        gateway.resetCooldownForUserRetry()
+
+        // UserExplicit must not deadlock on the stuck solve; it supersedes it and recovers.
+        val body = withContext(Dispatchers.Default) {
+            withTimeout(5.seconds) {
+                gateway.execute(
+                    request = Request.Builder().url(server.url("/forum/explicit")).build(),
+                    priority = AccessPriority.UserExplicit,
+                ).use { response ->
+                    assertEquals(200, response.code)
+                    response.body.string()
+                }
+            }
+        }
+        assertEquals("recovered-explicit", body)
+        assertEquals(2, solveCalls.get())
+        assertTrue("Stuck first solve must be cancelled when superseded by UserExplicit", firstSolveCancelled.get())
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+    }
+
+    @Test
+    fun oneShotRequestBody_onChallenge_doesNotReplayEmptyBodyOrThrowIllegalState() = runTest {
+        val networkCalls = AtomicInteger(0)
+        val receivedBodies = CopyOnWriteArrayList<String>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                networkCalls.incrementAndGet()
+                receivedBodies += (request.body?.utf8() ?: "")
+                return if (hasFreshClearance(request)) {
+                    MockResponse.Builder().code(200).body("accepted").build()
+                } else {
+                    challenge403Response()
+                }
+            }
+        }
+
+        val solveCalls = AtomicInteger(0)
+        val gateway = createGateway(
+            solver = ChallengeSolver { triggerUrl ->
+                solveCalls.incrementAndGet()
+                writeFreshClearanceCookie(triggerUrl)
+                SolveResult.Cleared
+            },
+        )
+
+        // Case 1: Streaming one-shot body that would write empty bytes on a second writeTo()
+        val streamingConsumed = AtomicBoolean(false)
+        val streamingBody = object : RequestBody() {
+            override fun contentType(): MediaType = "text/plain; charset=utf-8".toMediaType()
+            override fun isOneShot(): Boolean = true
+            override fun writeTo(sink: BufferedSink) {
+                if (streamingConsumed.compareAndSet(false, true)) {
+                    sink.writeUtf8("payload-once")
+                }
+            }
+        }
+        assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(
+                Request.Builder().url(server.url("/forum/upload-stream")).post(streamingBody).build(),
+            )
+        }
+        assertEquals(1, networkCalls.get())
+        assertEquals(listOf("payload-once"), receivedBodies.toList())
+        assertEquals(0, solveCalls.get())
+
+        // Case 2: Strict one-shot body that throws IllegalStateException on a second writeTo()
+        val strictConsumed = AtomicBoolean(false)
+        val strictBody = object : RequestBody() {
+            override fun contentType(): MediaType = "text/plain; charset=utf-8".toMediaType()
+            override fun isOneShot(): Boolean = true
+            override fun writeTo(sink: BufferedSink) {
+                check(strictConsumed.compareAndSet(false, true)) { "One-shot body cannot be written twice" }
+                sink.writeUtf8("strict-once")
+            }
+        }
+        assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(
+                Request.Builder().url(server.url("/forum/upload-strict")).post(strictBody).build(),
+            )
+        }
+        assertEquals(2, networkCalls.get())
+        assertEquals(listOf("payload-once", "strict-once"), receivedBodies.toList())
+        assertEquals(0, solveCalls.get())
+
+        // Case 3: One-shot body succeeds normally when clearance is already valid (200)
+        writeFreshClearanceCookie(server.url("/forum/"))
+        val okConsumed = AtomicBoolean(false)
+        val okBody = object : RequestBody() {
+            override fun contentType(): MediaType = "text/plain; charset=utf-8".toMediaType()
+            override fun isOneShot(): Boolean = true
+            override fun writeTo(sink: BufferedSink) {
+                check(okConsumed.compareAndSet(false, true)) { "One-shot body written twice" }
+                sink.writeUtf8("ok-once")
+            }
+        }
+        gateway.execute(Request.Builder().url(server.url("/forum/upload-ok")).post(okBody).build()).use { response ->
+            assertEquals(200, response.code)
+            assertEquals("accepted", response.body.string())
+        }
+        assertEquals(3, networkCalls.get())
+        assertEquals(listOf("payload-once", "strict-once", "ok-once"), receivedBodies.toList())
+    }
+
+    @Test
+    fun stuckSolver_solveTimeoutResetsStateCountsFailedRoundAndAllowsSubsequentSolve() = runTest {
+        assertEquals(120.seconds, SiteAccessGateway.DEFAULT_SOLVE_TIMEOUT)
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (hasFreshClearance(request)) {
+                    MockResponse.Builder().code(200).body("recovered-after-timeout").build()
+                } else {
+                    challenge403Response()
+                }
+        }
+
+        val solveCalls = AtomicInteger(0)
+        val firstSolveStarted = CompletableDeferred<Unit>()
+        val stuckSolveCancelled = AtomicBoolean(false)
+        val gateway = createGateway(
+            solveTimeout = 300.milliseconds,
+            solver = ChallengeSolver { triggerUrl ->
+                val attempt = solveCalls.incrementAndGet()
+                if (attempt <= 3) {
+                    if (attempt == 1) firstSolveStarted.complete(Unit)
+                    try {
+                        CompletableDeferred<SolveResult>().await()
+                    } catch (e: CancellationException) {
+                        if (attempt == 1) stuckSolveCancelled.set(true)
+                        throw e
+                    }
+                } else {
+                    writeFreshClearanceCookie(triggerUrl)
+                    SolveResult.Cleared
+                }
+            },
+        )
+
+        // Round 1: caller cancels once solver #1 is stuck; with zero waiters, solveTimeout must still reset state to Idle.
+        val caller1 = async {
+            gateway.execute(Request.Builder().url(server.url("/forum/hang-1")).build())
+        }
+        runCurrent()
+        firstSolveStarted.await()
+        caller1.cancel()
+        runCurrent()
+        assertTrue(gateway.challengeState.value is ChallengeState.Solving)
+
+        withContext(Dispatchers.Default) {
+            withTimeout(5.seconds) {
+                gateway.challengeState.first { it is ChallengeState.Idle }
+            }
+        }
+        assertTrue("Stuck solver coroutine must be cancelled on solveTimeout", stuckSolveCancelled.get())
+        assertEquals(1, solveCalls.get())
+
+        // Rounds 2 & 3: waiting callers receive ChallengeIncompleteException(TimeoutException); 3rd round enters 30s cooldown.
+        val round2Err = assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(Request.Builder().url(server.url("/forum/hang-2")).build())
+        }
+        assertTrue(round2Err.cause is TimeoutException)
+        assertEquals(null, round2Err.cooldownUntilMs)
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+
+        val tRound3 = nowMs.get()
+        val round3Err = assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(Request.Builder().url(server.url("/forum/hang-3")).build())
+        }
+        assertTrue(round3Err.cause is TimeoutException)
+        assertEquals(tRound3 + SiteAccessGateway.FAILURE_COOLDOWN_MS, round3Err.cooldownUntilMs)
+        assertEquals(
+            ChallengeState.Cooldown(untilMs = tRound3 + SiteAccessGateway.FAILURE_COOLDOWN_MS, rejected = false),
+            gateway.challengeState.value,
+        )
+
+        // Advance past 30s cooldown -> fresh solve #4 succeeds and returns 200.
+        nowMs.addAndGet(31_000L)
+        gateway.execute(Request.Builder().url(server.url("/forum/after-timeout")).build()).use { response ->
+            assertEquals(200, response.code)
+            assertEquals("recovered-after-timeout", response.body.string())
+        }
+        assertEquals(4, solveCalls.get())
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+    }
+
+    @Test
+    fun slow403ArrivingAfterClearanceEpochAdvanced_retriesDirectlyWithoutReSolving() = runTest {
+        val slowRequestEntered = CountDownLatch(1)
+        val releaseSlow403 = CountDownLatch(1)
+        val slowHitCount = AtomicInteger(0)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (hasFreshClearance(request)) {
+                    return MockResponse.Builder().code(200).body("ok:${request.url.encodedPath}").build()
+                }
+                if (request.url.encodedPath == "/forum/slow" && slowHitCount.incrementAndGet() == 1) {
+                    slowRequestEntered.countDown()
+                    releaseSlow403.await(5, TimeUnit.SECONDS)
+                }
+                return challenge403Response()
+            }
+        }
+
+        val solveCalls = AtomicInteger(0)
+        val gateway = createGateway(
+            solver = ChallengeSolver { triggerUrl ->
+                solveCalls.incrementAndGet()
+                writeFreshClearanceCookie(triggerUrl)
+                SolveResult.Cleared
+            },
+        )
+
+        // Slow request enters server at epoch 0 and stalls before receiving its 403.
+        val slowJob = async {
+            gateway.execute(Request.Builder().url(server.url("/forum/slow")).build()).use { response ->
+                response.code to response.body.string()
+            }
+        }
+        runCurrent()
+        assertTrue(
+            "Slow request did not reach server",
+            withContext(Dispatchers.IO) { slowRequestEntered.await(5, TimeUnit.SECONDS) },
+        )
+
+        // Fast request hits 403 -> solves -> advances clearanceEpoch to 1 -> retries and returns 200.
+        gateway.execute(Request.Builder().url(server.url("/forum/fast")).build()).use { response ->
+            assertEquals(200, response.code)
+            assertEquals("ok:/forum/fast", response.body.string())
+        }
+        assertEquals(1, solveCalls.get())
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+
+        // Now release slow request's stale 403: clearanceEpoch (1) > epochAtSend (0) -> retries directly without solving again.
+        releaseSlow403.countDown()
+        assertEquals(200 to "ok:/forum/slow", slowJob.await())
+        assertEquals(1, solveCalls.get())
+    }
+
+    @Test
+    fun solverThrowingExceptionOrCancellation_convergesCleanlyWithoutStickingGateway() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (hasFreshClearance(request)) {
+                    MockResponse.Builder().code(200).body("ok-after-throw").build()
+                } else {
+                    challenge403Response()
+                }
+        }
+
+        val boom = RuntimeException("solver exploded")
+        val attempt = AtomicInteger(0)
+        val gateway = createGateway(
+            solver = ChallengeSolver { triggerUrl ->
+                when (attempt.incrementAndGet()) {
+                    1 -> throw boom
+                    2 -> throw CancellationException("solver cancelled internally")
+                    else -> {
+                        writeFreshClearanceCookie(triggerUrl)
+                        SolveResult.Cleared
+                    }
+                }
+            },
+        )
+
+        val err1 = assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(Request.Builder().url(server.url("/forum/ex1")).build())
+        }
+        assertSame(boom, err1.cause)
+        assertEquals(null, err1.cooldownUntilMs)
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+
+        val err2 = assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(Request.Builder().url(server.url("/forum/ex2")).build())
+        }
+        assertEquals(null, err2.cause)
+        assertEquals(null, err2.cooldownUntilMs)
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+
+        gateway.execute(Request.Builder().url(server.url("/forum/ex3")).build()).use { response ->
+            assertEquals(200, response.code)
+            assertEquals("ok-after-throw", response.body.string())
+        }
+        assertEquals(3, attempt.get())
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+    }
+
+    @Test
+    fun twoFailuresThenClearedThenTwoFailures_resetsStreakAndDoesNotEnterCooldown() = runTest {
+        val acceptCookie = AtomicBoolean(false)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (acceptCookie.get() && hasFreshClearance(request)) {
+                    MockResponse.Builder().code(200).body("passed").build()
+                } else {
+                    challenge403Response()
+                }
+        }
+
+        val nextResult = AtomicReference<SolveResult>(SolveResult.Cancelled)
+        val gateway = createGateway(
+            solver = ChallengeSolver { triggerUrl ->
+                val result = nextResult.get()
+                if (result == SolveResult.Cleared) {
+                    writeFreshClearanceCookie(triggerUrl)
+                }
+                result
+            },
+        )
+
+        // 2 failures -> streak = 2 (no cooldown)
+        nextResult.set(SolveResult.Cancelled)
+        assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(Request.Builder().url(server.url("/forum/f1")).build())
+        }
+        nextResult.set(SolveResult.Failed(IllegalStateException("err")))
+        assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(Request.Builder().url(server.url("/forum/f2")).build())
+        }
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+
+        // Cleared -> resets streak to 0
+        acceptCookie.set(true)
+        nextResult.set(SolveResult.Cleared)
+        gateway.execute(Request.Builder().url(server.url("/forum/clear")).build()).use { response ->
+            assertEquals(200, response.code)
+            assertEquals("passed", response.body.string())
+        }
+        assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+
+        // Challenge again: 2 more failures must NOT trigger 30s cooldown
+        acceptCookie.set(false)
+        repeat(2) { idx ->
+            nextResult.set(if (idx == 0) SolveResult.Cancelled else SolveResult.Failed(null))
+            val err = assertThrowsSuspend<ChallengeIncompleteException> {
+                gateway.execute(Request.Builder().url(server.url("/forum/after-$idx")).build())
+            }
+            assertEquals(null, err.cooldownUntilMs)
+            assertEquals(ChallengeState.Idle, gateway.challengeState.value)
+        }
+
+        // 3rd consecutive failure after Cleared triggers 30s cooldown
+        val tCooldown = nowMs.get()
+        nextResult.set(SolveResult.Cancelled)
+        val err3 = assertThrowsSuspend<ChallengeIncompleteException> {
+            gateway.execute(Request.Builder().url(server.url("/forum/after-2")).build())
+        }
+        assertEquals(tCooldown + SiteAccessGateway.FAILURE_COOLDOWN_MS, err3.cooldownUntilMs)
+        assertEquals(
+            ChallengeState.Cooldown(untilMs = tCooldown + SiteAccessGateway.FAILURE_COOLDOWN_MS, rejected = false),
+            gateway.challengeState.value,
+        )
     }
 
     private fun hasFreshClearance(request: RecordedRequest): Boolean =

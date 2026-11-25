@@ -2,6 +2,7 @@ package net.jejer.hipda.data.network.access
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resumeWithException
@@ -10,8 +11,11 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,7 +32,7 @@ import okhttp3.Response
 
 /**
  * Coroutine-layer site access gateway coordinating single-flight Cloudflare challenge solving,
- * bounded retries, failure/rejected cooldowns, background abandonment, and per-call timeouts.
+ * bounded retries, failure/rejected cooldowns, background abandonment, and per-call/solve timeouts.
  */
 @Singleton
 class SiteAccessGateway internal constructor(
@@ -37,17 +41,31 @@ class SiteAccessGateway internal constructor(
     private val solver: ChallengeSolver,
     private val clock: () -> Long,
     private val gatewayScope: CoroutineScope,
+    private val solveTimeout: Duration = DEFAULT_SOLVE_TIMEOUT,
 ) {
     @Inject
     constructor(
         client: OkHttpClient,
         detector: ChallengeDetector,
         solver: ChallengeSolver,
-    ) : this(client, detector, solver, System::currentTimeMillis, CoroutineScope(SupervisorJob() + Dispatchers.Default))
+    ) : this(
+        client,
+        detector,
+        solver,
+        System::currentTimeMillis,
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        DEFAULT_SOLVE_TIMEOUT,
+    )
+
+    init {
+        require(solveTimeout > Duration.ZERO) { "solveTimeout must be positive: $solveTimeout" }
+    }
 
     private class ActiveSolve {
         val deferred = CompletableDeferred<SolveOutcome>()
         var completed = false
+        var solverJob: Job? = null
+        var timeoutJob: Job? = null
     }
 
     private sealed interface SolveOutcome {
@@ -73,13 +91,22 @@ class SiteAccessGateway internal constructor(
         require(timeout > Duration.ZERO) { "timeout must be positive: $timeout" }
 
         var epochAtSend = 0L
+        var supersededSolve: ActiveSolve? = null
         val pendingSolve = synchronized(stateLock) {
             checkCooldownLocked(priority)
             epochAtSend = clearanceEpoch
-            activeSolve?.also {
-                if (priority == AccessPriority.BackgroundSilent) throw ChallengeAbandonedException()
+            val running = activeSolve
+            when {
+                running == null -> null
+                priority == AccessPriority.BackgroundSilent -> throw ChallengeAbandonedException()
+                priority == AccessPriority.UserExplicit -> {
+                    supersededSolve = detachActiveSolveLocked()
+                    null
+                }
+                else -> running
             }
         }
+        supersededSolve?.let(::cancelDetachedSolve)
         var alreadySolved = pendingSolve != null
         if (pendingSolve != null) epochAtSend = awaitOutcome(pendingSolve)
 
@@ -96,6 +123,7 @@ class SiteAccessGateway internal constructor(
 
             if (alreadySolved) throw ChallengeRejectedException(enterRejectedCooldown(epochAtSend))
             if (priority == AccessPriority.BackgroundSilent) throw ChallengeAbandonedException()
+            if (request.body?.isOneShot() == true) throw ChallengeIncompleteException()
 
             epochAtSend = resolveChallenge(epochAtSend, buildTriggerUrl(request), priority)
             alreadySolved = true
@@ -110,30 +138,80 @@ class SiteAccessGateway internal constructor(
     private suspend fun resolveChallenge(epochAtSend: Long, triggerUrl: HttpUrl, priority: AccessPriority): Long {
         var shouldLaunch = false
         var retryEpoch = epochAtSend
+        var supersededSolve: ActiveSolve? = null
         val targetSolve = synchronized(stateLock) {
             checkCooldownLocked(priority)
             val running = activeSolve
             when {
+                running != null && priority == AccessPriority.UserExplicit -> {
+                    supersededSolve = detachActiveSolveLocked()
+                    startSolveLocked().also { shouldLaunch = true }
+                }
                 running != null -> running
                 clearanceEpoch > epochAtSend -> {
                     retryEpoch = clearanceEpoch
                     null
                 }
-                else -> ActiveSolve().also { created ->
-                    activeSolve = created
-                    shouldLaunch = true
-                    _challengeState.value = ChallengeState.Solving(startedAtMs = clock())
-                }
-            }
-        } ?: return retryEpoch
-
-        if (shouldLaunch) {
-            val job = gatewayScope.launch { runSolve(targetSolve, triggerUrl) }
-            if (job.isCancelled && !targetSolve.deferred.isCompleted) {
-                completeSolve(targetSolve, SolveResult.Failed(CancellationException("Gateway scope inactive")))
+                else -> startSolveLocked().also { shouldLaunch = true }
             }
         }
+        supersededSolve?.let(::cancelDetachedSolve)
+        if (targetSolve == null) return retryEpoch
+
+        if (shouldLaunch) launchSolve(targetSolve, triggerUrl)
         return awaitOutcome(targetSolve)
+    }
+
+    private fun startSolveLocked(): ActiveSolve = ActiveSolve().also { created ->
+        activeSolve = created
+        _challengeState.value = ChallengeState.Solving(startedAtMs = clock())
+    }
+
+    private fun detachActiveSolveLocked(): ActiveSolve? {
+        val old = activeSolve ?: return null
+        activeSolve = null
+        old.completed = true
+        _challengeState.value = ChallengeState.Idle
+        return old
+    }
+
+    private fun cancelDetachedSolve(old: ActiveSolve) {
+        old.timeoutJob?.cancel()
+        old.solverJob?.cancel(CancellationException("Superseded by UserExplicit retry"))
+        old.deferred.complete(SolveOutcome.Incomplete(cooldownUntilMs = null, cause = null))
+    }
+
+    private fun launchSolve(solve: ActiveSolve, triggerUrl: HttpUrl) {
+        val solverJob = gatewayScope.launch(start = CoroutineStart.LAZY) { runSolve(solve, triggerUrl) }
+        val timeoutJob = if (solveTimeout.isFinite()) {
+            gatewayScope.launch(start = CoroutineStart.LAZY) {
+                delay(solveTimeout)
+                completeSolve(
+                    solve = solve,
+                    result = SolveResult.Failed(TimeoutException("Challenge solve timed out after $solveTimeout")),
+                    cancelSolver = true,
+                )
+            }
+        } else {
+            null
+        }
+        val alreadyCompleted = synchronized(stateLock) {
+            if (solve.completed) true else {
+                solve.solverJob = solverJob
+                solve.timeoutJob = timeoutJob
+                false
+            }
+        }
+        if (alreadyCompleted) {
+            solverJob.cancel()
+            timeoutJob?.cancel()
+            return
+        }
+        if (!solverJob.start() && solverJob.isCancelled && !solve.deferred.isCompleted) {
+            completeSolve(solve, SolveResult.Failed(CancellationException("Gateway scope inactive")))
+            return
+        }
+        timeoutJob?.start()
     }
 
     private suspend fun runSolve(solve: ActiveSolve, triggerUrl: HttpUrl) {
@@ -149,10 +227,14 @@ class SiteAccessGateway internal constructor(
         }
     }
 
-    private fun completeSolve(solve: ActiveSolve, result: SolveResult) {
+    private fun completeSolve(solve: ActiveSolve, result: SolveResult, cancelSolver: Boolean = false) {
+        var solverJob: Job? = null
+        var timeoutJob: Job? = null
         val outcome = synchronized(stateLock) {
             if (solve.completed) return
             solve.completed = true
+            solverJob = solve.solverJob
+            timeoutJob = solve.timeoutJob
             if (activeSolve === solve) activeSolve = null
             when (result) {
                 SolveResult.Cleared -> {
@@ -178,6 +260,12 @@ class SiteAccessGateway internal constructor(
                     }
                 }
             }
+        }
+        if (cancelSolver) {
+            val cause = (result as? SolveResult.Failed)?.cause
+            solverJob?.cancel(CancellationException("Challenge solve timed out", cause))
+        } else {
+            timeoutJob?.cancel()
         }
         solve.deferred.complete(outcome)
     }
@@ -256,6 +344,7 @@ class SiteAccessGateway internal constructor(
 
     companion object {
         val DEFAULT_TIMEOUT: Duration = 30.seconds
+        val DEFAULT_SOLVE_TIMEOUT: Duration = 120.seconds
         const val REJECTED_COOLDOWN_MS: Long = 60_000L
         const val FAILURE_COOLDOWN_MS: Long = 30_000L
         const val MAX_CONSECUTIVE_FAILURES: Int = 3
