@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-25 11:40 +07）
+# 负责人交接说明（2026-11-25 12:15 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -15,15 +15,16 @@
   - A3b Cronet 传输（HttpEngine → Play 服务 Cronet → OkHttp 兜底；V-A3b PASS + R-A3b APPROVE `@6e91c6e`）→ `fe6b553`
   - A4a Cloudflare 验证页检测器与 TransportInterceptor 遗留收口（V-A4a PASS + R-A4a APPROVE `@e75ef76`）→ `294c705`
   - C4b 导航随滚动与键盘隐藏、内容留白、按压缩放（R-C4b APPROVE + V-C4b PASS `@6e92adc`，C4b-fix1 核对 PASS `@6396593`）→ `4229253`
+  - A5a WebView UA 统一与 Cookie 桥（R-A5a 阻断“清除 cf_clearance 未覆盖域变体”修复后复核 APPROVE `@3c9e3b3`）→ `4d90818`
+  - A4b 站点访问网关与独立恢复 Dispatcher（V-A4b 阻断“solver 挂起致网关卡死”修复后复验 PASS `@137376a`）→ `0247458`
 - 卡片全文在 `/home/mir/Documents/hipda-next.wt/_cards/<卡号>.md`（含 `-fix1` 修改轮与 `R-`/`V-` 审查验证卡），详细报告在 `_reports/`，通用条款在 `_cards/_common.md`。
 
 ## 2. 进行中
 
 | 卡号 | 分支 / worktree | 会话 | 状态 |
 |---|---|---|---|
-| A4b 站点访问网关与独立恢复 Dispatcher | `card/A4b-access-gateway` / `../hipda-next.wt/A4b` | 实现 `5e9d6bfe` | V-A4b FAIL → 修改轮：solver 挂起导致网关卡死 + 一次性请求体 |
-| A5a WebView UA 统一与 Cookie 桥 | `card/A5a-webview-identity` / `../hipda-next.wt/A5a` | 实现 `4a0702b3` | R-A5a 阻断 → 修改轮：清除 `cf_clearance` 未覆盖域变体 |
-| A5b 透明 ChallengeActivity 与后台自动过盾 | `card/A5b-challenge-host` / `../hipda-next.wt/A5b` | 待派发 | 卡片已起草（`_cards/A5b.md`），待 A4b、A5a 合并后填基线派发 |
+| A5b 透明 ChallengeActivity 与后台自动过盾 | `card/A5b-challenge-host` / `../hipda-next.wt/A5b` | 实现 `03e0ce89` | 实现中（基于 `0247458`；完成后 Carbon 审查 + Hydrogen 探针验证） |
+| A6 可见验证面板与原地等待/冷却提示 | `card/A6-challenge-panel` / `../hipda-next.wt/A6` | 待派发 | 卡片已起草（`_cards/A6.md`），待 A5b 合并后确认签名与基线派发 |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 助理 `1b4eb15f` | 常驻复用中 |
 
 - M4 外壳阶段验收（C1–C5b 全部已合并）待用户真机核验真实模糊与帧率。
@@ -31,7 +32,7 @@
 - 本机有 Android SDK（mise 安装，见 lesson.md），可本地录制 Roborazzi 基线。
 
 ## 3. 后续主干路径
-- A 线：`A4b、A5a 修改轮收口 → A5b → A6（遗留见 _cards/A6-notes.md）→ B1b`。**B1b 完成后找用户**：登录、确认抓到版块页（M1 验收）、按清单导出脱敏样本，随后解锁 B2–B9 与 D2/D4–D9。
+- A 线：`A5b → A6（遗留已写入 _cards/A6.md）→ B1b`。**B1b 完成后找用户**：登录、确认抓到版块页（M1 验收）、按清单导出脱敏样本，随后解锁 B2–B9 与 D2/D4–D9。
 - C 线：C1–C5b 已全部合入 `main`，M4 外壳阶段验收待用户真机（核验真实模糊与帧率）。
 - 第三批建议（未落实，后续卡带上）：R-C5b 复核建议 `HiPressFeedbackNode.onDetach` 复位 `anim`、`displayedCount`/`displayedChar` 改普通引用；V-C4a 浅色毛玻璃在强对比文字上的真实模糊观感待 M4 真机校准。
 

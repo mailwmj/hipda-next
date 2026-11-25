@@ -3,6 +3,7 @@ package net.jejer.hipda.ui.challenge
 import java.util.Locale
 import kotlinx.coroutines.flow.Flow
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /** Snapshot of the hosted WebView main frame's navigation and Cloudflare challenge state. */
 data class MainFrameState(
@@ -60,6 +61,14 @@ interface ChallengeWebViewHandle {
     fun mainFrameState(): MainFrameState
     suspend fun isDomInChallengeState(): Boolean
     fun close()
+
+    /**
+     * Initiates teardown and suspends until host cleanup completes (WebView stopped/destroyed and
+     * Activity finishing). Defaults to synchronous [close] for lightweight fakes.
+     */
+    suspend fun closeAndAwait() {
+        close()
+    }
 }
 
 /** Acquires a hosted challenge WebView session (production launches [ChallengeActivity]). */
@@ -99,6 +108,57 @@ internal fun parseTurnstileChallengeEvent(eventName: String?): ChallengeWebViewE
         "interactiveTimeout" -> ChallengeWebViewEvent.InteractiveTimeout
         else -> null
     }
+
+/** Formats the normalized `scheme://host[:port]` origin for [url], omitting default HTTP/HTTPS ports. */
+internal fun formatOrigin(url: HttpUrl): String {
+    val scheme = url.scheme.lowercase(Locale.ROOT)
+    val rawHost = url.host.lowercase(Locale.ROOT)
+    val formattedHost = if (rawHost.contains(':')) "[$rawHost]" else rawHost
+    val defaultPort = HttpUrl.defaultPort(scheme)
+    return if (url.port != defaultPort) {
+        "$scheme://$formattedHost:${url.port}"
+    } else {
+        "$scheme://$formattedHost"
+    }
+}
+
+/**
+ * Builds restricted `allowedOriginRules` for `WebViewCompat.addWebMessageListener` and
+ * `WebViewCompat.addDocumentStartJavaScript`: `4d4y.com`, `*.4d4y.com`,
+ * `challenges.cloudflare.com`, `*.challenges.cloudflare.com`, plus the origin of [triggerUrl].
+ */
+internal fun buildAllowedChallengeOriginRules(triggerUrl: HttpUrl): Set<String> = linkedSetOf(
+    "https://4d4y.com",
+    "https://*.4d4y.com",
+    "https://challenges.cloudflare.com",
+    "https://*.challenges.cloudflare.com",
+).apply {
+    val scheme = triggerUrl.scheme.lowercase(Locale.ROOT)
+    if (scheme == "http" || scheme == "https") {
+        add(formatOrigin(triggerUrl))
+    }
+}
+
+/**
+ * Returns true when [urlOrOrigin] belongs to `4d4y.com` (HTTPS), `challenges.cloudflare.com`
+ * (HTTPS), or matches the exact `(scheme, host, port)` origin of [triggerUrl].
+ */
+internal fun isAllowedChallengeOrigin(urlOrOrigin: String?, triggerUrl: HttpUrl): Boolean {
+    val parsed = urlOrOrigin?.trim()?.toHttpUrlOrNull() ?: return false
+    val scheme = parsed.scheme.lowercase(Locale.ROOT)
+    val host = parsed.host.lowercase(Locale.ROOT)
+    if (scheme == triggerUrl.scheme.lowercase(Locale.ROOT) &&
+        host == triggerUrl.host.lowercase(Locale.ROOT) &&
+        parsed.port == triggerUrl.port
+    ) {
+        return true
+    }
+    if (scheme != "https" || parsed.port != 443) return false
+    return host == "4d4y.com" ||
+        host.endsWith(".4d4y.com") ||
+        host == "challenges.cloudflare.com" ||
+        host.endsWith(".challenges.cloudflare.com")
+}
 
 /**
  * Thread-safe tracker reconciling WebView main-frame callbacks across Chromium orderings

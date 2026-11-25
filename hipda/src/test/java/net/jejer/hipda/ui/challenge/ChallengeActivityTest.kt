@@ -4,29 +4,37 @@ import android.app.Application
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Looper
+import android.util.AndroidRuntimeException
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.ValueCallback
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
-import android.net.Uri
-import java.io.ByteArrayInputStream
 import androidx.test.core.app.ApplicationProvider
 import dagger.Binds
+import java.io.ByteArrayInputStream
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.IdentityHashMap
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import net.jejer.hipda.R
 import net.jejer.hipda.data.network.InMemorySiteCookieStore
@@ -39,9 +47,11 @@ import okhttp3.Cookie
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttp
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -51,9 +61,15 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 
 @RunWith(RobolectricTestRunner::class)
-@Config(application = Application::class, sdk = [34])
+@Config(
+    application = Application::class,
+    sdk = [34],
+    shadows = [ChallengeActivityTest.RecordingShadowCookieManager::class],
+)
 class ChallengeActivityTest {
 
     private val forumUrl: HttpUrl = "https://www.4d4y.com/forum/".toHttpUrl()
@@ -70,6 +86,7 @@ class ChallengeActivityTest {
 
     @Before
     fun setUp() {
+        RecordingShadowCookieManager.reset()
         application = ApplicationProvider.getApplicationContext()
         OkHttp.initialize(application)
         store = InMemorySiteCookieStore()
@@ -81,20 +98,27 @@ class ChallengeActivityTest {
         )
     }
 
+    @After
+    fun tearDown() {
+        RecordingShadowCookieManager.reset()
+    }
+
     private fun futureHttpDate(offsetSeconds: Long = 1800): String {
         val epochSeconds = (System.currentTimeMillis() / 1_000L) + offsetSeconds
         return httpDateFormatter.format(Instant.ofEpochSecond(epochSeconds))
     }
 
+    private fun clearanceHeader(value: String): String =
+        "$CF_CLEARANCE_COOKIE_NAME=$value; Domain=.4d4y.com; Path=/; Expires=${futureHttpDate()}; Secure; HttpOnly; SameSite=None"
+
     private fun seedOldClearance(value: String = "old_activity_tok") {
-        val header =
-            "$CF_CLEARANCE_COOKIE_NAME=$value; Domain=.4d4y.com; Path=/; Expires=${futureHttpDate()}; Secure; HttpOnly; SameSite=None"
+        val header = clearanceHeader(value)
         store.saveFromResponse(forumUrl, listOf(requireNotNull(Cookie.parse(forumUrl, header))))
         fakeCookieAccess.seedCookie(forumUrl, header)
     }
 
     private suspend fun awaitStartedActivityIntent(): Intent {
-        repeat(100) {
+        repeat(200) {
             shadowOf(Looper.getMainLooper()).idle()
             val next = shadowOf(application).nextStartedActivity
             if (next != null) return next
@@ -103,8 +127,18 @@ class ChallengeActivityTest {
         error("ChallengeActivity launch intent was not dispatched")
     }
 
+    private suspend fun <T> awaitWithMainLooper(deferred: Deferred<T>): T {
+        repeat(500) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (deferred.isCompleted) return deferred.await()
+            delay(10)
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        return deferred.await()
+    }
+
     @Test
-    fun launchFromApplicationContext_configuresTransparentNonInteractiveSilentHostAndClosesCleanly() {
+    fun launchFromApplicationContext_configuresTransparentNonInteractiveSilentHostAndDestroysWebViewOnClose() {
         runBlocking {
             val host = AndroidChallengeWebViewHost(application)
             val acquireDeferred = async(Dispatchers.Default) {
@@ -123,7 +157,7 @@ class ChallengeActivityTest {
             val activity = controller.get()
             shadowOf(Looper.getMainLooper()).idle()
 
-            val handle = acquireDeferred.await()
+            val handle = awaitWithMainLooper(acquireDeferred)
             val binding = requireNotNull(handle.activityBinding)
             assertSame(activity, binding.activity)
 
@@ -148,11 +182,15 @@ class ChallengeActivityTest {
             assertTrue(webView.layoutParams.width >= (ChallengeActivity.SILENT_WEBVIEW_WIDTH_DP * density).toInt())
             assertTrue(webView.layoutParams.height >= (ChallengeActivity.SILENT_WEBVIEW_HEIGHT_DP * density).toInt())
 
-            // WebView settings and cookies must be configured with unified UA
+            // WebView settings and both first-party & third-party cookies must be enabled with unified UA
             assertTrue(webView.settings.javaScriptEnabled)
             assertTrue(webView.settings.domStorageEnabled)
             assertEquals(unifiedUa, webView.settings.userAgentString)
             assertTrue(CookieManager.getInstance().acceptCookie())
+            assertTrue(
+                "Third-party cookies must be enabled for Turnstile iframe challenges.cloudflare.com",
+                CookieManager.getInstance().acceptThirdPartyCookies(webView),
+            )
 
             // Verify A6 interactive mode handoff reuses the same WebView and clears silent window flags
             binding.setInteractiveMode(true)
@@ -164,11 +202,65 @@ class ChallengeActivityTest {
             assertTrue(webView.isFocusable)
             assertTrue(webView.isClickable)
 
-            // Closing handle must finish the Activity and detach WebView
+            // Closing handle must finish the Activity, detach WebView, and call WebView.destroy()
             handle.close()
             shadowOf(Looper.getMainLooper()).idle()
             assertTrue("Activity must be finishing after handle.close()", activity.isFinishing)
             assertEquals(0, binding.rootContainer.childCount)
+            assertTrue("WebView.destroy() must be called on close", shadowOf(webView).wasDestroyCalled())
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun installChallengeMessageListener_registersFallbackBridgeInjectsRestrictedScriptAndDispatchesEvents() {
+        runBlocking {
+            val host = AndroidChallengeWebViewHost(application)
+            val acquireDeferred = async(Dispatchers.Default) {
+                host.acquire(forumUrl, unifiedUa)
+            }
+
+            val intent = awaitStartedActivityIntent()
+            val controller = Robolectric.buildActivity(ChallengeActivity::class.java, intent).setup()
+            shadowOf(Looper.getMainLooper()).idle()
+
+            val handle = awaitWithMainLooper(acquireDeferred)
+            val webView = requireNotNull(handle.activityBinding).webView
+            val shadowWebView = shadowOf(webView)
+            val client = webView.webViewClient
+
+            handle.installChallengeMessageListener()
+            shadowOf(Looper.getMainLooper()).idle()
+
+            val jsBridge = shadowWebView.getJavascriptInterface(ChallengeActivity.FALLBACK_JS_BRIDGE_NAME)
+            assertNotNull("Fallback @JavascriptInterface must be registered", jsBridge)
+
+            // Untrusted origin must NOT trigger fallback listener injection AND direct JS bridge call must be ignored
+            client.onPageStarted(webView, "https://evil.example.com/ad", null)
+            assertNull("Listener script must not be injected on untrusted origins", shadowWebView.lastEvaluatedJavascript)
+            val onEventMethod = requireNotNull(jsBridge)::class.java.getMethod("onChallengeEvent", String::class.java)
+            onEventMethod.invoke(jsBridge, "interactiveBegin")
+
+            // Trusted forum origin MUST inject listener script with cloudflare-challenge & origin checks
+            client.onPageStarted(webView, forumUrl.toString(), null)
+            val injectedScript = shadowWebView.lastEvaluatedJavascript
+            assertNotNull("Listener script must be injected on allowed origin", injectedScript)
+            assertTrue(injectedScript.contains("cloudflare-challenge"))
+            assertTrue(injectedScript.contains("interactiveBegin"))
+            assertTrue(injectedScript.contains("interactiveTimeout"))
+            assertTrue(injectedScript.contains("isAllowedOrigin"))
+            assertTrue(injectedScript.contains(ChallengeActivity.FALLBACK_JS_BRIDGE_NAME))
+
+            // Invoking the registered JS bridge on trusted origin dispatches InteractiveTimeout (proving forged InteractiveBegin above was dropped!)
+            onEventMethod.invoke(jsBridge, "interactiveTimeout")
+            assertEquals(ChallengeWebViewEvent.InteractiveTimeout, handle.events.first())
+
+            onEventMethod.invoke(jsBridge, "interactiveBegin")
+            assertEquals(ChallengeWebViewEvent.InteractiveBegin, handle.events.first())
+
+            handle.close()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(shadowWebView.wasDestroyCalled())
             controller.destroy()
         }
     }
@@ -192,14 +284,16 @@ class ChallengeActivityTest {
             val controller = Robolectric.buildActivity(ChallengeActivity::class.java, intent).setup()
             val activity = controller.get()
             shadowOf(Looper.getMainLooper()).idle()
+            val webView = requireNotNull(findWebView(activity.findViewById(android.R.id.content)))
 
             // Simulate external termination of ChallengeActivity
             activity.finish()
             controller.pause().stop().destroy()
             shadowOf(Looper.getMainLooper()).idle()
 
-            val result = solveDeferred.await()
+            val result = awaitWithMainLooper(solveDeferred)
             assertEquals(SolveResult.Cancelled, result)
+            assertTrue("WebView.destroy() must be called on Activity destroy", shadowOf(webView).wasDestroyCalled())
 
             // Backup must be restored on both sides
             assertEquals(
@@ -215,7 +309,7 @@ class ChallengeActivityTest {
     }
 
     @Test
-    fun renderProcessGoneOnRealWebViewClient_returnsTrueAndWakesSolverAsFailed() {
+    fun renderProcessGoneOnRealWebViewClient_returnsTrueDestroysWebViewAndWakesSolverAsFailed() {
         runBlocking {
             seedOldClearance("backup_real_render_crash")
             val solver = WebViewChallengeSolver(
@@ -244,9 +338,9 @@ class ChallengeActivityTest {
                 },
             )
             assertTrue("onRenderProcessGone must return true to protect app process", handled)
-            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue("WebView.destroy() must be called on render process gone", shadowOf(webView).wasDestroyCalled())
 
-            val result = solveDeferred.await()
+            val result = awaitWithMainLooper(solveDeferred)
             assertTrue("Expected Failed on render process gone, got $result", result is SolveResult.Failed)
             assertTrue((result as SolveResult.Failed).cause is ChallengeRenderProcessGoneException)
             shadowOf(Looper.getMainLooper()).idle()
@@ -256,6 +350,160 @@ class ChallengeActivityTest {
                 store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
             )
             controller.destroy()
+        }
+    }
+
+    @Test
+    fun userExplicitReentry_destroysOldWebViewAndRelaunchesOnDyingOnNewIntentWithoutCancellingSecondSolve() {
+        runBlocking {
+            seedOldClearance("old_reentry_tok")
+            val secondSessionReady = AtomicReference<ChallengeInteractionSession>()
+            val solver = WebViewChallengeSolver(
+                cookieBridge = cookieBridge,
+                userAgentProvider = UserAgentProvider { unifiedUa },
+                webViewHost = AndroidChallengeWebViewHost(application),
+                interactionPresenter = ChallengeInteractionPresenter { session ->
+                    secondSessionReady.set(session)
+                    fakeCookieAccess.seedCookie(forumUrl, clearanceHeader("fresh_second_round_tok"))
+                    SolveResult.Cleared
+                },
+            )
+
+            // Round 1 starts and attaches ChallengeActivity #1
+            val firstSolve = async(Dispatchers.Default) { solver.solve(forumUrl) }
+            val firstIntent = awaitStartedActivityIntent()
+            val firstController = Robolectric.buildActivity(ChallengeActivity::class.java, firstIntent).setup()
+            val firstActivity = firstController.get()
+            shadowOf(Looper.getMainLooper()).idle()
+            val firstWebView = requireNotNull(findWebView(firstActivity.findViewById(android.R.id.content)))
+
+            // Simulate UserExplicit superseding round 1: cancel round 1 and immediately launch round 2
+            firstSolve.cancel(CancellationException("UserExplicit retry"))
+            val secondSolve = async(Dispatchers.Default) { solver.solve(forumUrl) }
+
+            // Round 2's intent must arrive only after round 1 destroyed old WebView and marked Activity #1 finishing
+            val secondIntent = awaitStartedActivityIntent()
+            assertTrue("Old WebView must be destroyed before round 2 starts", shadowOf(firstWebView).wasDestroyCalled())
+            assertTrue("Old ChallengeActivity must already be finishing", firstActivity.isFinishing)
+
+            // Simulate AMS delivering round 2's intent to dying Activity #1 via singleTop onNewIntent,
+            // followed immediately by Activity #1's onDestroy().
+            firstController.newIntent(secondIntent)
+            shadowOf(Looper.getMainLooper()).idle()
+            firstController.pause().stop().destroy()
+            shadowOf(Looper.getMainLooper()).idle()
+
+            // Dying Activity #1 must NOT swallow round 2; it must relaunch a fresh Activity #2 instance
+            val relaunchedIntent = awaitStartedActivityIntent()
+            assertEquals(
+                secondIntent.getStringExtra(ChallengeActivity.EXTRA_SESSION_ID),
+                relaunchedIntent.getStringExtra(ChallengeActivity.EXTRA_SESSION_ID),
+            )
+            assertFalse("Round 2 must NOT be cancelled by dying Activity #1 HostDestroyed", secondSolve.isCompleted)
+
+            // Start fresh Activity #2 for round 2 and trigger escalation -> Cleared
+            val secondController = Robolectric.buildActivity(ChallengeActivity::class.java, relaunchedIntent).setup()
+            val secondActivity = secondController.get()
+            shadowOf(Looper.getMainLooper()).idle()
+            val secondWebView = requireNotNull(findWebView(secondActivity.findViewById(android.R.id.content)))
+            val jsBridge = requireNotNull(
+                shadowOf(secondWebView).getJavascriptInterface(ChallengeActivity.FALLBACK_JS_BRIDGE_NAME),
+            )
+            jsBridge::class.java.getMethod("onChallengeEvent", String::class.java)
+                .invoke(jsBridge, "interactiveBegin")
+
+            val secondResult = awaitWithMainLooper(secondSolve)
+            assertEquals(SolveResult.Cleared, secondResult)
+            assertNotNull(secondSessionReady.get())
+            assertTrue(shadowOf(secondWebView).wasDestroyCalled())
+            assertTrue(secondActivity.isFinishing)
+            assertEquals(
+                listOf("fresh_second_round_tok"),
+                store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+            )
+            secondController.destroy()
+        }
+    }
+
+    @Test
+    fun unavailableWebViewPackage_finishesWithoutCrashingAndReturnsFailedImmediately() {
+        runBlocking {
+            seedOldClearance("backup_missing_wv")
+            val missingWebViewError = AndroidRuntimeException("WebViewFactory\$MissingWebViewPackageException")
+            FailingWebViewChallengeActivity.failureToThrow = missingWebViewError
+            try {
+                val solver = WebViewChallengeSolver(
+                    cookieBridge = cookieBridge,
+                    userAgentProvider = UserAgentProvider { unifiedUa },
+                    webViewHost = AndroidChallengeWebViewHost(application),
+                    interactionPresenter = DefaultChallengeInteractionPresenter(),
+                    hostAcquireTimeout = 30.seconds,
+                )
+
+                val solveDeferred = async(Dispatchers.Default) { solver.solve(forumUrl) }
+                val intent = awaitStartedActivityIntent()
+
+                // Launch failing subclass with the exact session intent; onCreate must NOT crash
+                val controller = Robolectric.buildActivity(FailingWebViewChallengeActivity::class.java, intent).setup()
+                val activity = controller.get()
+                shadowOf(Looper.getMainLooper()).idle()
+                assertTrue("Activity must finish when WebView creation fails", activity.isFinishing)
+
+                val result = awaitWithMainLooper(solveDeferred)
+                assertTrue("Unavailable WebView must return Failed (not Cancelled), got: $result", result is SolveResult.Failed)
+                val cause = (result as SolveResult.Failed).cause
+                assertTrue("Expected AndroidRuntimeException cause, got: $cause", cause is AndroidRuntimeException)
+                assertEquals(missingWebViewError.message, cause?.message)
+                assertEquals(
+                    listOf("backup_missing_wv"),
+                    store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+                )
+                assertTrue(
+                    fakeCookieAccess.storedRawHeaders(forumUrl).any {
+                        it.startsWith("$CF_CLEARANCE_COOKIE_NAME=backup_missing_wv")
+                    },
+                )
+                controller.destroy()
+            } finally {
+                FailingWebViewChallengeActivity.failureToThrow = null
+            }
+        }
+    }
+
+    @Test
+    fun webViewNativeLinkError_finishesWithoutCrashingAndReturnsFailedImmediately() {
+        runBlocking {
+            seedOldClearance("backup_unsatisfied_link")
+            val linkError = UnsatisfiedLinkError("libwebviewchromium.so not found")
+            FailingWebViewChallengeActivity.failureToThrow = linkError
+            try {
+                val solver = WebViewChallengeSolver(
+                    cookieBridge = cookieBridge,
+                    userAgentProvider = UserAgentProvider { unifiedUa },
+                    webViewHost = AndroidChallengeWebViewHost(application),
+                    interactionPresenter = DefaultChallengeInteractionPresenter(),
+                    hostAcquireTimeout = 30.seconds,
+                )
+
+                val solveDeferred = async(Dispatchers.Default) { solver.solve(forumUrl) }
+                val intent = awaitStartedActivityIntent()
+
+                val controller = Robolectric.buildActivity(FailingWebViewChallengeActivity::class.java, intent).setup()
+                assertTrue(controller.get().isFinishing)
+
+                val result = awaitWithMainLooper(solveDeferred)
+                assertTrue("UnsatisfiedLinkError must return Failed, got: $result", result is SolveResult.Failed)
+                val cause = (result as SolveResult.Failed).cause
+                assertTrue("Expected UnsatisfiedLinkError cause, got: $cause", cause is UnsatisfiedLinkError)
+                assertEquals(linkError.message, cause?.message)
+                assertEquals(
+                    listOf("backup_unsatisfied_link"),
+                    store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+                )
+                controller.destroy()
+            } finally {
+                FailingWebViewChallengeActivity.failureToThrow = null
+            }
         }
     }
 
@@ -270,7 +518,7 @@ class ChallengeActivityTest {
     }
 
     @Test
-    fun realWebViewClient_ignoresProbeDomainErrorsAndTracksMainFrameChallengeHeader() {
+    fun realWebViewClient_filtersNavigationSchemesIgnoresProbeErrorsAndTracksMainFrameChallengeHeader() {
         runBlocking {
             val host = AndroidChallengeWebViewHost(application)
             val acquireDeferred = async(Dispatchers.Default) {
@@ -281,9 +529,17 @@ class ChallengeActivityTest {
             val controller = Robolectric.buildActivity(ChallengeActivity::class.java, intent).setup()
             shadowOf(Looper.getMainLooper()).idle()
 
-            val handle = acquireDeferred.await()
+            val handle = awaitWithMainLooper(acquireDeferred)
             val webView = requireNotNull(handle.activityBinding).webView
             val client = webView.webViewClient
+
+            // Navigation scheme policy: allow http/https/about inside WebView, block external/file/js schemes
+            assertFalse(client.shouldOverrideUrlLoading(webView, fakeRequest("https://www.4d4y.com/forum/", isMainFrame = true)))
+            assertFalse(client.shouldOverrideUrlLoading(webView, fakeRequest("http://www.4d4y.com/forum/", isMainFrame = true)))
+            assertFalse(client.shouldOverrideUrlLoading(webView, fakeRequest("about:blank", isMainFrame = true)))
+            assertTrue(client.shouldOverrideUrlLoading(webView, fakeRequest("intent://evil/#Intent;end", isMainFrame = true)))
+            assertTrue(client.shouldOverrideUrlLoading(webView, fakeRequest("file:///etc/passwd", isMainFrame = true)))
+            assertTrue(client.shouldOverrideUrlLoading(webView, fakeRequest("javascript:alert(1)", isMainFrame = true)))
 
             handle.loadUrl(forumUrl.toString())
             shadowOf(Looper.getMainLooper()).idle()
@@ -293,7 +549,14 @@ class ChallengeActivityTest {
             client.onReceivedHttpError(
                 webView,
                 fakeRequest("https://probe.challenges.cloudflare.com/cdn-cgi/trace", isMainFrame = true),
-                WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", mapOf("cf-mitigated" to "challenge"), ByteArrayInputStream(ByteArray(0))),
+                WebResourceResponse(
+                    "text/plain",
+                    "utf-8",
+                    403,
+                    "Forbidden",
+                    mapOf("cf-mitigated" to "challenge"),
+                    ByteArrayInputStream(ByteArray(0)),
+                ),
             )
             client.onReceivedError(
                 webView,
@@ -307,7 +570,14 @@ class ChallengeActivityTest {
             client.onReceivedHttpError(
                 webView,
                 fakeRequest(forumUrl.toString(), isMainFrame = true),
-                WebResourceResponse("text/html", "utf-8", 403, "Forbidden", mapOf("cf-mitigated" to "challenge"), ByteArrayInputStream(ByteArray(0))),
+                WebResourceResponse(
+                    "text/html",
+                    "utf-8",
+                    403,
+                    "Forbidden",
+                    mapOf("cf-mitigated" to "challenge"),
+                    ByteArrayInputStream(ByteArray(0)),
+                ),
             )
             client.onPageStarted(webView, forumUrl.toString(), null)
             client.onPageFinished(webView, forumUrl.toString())
@@ -330,13 +600,13 @@ class ChallengeActivityTest {
             val firstIntent = awaitStartedActivityIntent()
             val controller = Robolectric.buildActivity(ChallengeActivity::class.java, firstIntent).setup()
             shadowOf(Looper.getMainLooper()).idle()
-            val firstHandle = firstAcquire.await()
+            val firstHandle = awaitWithMainLooper(firstAcquire)
 
             val secondAcquire = async(Dispatchers.Default) { host.acquire(forumUrl, unifiedUa) }
             val secondIntent = awaitStartedActivityIntent()
             controller.newIntent(secondIntent)
             shadowOf(Looper.getMainLooper()).idle()
-            val secondHandle = secondAcquire.await()
+            val secondHandle = awaitWithMainLooper(secondAcquire)
 
             // Calling close() on stale first handle must NOT finish the Activity hosting the second session
             firstHandle.close()
@@ -351,19 +621,9 @@ class ChallengeActivityTest {
         }
     }
 
-    private fun fakeRequest(url: String, isMainFrame: Boolean): WebResourceRequest =
-        object : WebResourceRequest {
-            override fun getUrl(): Uri = Uri.parse(url)
-            override fun isForMainFrame(): Boolean = isMainFrame
-            override fun isRedirect(): Boolean = false
-            override fun hasGesture(): Boolean = false
-            override fun getMethod(): String = "GET"
-            override fun getRequestHeaders(): MutableMap<String, String> = mutableMapOf()
-        }
-
     @Test
     fun manifestRegistrationAndHiltBindings_areConfiguredCorrectly() {
-        // Verify Manifest attributes
+        // Verify Manifest attributes including foldable/theme configChanges
         val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             application.packageManager.getPackageInfo(
                 application.packageName,
@@ -383,6 +643,18 @@ class ChallengeActivityTest {
         assertTrue(
             "ChallengeActivity must be excluded from recents",
             (info.flags and ActivityInfo.FLAG_EXCLUDE_FROM_RECENTS) != 0,
+        )
+        val requiredConfigChanges = ActivityInfo.CONFIG_ORIENTATION or
+            ActivityInfo.CONFIG_SCREEN_SIZE or
+            ActivityInfo.CONFIG_SCREEN_LAYOUT or
+            ActivityInfo.CONFIG_SMALLEST_SCREEN_SIZE or
+            ActivityInfo.CONFIG_DENSITY or
+            ActivityInfo.CONFIG_UI_MODE or
+            ActivityInfo.CONFIG_KEYBOARD_HIDDEN
+        assertEquals(
+            "ChallengeActivity configChanges must cover foldable density/uiMode/screen changes",
+            requiredConfigChanges,
+            info.configChanges and requiredConfigChanges,
         )
 
         // Verify Hilt bindings for ChallengeSolverModule, ChallengeInteractionModule, and ChallengeHostModule
@@ -417,6 +689,16 @@ class ChallengeActivityTest {
         assertTrue(bindHost.isAnnotationPresent(Singleton::class.java))
     }
 
+    private fun fakeRequest(url: String, isMainFrame: Boolean): WebResourceRequest =
+        object : WebResourceRequest {
+            override fun getUrl(): Uri = Uri.parse(url)
+            override fun isForMainFrame(): Boolean = isMainFrame
+            override fun isRedirect(): Boolean = false
+            override fun hasGesture(): Boolean = false
+            override fun getMethod(): String = "GET"
+            override fun getRequestHeaders(): MutableMap<String, String> = mutableMapOf()
+        }
+
     private fun findWebView(view: View?): WebView? {
         if (view is WebView) return view
         if (view is ViewGroup) {
@@ -425,5 +707,77 @@ class ChallengeActivityTest {
             }
         }
         return null
+    }
+
+    private class FailingWebViewChallengeActivity : ChallengeActivity() {
+        override fun createWebView(): WebView {
+            throw requireNotNull(failureToThrow) { "failureToThrow not configured" }
+        }
+
+        companion object {
+            @Volatile
+            var failureToThrow: Throwable? = null
+        }
+    }
+
+    /**
+     * Robolectric's default `RoboCookieManager` no-ops `setAcceptThirdPartyCookies` and always
+     * returns `false` from `acceptThirdPartyCookies`. This shadow records per-WebView third-party
+     * cookie policy so `ChallengeActivityTest` catches regressions if third-party cookies break.
+     */
+    @Implements(CookieManager::class)
+    class RecordingShadowCookieManager {
+        companion object {
+            @Volatile
+            private var instance: TrackingCookieManager? = null
+
+            fun reset() {
+                instance = null
+            }
+
+            @Implementation
+            @JvmStatic
+            fun getInstance(): CookieManager =
+                instance ?: TrackingCookieManager().also { instance = it }
+        }
+
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+        private class TrackingCookieManager : CookieManager() {
+            private var acceptCookies = false
+            private val thirdPartyByWebView = IdentityHashMap<WebView, Boolean>()
+
+            override fun setAcceptCookie(accept: Boolean) {
+                acceptCookies = accept
+            }
+
+            override fun acceptCookie(): Boolean = acceptCookies
+
+            override fun setAcceptThirdPartyCookies(webview: WebView, accept: Boolean) {
+                thirdPartyByWebView[webview] = accept
+            }
+
+            override fun acceptThirdPartyCookies(webview: WebView): Boolean =
+                thirdPartyByWebView[webview] == true
+
+            override fun setCookie(url: String?, value: String?) {}
+            override fun setCookie(url: String?, value: String?, callback: ValueCallback<Boolean>?) {
+                callback?.onReceiveValue(true)
+            }
+
+            override fun getCookie(url: String?): String? = null
+            override fun removeSessionCookie() {}
+            override fun removeSessionCookies(callback: ValueCallback<Boolean>?) {
+                callback?.onReceiveValue(true)
+            }
+
+            override fun removeAllCookie() {}
+            override fun removeAllCookies(callback: ValueCallback<Boolean>?) {
+                callback?.onReceiveValue(true)
+            }
+
+            override fun hasCookies(): Boolean = false
+            override fun removeExpiredCookie() {}
+            override fun flush() {}
+        }
     }
 }

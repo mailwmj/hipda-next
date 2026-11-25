@@ -1,12 +1,14 @@
 package net.jejer.hipda.ui.challenge
 
 import android.annotation.SuppressLint
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -37,18 +39,24 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl
+import org.json.JSONObject
 
 /**
  * Transparent, `singleTop` host Activity that mounts an invisible real-viewport [WebView] during
  * background Cloudflare auto-solving and exposes [ChallengeActivityBinding] so A6 can reveal the
  * exact same WebView without reloading when user interaction is required.
  */
-class ChallengeActivity : ComponentActivity() {
+open class ChallengeActivity : ComponentActivity() {
 
     private lateinit var rootContainer: FrameLayout
     private var activeSessionId: String? = null
@@ -77,6 +85,21 @@ class ChallengeActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (isFinishing || isDestroyed) {
+            // Never attach a fresh session onto a dying Activity; re-launch so AMS creates a new instance.
+            val sessionId = intent.getStringExtra(EXTRA_SESSION_ID)
+            val relaunch = Intent(intent).apply {
+                component = ComponentName(applicationContext, ChallengeActivity::class.java)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            }
+            runCatching { applicationContext.startActivity(relaunch) }
+                .onFailure { failure ->
+                    if (!sessionId.isNullOrBlank()) {
+                        ChallengeSessionRegistry.failPending(sessionId, failure)
+                    }
+                }
+            return
+        }
         setIntent(intent)
         detachActiveSession(emitHostDestroyed = true)
         applyWindowInteractiveMode(interactive = false)
@@ -90,13 +113,21 @@ class ChallengeActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    protected open fun createWebView(): WebView = WebView(this)
+
     private fun attachFromIntent(intent: Intent?): Boolean {
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID)?.takeIf { it.isNotBlank() }
             ?: return false
         val session = ChallengeSessionRegistry.takePending(sessionId) ?: return false
         if (session.isAborted()) return false
 
-        val webView = createConfiguredWebView(session.userAgent)
+        val webView = try {
+            createConfiguredWebView(session.userAgent)
+        } catch (t: Throwable) {
+            session.failAttach(t)
+            return false
+        }
+
         val density = resources.displayMetrics.density
         val widthPx = (SILENT_WEBVIEW_WIDTH_DP * density).roundToInt().coerceAtLeast(SILENT_WEBVIEW_WIDTH_DP)
         val heightPx = (SILENT_WEBVIEW_HEIGHT_DP * density).roundToInt().coerceAtLeast(SILENT_WEBVIEW_HEIGHT_DP)
@@ -106,14 +137,29 @@ class ChallengeActivity : ComponentActivity() {
         val handle = AndroidChallengeWebViewHandle(
             activity = this,
             sessionId = sessionId,
+            triggerUrl = session.triggerUrl,
             rootContainer = rootContainer,
             initialWebView = webView,
-            onRequestClose = { targetSessionId ->
-                runOnUiThread {
-                    if (activeSessionId == targetSessionId) {
-                        detachActiveSession(emitHostDestroyed = false)
-                        finishWithoutAnimation()
+            onRequestClose = { targetSessionId, handleRef, completed ->
+                val closeAction = Runnable {
+                    try {
+                        if (activeSessionId == targetSessionId) {
+                            detachActiveSession(emitHostDestroyed = false, completeCloseSignal = false)
+                            finishWithoutAnimation()
+                        } else {
+                            handleRef.tearDownFromActivity(
+                                emitHostDestroyed = false,
+                                completeCloseSignal = false,
+                            )
+                        }
+                    } finally {
+                        completed.complete(Unit)
                     }
+                }
+                if (Looper.myLooper() == Looper.getMainLooper()) {
+                    closeAction.run()
+                } else {
+                    runOnUiThread(closeAction)
                 }
             },
         )
@@ -130,7 +176,7 @@ class ChallengeActivity : ComponentActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createConfiguredWebView(userAgent: String): WebView =
-        WebView(this).apply {
+        createWebView().apply {
             // Keep View.VISIBLE with alpha=0f and real viewport dimensions so Chromium executes
             // Cloudflare Turnstile JS/timers without triggering 0x0 or GONE throttling/risk checks.
             visibility = View.VISIBLE
@@ -168,11 +214,17 @@ class ChallengeActivity : ComponentActivity() {
         }
     }
 
-    private fun detachActiveSession(emitHostDestroyed: Boolean) {
+    private fun detachActiveSession(
+        emitHostDestroyed: Boolean,
+        completeCloseSignal: Boolean = true,
+    ) {
         val handle = activeHandle
         activeHandle = null
         activeSessionId = null
-        handle?.tearDownFromActivity(emitHostDestroyed = emitHostDestroyed)
+        handle?.tearDownFromActivity(
+            emitHostDestroyed = emitHostDestroyed,
+            completeCloseSignal = completeCloseSignal,
+        )
     }
 
     private fun disableTransitions() {
@@ -205,7 +257,7 @@ class ChallengeActivity : ComponentActivity() {
 
         fun createLaunchIntent(context: Context, sessionId: String): Intent =
             Intent(context, ChallengeActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 putExtra(EXTRA_SESSION_ID, sessionId)
             }
     }
@@ -224,13 +276,17 @@ class AndroidChallengeWebViewHost @Inject constructor(
         triggerUrl: HttpUrl,
         userAgent: String,
     ): ChallengeWebViewHandle {
+        currentCoroutineContext().ensureActive()
         val session = ChallengeSessionRegistry.register(triggerUrl, userAgent)
         try {
+            currentCoroutineContext().ensureActive()
             val intent = ChallengeActivity.createLaunchIntent(appContext, session.sessionId)
             appContext.startActivity(intent)
             return session.handleDeferred.await()
         } catch (t: Throwable) {
-            ChallengeSessionRegistry.abort(session)
+            withContext(NonCancellable) {
+                ChallengeSessionRegistry.abortAndAwaitClose(session)
+            }
             throw t
         }
     }
@@ -257,7 +313,15 @@ internal class PendingChallengeSession(
         return true
     }
 
-    fun abort() {
+    fun failAttach(cause: Throwable) {
+        synchronized(lock) {
+            if (aborted || attachedHandle != null) return
+            aborted = true
+        }
+        handleDeferred.completeExceptionally(cause)
+    }
+
+    suspend fun abortAndAwaitClose() {
         val handleToClose = synchronized(lock) {
             aborted = true
             val existing = attachedHandle
@@ -265,7 +329,7 @@ internal class PendingChallengeSession(
             existing
         }
         handleDeferred.cancel()
-        handleToClose?.close()
+        handleToClose?.let { handle -> runCatching { handle.closeAndAwait() } }
     }
 }
 
@@ -285,25 +349,46 @@ internal object ChallengeSessionRegistry {
     fun takePending(sessionId: String): PendingChallengeSession? =
         pendingSessions.remove(sessionId)
 
-    fun abort(session: PendingChallengeSession) {
+    fun failPending(sessionId: String, cause: Throwable) {
+        pendingSessions.remove(sessionId)?.failAttach(cause)
+    }
+
+    suspend fun abortAndAwaitClose(session: PendingChallengeSession) {
         pendingSessions.remove(session.sessionId, session)
-        session.abort()
+        session.abortAndAwaitClose()
     }
 }
 
 private class AndroidChallengeWebViewHandle(
     private val activity: ChallengeActivity,
     private val sessionId: String,
+    private val triggerUrl: HttpUrl,
     private val rootContainer: FrameLayout,
     initialWebView: WebView,
-    private val onRequestClose: (String) -> Unit,
+    private val onRequestClose: (String, AndroidChallengeWebViewHandle, CompletableDeferred<Unit>) -> Unit,
 ) : ChallengeWebViewHandle {
 
     private val eventChannel = Channel<ChallengeWebViewEvent>(Channel.UNLIMITED)
     override val events: Flow<ChallengeWebViewEvent> = eventChannel.receiveAsFlow()
 
+    private val allowedOriginRules: Set<String> = buildAllowedChallengeOriginRules(triggerUrl)
+    private val triggerOrigin: String = formatOrigin(triggerUrl)
+    private val documentStartScript: String = turnstileMessageScript(
+        guardFlag = "__hipdaCfMsgBridgeInstalled",
+        bridgeName = ChallengeActivity.WEB_MESSAGE_BRIDGE_NAME,
+        methodName = "postMessage",
+        triggerOrigin = triggerOrigin,
+    )
+    private val fallbackListenerScript: String = turnstileMessageScript(
+        guardFlag = "__hipdaCfFallbackInstalled",
+        bridgeName = ChallengeActivity.FALLBACK_JS_BRIDGE_NAME,
+        methodName = "onChallengeEvent",
+        triggerOrigin = triggerOrigin,
+    )
+
     private val tracker = MainFrameStateTracker()
     private val closed = AtomicBoolean(false)
+    private val closeCompleted = CompletableDeferred<Unit>()
     private val pendingDomChecks = CopyOnWriteArrayList<CancellableContinuation<Boolean>>()
 
     @Volatile
@@ -360,17 +445,19 @@ private class AndroidChallengeWebViewHandle(
                         WebViewCompat.addWebMessageListener(
                             wv,
                             ChallengeActivity.WEB_MESSAGE_BRIDGE_NAME,
-                            setOf("*"),
-                        ) { _, message, _, _, _ ->
-                            if (message.type == WebMessageCompat.TYPE_STRING) {
+                            allowedOriginRules,
+                        ) { _, message, sourceOrigin, _, _ ->
+                            if (message.type == WebMessageCompat.TYPE_STRING &&
+                                isAllowedChallengeOrigin(sourceOrigin.toString(), triggerUrl)
+                            ) {
                                 parseTurnstileChallengeEvent(message.data)?.let { eventChannel.trySend(it) }
                             }
                         }
                         webMessageListenerInstalled = true
                         scriptHandler = WebViewCompat.addDocumentStartJavaScript(
                             wv,
-                            DOCUMENT_START_BRIDGE_SCRIPT,
-                            setOf("*"),
+                            documentStartScript,
+                            allowedOriginRules,
                         )
                         true
                     } else {
@@ -396,7 +483,9 @@ private class AndroidChallengeWebViewHandle(
             fallbackJsInterfaceInstalled = true
             wv.addJavascriptInterface(
                 FallbackChallengeJsBridge { rawEvent ->
-                    parseTurnstileChallengeEvent(rawEvent)?.let { eventChannel.trySend(it) }
+                    if (isAllowedChallengeOrigin(tracker.snapshot().url, triggerUrl)) {
+                        parseTurnstileChallengeEvent(rawEvent)?.let { eventChannel.trySend(it) }
+                    }
                 },
                 ChallengeActivity.FALLBACK_JS_BRIDGE_NAME,
             )
@@ -451,13 +540,24 @@ private class AndroidChallengeWebViewHandle(
     }
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        drainPendingDomChecks()
-        eventChannel.close()
-        onRequestClose(sessionId)
+        if (closed.compareAndSet(false, true)) {
+            drainPendingDomChecks()
+            eventChannel.close()
+            onRequestClose(sessionId, this, closeCompleted)
+        }
     }
 
-    fun tearDownFromActivity(emitHostDestroyed: Boolean) {
+    override suspend fun closeAndAwait() {
+        close()
+        withTimeoutOrNull(CLOSE_AWAIT_TIMEOUT_MS) {
+            closeCompleted.await()
+        }
+    }
+
+    fun tearDownFromActivity(
+        emitHostDestroyed: Boolean,
+        completeCloseSignal: Boolean = true,
+    ) {
         val wasOpen = closed.compareAndSet(false, true)
         if (wasOpen && emitHostDestroyed) {
             eventChannel.trySend(ChallengeWebViewEvent.HostDestroyed)
@@ -465,6 +565,9 @@ private class AndroidChallengeWebViewHandle(
         drainPendingDomChecks()
         destroyWebViewSafely()
         eventChannel.close()
+        if (completeCloseSignal) {
+            closeCompleted.complete(Unit)
+        }
     }
 
     private fun destroyWebViewSafely() {
@@ -519,8 +622,8 @@ private class AndroidChallengeWebViewHandle(
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
             tracker.onPageStarted(url)
-            if (useFallbackJsInjection && !closed.get()) {
-                runCatching { view?.evaluateJavascript(FALLBACK_LISTENER_SCRIPT, null) }
+            if (useFallbackJsInjection && !closed.get() && isAllowedChallengeOrigin(url, triggerUrl)) {
+                runCatching { view?.evaluateJavascript(fallbackListenerScript, null) }
             }
         }
 
@@ -551,8 +654,8 @@ private class AndroidChallengeWebViewHandle(
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
-            if (useFallbackJsInjection && !closed.get()) {
-                runCatching { view?.evaluateJavascript(FALLBACK_LISTENER_SCRIPT, null) }
+            if (useFallbackJsInjection && !closed.get() && isAllowedChallengeOrigin(url, triggerUrl)) {
+                runCatching { view?.evaluateJavascript(fallbackListenerScript, null) }
             }
             tracker.onPageFinished(url)
             eventChannel.trySend(ChallengeWebViewEvent.PageFinished(url))
@@ -589,43 +692,58 @@ private class AndroidChallengeWebViewHandle(
     }
 
     private companion object {
-        fun turnstileMessageScript(guardFlag: String, bridgeName: String, methodName: String): String =
-            """
-            (function() {
-              if (window.$guardFlag) return;
-              window.$guardFlag = true;
-              window.addEventListener('message', function(e) {
-                try {
-                  var d = e && e.data;
-                  if (typeof d === 'string') {
-                    if (d.indexOf('cloudflare-challenge') === -1) return;
-                    d = JSON.parse(d);
-                  }
-                  if (d && d.source === 'cloudflare-challenge') {
-                    var ev = d.event;
-                    if (ev === 'interactiveBegin' || ev === 'interactiveTimeout') {
-                      var b = window.$bridgeName;
-                      if (b && typeof b.$methodName === 'function') {
-                        b.$methodName(ev);
+        const val CLOSE_AWAIT_TIMEOUT_MS: Long = 500L
+
+        fun turnstileMessageScript(
+            guardFlag: String,
+            bridgeName: String,
+            methodName: String,
+            triggerOrigin: String,
+        ): String {
+            val quotedTriggerOrigin = JSONObject.quote(triggerOrigin.lowercase(Locale.ROOT))
+            return """
+                (function() {
+                  if (window.$guardFlag) return;
+                  window.$guardFlag = true;
+                  var triggerOrigin = $quotedTriggerOrigin;
+                  function isAllowedOrigin(o) {
+                    if (!o || typeof o !== 'string') return false;
+                    var lo = o.toLowerCase();
+                    if (lo === triggerOrigin) return true;
+                    if (lo === 'https://4d4y.com' || lo === 'https://challenges.cloudflare.com') return true;
+                    if (lo.indexOf('https://') === 0) {
+                      var host = lo.slice(8);
+                      var colon = host.indexOf(':');
+                      if (colon !== -1) {
+                        if (host.slice(colon + 1) !== '443') return false;
+                        host = host.slice(0, colon);
                       }
+                      if (host.endsWith('.4d4y.com') || host.endsWith('.challenges.cloudflare.com')) return true;
                     }
+                    return false;
                   }
-                } catch (_) {}
-              }, false);
-            })();
+                  window.addEventListener('message', function(e) {
+                    try {
+                      if (!isAllowedOrigin(e && e.origin)) return;
+                      var d = e && e.data;
+                      if (typeof d === 'string') {
+                        if (d.indexOf('cloudflare-challenge') === -1) return;
+                        d = JSON.parse(d);
+                      }
+                      if (d && d.source === 'cloudflare-challenge') {
+                        var ev = d.event;
+                        if (ev === 'interactiveBegin' || ev === 'interactiveTimeout') {
+                          var b = window.$bridgeName;
+                          if (b && typeof b.$methodName === 'function') {
+                            b.$methodName(ev);
+                          }
+                        }
+                      }
+                    } catch (_) {}
+                  }, false);
+                })();
             """.trimIndent()
-
-        val DOCUMENT_START_BRIDGE_SCRIPT: String = turnstileMessageScript(
-            guardFlag = "__hipdaCfMsgBridgeInstalled",
-            bridgeName = ChallengeActivity.WEB_MESSAGE_BRIDGE_NAME,
-            methodName = "postMessage",
-        )
-
-        val FALLBACK_LISTENER_SCRIPT: String = turnstileMessageScript(
-            guardFlag = "__hipdaCfFallbackInstalled",
-            bridgeName = ChallengeActivity.FALLBACK_JS_BRIDGE_NAME,
-            methodName = "onChallengeEvent",
-        )
+        }
 
         val CHALLENGE_DOM_CHECK_SCRIPT: String =
             """

@@ -730,7 +730,246 @@ class ChallengeSolveStateMachineTest {
         assertFalse(tracker.snapshot().isReadyNonChallengePage)
     }
 
-    private class FakeChallengeWebViewHandle : ChallengeWebViewHandle {
+    @Test
+    fun closeCompletesBeforeRestoreClearanceAndBeforeNextSolveAcquiresMutex() = runTest {
+        seedOldClearanceAndLogin(oldValue = "backup_ordered_close")
+        val closeGate = CompletableDeferred<Unit>()
+        val firstHandle = FakeChallengeWebViewHandle(closeGate = closeGate)
+        val secondHandle = FakeChallengeWebViewHandle()
+        val callCount = AtomicInteger(0)
+        val secondAcquired = CompletableDeferred<Unit>()
+
+        secondHandle.onLoadUrl = { url ->
+            fakeCookieAccess.seedCookie(forumUrl, clearanceHeader("second_ordered_tok"))
+            secondHandle.currentMainFrameState = MainFrameState(url = url, pageFinished = true)
+            secondHandle.domInChallengeState = false
+            secondHandle.emit(ChallengeWebViewEvent.PageFinished(url))
+        }
+
+        val solver = createSolver(
+            host = ChallengeWebViewHost { _, _ ->
+                if (callCount.getAndIncrement() == 0) {
+                    firstHandle
+                } else {
+                    secondAcquired.complete(Unit)
+                    secondHandle
+                }
+            },
+        )
+
+        val firstJob = async { solver.solve(forumUrl) }
+        runCurrent()
+
+        val secondJob = async { solver.solve(forumUrl) }
+        firstJob.cancel()
+        runCurrent()
+
+        // While firstHandle.close() is still awaiting main-thread teardown:
+        // 1) restoreClearance must NOT have run yet;
+        // 2) solveMutex must NOT have been released to the second solve yet.
+        assertTrue("First handle close must have started", firstHandle.closeStarted)
+        assertFalse("First handle must still be awaiting closeGate", firstHandle.closed)
+        assertTrue(
+            "restoreClearance must wait until handle.close() completes",
+            store.loadForRequest(forumUrl).none { it.name == CF_CLEARANCE_COOKIE_NAME },
+        )
+        assertFalse("Second solve must wait for first handle close + restore", secondAcquired.isCompleted)
+
+        closeGate.complete(Unit)
+        runCurrent()
+
+        assertTrue(firstHandle.closed)
+        assertTrue(secondAcquired.isCompleted)
+        assertEquals(SolveResult.Cleared, secondJob.await())
+        assertEquals(
+            listOf("second_ordered_tok"),
+            store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+        )
+    }
+
+    @Test
+    fun unsuccessfulPollingWithoutFreshClearance_doesNotWriteUnrelatedCookiesToStore() = runTest {
+        seedOldClearanceAndLogin(oldValue = "stale_only_tok")
+        val handle = FakeChallengeWebViewHandle()
+
+        handle.onLoadUrl = { url ->
+            // WebView reached a 200 page with clean DOM, has an unrelated guest cookie and only the stale clearance.
+            fakeCookieAccess.seedCookie(forumUrl, clearanceHeader("stale_only_tok"))
+            fakeCookieAccess.seedCookie(forumUrl, "cdb_sid=guest_sid_must_not_sync; Path=/")
+            handle.currentMainFrameState = MainFrameState(url = url, pageFinished = true)
+            handle.domInChallengeState = false
+            handle.emit(ChallengeWebViewEvent.PageFinished(url))
+        }
+
+        val solver = createSolver(host = ChallengeWebViewHost { _, _ -> handle })
+        val solveDeferred = async { solver.solve(forumUrl) }
+
+        advanceTimeBy(8_000L)
+        runCurrent()
+
+        assertEquals(SolveResult.Cancelled, solveDeferred.await())
+        val finalCookies = store.loadForRequest(forumUrl)
+        assertTrue(
+            "Unsuccessful polling must never write unrelated WebView cookies into SiteCookieStore",
+            finalCookies.none { it.name == "cdb_sid" && it.value == "guest_sid_must_not_sync" },
+        )
+        assertEquals(
+            listOf("stale_only_tok"),
+            finalCookies.filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+        )
+    }
+
+    @Test
+    fun allowedChallengeOriginRulesAndValidation_restrictToForumCloudflareAndTriggerOrigin() {
+        val defaultRules = buildAllowedChallengeOriginRules(forumUrl)
+        assertFalse("Wildcard '*' must never be used in WebMessage/Script origin rules", "*" in defaultRules)
+        assertEquals(
+            setOf(
+                "https://4d4y.com",
+                "https://*.4d4y.com",
+                "https://challenges.cloudflare.com",
+                "https://*.challenges.cloudflare.com",
+                "https://www.4d4y.com",
+            ),
+            defaultRules,
+        )
+
+        val customPortUrl = "http://127.0.0.1:8443/forum/".toHttpUrl()
+        val customRules = buildAllowedChallengeOriginRules(customPortUrl)
+        assertTrue("http://127.0.0.1:8443" in customRules)
+        assertFalse("*" in customRules)
+
+        // Allowed origins
+        assertTrue(isAllowedChallengeOrigin("https://4d4y.com", forumUrl))
+        assertTrue(isAllowedChallengeOrigin("https://www.4d4y.com/forum/", forumUrl))
+        assertTrue(isAllowedChallengeOrigin("https://challenges.cloudflare.com", forumUrl))
+        assertTrue(isAllowedChallengeOrigin("https://widget.challenges.cloudflare.com/turnstile", forumUrl))
+        assertTrue(isAllowedChallengeOrigin("http://127.0.0.1:8443/forum/", customPortUrl))
+
+        // Rejected origins
+        assertFalse(isAllowedChallengeOrigin("https://evil.example.com", forumUrl))
+        assertFalse(isAllowedChallengeOrigin("https://evil4d4y.com", forumUrl))
+        assertFalse(isAllowedChallengeOrigin("https://www.4d4y.com.evil.com", forumUrl))
+        assertFalse(isAllowedChallengeOrigin("http://www.4d4y.com", forumUrl))
+        assertFalse(isAllowedChallengeOrigin("https://www.4d4y.com:8443", forumUrl))
+        assertFalse(isAllowedChallengeOrigin("http://127.0.0.1:9999", customPortUrl))
+        assertFalse(isAllowedChallengeOrigin(null, forumUrl))
+        assertFalse(isAllowedChallengeOrigin("", forumUrl))
+    }
+
+    @Test
+    fun delayedClearanceAfterNormalPageFinished_invokesSyncFromWebViewExactlyOnce() = runTest {
+        seedOldClearanceAndLogin(oldValue = "old_delayed_tok")
+        val handle = FakeChallengeWebViewHandle()
+        val saveCounts = AtomicInteger(0)
+        val countingStore = object : net.jejer.hipda.data.network.cookie.SiteCookieStore by store {
+            override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                saveCounts.incrementAndGet()
+                store.saveFromResponse(url, cookies)
+            }
+        }
+        val bridge = WebViewCookieBridge(
+            siteCookieStore = countingStore,
+            webViewCookieAccess = fakeCookieAccess,
+            cookieDispatcher = StandardTestDispatcher(testScheduler),
+        )
+        var savesBeforeLoop = 0
+        val solver = WebViewChallengeSolver(
+            cookieBridge = bridge,
+            userAgentProvider = UserAgentProvider { unifiedUa },
+            webViewHost = ChallengeWebViewHost { _, _ ->
+                savesBeforeLoop = saveCounts.get()
+                handle
+            },
+            interactionPresenter = DefaultChallengeInteractionPresenter(),
+        )
+
+        val solveDeferred = async { solver.solve(forumUrl) }
+        runCurrent()
+
+        // First page: 403 challenge page
+        handle.currentMainFrameState = MainFrameState(
+            url = forumUrl.toString(),
+            pageFinished = true,
+            hasCfMitigatedChallengeHeader = true,
+            httpErrorStatusCode = 403,
+        )
+        handle.domInChallengeState = true
+        handle.emit(ChallengeWebViewEvent.PageFinished(forumUrl.toString()))
+        advanceTimeBy(500L)
+        runCurrent()
+
+        // Second page: normal 200 page, but fresh cf_clearance arrives 1.5s later
+        handle.currentMainFrameState = MainFrameState(url = forumUrl.toString(), pageFinished = true)
+        handle.domInChallengeState = false
+        handle.emit(ChallengeWebViewEvent.PageFinished(forumUrl.toString()))
+        advanceTimeBy(1_500L)
+        runCurrent()
+        assertFalse(solveDeferred.isCompleted)
+        assertEquals("No store write should occur before fresh cf_clearance arrives", 0, saveCounts.get() - savesBeforeLoop)
+
+        // Fresh clearance finally arrives
+        fakeCookieAccess.seedCookie(forumUrl, clearanceHeader("delayed_fresh_tok"))
+        advanceTimeBy(600L)
+        runCurrent()
+
+        assertEquals(SolveResult.Cleared, solveDeferred.await())
+        assertEquals(
+            "syncFromWebView must write into SiteCookieStore exactly once per solve",
+            1,
+            saveCounts.get() - savesBeforeLoop,
+        )
+        assertEquals(
+            listOf("delayed_fresh_tok"),
+            store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+        )
+    }
+
+    @Test
+    fun callerCancellationBeforeAcquire_neverLaunchesHostAndRestoresBackup() = runTest {
+        seedOldClearanceAndLogin(oldValue = "backup_cancel_before_acquire")
+        val acquireCalls = AtomicInteger(0)
+        val jobRef = AtomicReference<kotlinx.coroutines.Job?>()
+
+        val bridge = WebViewCookieBridge(
+            siteCookieStore = store,
+            webViewCookieAccess = fakeCookieAccess,
+            cookieDispatcher = StandardTestDispatcher(testScheduler),
+        )
+        val solver = WebViewChallengeSolver(
+            cookieBridge = bridge,
+            userAgentProvider = UserAgentProvider {
+                jobRef.get()?.cancel()
+                unifiedUa
+            },
+            webViewHost = ChallengeWebViewHost { _, _ ->
+                acquireCalls.incrementAndGet()
+                FakeChallengeWebViewHandle()
+            },
+            interactionPresenter = DefaultChallengeInteractionPresenter(),
+        )
+
+        val job = async(start = kotlinx.coroutines.CoroutineStart.LAZY) { solver.solve(forumUrl) }
+        jobRef.set(job)
+        job.start()
+        runCurrent()
+
+        assertTrue("Solve job must be cancelled", job.isCancelled)
+        assertEquals("Host acquire must never be invoked after cancellation", 0, acquireCalls.get())
+        assertEquals(
+            listOf("backup_cancel_before_acquire"),
+            store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+        )
+        assertTrue(
+            fakeCookieAccess.storedRawHeaders(forumUrl).any {
+                it.startsWith("$CF_CLEARANCE_COOKIE_NAME=backup_cancel_before_acquire")
+            },
+        )
+    }
+
+    private class FakeChallengeWebViewHandle(
+        private val closeGate: CompletableDeferred<Unit>? = null,
+    ) : ChallengeWebViewHandle {
         private val eventChannel = Channel<ChallengeWebViewEvent>(Channel.UNLIMITED)
         override val events: Flow<ChallengeWebViewEvent> = eventChannel.receiveAsFlow()
 
@@ -741,6 +980,10 @@ class ChallengeSolveStateMachineTest {
 
         @Volatile
         var domInChallengeState: Boolean = true
+
+        @Volatile
+        var closeStarted: Boolean = false
+            private set
 
         @Volatile
         var closed: Boolean = false
@@ -770,6 +1013,17 @@ class ChallengeSolveStateMachineTest {
         override suspend fun isDomInChallengeState(): Boolean = domInChallengeState
 
         override fun close() {
+            closeStarted = true
+            if (closeGate == null) {
+                closed = true
+                actions.add("close")
+                eventChannel.close()
+            }
+        }
+
+        override suspend fun closeAndAwait() {
+            closeStarted = true
+            closeGate?.await()
             closed = true
             actions.add("close")
             eventChannel.close()
