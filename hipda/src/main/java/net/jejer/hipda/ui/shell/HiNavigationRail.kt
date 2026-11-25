@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,15 +23,12 @@ import net.jejer.hipda.ui.designsystem.glass.HiGlassState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
 
 val HiNavigationRailWidth: Dp = 80.dp
-
 private val RailHorizontalPadding: Dp = 8.dp
 
 /**
  * 宽度 80dp 的左侧毛玻璃导航轨（宽度 ≥ 840dp 且无竖直物理铰链分隔时使用）。
  *
- * 竖排 4 个一级目的地，仅在朝向内容区的右侧绘制 0.5dp 描边；
- * 选中指示器为包裹图标的 56×32dp 全圆角胶囊，通过 [net.jejer.hipda.ui.designsystem.motion.HiMotion.spatialFast]
- * 沿纵轴连续滑动且可打断；文字受 [HiCappedFontScale] 限制在 1.25 倍以内。
+ * 使用 `surfaceContainer` 作为毛玻璃底色（与滚动后顶栏一致），在深浅色下均与内容区 `background` 形成清晰层级区分。
  */
 @Composable
 fun HiNavigationRail(
@@ -50,11 +48,11 @@ fun HiNavigationRail(
             floating = false,
             contentAlignment = Alignment.TopCenter,
             borderMode = HiGlassBorderMode.EndEdgeOnly,
+            surfaceColor = MaterialTheme.colorScheme.surfaceContainer,
         ) {
             ShellIndicatorLayout(
                 selected = selected,
-                arrangement = ShellLayoutArrangement.VerticalRail,
-                animatorKey = ShellLayoutArrangement.VerticalRail,
+                mode = ShellNavigationMode.Rail,
                 modifier = Modifier
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical))
@@ -65,7 +63,7 @@ fun HiNavigationRail(
                         destination = destination,
                         selected = destination == selected,
                         showLabel = true,
-                        style = ShellNavItemStyle.Rail,
+                        mode = ShellNavigationMode.Rail,
                         onSelect = onSelect,
                     )
                 }

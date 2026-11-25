@@ -767,7 +767,7 @@ fun ShellPreviewScreen(
         selected = selected,
         onSelect = { selected = it },
         modifier = modifier,
-    ) { destination ->
+    ) { destination, contentPadding ->
         val items = remember(destination) {
             val prefix = when (destination) {
                 ShellDestination.Forum -> "Discovery · 帖子示例"
@@ -775,7 +775,7 @@ fun ShellPreviewScreen(
                 ShellDestination.Search -> "搜索结果 · 标题与正文匹配示例"
                 ShellDestination.Mine -> "我的空间 · 收藏与历史条目示例"
             }
-            List(24) { index -> "$prefix #${index + 1}" }
+            List(40) { index -> "$prefix #${index + 1}" }
         }
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
@@ -798,7 +798,12 @@ fun ShellPreviewScreen(
             }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 120.dp),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    top = 12.dp,
+                    end = 16.dp,
+                    bottom = 12.dp + contentPadding.calculateBottomPadding(),
+                ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(items) { rowTitle ->

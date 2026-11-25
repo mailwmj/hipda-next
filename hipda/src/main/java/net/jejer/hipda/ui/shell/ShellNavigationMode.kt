@@ -10,8 +10,6 @@ import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.runtime.ProvidableCompositionLocal
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.vector.ImageVector
 import net.jejer.hipda.R
 
@@ -87,7 +85,3 @@ object HiShellTestTags {
 
     fun navItem(destination: ShellDestination): String = "hi_shell_nav_item_${destination.name}"
 }
-
-/** 仅用于测试观测各导航项的组合次数，生产环境下为 `null`。 */
-internal val LocalShellItemCompositionObserver: ProvidableCompositionLocal<((ShellDestination) -> Unit)?> =
-    staticCompositionLocalOf { null }

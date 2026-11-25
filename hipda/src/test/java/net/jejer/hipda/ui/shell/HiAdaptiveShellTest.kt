@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -101,7 +102,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize().testTag("dest_${destination.name}"))
                 }
             }
@@ -128,7 +129,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
@@ -175,7 +176,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
@@ -224,8 +225,7 @@ class HiAdaptiveShellTest {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 ShellIndicatorLayout(
                     selected = selected,
-                    arrangement = ShellLayoutArrangement.CompactHorizontal,
-                    animatorKey = "width_continuity_test",
+                    mode = ShellNavigationMode.CompactPill,
                 ) {
                     ShellDestination.entries.forEachIndexed { idx, dest ->
                         Box(
@@ -288,7 +288,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
@@ -336,7 +336,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize().testTag("page_${destination.name}")) {
                         Text(destination.name)
                     }
@@ -383,7 +383,7 @@ class HiAdaptiveShellTest {
                     HiAdaptiveShell(
                         selected = selected,
                         onSelect = { selected = it },
-                    ) { destination ->
+                    ) { destination, _ ->
                         Box(Modifier.fillMaxSize().testTag("page_${destination.name}"))
                     }
                 }
@@ -415,7 +415,7 @@ class HiAdaptiveShellTest {
                     HiAdaptiveShell(
                         selected = selected,
                         onSelect = { selected = it },
-                    ) { destination ->
+                    ) { destination, _ ->
                         Box(Modifier.fillMaxSize().testTag("page_${destination.name}"))
                     }
                 }
@@ -447,35 +447,47 @@ class HiAdaptiveShellTest {
     @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
     fun destinationSwitch_unselectedNavItemsDoNotRecompose_bottomPill() =
-        verifyUnselectedItemsSkipRecomposition()
+        verifyUnselectedItemsSkipRecomposition(ShellNavigationMode.BottomPill)
 
     @Test
     @Config(qualifiers = "w891dp-h411dp-xhdpi")
     fun destinationSwitch_unselectedNavItemsDoNotRecompose_compactPill() =
-        verifyUnselectedItemsSkipRecomposition()
+        verifyUnselectedItemsSkipRecomposition(ShellNavigationMode.CompactPill)
 
     @Test
     @Config(qualifiers = "w900dp-h1120dp-xhdpi")
     fun destinationSwitch_unselectedNavItemsDoNotRecompose_rail() =
-        verifyUnselectedItemsSkipRecomposition()
+        verifyUnselectedItemsSkipRecomposition(ShellNavigationMode.Rail)
 
-    private fun verifyUnselectedItemsSkipRecomposition() = withAnimatorDurationScale(1f) {
+    private fun verifyUnselectedItemsSkipRecomposition(mode: ShellNavigationMode) = withAnimatorDurationScale(1f) {
         val counters = ShellDestination.entries.associateWith { RecompositionCounter("NavItem_${it.name}") }
         var selected by mutableStateOf(ShellDestination.Forum)
         val onSelectStable: (ShellDestination) -> Unit = { selected = it }
 
         setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                CompositionLocalProvider(
-                    LocalShellItemCompositionObserver provides { destination ->
-                        counters.getValue(destination).record()
+                Box(
+                    modifier = if (mode == ShellNavigationMode.Rail) {
+                        Modifier.width(HiNavigationRailWidth).height(400.dp)
+                    } else {
+                        Modifier.width(411.dp).height(64.dp)
                     },
                 ) {
-                    HiAdaptiveShell(
+                    ShellIndicatorLayout(
                         selected = selected,
-                        onSelect = onSelectStable,
-                    ) { destination ->
-                        Box(Modifier.fillMaxSize().testTag("content_${destination.name}"))
+                        mode = mode,
+                    ) {
+                        ShellDestination.entries.forEach { destination ->
+                            val isSelected = destination == selected
+                            ObservedShellNavItem(
+                                destination = destination,
+                                selected = isSelected,
+                                showLabel = if (mode == ShellNavigationMode.CompactPill) isSelected else true,
+                                mode = mode,
+                                onSelect = onSelectStable,
+                                counter = counters.getValue(destination),
+                            )
+                        }
                     }
                 }
             }
@@ -506,6 +518,25 @@ class HiAdaptiveShellTest {
         counters.getValue(ShellDestination.Mine).assertEquals(2)
     }
 
+    @Composable
+    private fun ObservedShellNavItem(
+        destination: ShellDestination,
+        selected: Boolean,
+        showLabel: Boolean,
+        mode: ShellNavigationMode,
+        onSelect: (ShellDestination) -> Unit,
+        counter: RecompositionCounter,
+    ) {
+        counter.Track()
+        ShellNavItem(
+            destination = destination,
+            selected = selected,
+            showLabel = showLabel,
+            mode = mode,
+            onSelect = onSelect,
+        )
+    }
+
     // ---- (e) 无障碍与形态几何断言 + 视觉打磨验证 ----
 
     @Test
@@ -517,7 +548,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize().testTag("page_${destination.name}"))
                 }
             }
@@ -553,7 +584,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -589,7 +620,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -612,7 +643,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Messages,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -631,7 +662,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -669,7 +700,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Mine,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -706,7 +737,7 @@ class HiAdaptiveShellTest {
                     HiAdaptiveShell(
                         selected = ShellDestination.Forum,
                         onSelect = {},
-                    ) { _ ->
+                    ) { _, _ ->
                         Box(Modifier.fillMaxSize()) {
                             Text(
                                 text = "对照组正文文字",
@@ -800,7 +831,7 @@ class HiAdaptiveShellTest {
         withAnimatorDurationScale(1f) {
             setContent {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _, _ ->
                         Box(Modifier.fillMaxSize())
                     }
                 }
@@ -823,7 +854,7 @@ class HiAdaptiveShellTest {
         withAnimatorDurationScale(1f) {
             setContent {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _, _ ->
                         Box(Modifier.fillMaxSize())
                     }
                 }
@@ -846,7 +877,7 @@ class HiAdaptiveShellTest {
         withAnimatorDurationScale(1f) {
             setContent {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _, _ ->
                         Box(Modifier.fillMaxSize())
                     }
                 }
