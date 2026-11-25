@@ -51,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -58,6 +59,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
+import net.jejer.hipda.debug.sampleexport.SampleExportActivity
 import net.jejer.hipda.ui.designsystem.glass.GlassDegradationReason
 import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
@@ -192,7 +194,7 @@ private fun SpecimenHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column {
+        Column(modifier = if (onOpenShellDemo != null) Modifier.weight(1f) else Modifier) {
             Text(
                 text = stringResource(R.string.preview_launcher_label),
                 style = MaterialTheme.typography.headlineSmall,
@@ -204,10 +206,23 @@ private fun SpecimenHeader(
             )
         }
         if (onOpenShellDemo != null) {
+            val context = LocalContext.current
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                FilledTonalButton(
+                    onClick = { context.startActivity(SampleExportActivity.createIntent(context)) },
+                    shape = HiShapeTokens.Small,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    HiCappedFontScale {
+                        Text(
+                            text = stringResource(R.string.sample_export_entry_button),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
                 FilledTonalButton(
                     onClick = onOpenShellDemo,
                     shape = HiShapeTokens.Small,

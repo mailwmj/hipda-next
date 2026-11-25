@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sample_export_entry_button">样本导出</string>
+    <string name="sample_export_title">样本导出</string>
+    <string name="sample_export_readonly_badge">仅只读 GET</string>
+    <string name="sample_export_back_cd">关闭</string>
+
+    <string name="sample_export_login_section">登录状态</string>
+    <string name="sample_export_login_status_logged_in">已登录</string>
+    <string name="sample_export_login_status_logged_out">未登录</string>
+    <string name="sample_export_login_hint">仅依据 SiteCookieStore 中的 cdb_auth 判断，不保存密码。</string>
+    <string name="sample_export_action_open_login">登录</string>
+    <string name="sample_export_action_sync_cookies">同步状态</string>
+
+    <string name="sample_export_login_webview_title">登录 HiPDA</string>
+    <string name="sample_export_login_webview_done">完成登录</string>
+    <string name="sample_export_login_webview_close">关闭</string>
+
+    <string name="sample_export_privacy_title">隐私提示</string>
+    <string name="sample_export_privacy_body">我的帖子、我的回复、收藏含真实帖子与楼层编号，可在论坛反查发帖人。建议挑选公开普通帖，或使用测试号导出。</string>
+    <string name="sample_export_privacy_toggle">包含我的帖子、我的回复与收藏</string>
+
+    <string name="sample_export_tid_label">自定义公开帖子编号（可选）</string>
+    <string name="sample_export_tid_placeholder">留空则自动挑选版块内公开多页帖</string>
+    <string name="sample_export_tid_invalid">请输入纯数字帖子编号</string>
+    <string name="sample_export_action_start">一键抓取并导出</string>
+    <string name="sample_export_action_running">正在抓取…</string>
+    <string name="sample_export_action_share">分享</string>
+    <string name="sample_export_share_chooser_title">分享脱敏样本压缩包</string>
+    <string name="sample_export_zip_ready">已生成 %1$s</string>
+
+    <string name="sample_export_list_section">抓取清单</string>
+    <string name="sample_export_summary">成功 %1$d/%2$d · 跳过 %3$d · 失败 %4$d</string>
+    <string name="sample_export_status_pending">待抓取</string>
+    <string name="sample_export_status_fetching">抓取中</string>
+    <string name="sample_export_status_success">成功</string>
+    <string name="sample_export_status_skipped">已跳过</string>
+    <string name="sample_export_status_failed">失败</string>
+    <string name="sample_export_action_retry">重试</string>
+
+    <string name="sample_export_feedback_synced_logged_in">已同步 Cookie，当前已登录</string>
+    <string name="sample_export_feedback_synced_logged_out">已同步 Cookie，尚未检测到登录态</string>
+    <string name="sample_export_feedback_zip_ready">脱敏样本压缩包已生成</string>
+    <string name="sample_export_feedback_export_failed">没有可导出的样本，请查看失败项</string>
+    <string name="sample_export_feedback_share_failed">无法打开系统分享</string>
+
+    <string name="sample_export_item_thread_list_p1">版块列表 · 第 1 页（按回复）</string>
+    <string name="sample_export_item_thread_list_p2">版块列表 · 第 2 页（按回复）</string>
+    <string name="sample_export_item_thread_list_dateline">版块列表 · 第 1 页（按发帖）</string>
+    <string name="sample_export_item_thread_detail_p1">帖子详情 · 第 1 页</string>
+    <string name="sample_export_item_thread_detail_p2">帖子详情 · 第 2 页</string>
+    <string name="sample_export_item_thread_detail_author">帖子详情 · 只看楼主</string>
+    <string name="sample_export_item_sms_list">短消息列表</string>
+    <string name="sample_export_item_sms_detail">短消息对话详情</string>
+    <string name="sample_export_item_notify_list">提醒列表</string>
+    <string name="sample_export_item_search_result">搜索结果</string>
+    <string name="sample_export_item_user_profile">用户资料</string>
+    <string name="sample_export_item_my_threads">我的帖子</string>
+    <string name="sample_export_item_my_posts">我的回复</string>
+    <string name="sample_export_item_my_favorites">我的收藏</string>
+    <string name="sample_export_item_post_form">发帖空表单页（只读 GET）</string>
+    <string name="sample_export_item_login_page">登录页</string>
+</resources>
