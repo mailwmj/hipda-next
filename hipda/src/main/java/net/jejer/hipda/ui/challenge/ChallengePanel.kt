@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
@@ -61,6 +62,8 @@ import net.jejer.hipda.ui.designsystem.motion.hiSlideOutVertically
 @Immutable
 object ChallengePanelDefaults {
     val DialogBreakpoint: Dp = 600.dp
+    val NarrowHeaderBreakpoint: Dp = 360.dp
+    const val NarrowHeaderFontScaleThreshold: Float = 1.5f
     val DialogMaxWidth: Dp = 480.dp
     val DialogMaxHeight: Dp = 560.dp
     const val SheetHeightFraction: Float = 0.78f
@@ -86,7 +89,11 @@ fun ChallengePanelOverlay(
     onDismissed: () -> Unit = {},
     webViewSlot: @Composable () -> Unit,
 ) {
-    val isDialog = LocalWindowInfo.current.containerDpSize.width >= ChallengePanelDefaults.DialogBreakpoint
+    val windowWidth = LocalWindowInfo.current.containerDpSize.width
+    val isDialog = windowWidth >= ChallengePanelDefaults.DialogBreakpoint
+    val isNarrowLargeFont = !isDialog &&
+        windowWidth < ChallengePanelDefaults.NarrowHeaderBreakpoint &&
+        LocalDensity.current.fontScale >= ChallengePanelDefaults.NarrowHeaderFontScaleThreshold
     val transition = updateTransition(targetState = visible, label = "ChallengePanelOverlay")
     var everShown by remember { mutableStateOf(visible) }
     if (visible) {
@@ -180,6 +187,7 @@ fun ChallengePanelOverlay(
                 ) {
                     ChallengePanelHeader(
                         title = panelTitle,
+                        isNarrowLargeFont = isNarrowLargeFont,
                         onRefresh = onRefresh,
                         onCancel = onCancel,
                     )
@@ -196,9 +204,38 @@ fun ChallengePanelOverlay(
 @Composable
 private fun ChallengePanelHeader(
     title: String,
+    isNarrowLargeFont: Boolean,
     onRefresh: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    if (isNarrowLargeFont) {
+        // 极端窄屏 + 大字号（如 340dp + 2x）：标题与动作按钮置顶行，副行独占整宽避免截断且控制顶栏总高不挤占 WebView。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ChallengePanelTitle(title = title, modifier = Modifier.weight(1f))
+                ChallengePanelActions(onRefresh = onRefresh, onCancel = onCancel, horizontalPadding = 8.dp)
+            }
+            Text(
+                text = stringResource(R.string.challenge_panel_subtitle),
+                modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        return
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -210,14 +247,7 @@ private fun ChallengePanelHeader(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(
-                text = title,
-                modifier = Modifier.semantics { heading() },
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            ChallengePanelTitle(title = title)
             Text(
                 text = stringResource(R.string.challenge_panel_subtitle),
                 style = MaterialTheme.typography.bodySmall,
@@ -226,16 +256,39 @@ private fun ChallengePanelHeader(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ChallengePanelActionButton(
-                label = stringResource(R.string.challenge_action_refresh),
-                onClick = onRefresh,
-            )
-            ChallengePanelActionButton(
-                label = stringResource(R.string.challenge_action_cancel),
-                onClick = onCancel,
-            )
-        }
+        ChallengePanelActions(onRefresh = onRefresh, onCancel = onCancel)
+    }
+}
+
+@Composable
+private fun ChallengePanelTitle(title: String, modifier: Modifier = Modifier) {
+    Text(
+        text = title,
+        modifier = modifier.semantics { heading() },
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun ChallengePanelActions(
+    onRefresh: () -> Unit,
+    onCancel: () -> Unit,
+    horizontalPadding: Dp = 12.dp,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        ChallengePanelActionButton(
+            label = stringResource(R.string.challenge_action_refresh),
+            onClick = onRefresh,
+            horizontalPadding = horizontalPadding,
+        )
+        ChallengePanelActionButton(
+            label = stringResource(R.string.challenge_action_cancel),
+            onClick = onCancel,
+            horizontalPadding = horizontalPadding,
+        )
     }
 }
 
@@ -243,13 +296,14 @@ private fun ChallengePanelHeader(
 private fun ChallengePanelActionButton(
     label: String,
     onClick: () -> Unit,
+    horizontalPadding: Dp = 12.dp,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     TextButton(
         onClick = onClick,
         shape = HiShapeTokens.Small,
         interactionSource = interactionSource,
-        contentPadding = PaddingValues(horizontal = 12.dp),
+        contentPadding = PaddingValues(horizontal = horizontalPadding),
         modifier = Modifier
             .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .hiPressScale(interactionSource),

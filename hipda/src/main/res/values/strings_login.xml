@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 登录与临时账号出口文案（逐字取自 docs/design/copy.md；安全提问选项对齐 Discuz! 标准 questionid 0..7） -->
+    <string name="login_title">登录 HiPDA</string>
+    <string name="login_action_submit">登录</string>
+    <string name="login_action_close">关闭</string>
+    <string name="login_field_username">用户名</string>
+    <string name="login_field_password">密码</string>
+    <string name="login_field_security_question">安全提问</string>
+    <string name="login_field_security_answer">提问回答</string>
+    <string name="login_cd_show_password">显示密码</string>
+    <string name="login_cd_hide_password">隐藏密码</string>
+    <string name="login_status_submitting">正在登录…</string>
+    <string name="login_error_network">网络连接失败，请重试</string>
+
+    <string name="login_question_none">无安全提问</string>
+    <string name="login_question_1">母亲的名字</string>
+    <string name="login_question_2">爷爷的名字</string>
+    <string name="login_question_3">父亲出生的城市</string>
+    <string name="login_question_4">您其中一位老师的名字</string>
+    <string name="login_question_5">您个人计算机的型号</string>
+    <string name="login_question_6">您最喜欢的餐馆名称</string>
+    <string name="login_question_7">驾驶执照的最后四位数字</string>
+
+    <string name="login_account_current">当前账号</string>
+    <string name="login_action_logout">退出登录</string>
+    <string name="login_snackbar_logged_out">已退出登录</string>
+</resources>

@@ -2,10 +2,7 @@ package net.jejer.hipda.ui.challenge
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,17 +13,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -38,11 +31,11 @@ import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeIncompleteException
 import net.jejer.hipda.data.network.access.ChallengeRejectedException
 import net.jejer.hipda.data.network.access.ChallengeState
-import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 import net.jejer.hipda.ui.designsystem.state.HiErrorState
+import net.jejer.hipda.ui.designsystem.state.HiLoadingSpinner
 import net.jejer.hipda.ui.designsystem.state.HiStateAction
 
 /** 原地验证提示常量（product-design.md §7.12）。 */
@@ -74,6 +67,7 @@ fun ChallengeState.effectiveAt(nowMs: Long): ChallengeState =
 
 private enum class ChallengeVisualState {
     None,
+    PendingLoading,
     Checking,
     Incomplete,
     Rejected,
@@ -82,8 +76,9 @@ private enum class ChallengeVisualState {
 /**
  * 可复用的 Cloudflare 验证原地等待与冷却提示组件（供业务页与 debug 工具页接入）。
  *
- * - `Solving(startedAtMs)`：持续达到 2000ms 后原地显示进度圈 + “正在检查安全环境…”（业务等待，不受减少动态效果影响）；
- * - `Cooldown(untilMs, rejected)`：执行惰性归位（`nowMs >= untilMs` 时立即视为 `Idle`，未到期时到点自动归位）；
+ * - `Solving(startedAtMs)`：未满 2000ms 时若传入 [pendingLoadingSlot] 则渲染原加载指示，满 2000ms 后平滑切换为
+ *   进度圈 + “正在检查安全环境…”（业务等待，不受减少动态效果影响）；
+ * - `Cooldown(untilMs, rejected)`：经 [ChallengeState.effectiveAt] 执行惰性归位（到期即视为 `Idle`，未到期则到点自动归位）；
  * - 取消/连续失败与拒绝冷却均直接复用 [HiErrorState]；点击“重新验证”时通过 [onRetry] 固定传出 [AccessPriority.UserExplicit]，
  *   调用方应将该优先级传给 `SiteAccessGateway.execute` 以清除冷却并立即重试。
  */
@@ -95,6 +90,7 @@ fun ChallengeStatusView(
     failure: ChallengeFailureKind? = null,
     errorDetails: String? = null,
     clock: () -> Long = System::currentTimeMillis,
+    pendingLoadingSlot: (@Composable () -> Unit)? = null,
 ) {
     val currentClock by rememberUpdatedState(clock)
     var checkingDelayElapsed by remember(state) {
@@ -104,13 +100,15 @@ fun ChallengeStatusView(
         )
     }
     var cooldownExpired by remember(state) {
-        mutableStateOf(state is ChallengeState.Cooldown && currentClock() >= state.untilMs)
+        mutableStateOf(
+            state is ChallengeState.Cooldown && state.effectiveAt(currentClock()) is ChallengeState.Idle,
+        )
     }
 
     LaunchedEffect(state) {
-        when (state) {
+        when (val initialEffective = state.effectiveAt(currentClock())) {
             is ChallengeState.Solving -> {
-                val elapsed = (currentClock() - state.startedAtMs).coerceAtLeast(0L)
+                val elapsed = (currentClock() - initialEffective.startedAtMs).coerceAtLeast(0L)
                 val remaining = ChallengeStatusDefaults.CheckingDelayMs - elapsed
                 if (remaining > 0L) {
                     delay(remaining)
@@ -118,26 +116,35 @@ fun ChallengeStatusView(
                 checkingDelayElapsed = true
             }
             is ChallengeState.Cooldown -> {
-                val remaining = state.untilMs - currentClock()
+                val remaining = initialEffective.untilMs - currentClock()
                 if (remaining > 0L) {
                     delay(remaining)
                 }
                 cooldownExpired = true
             }
-            ChallengeState.Idle -> Unit
+            ChallengeState.Idle -> {
+                if (state is ChallengeState.Cooldown) {
+                    cooldownExpired = true
+                }
+            }
         }
     }
 
     val nowMs = currentClock()
-    val effectiveState = when (state) {
-        is ChallengeState.Cooldown -> if (cooldownExpired) ChallengeState.Idle else state.effectiveAt(nowMs)
-        else -> state
+    val effectiveState = if (cooldownExpired && state is ChallengeState.Cooldown) {
+        ChallengeState.Idle
+    } else {
+        state.effectiveAt(nowMs)
     }
     val visualState = when (effectiveState) {
         is ChallengeState.Solving -> {
             val reachedThreshold = checkingDelayElapsed ||
                 (nowMs - effectiveState.startedAtMs) >= ChallengeStatusDefaults.CheckingDelayMs
-            if (reachedThreshold) ChallengeVisualState.Checking else ChallengeVisualState.None
+            when {
+                reachedThreshold -> ChallengeVisualState.Checking
+                pendingLoadingSlot != null -> ChallengeVisualState.PendingLoading
+                else -> ChallengeVisualState.None
+            }
         }
         is ChallengeState.Cooldown ->
             if (effectiveState.rejected) ChallengeVisualState.Rejected else ChallengeVisualState.Incomplete
@@ -157,6 +164,7 @@ fun ChallengeStatusView(
     ) { target ->
         when (target) {
             ChallengeVisualState.None -> Unit
+            ChallengeVisualState.PendingLoading -> pendingLoadingSlot?.invoke()
             ChallengeVisualState.Checking -> ChallengeCheckingIndicator()
             ChallengeVisualState.Incomplete -> HiErrorState(
                 message = stringResource(R.string.challenge_status_incomplete),
@@ -196,32 +204,14 @@ private fun ChallengeCheckingIndicator() {
         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ChallengeCheckingSpinner(Modifier.size(20.dp))
+        HiLoadingSpinner(
+            modifier = Modifier.size(20.dp),
+            strokeWidth = 2.5.dp,
+        )
         Text(
             text = stringResource(R.string.challenge_status_checking),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-@Composable
-private fun ChallengeCheckingSpinner(modifier: Modifier = Modifier) {
-    val color = MaterialTheme.colorScheme.primary
-    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    val angleState: State<Float> = if (HiTheme.isReducedMotion) {
-        remember { mutableFloatStateOf(-90f) }
-    } else {
-        rememberInfiniteTransition(label = "challengeCheckingSpinner").animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = HiMotion.spinnerRepeatable(),
-            label = "challengeCheckingSpinnerAngle",
-        )
-    }
-    Canvas(modifier) {
-        val stroke = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
-        drawArc(color = trackColor, startAngle = 0f, sweepAngle = 360f, useCenter = false, style = stroke)
-        drawArc(color = color, startAngle = angleState.value, sweepAngle = 270f, useCenter = false, style = stroke)
     }
 }
