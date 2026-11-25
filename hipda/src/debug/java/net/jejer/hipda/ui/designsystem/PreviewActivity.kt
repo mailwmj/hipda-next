@@ -67,6 +67,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
+import net.jejer.hipda.debug.next.NextAppActivity
 import net.jejer.hipda.debug.sampleexport.SampleExportActivity
 import net.jejer.hipda.ui.designsystem.glass.GlassDegradationReason
 import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
@@ -242,6 +243,18 @@ private fun SpecimenHeader(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                FilledTonalButton(
+                    onClick = { context.startActivity(NextAppActivity.createIntent(context)) },
+                    shape = HiShapeTokens.Small,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    HiCappedFontScale {
+                        Text(
+                            text = stringResource(R.string.preview_entry_next_app),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
                 FilledTonalButton(
                     onClick = { context.startActivity(SampleExportActivity.createIntent(context)) },
                     shape = HiShapeTokens.Small,
