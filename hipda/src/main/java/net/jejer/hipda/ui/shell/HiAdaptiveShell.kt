@@ -4,16 +4,30 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -26,20 +40,19 @@ import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 /**
  * HiPDA Next 自适应主外壳：按实时窗口尺寸与竖直物理铰链分隔状态在底部悬浮胶囊、紧凑胶囊与左侧 80dp 导航轨之间切换。
  *
- * 窗口信息选型说明：
- * - 使用 [LocalWindowInfo.current] 的 `containerDpSize` 获取精确窗口宽高（dp），满足 360dp 等细粒度阈值；
- * - 使用 [currentWindowAdaptiveInfoV2] 的 `windowPosture.hingeList` 读取实时 `isVertical && isSeparating`
- *   信号（product-design.md §4.1：半折横放的桌面姿态不做特殊布局）。
- *
- * 内容区作为 Haze 源铺满窗口（胶囊浮在内容上方不占布局高度；导航轨占左侧 80dp），
- * 切换一级目的地时原地交叉淡入淡出（无位移）。
+ * - 内容区作为 Haze 源铺满窗口（胶囊浮在内容上方不占布局高度；导航轨占左侧 80dp），
+ *   通过 [content] 的第二个参数 `PaddingValues` 提供恒定的底部留白（按胶囊完全可见时计算，不随滚动收起变化）；
+ * - 底部胶囊与紧凑胶囊通过 [barState] 接收内容滚动并经 `graphicsLayer` 跟手滑出/吸附，键盘可见时立即隐藏；
+ * - 切换一级目的地时原地交叉淡入淡出（无位移），并恢复被滚动收起的胶囊。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HiAdaptiveShell(
     selected: ShellDestination,
     onSelect: (ShellDestination) -> Unit,
     modifier: Modifier = Modifier,
-    content: @Composable (ShellDestination) -> Unit,
+    barState: ShellBarState = rememberShellBarState(),
+    content: @Composable (ShellDestination, PaddingValues) -> Unit,
 ) {
     val windowDpSize = LocalWindowInfo.current.containerDpSize
     val windowPosture = currentWindowAdaptiveInfoV2().windowPosture
@@ -53,6 +66,35 @@ fun HiAdaptiveShell(
     )
     val showUnselectedLabels = showLabelForUnselected(widthDp)
     val glassState = rememberHiGlassState()
+    val density = LocalDensity.current
+
+    var measuredPillHeightPx by remember(mode) { mutableIntStateOf(0) }
+    val navBarsBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val bottomGapPx = with(density) { HiNavigationPillBottomGap.roundToPx() }
+    val minPillHeightPx = with(density) {
+        val minHeight = if (mode == ShellNavigationMode.CompactPill) {
+            HiNavigationPillCompactMinHeight
+        } else {
+            HiNavigationPillMinHeight
+        }
+        minHeight.roundToPx()
+    }
+    val effectivePillHeightPx = if (measuredPillHeightPx > 0) measuredPillHeightPx else minPillHeightPx
+    val isRail = mode == ShellNavigationMode.Rail
+    val maxHiddenOffsetPx = if (isRail) 0f else (effectivePillHeightPx + bottomGapPx + navBarsBottomPx).toFloat()
+    val imeVisible = WindowInsets.isImeVisible || WindowInsets.ime.getBottom(density) > 0
+
+    SideEffect {
+        barState.syncLayout(newMaxHiddenOffsetPx = maxHiddenOffsetPx, imeVisible = imeVisible)
+    }
+    LaunchedEffect(selected) {
+        barState.show()
+    }
+
+    val bottomPaddingDp = with(density) {
+        if (isRail) navBarsBottomPx.toDp() else (effectivePillHeightPx + bottomGapPx + navBarsBottomPx).toDp()
+    }
+    val contentPadding = remember(bottomPaddingDp) { PaddingValues(bottom = bottomPaddingDp) }
 
     Box(
         modifier = modifier
@@ -63,7 +105,8 @@ fun HiAdaptiveShell(
             modifier = Modifier
                 .testTag(HiShellTestTags.ContentContainer)
                 .fillMaxSize()
-                .padding(start = if (mode == ShellNavigationMode.Rail) HiNavigationRailWidth else 0.dp)
+                .padding(start = if (isRail) HiNavigationRailWidth else 0.dp)
+                .then(if (isRail) Modifier else Modifier.nestedScroll(barState.nestedScrollConnection))
                 .hiGlassSource(glassState),
         ) {
             AnimatedContent(
@@ -77,39 +120,37 @@ fun HiAdaptiveShell(
                 },
                 label = "HiAdaptiveShellContent",
             ) { destination ->
-                content(destination)
+                content(destination, contentPadding)
             }
         }
 
-        when (mode) {
-            ShellNavigationMode.Rail -> {
-                HiNavigationRail(
-                    selected = selected,
-                    onSelect = onSelect,
-                    glassState = glassState,
-                    modifier = Modifier.align(Alignment.CenterStart),
-                )
-            }
-
-            ShellNavigationMode.BottomPill,
-            ShellNavigationMode.CompactPill,
-            -> {
-                HiNavigationPill(
-                    selected = selected,
-                    onSelect = onSelect,
-                    glassState = glassState,
-                    compact = mode == ShellNavigationMode.CompactPill,
-                    showUnselectedLabels = showUnselectedLabels,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                        .padding(
-                            start = HiNavigationPillHorizontalMargin,
-                            end = HiNavigationPillHorizontalMargin,
-                            bottom = HiNavigationPillBottomGap,
-                        ),
-                )
-            }
+        if (isRail) {
+            HiNavigationRail(
+                selected = selected,
+                onSelect = onSelect,
+                glassState = glassState,
+                modifier = Modifier.align(Alignment.CenterStart),
+            )
+        } else {
+            HiNavigationPill(
+                selected = selected,
+                onSelect = onSelect,
+                glassState = glassState,
+                compact = mode == ShellNavigationMode.CompactPill,
+                showUnselectedLabels = showUnselectedLabels,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .graphicsLayer {
+                        translationY = if (imeVisible) maxHiddenOffsetPx else barState.hiddenOffsetPx
+                    }
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(
+                        start = HiNavigationPillHorizontalMargin,
+                        end = HiNavigationPillHorizontalMargin,
+                        bottom = HiNavigationPillBottomGap,
+                    )
+                    .onSizeChanged { measuredPillHeightPx = it.height },
+            )
         }
     }
 }

@@ -101,7 +101,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize().testTag("dest_${destination.name}"))
                 }
             }
@@ -128,7 +128,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
@@ -175,7 +175,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
@@ -224,7 +224,7 @@ class HiAdaptiveShellTest {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 ShellIndicatorLayout(
                     selected = selected,
-                    arrangement = ShellLayoutArrangement.CompactHorizontal,
+                    mode = ShellNavigationMode.CompactPill,
                     animatorKey = "width_continuity_test",
                 ) {
                     ShellDestination.entries.forEachIndexed { idx, dest ->
@@ -288,7 +288,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize()) { Text(destination.name) }
                 }
             }
@@ -336,7 +336,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize().testTag("page_${destination.name}")) {
                         Text(destination.name)
                     }
@@ -383,7 +383,7 @@ class HiAdaptiveShellTest {
                     HiAdaptiveShell(
                         selected = selected,
                         onSelect = { selected = it },
-                    ) { destination ->
+                    ) { destination, _ ->
                         Box(Modifier.fillMaxSize().testTag("page_${destination.name}"))
                     }
                 }
@@ -415,7 +415,7 @@ class HiAdaptiveShellTest {
                     HiAdaptiveShell(
                         selected = selected,
                         onSelect = { selected = it },
-                    ) { destination ->
+                    ) { destination, _ ->
                         Box(Modifier.fillMaxSize().testTag("page_${destination.name}"))
                     }
                 }
@@ -474,7 +474,7 @@ class HiAdaptiveShellTest {
                     HiAdaptiveShell(
                         selected = selected,
                         onSelect = onSelectStable,
-                    ) { destination ->
+                    ) { destination, _ ->
                         Box(Modifier.fillMaxSize().testTag("content_${destination.name}"))
                     }
                 }
@@ -517,7 +517,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = selected,
                     onSelect = { selected = it },
-                ) { destination ->
+                ) { destination, _ ->
                     Box(Modifier.fillMaxSize().testTag("page_${destination.name}"))
                 }
             }
@@ -553,7 +553,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -589,7 +589,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -612,7 +612,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Messages,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -631,7 +631,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -669,7 +669,7 @@ class HiAdaptiveShellTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Mine,
                     onSelect = {},
-                ) { _ ->
+                ) { _, _ ->
                     Box(Modifier.fillMaxSize())
                 }
             }
@@ -706,7 +706,7 @@ class HiAdaptiveShellTest {
                     HiAdaptiveShell(
                         selected = ShellDestination.Forum,
                         onSelect = {},
-                    ) { _ ->
+                    ) { _, _ ->
                         Box(Modifier.fillMaxSize()) {
                             Text(
                                 text = "对照组正文文字",
@@ -800,7 +800,7 @@ class HiAdaptiveShellTest {
         withAnimatorDurationScale(1f) {
             setContent {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _, _ ->
                         Box(Modifier.fillMaxSize())
                     }
                 }
@@ -823,7 +823,7 @@ class HiAdaptiveShellTest {
         withAnimatorDurationScale(1f) {
             setContent {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _, _ ->
                         Box(Modifier.fillMaxSize())
                     }
                 }
@@ -846,7 +846,7 @@ class HiAdaptiveShellTest {
         withAnimatorDurationScale(1f) {
             setContent {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _ ->
+                    HiAdaptiveShell(selected = ShellDestination.Forum, onSelect = {}) { _, _ ->
                         Box(Modifier.fillMaxSize())
                     }
                 }

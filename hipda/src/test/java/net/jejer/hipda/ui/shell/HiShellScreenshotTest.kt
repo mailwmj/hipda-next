@@ -188,7 +188,7 @@ class HiShellScreenshotTest {
                 HiAdaptiveShell(
                     selected = ShellDestination.Forum,
                     onSelect = {},
-                ) { destination ->
+                ) { destination, _ ->
                     ShellSpecimenContent(
                         destination = destination,
                         windowBadge = windowBadge,
