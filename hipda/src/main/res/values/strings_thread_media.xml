@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 帖子图片加载与省流文案（逐字取自 docs/design/copy.md，0 豁免） -->
+    <string name="thread_media_tap_to_load_with_size">点击加载图片（%1$s）</string>
+    <string name="thread_media_loading_cancel">正在加载图片，点击取消</string>
+    <string name="thread_media_load_failed">图片加载失败</string>
+</resources>

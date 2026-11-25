@@ -28,7 +28,10 @@ import net.jejer.hipda.data.threaddetail.ThreadDetailRepository
 import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
 import net.jejer.hipda.feature.common.FullScreenToggle
+import net.jejer.hipda.feature.common.LocalHiImageLoader
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.threaddetail.media.ImageAspectRatioCache
+import net.jejer.hipda.feature.threaddetail.media.OfflineTestImageLoader
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
 import net.jejer.hipda.parser.common.PromptCounts
@@ -46,6 +49,8 @@ import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
 import okhttp3.OkHttpClient
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -223,13 +228,22 @@ class ThreadDetailScreenshotTest {
             errorResult = errorResult,
         )
         val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        val offlineImageLoader = OfflineTestImageLoader.success(
+            width = 400,
+            height = 300,
+            dark = themeMode == HiThemeMode.DARK,
+        )
+        ImageAspectRatioCache.Default.clear()
         val staticScale = object : MotionDurationScale {
             override val scaleFactor: Float = 0f
         }
 
         composeRule.setContent {
             val baseDensity = LocalDensity.current
-            CompositionLocalProvider(LocalDensity provides Density(baseDensity.density, fontScale)) {
+            CompositionLocalProvider(
+                LocalDensity provides Density(baseDensity.density, fontScale),
+                LocalHiImageLoader provides offlineImageLoader,
+            ) {
                 HiTheme(
                     themeMode = themeMode,
                     pureBlack = pureBlack,
@@ -265,8 +279,20 @@ class ThreadDetailScreenshotTest {
             composeRule.runOnIdle { vm.toggleAuthorOnly() }
             composeRule.waitForIdle()
         }
+        val expectsImageLoad = !holdLoading && errorResult == null
+        if (expectsImageLoad) {
+            assertTrue(
+                "1楼示例图片必须仅经离线 LocalHiImageLoader 加载（零真实网络），实际：${offlineImageLoader.requestedUrls}",
+                offlineImageLoader.requestedUrls.isNotEmpty() &&
+                    offlineImageLoader.requestedUrls.all { it == "https://img.example.invalid/sample_photo.jpg" },
+            )
+        } else {
+            assertEquals(emptyList<String>(), offlineImageLoader.requestedUrls)
+        }
+        assertEquals(0, offlineImageLoader.enqueueCount.get())
         composeRule.assertGlassSurfaceCountAtMost(1)
         composeRule.onRoot().captureHiSnapshot(name)
+        ImageAspectRatioCache.Default.clear()
     }
 
     private class SnapshotThreadDetailRepository(
