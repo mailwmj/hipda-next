@@ -1,19 +1,27 @@
-# 真机操作清单：M1 验收、样本导出、M4 外壳验收
+# 真机操作清单
 
-适用版本：`main` @ `15d3e32`（A 线 Cloudflare 通道 + B1b 样本导出页 + A5c 桌面站点 UA 修复）。
+适用版本：`main` @ `7cf0e70`（含 G1 毛玻璃调参与 debug 调参面板）。M1 与 M4 已于 2026-11-25 验收通过，第一、二节留作记录。
 
 ## 0. 取安装包
 
 debug 包在 CI 产物里（私有仓库，需登录 GitHub）：
 
-- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45589518983> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
-- 命令行：`gh run download 45589518983 -R mailwmj/hipda-next -n debug-apk`
+- 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45602043228> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`）
+- 命令行：`gh run download 45602043228 -R mailwmj/hipda-next -n debug-apk`
 
 安装：`adb install -r hipda-debug.apk`。包名 `net.jejer.hipda.next`，可与旧版并存。
 
 > 2026-11-25 第一次实测因 UA 含 `Android` 拿到手机版模板而全部失败，已由 A5c 修复。请先卸载旧的 debug 包（或直接覆盖安装），重新登录后再抓取；遇到 Cloudflare 验证时留意能否在 WebView 里正常通过。
 
-## 一、样本导出 + M1 验收（约 10 分钟）
+## 当前待办：毛玻璃调参（约 5 分钟）
+
+1. 安装上面的新包（覆盖安装即可）。
+2. 打开「**HiPDA 预览**」→「**外壳**」→ 打开「**调参**」面板。
+3. 先看默认效果：彩带背景从胶囊下滑过时，透色是否干净、字是否清楚；深色、浅色各看一次。
+4. 拖动滑杆调到满意（模糊、着色透明度亮/暗、饱和度、噪点、描边高光、指示器透明度）。
+5. 点「**复制当前参数**」，把复制出的那一行发给负责人；深色和浅色如果想要不同值，各复制一次。
+
+## 一、样本导出 + M1 验收（约 10 分钟，已完成）
 
 全程只发只读 GET 请求：不发帖、不回复、不发短消息、不改收藏，不保存密码。
 
@@ -26,7 +34,7 @@ debug 包在 CI 产物里（私有仓库，需登录 GitHub）：
 7. 个别项「失败」可点「重试」；出现「**脱敏校验未通过**」的项不会进压缩包，把详情记下来反馈即可。
 8. 完成后点「**分享**」，把 `hipda-samples-<时间戳>.zip` 传到那台电脑。
 
-## 二、M4 外壳验收（约 5 分钟，需 Android 12+）
+## 二、M4 外壳验收（已完成）
 
 「HiPDA 预览」→「**外壳**」：
 
