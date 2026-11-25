@@ -1,5 +1,6 @@
 package net.jejer.hipda.data.account
 
+import java.util.Locale
 import kotlinx.serialization.Serializable
 
 /**
@@ -27,5 +28,9 @@ data class SavedAccount(
 
     companion object {
         const val NO_SECURITY_QUESTION: Int = 0
+        private val PASSWORD_MD5_REGEX: Regex = Regex("^[0-9a-fA-F]{32}$")
+
+        internal fun normalizePasswordMd5OrNull(raw: String): String? =
+            if (PASSWORD_MD5_REGEX.matches(raw)) raw.lowercase(Locale.ROOT) else null
     }
 }

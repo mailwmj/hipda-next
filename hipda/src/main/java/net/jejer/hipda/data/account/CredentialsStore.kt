@@ -1,29 +1,16 @@
 package net.jejer.hipda.data.account
 
-import android.content.Context
-import androidx.annotation.VisibleForTesting
 import androidx.datastore.core.CorruptionException
 import androidx.datastore.core.DataStore
-import androidx.datastore.core.DataStoreFactory
 import androidx.datastore.core.Serializer
-import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
-import androidx.datastore.dataStoreFile
-import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
-import javax.inject.Inject
-import javax.inject.Singleton
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
-import net.jejer.hipda.data.security.AeadProvider
 
 /**
  * Tink AEAD-encrypted multi-account credentials store supporting active account selection and
@@ -46,7 +33,11 @@ interface CredentialsStore {
      */
     val manuallyLoggedOut: Flow<Boolean>
 
-    /** Inserts a new account or replaces the existing entry with the same [SavedAccount.uid]. */
+    /**
+     * Inserts a new account or replaces the existing entry with the same [SavedAccount.uid].
+     * Validates non-blank `uid`/`username` and normalizes [SavedAccount.passwordMd5] (must match
+     * `^[0-9a-fA-F]{32}$`) to lowercase; throws [IllegalArgumentException] otherwise.
+     */
     suspend fun upsert(account: SavedAccount)
 
     /**
@@ -75,9 +66,16 @@ internal data class CredentialsSnapshot(
         val deduplicated = linkedMapOf<String, SavedAccount>()
         for (account in accounts) {
             if (account.uid.isBlank() || account.username.isBlank()) continue
-            val existing = deduplicated[account.uid]
-            if (existing == null || account.lastLoginAt >= existing.lastLoginAt) {
-                deduplicated[account.uid] = account
+            val normalizedMd5 = SavedAccount.normalizePasswordMd5OrNull(account.passwordMd5)
+                ?: continue
+            val normalizedAccount = if (normalizedMd5 == account.passwordMd5) {
+                account
+            } else {
+                account.copy(passwordMd5 = normalizedMd5)
+            }
+            val existing = deduplicated[normalizedAccount.uid]
+            if (existing == null || normalizedAccount.lastLoginAt >= existing.lastLoginAt) {
+                deduplicated[normalizedAccount.uid] = normalizedAccount
             }
         }
         val sortedAccounts = deduplicated.values.sortedWith(ACCOUNT_COMPARATOR)
@@ -108,7 +106,11 @@ internal object CredentialsSnapshotSerializer : Serializer<CredentialsSnapshot> 
     override val defaultValue: CredentialsSnapshot = CredentialsSnapshot.EMPTY
 
     override suspend fun readFrom(input: InputStream): CredentialsSnapshot {
-        val payload = input.readBytes().toString(Charsets.UTF_8)
+        val rawBytes = input.readBytes()
+        if (rawBytes.isEmpty()) {
+            throw CorruptionException("Encrypted credentials payload is empty.")
+        }
+        val payload = rawBytes.toString(Charsets.UTF_8)
         return try {
             json.decodeFromString(CredentialsSnapshot.serializer(), payload).normalized()
         } catch (e: SerializationException) {
@@ -124,22 +126,9 @@ internal object CredentialsSnapshotSerializer : Serializer<CredentialsSnapshot> 
     }
 }
 
-@Singleton
-class DataStoreCredentialsStore @VisibleForTesting internal constructor(
+class DataStoreCredentialsStore internal constructor(
     private val dataStore: DataStore<CredentialsSnapshot>,
 ) : CredentialsStore {
-
-    @Inject
-    constructor(
-        @ApplicationContext context: Context,
-        aeadProvider: AeadProvider,
-    ) : this(
-        dataStore = createDataStore(
-            produceFile = { credentialsDataStoreFile(context, aeadProvider) },
-            aeadProvider = aeadProvider,
-            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-        ),
-    )
 
     override val accounts: Flow<List<SavedAccount>> = dataStore.data
         .map { it.accounts }
@@ -156,8 +145,19 @@ class DataStoreCredentialsStore @VisibleForTesting internal constructor(
     override suspend fun upsert(account: SavedAccount) {
         require(account.uid.isNotBlank()) { "Account uid must not be blank" }
         require(account.username.isNotBlank()) { "Account username must not be blank" }
+        val normalizedPasswordMd5 = requireNotNull(
+            SavedAccount.normalizePasswordMd5OrNull(account.passwordMd5),
+        ) {
+            "Account passwordMd5 must be a 32-character hexadecimal MD5 digest"
+        }
+        val normalizedAccount = if (normalizedPasswordMd5 == account.passwordMd5) {
+            account
+        } else {
+            account.copy(passwordMd5 = normalizedPasswordMd5)
+        }
         dataStore.updateData { current ->
-            val updated = current.accounts.filterNot { it.uid == account.uid } + account
+            val updated = current.accounts
+                .filterNot { it.uid == normalizedAccount.uid } + normalizedAccount
             current.copy(accounts = updated).normalized()
         }
     }
@@ -196,30 +196,5 @@ class DataStoreCredentialsStore @VisibleForTesting internal constructor(
                 activeUid = if (current.activeUid == uid) null else current.activeUid,
             ).normalized()
         }
-    }
-
-    companion object {
-        const val CREDENTIALS_LOGICAL_NAME: String = "credentials"
-
-        internal fun credentialsDataStoreFile(
-            context: Context,
-            aeadProvider: AeadProvider,
-        ): File = context.dataStoreFile(aeadProvider.encryptedFileName(CREDENTIALS_LOGICAL_NAME))
-
-        internal fun createDataStore(
-            produceFile: () -> File,
-            aeadProvider: AeadProvider,
-            scope: CoroutineScope,
-        ): DataStore<CredentialsSnapshot> = DataStoreFactory.create(
-            serializer = aeadProvider.wrapSerializer(
-                logicalName = CREDENTIALS_LOGICAL_NAME,
-                wrappedSerializer = CredentialsSnapshotSerializer,
-            ),
-            corruptionHandler = ReplaceFileCorruptionHandler(
-                produceNewData = { CredentialsSnapshot.EMPTY },
-            ),
-            scope = scope,
-            produceFile = produceFile,
-        )
     }
 }

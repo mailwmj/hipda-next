@@ -1,11 +1,13 @@
 package net.jejer.hipda.data.account
 
+import androidx.datastore.core.CorruptionException
 import androidx.datastore.core.Serializer
 import app.cash.turbine.test
 import com.google.crypto.tink.Aead
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.RegistryConfiguration
 import com.google.crypto.tink.aead.PredefinedAeadParameters
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -50,14 +52,14 @@ class CredentialsStoreTest {
     }
 
     private fun newCredentialsFile(provider: AeadProvider = aeadProvider): File =
-        File(tempFolder.newFolder(), provider.encryptedFileName(DataStoreCredentialsStore.CREDENTIALS_LOGICAL_NAME))
+        File(tempFolder.newFolder(), provider.encryptedFileName(CredentialsModule.CREDENTIALS_LOGICAL_NAME))
 
     private fun createStore(
         file: File,
         scope: CoroutineScope,
         provider: AeadProvider = aeadProvider,
     ): CredentialsStore = DataStoreCredentialsStore(
-        DataStoreCredentialsStore.createDataStore(
+        CredentialsModule.createCredentialsDataStore(
             produceFile = { file },
             aeadProvider = provider,
             scope = scope,
@@ -123,6 +125,97 @@ class CredentialsStoreTest {
             store.upsert(sampleAccount(uid = "1001", username = "   ", lastLoginAt = 1L))
         }
         assertEquals(emptyList<SavedAccount>(), store.accounts.first())
+    }
+
+    @Test
+    fun upsert_normalizesUppercasePasswordMd5AndRejectsPlaintextOrInvalidDigest() = runTest {
+        val store = createStore(newCredentialsFile(), backgroundScope)
+        val uppercaseDigest = "0123456789ABCDEF0123456789ABCDEF"
+        val account = sampleAccount(
+            uid = "1001",
+            username = "alice",
+            passwordMd5 = uppercaseDigest,
+            lastLoginAt = 1_000L,
+        )
+
+        store.upsert(account)
+        assertEquals(
+            listOf(account.copy(passwordMd5 = "0123456789abcdef0123456789abcdef")),
+            store.accounts.first(),
+        )
+
+        val invalidDigests = listOf(
+            "",
+            "   ",
+            "myPlaintextPassword!",
+            "0123456789abcdef0123456789abcde", // 31 chars
+            "0123456789abcdef0123456789abcdef0", // 33 chars
+            "0123456789abcdef0123456789abcdeg", // non-hex char 'g'
+        )
+        for (badDigest in invalidDigests) {
+            val error = assertThrowsIllegalArgument {
+                store.upsert(
+                    sampleAccount(
+                        uid = "1002",
+                        username = "bob",
+                        passwordMd5 = badDigest,
+                        lastLoginAt = 2_000L,
+                    ),
+                )
+            }
+            if (badDigest.isNotBlank()) {
+                assertFalse(
+                    "Validation error must not echo secret input",
+                    error.message.orEmpty().contains(badDigest),
+                )
+            }
+        }
+        // Existing valid account remains intact after rejected writes.
+        assertEquals(listOf("1001"), store.accounts.first().map { it.uid })
+    }
+
+    @Test
+    fun deserialization_normalizesUppercasePasswordMd5AndFiltersInvalidEntriesWithoutCrashing() = runTest {
+        val file = newCredentialsFile()
+        val encryptedRawSerializer = aeadProvider.wrapSerializer(
+            logicalName = CredentialsModule.CREDENTIALS_LOGICAL_NAME,
+            wrappedSerializer = Utf8StringSerializer,
+        )
+        val payload = """
+            {
+              "accounts": [
+                {
+                  "uid": "1001",
+                  "username": "upper_user",
+                  "passwordMd5": "ABCDEF0123456789ABCDEF0123456789",
+                  "securityQuestionId": 0,
+                  "securityAnswer": "",
+                  "lastLoginAt": 1000
+                },
+                {
+                  "uid": "1002",
+                  "username": "plaintext_user",
+                  "passwordMd5": "not-an-md5-plaintext",
+                  "securityQuestionId": 0,
+                  "securityAnswer": "",
+                  "lastLoginAt": 2000
+                }
+              ],
+              "activeUid": "1002",
+              "manuallyLoggedOut": false
+            }
+        """.trimIndent()
+        val output = ByteArrayOutputStream()
+        encryptedRawSerializer.writeTo(payload, output)
+        file.writeBytes(output.toByteArray())
+
+        val store = createStore(file, backgroundScope)
+        val loaded = store.accounts.first()
+        assertEquals(1, loaded.size)
+        assertEquals("1001", loaded.single().uid)
+        assertEquals("abcdef0123456789abcdef0123456789", loaded.single().passwordMd5)
+        // Active UID pointed at filtered invalid account -> safely cleared to null.
+        assertNull(store.activeUid.first())
     }
 
     @Test
@@ -252,6 +345,35 @@ class CredentialsStoreTest {
     }
 
     @Test
+    fun zeroByteFileOnDisk_recoversToEmptyStateAndAllowsSubsequentWrites() = runTest {
+        // Explicit 0-byte guard inside CredentialsSnapshotSerializer itself.
+        try {
+            CredentialsSnapshotSerializer.readFrom(ByteArrayInputStream(ByteArray(0)))
+            throw AssertionError("Expected CorruptionException for 0-byte payload")
+        } catch (_: CorruptionException) {
+            // Expected
+        }
+
+        // End-to-end 0-byte hx_credentials file on disk recovers cleanly and accepts future writes.
+        val file = newCredentialsFile()
+        file.writeBytes(ByteArray(0))
+        assertEquals(0L, file.length())
+
+        val store = createStore(file, backgroundScope)
+        assertEquals(emptyList<SavedAccount>(), store.accounts.first())
+        assertNull(store.activeUid.first())
+        assertFalse(store.manuallyLoggedOut.first())
+
+        val recovered = sampleAccount(uid = "2048", username = "from_empty", lastLoginAt = 8_000L)
+        store.upsert(recovered)
+        store.setActive(recovered.uid)
+
+        assertEquals(listOf(recovered), store.accounts.first())
+        assertEquals(recovered.uid, store.activeUid.first())
+        assertTrue(file.length() > 0L)
+    }
+
+    @Test
     fun corruptedFileOnDisk_recoversToEmptyStateAndAllowsSubsequentWrites() = runTest {
         val file = newCredentialsFile()
         file.writeBytes(byteArrayOf(0x00, 0xFF.toByte(), 0x42, 0x13, 0x7F, 0x10))
@@ -311,7 +433,7 @@ class CredentialsStoreTest {
     fun corruptedJsonInsideValidCiphertext_recoversToEmptyStateAndAllowsSubsequentWrites() = runTest {
         val file = newCredentialsFile()
         val encryptedRawSerializer = aeadProvider.wrapSerializer(
-            logicalName = DataStoreCredentialsStore.CREDENTIALS_LOGICAL_NAME,
+            logicalName = CredentialsModule.CREDENTIALS_LOGICAL_NAME,
             wrappedSerializer = Utf8StringSerializer,
         )
         val output = ByteArrayOutputStream()
@@ -428,12 +550,12 @@ class CredentialsStoreTest {
         lastLoginAt = lastLoginAt,
     )
 
-    private suspend fun assertThrowsIllegalArgument(block: suspend () -> Unit) {
+    private suspend fun assertThrowsIllegalArgument(block: suspend () -> Unit): IllegalArgumentException {
         try {
             block()
             throw AssertionError("Expected IllegalArgumentException")
-        } catch (_: IllegalArgumentException) {
-            // Expected
+        } catch (e: IllegalArgumentException) {
+            return e
         }
     }
 
