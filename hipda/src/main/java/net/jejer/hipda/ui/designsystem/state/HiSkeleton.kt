@@ -5,7 +5,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.State
@@ -13,10 +13,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawOutline
-import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.isSpecified
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
@@ -47,8 +45,7 @@ fun Modifier.hiSkeleton(shape: Shape = HiShapeTokens.Small): Modifier {
             label = "hiSkeletonAlpha",
         )
     }
-    val contentColor = LocalContentColor.current
-    val baseColor = if (contentColor.isSpecified) contentColor else Color.Gray
+    val baseColor = MaterialTheme.colorScheme.onSurface
     return drawWithCache {
         val outline = shape.createOutline(size, layoutDirection, this)
         onDrawWithContent {
