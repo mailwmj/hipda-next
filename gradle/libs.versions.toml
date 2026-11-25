@@ -30,6 +30,7 @@ cronetOkhttp = "0.1.2"
 playServicesCronet = "18.1.1"
 cronetApi = "500.1.0"
 browser = "1.10.0"
+webkit = "1.18.0"
 jsoup = "1.24.1"
 
 # Images
@@ -133,6 +134,7 @@ cronet-okhttp = { module = "com.google.net.cronet:cronet-okhttp", version.ref = 
 play-services-cronet = { module = "com.google.android.gms:play-services-cronet", version.ref = "playServicesCronet" }
 cronet-api = { module = "org.chromium.net:cronet-api", version.ref = "cronetApi" }
 androidx-browser = { module = "androidx.browser:browser", version.ref = "browser" }
+androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 
 # Images
