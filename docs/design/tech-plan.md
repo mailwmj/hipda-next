@@ -1,9 +1,9 @@
-# hipda-next 现代化技术方案（v0.3）
+# hipda-next 现代化技术方案（v0.4）
 
-> 状态：v0.3，已按 Carbon 两轮评审（T1–T17，全部采纳）及 2026-11-25 大屏三栏定稿（D-3pane）同步修订。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查（P1 的 32 个版本号都存在，而且都是稳定版；需要改的几处已在本文改正），最终以 M0-1 的实测为准。决策记录见 `docs/agents/decisions.md`。
+> 状态：v0.4，已按 Carbon 两轮评审（T1–T17，全部采纳）、2026-11-25 大屏三栏定稿（D-3pane）及 2026-11-25 液态玻璃与 kudo 交互定稿（D-kudo，含 R-Dkudo 审查修订）同步修订。来源：负责人方案与 P1 独立方案合并；版本号已经 F2 核查，Kyant `backdrop` 依赖与 AAR 元数据已在 Maven Central 实查核实，最终以玻璃替换卡 `G2` 实测为准。决策记录见 `docs/agents/decisions.md`。
 
 ## 1. 目标
-- 用户看到的结果：一个现代、流畅的 HiPDA 客户端。手机、折叠屏的外屏和内屏、平板、分屏窄窗口、深色和浅色模式下都好用。窄屏底部导航和帖子详情工具条是毛玻璃材质；大屏与展开后的折叠屏采用常驻左侧栏 + 列表 + 详情三栏布局；动效细腻，有交代。
+- 用户看到的结果：一个现代、流畅的 HiPDA 客户端。手机、折叠屏的外屏和内屏、平板、分屏窄窗口、深色和浅色模式下都好用。透明吸顶顶栏、窄屏底部导航胶囊、帖子详情透明顶栏、底部三段式工具条与快速回复面板采用液态玻璃材质（同屏活跃上限 3 块）；大屏与展开后的折叠屏采用常驻左侧栏 + 列表 + 详情三栏布局；动效细腻，有交代。
 - 功能范围与现有应用一致，不扩张。只删除已经失效的功能（例如检查更新），以及可以由系统自动判断的设置项。
 - 不兼容老版本和老用户（用户决定）：不做数据迁移，不要求沿用原签名，不做覆盖安装测试。
 - 包名改为 `net.jejer.hipda.next`（用户决定），可以和旧版同时安装、对照使用。在 M0-2 中修改，连同 `shortcuts.xml`、provider authority 等写死包名的地方。
@@ -39,7 +39,7 @@
 | 解析 | jsoup 最新稳定版，放在纯 JVM 模块 `:core-parser`，没有 Android 依赖，测试快 |
 | 图片 | Coil 3（与网络层共用同一个 OkHttpClient）、Telephoto（看大图） |
 | 存储 | Room（草稿、浏览历史、阅读位置）、DataStore（设置；凭据用 Tink 加密）。全新结构，不迁移旧数据 |
-| 毛玻璃 | Haze 2.x（`haze-blur` 模块，API 是 `Modifier.hazeSource` 和 `Modifier.hazeBlur`；1.x 的 `hazeEffect(state, style)` 签名已经移除）：API 31 及以上用真实模糊（API 31 上，任何快照状态变化都会让 Haze 重新抓取背景，需要在 M4 实测性能，必要时只在 32 及以上开启）；API 30 及以下降级为高不透明度的 scrim。Haze 不会自动检测省电模式和系统的“降低透明度”设置，要由应用自己监听，并传入 `blurEnabled(false)`；降级后的描边和阴影也由应用自己画 |
+| 毛玻璃（液态玻璃） | **Kyant Backdrop**（`io.github.kyant0:backdrop`，Apache-2.0，配套 `io.github.kyant0:shapes`），**替换原有 Haze 2.x**（移除 `haze` / `haze-blur` / `haze-blur-materials`）。<br>• **版本选型**：Maven Central 最新稳定版为 `io.github.kyant0:backdrop:2.0.1`（传递 `shapes:1.2.1`，`minCompileSdk=37`、Kotlin `2.4.10`，与本项目 `compileSdk 37.1` / Kotlin `2.4.21` 对齐）；若其 Compose Multiplatform 依赖传递与 Compose BOM `2026.11.01` 或 AGP 9 发生解析冲突，则退用纯 Android Jetpack Compose 稳定版 `1.0.6`（配套 `shapes:1.2.0`），以玻璃替换卡 `G2` 实测锁定。<br>• **统一门面与分卡职责**：业务层只调用项目封装的 `HiGlassState`、`Modifier.hiGlassSource`、`HiGlassSurface` 与四档 `HiGlassStyle`（`G2` 落地 `Navigation` / `Toolbar` 引擎与折射令牌，`C4d` 补齐 `TopBar` / `Sheet` 档、复合区域标记与 `HiAdaptiveShell` 无环兄弟拓扑），内部映射为 `rememberLayerBackdrop()` + `Modifier.layerBackdrop(...)` 与 `Modifier.drawBackdrop(...)` / `Modifier.drawPlainBackdrop(...)`，不把第三方类型泄漏到 `feature/`。<br>• **三级硬件能力 + 四路系统自动降级**：(1) **API 33+（Android 13+）**且系统允许模糊：启用模糊 + `vibrancy()`/`colorControls()` + AGSL 边缘透镜折射 `lens()`；(2) **API 31–32（Android 12/12L）**且系统允许模糊：关闭 `lens()` 折射，退为纯模糊 + 色彩控制 + 渐变高光描边；(3) **API ≤ 30（Android 8–11）或 `GlassEnvironment` 4 路信号任一命中**（API ≤ 30、省电模式、系统“降低透明度/禁用窗口模糊”、高对比度文字或色彩对比度）：完全跳过 `drawBackdrop` 并释放/停止 `layerBackdrop` 离屏录制，降级为不透明度 94% 的纯色表面 + `0.5dp` `outlineVariant` 细描边。<br>• **区域计数、防崩溃与渲染预算**：以“独立玻璃区域（`HiGlassMarker` 根节点）”计数，全屏活跃区域上限 **3 个**（`assertGlassSurfaceCountAtMost(3)` 直接守卫；底部三段工具条外层记 1 个 `HiGlassMarker`、3 胶囊共享同一 `LayerBackdrop`；详情顶栏圆钮为轻底纯色按钮、严禁嵌套玻璃；快速回复面板打开时停绘并卸载底部工具条 `HiGlassMarker`）；独立 `layerBackdrop` 采样源上限 **2 个**，静止物理 `drawBackdrop` pass 上限 **5 次**；`layerBackdrop` 与所有消费它的玻璃区域必须为**严格兄弟节点**（`C4d` 改造 `HiAdaptiveShell` 不再将 `hiGlassSource` 包在含顶栏的外层 `ContentContainer` 上，严防 RenderThread `libhwui.so SIGSEGV` 循环采样崩溃）；`WebView` 宿主不挂采样源；对比度按三层契约分责验证（CI 测 94% 降级极端黑白 + 模糊态标准主题背景及叠加层 alpha 上限，真机人工验极端样张）；真机 120Hz 不达标时按 `product-design.md` §5 预定 4 级回退顺序降级。<br>• **R8 Keep 规则与 Release 冒烟**：实查 `backdrop:2.0.1` 与 `1.0.6` 的 AAR 均**未自带有效 consumer ProGuard 规则**，按 `G2` 实测需要在 `hipda/proguard-rules.txt` 补充最小定向规则（如 `-keep class com.kyant.backdrop.** { *; }`、`-keep class com.kyant.shapes.** { *; }` 及 `-dontwarn`），并在 `G2` 改动依赖和混淆规则后执行一次 CI **release 模拟器冒烟（`emulator=true`）** 验证 R8 full mode 下冷启动、液态玻璃渲染与切页零崩溃；在 `hipda/src/main/assets/license.txt` 补充 Apache-2.0 许可与版权致谢 |
 | 测试 | JUnit、MockWebServer、Turbine、Robolectric、Roborazzi（截图）、Compose UI test（动效用 mainClock 逐帧检查）、Macrobenchmark（帧时间，在 CI 模拟器上跑，只在阶段验收时） |
 
 ## 5. 架构
@@ -50,7 +50,7 @@
 - **验证面板有独立的宿主（T3）**：用一个透明的 `ChallengeActivity`（singleTop）承载验证用的 WebView，不管前台是新界面还是旧界面，都能弹出验证面板。
 - **解析器先上测试，再抽模块（T2）**：现有解析器依赖 Context、HiSettingsHelper，还会在解析时开线程发通知，不能原样搬进纯 JVM 模块。顺序是：样本导出工具（debug 构建里的工具页，内置 WebView 登录，用新的网络层和验证通道抓取页面）→ 在 `:hipda` 里对现有解析入口写样本回归测试（Robolectric）→ 在 `:core-parser` 里用 Kotlin 分批写新的解析器和不可变模型（不依赖 Android、不读写设置、没有副作用；不删改旧的 Java 解析器，M7 时一起删），并把散落在 `PrePostAsyncTask`、`LoginHelper`、`FavoriteHelper`、`PostSmsAsyncTask`、`NotiHelper`、`UploadImgHelper` 里的解析代码收拢过来。每写一批，都用同一批样本断言新旧输出等价。
 - **帖子正文用 Compose 原生渲染（T6）**：解析器已经把引用、图片、跳楼、附件、投票拆成了独立的块，正文文本块只含基础的内联标签、链接和表情。直接用 `AnnotatedString` + `InlineTextContent`（表情取自 `:emoji` 的资源）+ `LinkAnnotation` 渲染，不用 AndroidView 包旧的 TextView。文字颜色的可读性判断（`TextStyle.java:49`）从解析阶段移到渲染阶段，切换深浅色后才不会错色。
-- **共享文件的改动集中在一张卡里（T7）**：M0-2 一次性把方案确定的全部依赖和插件写进 version catalog，建好空的 `:core-parser` 模块，挂上 `@HiltAndroidApp`。后续各条开发线只改自己目录下的源码。界面字符串按功能拆成 `res/values/strings_<功能>.xml`。
+- **共享文件的改动集中在一张卡里（T7）**：M0-2 一次性把方案确定的全部依赖和插件写进 version catalog，建好空的 `:core-parser` 模块，挂上 `@HiltAndroidApp`。后续各条开发线只改自己目录下的源码；确需修改共享文件时（如 `A5` 注册 `ChallengeActivity`，或玻璃替换卡 `G2` 替换 `libs.versions.toml` / `hipda/build.gradle.kts` / `hipda/proguard-rules.txt` 中的毛玻璃依赖与 R8 规则），必须单卡经跨线授权独占修改且不与其他改共享文件的卡并行。界面字符串按功能拆成 `res/values/strings_<功能>.xml`。
 
 ## 6. Cloudflare 验证通道（依据 S1 调研 `docs/design/cloudflare-research.md`，已经 F3 核查）
 - 实测：论坛首页对所有非浏览器请求都返回 403 加托管验证（managed challenge）；但版块页和登录页，用浏览器请求头访问时返回 200。图片域名不受验证影响。所以验证是按路径触发的，不是整站拦截。
@@ -83,18 +83,19 @@
 | M1 验证通道 | 新的网络层能在 Cloudflare 后正常访问论坛 | MockWebServer 测试（检测、排队、冷却、重试、逐跳 Cookie、跨域剥离、POST 改 GET）；B1b 完成后，用户在 debug 工具页登录并抓到版块页的截图 |
 | M2 安全网 | 样本导出（脱敏）→ 现有解析器的样本回归测试 → 分批抽到 `:core-parser` | 测试报告；故意改坏一个解析器，测试会失败；脱敏扫描测试 |
 | M3 数据层 | Kotlin Repository、Hilt、Room 和 DataStore（全新结构，不迁移旧数据）、提醒轮询 | 单元测试 |
-| M4 外壳 | 预览入口里的主题、毛玻璃导航、三栏自适应外壳与左侧栏、动效系统 | Roborazzi 截图；动效逐帧测试；“减少动态效果”测试；重组次数断言 |
-| M5 阅读核心 | 版块、帖子列表、帖子详情（Compose 原生正文）、三栏与铰链双栏；折叠、半折和展开时状态保持 | 截图测试；状态恢复测试；重组次数断言 |
-| M6 其余页面 | 编辑器、表情、短消息、提醒、搜索、我的、设置、用户资料、看图、登录、外部链接 | 每页的截图测试和交互测试 |
-| M7 切换和清理 | 切换启动入口；删除旧代码和旧依赖；targetSdk 36（通知权限、MediaStore 下载、全面屏）；收紧 R8 规则；Baseline Profile | 依赖清单；全新安装后的冒烟测试；真机上的帧时间 |
+| M4 外壳 | 预览入口里的主题、Kyant backdrop 液态玻璃与 4 路降级、底部胶囊跟手拖拽预选、三栏自适应外壳与左侧栏、动效系统 | Roborazzi 截图；动效逐帧测试；“减少动态效果”测试；重组次数断言；`G2` 的 CI release 模拟器冒烟（`emulator=true`）；真机 API 33+ 折射、极端样张可读性与 120Hz 实测 |
+| M5 阅读核心 | 版块（透明吸顶标签行与荧光笔高光）、帖子列表、帖子详情（透明顶栏圆钮、底部三段工具条与内联跳页、Compose 原生正文）、三栏与铰链双栏；折叠、半折和展开时状态保持 | 截图测试；状态恢复测试；重组次数断言；真机三栏 3 区域实时玻璃 120Hz 滚动帧率与极端样张实测（不达标按 §5 4 级回退顺序降级复测） |
+| M6 其余页面 | 毛玻璃快速回复面板、完整编辑器、表情、短消息、提醒、搜索、我的、设置、用户资料、看图、登录、外部链接 | 每页的截图测试和交互测试 |
+| M7 切换和清理 | 切换启动入口；删除旧代码和旧依赖；targetSdk 36（通知权限、MediaStore 下载、全面屏）；收紧 R8 规则（保留经冒烟验证的 `com.kyant.backdrop`/`shapes` 必要规则）；Baseline Profile | 依赖清单；全新安装后的冒烟测试；真机上的帧时间 |
 
 - **新的存储结构（T4 中仍然适用的部分）**：备份规则排除和 Keystore 绑定的加密文件和 Tink 密钥；草稿用业务键（`reply:<tid>`、`new:<fid>`、`edit:<pid>`，见产品设计 §7.2）。
-- **性能验证的分工（T9）**：日常 CI 用重组次数断言守住性能不退化；Roborazzi 只验证毛玻璃的降级分支和对比度；真实的模糊效果、API 31 的性能、P90 帧时间和卡顿率，在 M4、M5、M7 的阶段验收时用真机测（没有真机时用模拟器的硬件渲染，并注明数据不可靠）。
-- **截图矩阵分级（T9）**：外壳和多栏核心页面跑 6 种窗口尺寸 × 深浅色（另加 5 种特殊窗口，见产品设计 §10.1）；其他页面的主状态跑 3 种宽度（`411`、`749`、`1280dp`）；空、错、加载状态跑 2 种宽度（`411`、`933dp`）。
-- **release 构建（T10）**：CI 每次都编 release；M7 清理 `proguard-rules.txt` 中过宽的 `-keep` 规则。
+- **性能与可读性验证的分工（T9）**：日常 CI 用重组次数断言守住性能不退化，并用静态 WCAG 2.1 单测守住 94% 降级态极端黑白背景 `≥ 4.5:1` 与四档模糊态标准主题背景（含叠加层 alpha 上限）`≥ 4.5:1`；Roborazzi 验证降级分支与布局结构；真实的 API 33+ 液态边缘折射、API 31–32 纯模糊分支、极端配图（纯黑/纯白/高饱和图）人工可读性、三栏 3 区域实时玻璃的 120Hz P90 帧时间与卡顿率，在 M4/G2、M5、M7 的阶段验收时用真机实测（不达标严格按 `product-design.md` §5 的 4 级回退顺序逐级降级并复测；没有真机时用模拟器的硬件渲染，并注明数据不可靠）。
+- **截图矩阵分级（T9）**：外壳和多栏核心页面跑 6 种窗口尺寸 × 深浅色（另加 5 种特殊窗口与核心新增交互专项截图，见产品设计 §10.1）；其他页面的主状态跑 3 种宽度（`411`、`749`、`1280dp`）；空、错、加载状态跑 2 种宽度（`411`、`933dp`）。
+- **release 构建（T10）**：CI 每次都编 release；涉及依赖替换或混淆规则修改的卡（如 `G2`）须额外跑一次 CI release 模拟器冒烟（`emulator=true`）；M7 清理 `proguard-rules.txt` 中过宽的 `-keep` 规则时，须保留 `com.kyant.backdrop` / `com.kyant.shapes` 必要规则并再过冒烟。
 
 ## 9. 风险
 1. Cloudflare：cf_clearance 和设备、IP、UA 绑定，默认 30 分钟过期。网络指纹和浏览器不一致时，可能过了验证仍被拦，所以底层优先用与 Chrome 一致的网络栈。没有这种网络栈的旧设备（Android 13 及以下、又没有 Play 服务）风险最高，退回 OkHttp 加单次重试；实测仍过不了时，按 ABI 分包引入 `cronet-bundled`（T11）。网络切换导致出口 IP 变化后凭证是否失效，官方没有明说（属于工程经验）；做法是：网络切换后再遇到验证页，就重新验证，不预先清掉凭证。
 2. 样本采集依赖用户登录，这一步只有用户能做。
 3. 帖子正文的 Compose 原生渲染：表情、链接、跳楼的点击和长按菜单要重新实现，旧版 `TextViewWithEmoticon` 的行为要逐项对照（以 B 线的样本为输入做截图测试）。
 4. 帖子里的 Emoji：页面按 GBK 提交，Unicode Emoji 要先转成十进制 HTML 实体（`&#...;`），否则会变成问号（`PostHelper.java:84-86`，T8）。
+5. **Kyant Backdrop 液态玻璃替换、R8 混淆与三栏 120Hz 渲染负载**：(a) `backdrop:2.0.1` 引入了 Compose Multiplatform 依赖传递，若与 Compose BOM `2026.11.01` 或 AGP 9 产生版本/类重复冲突，由 `G2` 直接退回纯 Android `1.0.6`（配 `shapes:1.2.0`）；(b) AAR 未附带有效 consumer ProGuard 规则，须按实测显式加 `-keep` 并以 CI `emulator=true` release 冒烟守住；(c) 若业务页误将毛玻璃顶栏放进外壳 `ContentContainer` 祖先 `layerBackdrop` 会触发 RenderThread `libhwui.so` 崩溃，须由 `C4d` 下放/拆分采样源以强制维持严格兄弟节点与按需释放；(d) 三栏同时开 3 个实时玻璃区域（静止 ≤ 5 次 `drawBackdrop` pass）+ 2 个独立滚动采样源在 120Hz 高刷屏上有超 8.3ms 帧预算风险，已规定真机实测与 4 级预定回退顺序兜底（`product-design.md` §5）。
