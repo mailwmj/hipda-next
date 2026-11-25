@@ -13,9 +13,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 断言当前界面语义树中同时存在的 [HiGlassSurface] 数量不超过 [maxCount]（product-design.md §5、§10.3）。
+ * 断言当前界面语义树中同时存在的毛玻璃区域（独立 [HiGlassSurface] 或 [HiGlassRegion]）数量不超过 [maxCount]。
  *
- * 使用未合并语义树计数，避免父节点合并语义后漏计嵌套或相邻的毛玻璃表面。
+ * 使用未合并语义树计数，避免父节点合并语义后漏计嵌套或相邻的玻璃区域；
+ * 同一 [HiGlassRegion] 内共享采样源的多段形状（如三段工具条）仅计为 1 个区域。
  */
 fun SemanticsNodeInteractionsProvider.assertGlassSurfaceCountAtMost(maxCount: Int) {
     require(maxCount >= 0) { "maxCount must be >= 0, was $maxCount" }
@@ -25,7 +26,7 @@ fun SemanticsNodeInteractionsProvider.assertGlassSurfaceCountAtMost(maxCount: In
     ).fetchSemanticsNodes().size
     if (count > maxCount) {
         throw AssertionError(
-            "Expected at most $maxCount HiGlassSurface nodes on screen, but found $count",
+            "Expected at most $maxCount glass regions on screen, but found $count",
         )
     }
 }
@@ -35,7 +36,7 @@ fun SemanticsNodeInteractionsProvider.assertGlassSurfaceCountAtMost(maxCount: In
  */
 fun SemanticsNodeInteractionsProvider.assertAllGlassSurfacesBlurActive(expectedBlurActive: Boolean) {
     val nodes = onAllNodes(
-        matcher = SemanticsMatcher.expectValue(HiGlassMarker, true),
+        matcher = SemanticsMatcher.keyIsDefined(HiGlassBlurActive),
         useUnmergedTree = true,
     ).fetchSemanticsNodes()
     if (nodes.isEmpty()) {

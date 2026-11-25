@@ -45,10 +45,12 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * 毛玻璃表面 8 变体截图测试（浅色/深色 × {API 31 模糊、API 30 降级、省电降级、降低透明度降级}）。
+ * 毛玻璃表面 10 变体截图测试（浅色/深色 × {API 33+ 折射模糊、API 31 仅模糊、API 30 降级、省电降级、降低透明度降级}）。
  *
- * 说明：Robolectric 软件渲染不作为真实 RenderEffect 模糊效果的证据（tech-plan §8）；
- * 本测试守住降级分支选择、两块毛玻璃叠加在滚动内容上的布局，以及降级表面文字对比度 ≥ 4.5:1。
+ * 说明：
+ * - API 33+ 折射档用例在 Robolectric API 35 原生图形栈下执行真实 AGSL `lens()` 折射 + `blur()` + `vibrancy()`；
+ * - API 31 仅模糊档用例在 Robolectric API 31 原生图形栈下执行 `blur()` + `vibrancy()`（不调用 `lens()`）；
+ * - 6 张降级基线守住 94% 不透明纯色底 + `0.5dp outlineVariant` 描边及文字对比度 ≥ 4.5:1。
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -63,11 +65,21 @@ class HiGlassScreenshotTest {
     val composeRule = createComposeRule()
 
     @Test
+    @Config(sdk = [35])
+    fun glass_light_api33_refraction() = captureGlassVariant(
+        name = "glass_specimen_light_api33_refraction",
+        themeMode = HiThemeMode.LIGHT,
+        environment = GlassEnvironmentState.RefractionAndBlur,
+        statusLabel = "API 33+ 折射模糊",
+    )
+
+    @Test
+    @Config(sdk = [31])
     fun glass_light_api31_blur() = captureGlassVariant(
         name = "glass_specimen_light_api31_blur",
         themeMode = HiThemeMode.LIGHT,
-        environment = GlassEnvironmentState.BlurEnabled,
-        statusLabel = "API 31 模糊",
+        environment = GlassEnvironmentState.BlurOnly,
+        statusLabel = "API 31 仅模糊",
     )
 
     @Test
@@ -96,11 +108,21 @@ class HiGlassScreenshotTest {
     )
 
     @Test
+    @Config(sdk = [35])
+    fun glass_dark_api33_refraction() = captureGlassVariant(
+        name = "glass_specimen_dark_api33_refraction",
+        themeMode = HiThemeMode.DARK,
+        environment = GlassEnvironmentState.RefractionAndBlur,
+        statusLabel = "API 33+ 折射模糊",
+    )
+
+    @Test
+    @Config(sdk = [31])
     fun glass_dark_api31_blur() = captureGlassVariant(
         name = "glass_specimen_dark_api31_blur",
         themeMode = HiThemeMode.DARK,
-        environment = GlassEnvironmentState.BlurEnabled,
-        statusLabel = "API 31 模糊",
+        environment = GlassEnvironmentState.BlurOnly,
+        statusLabel = "API 31 仅模糊",
     )
 
     @Test

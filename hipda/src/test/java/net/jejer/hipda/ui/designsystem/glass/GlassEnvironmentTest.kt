@@ -45,8 +45,8 @@ class GlassEnvironmentTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun normalEnvironment_api31AndAbove_enablesBlur() {
-        for (sdk in listOf(Build.VERSION_CODES.S, Build.VERSION_CODES.UPSIDE_DOWN_CAKE, Build.VERSION_CODES.BAKLAVA)) {
+    fun normalEnvironment_api33AndAbove_enablesRefractionAndBlur() {
+        for (sdk in listOf(Build.VERSION_CODES.TIRAMISU, Build.VERSION_CODES.UPSIDE_DOWN_CAKE, Build.VERSION_CODES.BAKLAVA)) {
             val env = GlassEnvironment(
                 FakeGlassEnvironmentSignalSource(
                     GlassEnvironmentSignals(
@@ -59,6 +59,30 @@ class GlassEnvironmentTest {
             )
             val state = env.currentState()
             assertTrue("API $sdk should enable blur", state.blurEnabled)
+            assertTrue("API $sdk should enable refraction", state.refractionEnabled)
+            assertEquals("API $sdk should be REFRACTION_AND_BLUR", GlassRenderTier.REFRACTION_AND_BLUR, state.renderTier)
+            assertTrue("API $sdk should have no degradation reasons", state.reasons.isEmpty())
+        }
+    }
+
+    @Test
+    fun normalEnvironment_api31To32_enablesBlurOnlyWithoutRefraction() {
+        for (sdk in listOf(Build.VERSION_CODES.S, Build.VERSION_CODES.S_V2)) {
+            val env = GlassEnvironment(
+                FakeGlassEnvironmentSignalSource(
+                    GlassEnvironmentSignals(
+                        sdkInt = sdk,
+                        isPowerSaveMode = false,
+                        isReduceTransparencyEnabled = false,
+                        isHighContrastTextEnabled = false,
+                    ),
+                ),
+            )
+            val state = env.currentState()
+            assertTrue("API $sdk should enable blur", state.blurEnabled)
+            assertFalse("API $sdk must disable refraction", state.refractionEnabled)
+            assertEquals("API $sdk should be BLUR_ONLY", GlassRenderTier.BLUR_ONLY, state.renderTier)
+            assertEquals(GlassEnvironmentState.BlurOnly, state)
             assertTrue("API $sdk should have no degradation reasons", state.reasons.isEmpty())
         }
     }
@@ -78,6 +102,8 @@ class GlassEnvironmentTest {
             )
             val state = env.currentState()
             assertFalse("API $sdk should disable blur", state.blurEnabled)
+            assertFalse("API $sdk should disable refraction", state.refractionEnabled)
+            assertEquals("API $sdk should be SOLID_DEGRADED", GlassRenderTier.SOLID_DEGRADED, state.renderTier)
             assertEquals(setOf(GlassDegradationReason.UNSUPPORTED_API_LEVEL), state.reasons)
         }
     }
@@ -96,6 +122,8 @@ class GlassEnvironmentTest {
         )
         val state = env.currentState()
         assertFalse(state.blurEnabled)
+        assertFalse(state.refractionEnabled)
+        assertEquals(GlassRenderTier.SOLID_DEGRADED, state.renderTier)
         assertEquals(setOf(GlassDegradationReason.POWER_SAVE_MODE), state.reasons)
     }
 
@@ -113,6 +141,8 @@ class GlassEnvironmentTest {
         )
         val state = env.currentState()
         assertFalse(state.blurEnabled)
+        assertFalse(state.refractionEnabled)
+        assertEquals(GlassRenderTier.SOLID_DEGRADED, state.renderTier)
         assertEquals(setOf(GlassDegradationReason.REDUCE_TRANSPARENCY), state.reasons)
     }
 
@@ -130,7 +160,21 @@ class GlassEnvironmentTest {
         )
         val state = env.currentState()
         assertFalse(state.blurEnabled)
+        assertFalse(state.refractionEnabled)
+        assertEquals(GlassRenderTier.SOLID_DEGRADED, state.renderTier)
         assertEquals(setOf(GlassDegradationReason.HIGH_CONTRAST_TEXT), state.reasons)
+    }
+
+    @Test
+    @Config(sdk = [31])
+    fun androidSignalSource_api31_reportsBlurOnlyTier() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val env = GlassEnvironment(AndroidGlassEnvironmentSignalSource(context))
+        val state = env.currentState()
+        assertTrue(state.blurEnabled)
+        assertFalse(state.refractionEnabled)
+        assertEquals(GlassRenderTier.BLUR_ONLY, state.renderTier)
+        assertTrue(state.reasons.isEmpty())
     }
 
     @Test

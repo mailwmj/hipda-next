@@ -24,6 +24,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -44,22 +45,26 @@ import java.util.Locale
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 
-/** 将当前毛玻璃参数格式化为单行稳定文本，便于用户直接复制发给负责人。 */
+/** 将当前液态毛玻璃参数格式化为单行稳定文本（固定 `Locale.US`），便于直接复制发给负责人。 */
 fun formatGlassStyleParams(style: HiGlassStyle): String = String.format(
     Locale.US,
-    "blur=%.1fdp lightTint=%.2f darkTint=%.2f sat=%.2f noise=%.3f border=%.2f indicator=%.2f",
+    "blur=%.1fdp refractH=%.1fdp refractAmt=%.1fdp depth=%s ca=%s vibrancy=%s lightTint=%.2f darkTint=%.2f sat=%.2f border=%.2f indicator=%.2f",
     style.blurRadius.value,
+    style.refractionHeight.value,
+    style.refractionAmount.value,
+    if (style.depthEffect) "on" else "off",
+    if (style.chromaticAberration) "on" else "off",
+    if (style.vibrancyEnabled) "on" else "off",
     style.lightTintAlpha,
     style.darkTintAlpha,
     style.saturation,
-    style.noiseFactor,
     style.borderHighlightStrength,
     style.indicatorAlpha,
 )
 
 /**
  * 仅用于 `src/debug` 预览外壳页的实时毛玻璃调参面板。
- * 使用标准 Material 3 `Card`、`FilterChip`、`Slider` 与按钮组件，不进入 release 包。
+ * 使用标准 Material 3 `Card`、`FilterChip`、`Slider`、`Switch` 与按钮组件，不进入 release 包。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -137,6 +142,20 @@ internal fun GlassTuningPanel(
                 onValueChange = { onStyleChange(style.copy(blurRadius = it.dp)) },
             )
             GlassTuningSliderRow(
+                label = stringResource(R.string.preview_glass_tune_refraction_height),
+                valueText = String.format(Locale.US, "%.1fdp", style.refractionHeight.value),
+                value = style.refractionHeight.value,
+                valueRange = 0f..32f,
+                onValueChange = { onStyleChange(style.copy(refractionHeight = it.dp)) },
+            )
+            GlassTuningSliderRow(
+                label = stringResource(R.string.preview_glass_tune_refraction_amount),
+                valueText = String.format(Locale.US, "%.1fdp", style.refractionAmount.value),
+                value = style.refractionAmount.value,
+                valueRange = 0f..48f,
+                onValueChange = { onStyleChange(style.copy(refractionAmount = it.dp)) },
+            )
+            GlassTuningSliderRow(
                 label = stringResource(R.string.preview_glass_tune_light_tint),
                 valueText = String.format(Locale.US, "%.2f", style.lightTintAlpha),
                 value = style.lightTintAlpha,
@@ -158,13 +177,6 @@ internal fun GlassTuningPanel(
                 onValueChange = { onStyleChange(style.copy(saturation = it)) },
             )
             GlassTuningSliderRow(
-                label = stringResource(R.string.preview_glass_tune_noise),
-                valueText = String.format(Locale.US, "%.3f", style.noiseFactor),
-                value = style.noiseFactor,
-                valueRange = 0f..0.1f,
-                onValueChange = { onStyleChange(style.copy(noiseFactor = it)) },
-            )
-            GlassTuningSliderRow(
                 label = stringResource(R.string.preview_glass_tune_border),
                 valueText = String.format(Locale.US, "%.2fx", style.borderHighlightStrength),
                 value = style.borderHighlightStrength,
@@ -177,6 +189,22 @@ internal fun GlassTuningPanel(
                 value = style.indicatorAlpha,
                 valueRange = 0f..0.6f,
                 onValueChange = { onStyleChange(style.copy(indicatorAlpha = it)) },
+            )
+
+            GlassTuningSwitchRow(
+                label = stringResource(R.string.preview_glass_tune_vibrancy),
+                checked = style.vibrancyEnabled,
+                onCheckedChange = { onStyleChange(style.copy(vibrancyEnabled = it)) },
+            )
+            GlassTuningSwitchRow(
+                label = stringResource(R.string.preview_glass_tune_depth_effect),
+                checked = style.depthEffect,
+                onCheckedChange = { onStyleChange(style.copy(depthEffect = it)) },
+            )
+            GlassTuningSwitchRow(
+                label = stringResource(R.string.preview_glass_tune_chromatic_aberration),
+                checked = style.chromaticAberration,
+                onCheckedChange = { onStyleChange(style.copy(chromaticAberration = it)) },
             )
 
             Row(
@@ -251,6 +279,7 @@ private fun GlassTuningSliderRow(
                 color = MaterialTheme.colorScheme.primary,
             )
         }
+        @Suppress("DEPRECATION")
         Slider(
             value = value.coerceIn(valueRange.start, valueRange.endInclusive),
             onValueChange = onValueChange,
@@ -262,13 +291,45 @@ private fun GlassTuningSliderRow(
     }
 }
 
-/** 高饱和彩色内容横幅，用于在外壳预览中直观检验毛玻璃透色、饱和度与边缘高光。 */
+@Composable
+private fun GlassTuningSwitchRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.semantics { contentDescription = label },
+        )
+    }
+}
+
+private val GlassBackdropDotColors: List<Color> = listOf(
+    Color(0xFFFF1744),
+    Color(0xFFFFEA00),
+    Color(0xFF00E676),
+    Color(0xFF2979FF),
+    Color(0xFFD500F9),
+)
+
+/** 高饱和彩色内容横幅，用于在外壳预览中直观检验液态玻璃透色、折射与边缘高光。 */
 @Composable
 internal fun GlassColorBackdropBanner(
     variant: Int,
     modifier: Modifier = Modifier,
 ) {
-    val rainbowColors = remember(variant) {
+    val rainbowBrush = remember(variant) {
         val base = listOf(
             Color(0xFFFF2D55),
             Color(0xFFFF9500),
@@ -279,13 +340,13 @@ internal fun GlassColorBackdropBanner(
             Color(0xFFAF52DE),
         )
         val shift = (variant % base.size + base.size) % base.size
-        base.drop(shift) + base.take(shift)
+        Brush.horizontalGradient(base.drop(shift) + base.take(shift))
     }
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(HiShapeTokens.Medium)
-            .background(Brush.horizontalGradient(rainbowColors))
+            .background(rainbowBrush)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -300,13 +361,7 @@ internal fun GlassColorBackdropBanner(
                 color = Color.White,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(
-                    Color(0xFFFF1744),
-                    Color(0xFFFFEA00),
-                    Color(0xFF00E676),
-                    Color(0xFF2979FF),
-                    Color(0xFFD500F9),
-                ).forEach { dot ->
+                GlassBackdropDotColors.forEach { dot ->
                     Box(
                         modifier = Modifier
                             .size(16.dp)

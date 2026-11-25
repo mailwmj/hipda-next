@@ -44,6 +44,16 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
+/** 毛玻璃实时渲染档位：区分 Android 13+ 折射+模糊、Android 12 仅模糊与 94% 纯色降级。 */
+enum class GlassRenderTier {
+    /** Android 13+（API ≥ 33）且无系统降级原因：开启模糊 + AGSL 折射透镜 + 活色。 */
+    REFRACTION_AND_BLUR,
+    /** Android 12–12L（API 31–32）且无系统降级原因：仅开启模糊与活色，严禁调用 lens 折射。 */
+    BLUR_ONLY,
+    /** Android 11 及以下（API ≤ 30）或省电/降低透明度/高对比度：94% 纯色降级，不挂载 drawBackdrop。 */
+    SOLID_DEGRADED,
+}
+
 /** 触发毛玻璃降级为不透明度 94% 纯色表面的原因（product-design.md §5、§10.3）。 */
 enum class GlassDegradationReason {
     /** 设备系统版本为 Android 11（API 30）及以下，不支持硬件 RenderEffect 实时模糊。 */
@@ -56,15 +66,40 @@ enum class GlassDegradationReason {
     HIGH_CONTRAST_TEXT,
 }
 
-/** 毛玻璃环境不可变状态；仅当 [reasons] 为空时 [blurEnabled] 为 `true`。 */
+/**
+ * 毛玻璃环境不可变状态：
+ * - [reasons] 非空 → [GlassRenderTier.SOLID_DEGRADED]（[blurEnabled] = `false`，[refractionEnabled] = `false`）；
+ * - [reasons] 为空且 [refractionSupported] 为 `true`（API ≥ 33）→ [GlassRenderTier.REFRACTION_AND_BLUR]；
+ * - [reasons] 为空且 [refractionSupported] 为 `false`（API 31–32）→ [GlassRenderTier.BLUR_ONLY]。
+ */
 @Immutable
 data class GlassEnvironmentState(
     val reasons: Set<GlassDegradationReason> = emptySet(),
+    val refractionSupported: Boolean = true,
 ) {
     val blurEnabled: Boolean get() = reasons.isEmpty()
 
+    val renderTier: GlassRenderTier
+        get() = when {
+            reasons.isNotEmpty() -> GlassRenderTier.SOLID_DEGRADED
+            refractionSupported -> GlassRenderTier.REFRACTION_AND_BLUR
+            else -> GlassRenderTier.BLUR_ONLY
+        }
+
+    val refractionEnabled: Boolean
+        get() = renderTier == GlassRenderTier.REFRACTION_AND_BLUR
+
     companion object {
-        val BlurEnabled: GlassEnvironmentState = GlassEnvironmentState(emptySet())
+        /** Android 13+ 无降级开关：折射 + 模糊全开。 */
+        val RefractionAndBlur: GlassEnvironmentState =
+            GlassEnvironmentState(reasons = emptySet(), refractionSupported = true)
+
+        /** Android 12–12L 无降级开关：仅模糊，不调用 lens 折射。 */
+        val BlurOnly: GlassEnvironmentState =
+            GlassEnvironmentState(reasons = emptySet(), refractionSupported = false)
+
+        /** 兼容既有调用：默认代表启用实时模糊（API 33+ 折射+模糊）状态。 */
+        val BlurEnabled: GlassEnvironmentState = RefractionAndBlur
     }
 }
 
@@ -77,12 +112,13 @@ data class GlassEnvironmentSignals(
     val isHighContrastTextEnabled: Boolean,
 ) {
     fun toEnvironmentState(): GlassEnvironmentState = GlassEnvironmentState(
-        buildSet {
+        reasons = buildSet {
             if (sdkInt < Build.VERSION_CODES.S) add(GlassDegradationReason.UNSUPPORTED_API_LEVEL)
             if (isPowerSaveMode) add(GlassDegradationReason.POWER_SAVE_MODE)
             if (isReduceTransparencyEnabled) add(GlassDegradationReason.REDUCE_TRANSPARENCY)
             if (isHighContrastTextEnabled) add(GlassDegradationReason.HIGH_CONTRAST_TEXT)
         },
+        refractionSupported = sdkInt >= Build.VERSION_CODES.TIRAMISU,
     )
 }
 
