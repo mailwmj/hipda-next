@@ -1,6 +1,10 @@
 package net.jejer.hipda.feature.threaddetail
 
 import android.app.Application
+import android.content.Context
+import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.NetworkInfo
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.SideEffect
@@ -34,6 +39,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -42,11 +48,24 @@ import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.test.core.app.ApplicationProvider
+import coil3.ComponentRegistry
+import coil3.ImageLoader
+import coil3.asImage
+import coil3.decode.DataSource
+import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
+import coil3.request.Disposable
+import coil3.request.ErrorResult
+import coil3.request.ImageRequest
+import coil3.request.ImageResult
+import coil3.request.SuccessResult
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.runBlocking
 import net.jejer.hipda.data.local.ReadingFilterMode
 import net.jejer.hipda.data.local.ReadingPositionEntity
 import net.jejer.hipda.data.network.ChallengeDetector
@@ -61,7 +80,9 @@ import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
 import net.jejer.hipda.data.threaddetail.ThreadDetailLoadResult
 import net.jejer.hipda.data.threaddetail.ThreadDetailRepository
 import net.jejer.hipda.feature.common.DetailChromeSpec
+import net.jejer.hipda.feature.common.LocalHiImageLoader
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.threaddetail.media.ImageAspectRatioCache
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
 import net.jejer.hipda.parser.common.PromptCounts
@@ -72,18 +93,24 @@ import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
+import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.state.HiFooterState
 import net.jejer.hipda.ui.designsystem.state.HiListFooter
 import okhttp3.OkHttpClient
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowNetworkInfo
 
 /**
  * 覆盖任务卡 E2d 全部验收项与 R-E2d B1/S1 修复项（100% 离线）：
@@ -105,6 +132,31 @@ class ContinuousPagingAnchorTest {
 
     @get:Rule
     val composeRule = createComposeRule()
+
+    @Before
+    fun setUpImageCacheAndNetwork() {
+        ImageAspectRatioCache.Default.clear()
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val cm = ctx.getSystemService(ConnectivityManager::class.java)
+        val shadowCm = shadowOf(cm)
+        shadowCm.setDefaultNetworkActive(true)
+        @Suppress("DEPRECATION")
+        shadowCm.setActiveNetworkInfo(
+            ShadowNetworkInfo.newInstance(
+                NetworkInfo.DetailedState.CONNECTED,
+                ConnectivityManager.TYPE_WIFI,
+                0,
+                true,
+                NetworkInfo.State.CONNECTED,
+            ),
+        )
+        shadowCm.setRestrictBackgroundStatus(ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED)
+    }
+
+    @After
+    fun tearDownImageCache() {
+        ImageAspectRatioCache.Default.clear()
+    }
 
     private data class TraversalFrameSample(
         val step: Int,
@@ -886,6 +938,308 @@ class ContinuousPagingAnchorTest {
     }
 
     /**
+     * V-E2b 合并探针 1A（同帧先插页后图）：首可见楼层 `p201` 含一张越过视口顶部的 `4:3` 图片，
+     * 同帧先释放第 1 页向上插页、再释放该图变为 `1:2` 长图；通过 `PrependFrameProbe` + `runWithoutImplicitWait`
+     * 逐帧断言 `p201` 尾段与 `p202` 偏移全程 `≤ 1dp`（不丢补偿、不重复补偿）。
+     */
+    @Test
+    fun e2bE2dMerge_sameFrame_prependThenAboveViewportImage_zeroJumpOnEveryFrame() {
+        runE2bE2dFirstVisibleFloorImageMergeProbe(
+            prependFirst = true,
+            delayImageByOneFrame = false,
+            label = "SAME_FRAME_PREPEND_THEN_IMAGE",
+        )
+    }
+
+    /**
+     * V-E2b 合并探针 1B（同帧先图后插页）：同帧先释放 `p201` 越顶图片变长、再释放第 1 页向上插页；
+     * 验证 `PrependAnchorController` 合并同帧已登记图片高度增量，绝不被旧 `layoutInfo.offset` 覆盖归零。
+     */
+    @Test
+    fun e2bE2dMerge_sameFrame_aboveViewportImageThenPrepend_zeroJumpOnEveryFrame() {
+        runE2bE2dFirstVisibleFloorImageMergeProbe(
+            prependFirst = false,
+            delayImageByOneFrame = false,
+            label = "SAME_FRAME_IMAGE_THEN_PREPEND",
+        )
+    }
+
+    /**
+     * V-E2b 合并探针 1C（隔帧）：第 1 帧先合入第 1 页并更新 `layoutInfo`，第 2 帧再释放 `p201` 越顶图变长；
+     * 验证布局纪元切换后既不重复补偿也不漏补偿，逐帧偏移全程 `≤ 1dp`。
+     */
+    @Test
+    fun e2bE2dMerge_nextFrame_aboveViewportImageOneFrameAfterPrepend_zeroJumpOnEveryFrame() {
+        runE2bE2dFirstVisibleFloorImageMergeProbe(
+            prependFirst = true,
+            delayImageByOneFrame = true,
+            label = "NEXT_FRAME_IMAGE_AFTER_PREPEND",
+        )
+    }
+
+    /**
+     * V-E2b 合并探针 2（跨楼层）：`p202` 为当前首可见楼层（`offset = -10dp`），其上方 `p201` 位于透明顶栏后的
+     * `beforeContentPadding` 区域；第 1 页向上插页与 `p201` 图片变长（`4:3 -> 1:2`）同帧完成，
+     * 通过 `PrependFrameProbe` + `runWithoutImplicitWait` 逐帧断言 `p202` 偏移全程 `≤ 1dp`（无过度补偿）。
+     */
+    @Test
+    fun e2bE2dMerge_crossFloor_aboveFloorInTopPaddingGrowsSameFrameAsPrepend_zeroJumpOnEveryFrame() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val page1Gate = CompletableDeferred<ThreadDetailLoadResult>()
+        val imageGate = CompletableDeferred<Pair<Int, Int>>()
+        val tallImageUrl = "https://img.example.invalid/e2b_e2d_cross_floor_tall.jpg"
+
+        val imageLoader = ControllableOfflineImageLoader(ctx).apply { setDeferred(tallImageUrl, imageGate) }
+        val repo = ImageMergeThreadRepository(tallImageUrl = tallImageUrl).apply {
+            pageInterceptor = { page -> if (page == 1 && firstPageGateArmed) page1Gate.await() else null }
+        }
+        val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        lateinit var listState: LazyListState
+        val probeStep = mutableIntStateOf(0)
+        val samples = mutableListOf<TraversalFrameSample>()
+        var density = 1f
+
+        composeRule.setContent {
+            density = LocalDensity.current.density
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    CompositionLocalProvider(LocalHiImageLoader provides imageLoader) {
+                        listState = rememberLazyListState()
+                        Box(Modifier.fillMaxSize()) {
+                            ThreadDetailPane(
+                                args = ThreadNavArgs(tid = "99002", title = "E2b+E2d 跨楼层合并探针"),
+                                chromeSpec = DetailChromeSpec(showBack = true),
+                                onBack = {},
+                                onOpenLogin = {},
+                                listState = listState,
+                                viewModel = vm,
+                            )
+                            PrependFrameProbe(vm, listState, "floor:p202", probeStep, samples)
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("下一页").performClick()
+        composeRule.waitForIdle()
+
+        repo.firstPageGateArmed = true
+        composeRule.runOnIdle { listState.requestScrollToItem(index = 0, scrollOffset = 0) }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { vm.loadPreviousPage() }
+        composeRule.waitForIdle()
+
+        val offsetPx = (10f * density).toInt()
+        composeRule.runOnIdle {
+            val p202Idx = if (vm.uiState.value.showPrependHeader) 2 else 1
+            runBlocking { listState.scrollToItem(index = p202Idx, scrollOffset = offsetPx) }
+        }
+        composeRule.waitForIdle()
+        assertTrue("前提：p201 应在 beforeContentPadding 区内保持组合", listState.layoutInfo.visibleItemsInfo.any { it.key == "floor:p201" })
+
+        val expectedMergedCount = vm.uiState.value.floors.size + 15
+        val baselineP202OffsetPx = listState.layoutInfo.visibleItemsInfo.first { it.key == "floor:p202" }.offset
+        val baselineP202TopPx = composeRule.onAllNodesWithText("17楼", useUnmergedTree = true)
+            .fetchSemanticsNodes()
+            .first()
+            .boundsInRoot.top
+
+        samples.clear()
+        composeRule.mainClock.autoAdvance = false
+        try {
+            page1Gate.complete(repo.buildPageSuccess(page = 1, tid = "99002"))
+            imageGate.complete(400 to 800)
+            var mergeFrameObserved = false
+            for (frame in 1..20) {
+                val sampleStart = samples.size
+                probeStep.intValue += 1
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+
+                val frameSamples = samples.subList(sampleStart, samples.size).toList()
+                assertTrue("跨楼层第 $frame 帧必须捕获 traversal 探针样本", frameSamples.isNotEmpty())
+                for (sample in frameSamples) {
+                    val merged = sample.floorsCount == expectedMergedCount &&
+                        sample.layoutTotalItemsCount >= expectedMergedCount &&
+                        sample.firstLoadedPage == 1
+                    if (merged) mergeFrameObserved = true
+                    val off = sample.anchorOffsetPx
+                    assertNotNull("跨楼层第 $frame 帧 p202 不得跳出视口（sample=$sample）", off)
+                    val driftDp = abs(off!! - baselineP202OffsetPx) / density
+                    assertTrue(
+                        "跨楼层第 $frame 帧（traversal merged=$merged）p202 偏移 ${driftDp}dp 超过 1dp（before=$baselineP202OffsetPx, now=$off）",
+                        driftDp <= 1.0f,
+                    )
+                    if (merged) assertEquals("跨楼层合入后 p202 应位于索引 16", 16, sample.anchorIndex)
+                }
+
+                val currentTop = composeRule.runWithoutImplicitWait {
+                    composeRule.onAllNodesWithText("17楼", useUnmergedTree = true)
+                        .fetchSemanticsNodes()
+                        .first()
+                        .boundsInRoot.top
+                }
+                val boundsDriftDp = abs(currentTop - baselineP202TopPx) / density
+                assertTrue("跨楼层第 $frame 帧（runWithoutImplicitWait）p202 偏差 ${boundsDriftDp}dp 超过 1dp", boundsDriftDp <= 1.0f)
+            }
+            assertTrue("跨楼层探针必须实际观测到第 1 页合入首帧", mergeFrameObserved)
+        } finally {
+            composeRule.mainClock.autoAdvance = true
+        }
+        composeRule.waitForIdle()
+
+        assertEquals(expectedMergedCount, vm.uiState.value.floors.size)
+        assertEquals(1, vm.uiState.value.firstLoadedPage)
+        assertEquals(16, listState.firstVisibleItemIndex)
+        assertEquals("跨楼层变高严禁过度补偿 p202 滚动偏移", offsetPx, listState.firstVisibleItemScrollOffset)
+        assertEquals(0.5f, ImageAspectRatioCache.Default.get(tallImageUrl)!!, 0.001f)
+    }
+
+    private fun runE2bE2dFirstVisibleFloorImageMergeProbe(
+        prependFirst: Boolean,
+        delayImageByOneFrame: Boolean,
+        label: String,
+    ) {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val page1Gate = CompletableDeferred<ThreadDetailLoadResult>()
+        val imageGate = CompletableDeferred<Pair<Int, Int>>()
+        val tallImageUrl = "https://img.example.invalid/${label}_tall.jpg"
+
+        val imageLoader = ControllableOfflineImageLoader(ctx).apply { setDeferred(tallImageUrl, imageGate) }
+        val repo = ImageMergeThreadRepository(tallImageUrl = tallImageUrl).apply {
+            pageInterceptor = { page -> if (page == 1 && firstPageGateArmed) page1Gate.await() else null }
+        }
+        val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        lateinit var listState: LazyListState
+        val probeStep = mutableIntStateOf(0)
+        val samples = mutableListOf<TraversalFrameSample>()
+        var density = 1f
+
+        composeRule.setContent {
+            density = LocalDensity.current.density
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    CompositionLocalProvider(LocalHiImageLoader provides imageLoader) {
+                        listState = rememberLazyListState()
+                        Box(Modifier.fillMaxSize()) {
+                            ThreadDetailPane(
+                                args = ThreadNavArgs(tid = "99001", title = label),
+                                chromeSpec = DetailChromeSpec(showBack = true),
+                                onBack = {},
+                                onOpenLogin = {},
+                                listState = listState,
+                                viewModel = vm,
+                            )
+                            PrependFrameProbe(vm, listState, "floor:p202", probeStep, samples)
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("下一页").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("第 2 / 3 页").assertIsDisplayed()
+
+        // 滚过 p201 顶部 4:3 图片，使图片底缘越过视口顶边且 p201 尾段与 p202 可见
+        val scrollPx = (410f * density).toInt()
+        composeRule.runOnIdle { runBlocking { listState.scrollToItem(index = 0, scrollOffset = scrollPx) } }
+        composeRule.waitForIdle()
+        assertTrue("前提：p201 越顶图片应已发起加载", imageLoader.requestedUrls.contains(tallImageUrl))
+
+        repo.firstPageGateArmed = true
+        composeRule.runOnIdle { vm.loadPreviousPage() }
+        composeRule.waitForIdle()
+        assertTrue(vm.uiState.value.showPrependHeader)
+
+        val expectedMergedCount = vm.uiState.value.floors.size + 15
+        val scrollOffsetBefore = listState.firstVisibleItemScrollOffset
+        val baselineP202OffsetPx = listState.layoutInfo.visibleItemsInfo.first { it.key == "floor:p202" }.offset
+        val baselineP202TopPx = composeRule.onAllNodesWithText("17楼", useUnmergedTree = true)
+            .fetchSemanticsNodes()
+            .first()
+            .boundsInRoot.top
+        val baselineP201TailTopPx = composeRule.onAllNodesWithText("P201_TAIL_ANCHOR", substring = true, useUnmergedTree = true)
+            .fetchSemanticsNodes()
+            .first()
+            .boundsInRoot.top
+
+        samples.clear()
+        composeRule.mainClock.autoAdvance = false
+        try {
+            if (delayImageByOneFrame) {
+                page1Gate.complete(repo.buildPageSuccess(page = 1))
+            } else if (prependFirst) {
+                page1Gate.complete(repo.buildPageSuccess(page = 1))
+                imageGate.complete(400 to 800)
+            } else {
+                imageGate.complete(400 to 800)
+                page1Gate.complete(repo.buildPageSuccess(page = 1))
+            }
+
+            var mergeFrameObserved = false
+            for (frame in 1..20) {
+                if (delayImageByOneFrame && frame == 2) {
+                    imageGate.complete(400 to 800)
+                }
+                val sampleStart = samples.size
+                probeStep.intValue += 1
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+
+                val frameSamples = samples.subList(sampleStart, samples.size).toList()
+                assertTrue("[$label] 第 $frame 帧必须捕获 traversal 探针样本", frameSamples.isNotEmpty())
+                for (sample in frameSamples) {
+                    val merged = sample.floorsCount == expectedMergedCount &&
+                        sample.layoutTotalItemsCount >= expectedMergedCount &&
+                        sample.firstLoadedPage == 1
+                    if (merged) mergeFrameObserved = true
+                    val off = sample.anchorOffsetPx
+                    assertNotNull("[$label] 第 $frame 帧 p202 不得跳出视口（sample=$sample）", off)
+                    val driftDp = abs(off!! - baselineP202OffsetPx) / density
+                    assertTrue(
+                        "[$label] 第 $frame 帧（traversal merged=$merged）p202 偏移 ${driftDp}dp 超过 1dp（before=$baselineP202OffsetPx, now=$off）",
+                        driftDp <= 1.0f,
+                    )
+                    if (merged) assertEquals("[$label] 合入后 p202 应位于索引 16", 16, sample.anchorIndex)
+                }
+
+                val (p202TopNow, p201TailTopNow) = composeRule.runWithoutImplicitWait {
+                    val p202Top = composeRule.onAllNodesWithText("17楼", useUnmergedTree = true)
+                        .fetchSemanticsNodes()
+                        .first()
+                        .boundsInRoot.top
+                    val p201TailTop = composeRule.onAllNodesWithText("P201_TAIL_ANCHOR", substring = true, useUnmergedTree = true)
+                        .fetchSemanticsNodes()
+                        .first()
+                        .boundsInRoot.top
+                    p202Top to p201TailTop
+                }
+                val p202DriftDp = abs(p202TopNow - baselineP202TopPx) / density
+                val p201TailDriftDp = abs(p201TailTopNow - baselineP201TailTopPx) / density
+                assertTrue("[$label] 第 $frame 帧（runWithoutImplicitWait）p202 偏差 ${p202DriftDp}dp 超过 1dp", p202DriftDp <= 1.0f)
+                assertTrue("[$label] 第 $frame 帧（runWithoutImplicitWait）p201 尾部偏差 ${p201TailDriftDp}dp 超过 1dp", p201TailDriftDp <= 1.0f)
+            }
+            assertTrue("[$label] 逐帧探针必须实际观测到第 1 页合入首帧", mergeFrameObserved)
+        } finally {
+            composeRule.mainClock.autoAdvance = true
+        }
+        composeRule.waitForIdle()
+
+        assertEquals(expectedMergedCount, vm.uiState.value.floors.size)
+        assertEquals(1, vm.uiState.value.firstLoadedPage)
+        assertEquals("[$label] 终态首可见楼层 p201 应精准平移至索引 15", 15, listState.firstVisibleItemIndex)
+        assertTrue(
+            "[$label] 终态滚动偏移必须包含越顶长图高度补偿（before=$scrollOffsetBefore, now=${listState.firstVisibleItemScrollOffset}）",
+            listState.firstVisibleItemScrollOffset > scrollOffsetBefore + (400f * density).toInt(),
+        )
+        assertEquals(0.5f, ImageAspectRatioCache.Default.get(tallImageUrl)!!, 0.001f)
+    }
+
+    /**
      * 共享逐帧合入校验器（同时服务正式实现与两个反例自证）：
      * 1. 关闭 `mainClock.autoAdvance` 并清空旧样本；
      * 2. 每推进一帧前翻转 `probeStep` 强制 `PrependFrameProbe` 在 `AndroidComposeView.measureAndLayout()` 末尾
@@ -1216,6 +1570,142 @@ class ContinuousPagingAnchorTest {
             loadPage(tid, totalPages, ThreadDetailFilter.All, recordHistory, forumName, priority)
         override suspend fun loadByPostId(pid: String, tid: String?, recordHistory: Boolean, forumName: String?, priority: AccessPriority) =
             loadPage(tid ?: "5001", 1, ThreadDetailFilter.All, recordHistory, forumName, priority)
+        override suspend fun getReadingPosition(tid: String): ReadingPositionEntity? = null
+        override suspend fun saveReadingPosition(tid: String, page: Int, pid: String, offsetPx: Int, filterMode: ReadingFilterMode, filterUid: String?, filterUserName: String?) = Unit
+        override fun observeFloors(floorsFlow: Flow<List<PostFloor>>): Flow<List<ThreadDetailFloorItem>> =
+            floorsFlow.map { list -> list.map { ThreadDetailFloorItem(it, isAuthorBlocked = false) } }
+        override fun observeVisibleFloors(floorsFlow: Flow<List<PostFloor>>): Flow<List<ThreadDetailFloorItem>> = observeFloors(floorsFlow)
+        override fun mapFloorsWithBlacklist(floors: List<PostFloor>, blockedUsernames: Set<String>?): List<ThreadDetailFloorItem> =
+            floors.map { ThreadDetailFloorItem(it, isAuthorBlocked = false) }
+        override fun filterBlockedFloors(floors: List<PostFloor>, blockedUsernames: Set<String>?): List<PostFloor> = floors
+        override suspend fun submitPollVote(fid: Int, tid: String, formhash: String, optionIds: List<String>, maxChoices: Int?, priority: AccessPriority): PollVoteResult =
+            throw UnsupportedOperationException()
+    }
+
+    private class ControllableOfflineImageLoader(private val context: Context) : ImageLoader {
+        override val defaults: ImageRequest.Defaults = ImageRequest.Defaults.DEFAULT
+        override val components: ComponentRegistry = ComponentRegistry()
+        override val memoryCache: MemoryCache? = null
+        override val diskCache: DiskCache? = null
+
+        val requestedUrls = CopyOnWriteArrayList<String>()
+        private val deferreds = LinkedHashMap<String, CompletableDeferred<Pair<Int, Int>>>()
+
+        fun setDeferred(url: String, d: CompletableDeferred<Pair<Int, Int>>) {
+            synchronized(this) { deferreds[url] = d }
+        }
+
+        override fun enqueue(request: ImageRequest): Disposable = object : Disposable {
+            override val job = CompletableDeferred<ImageResult>()
+            override val isDisposed = true
+            override fun dispose() = Unit
+        }
+
+        override suspend fun execute(request: ImageRequest): ImageResult {
+            val url = request.data.toString()
+            requestedUrls += url
+            val d = synchronized(this) { deferreds[url] }
+            return if (d != null) {
+                val (w, h) = d.await()
+                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                SuccessResult(bmp.asImage(), request, DataSource.NETWORK)
+            } else {
+                ErrorResult(null, request, RuntimeException("not configured"))
+            }
+        }
+
+        override fun newBuilder(): ImageLoader.Builder = ImageLoader.Builder(context)
+        override fun shutdown() = Unit
+    }
+
+    private class ImageMergeThreadRepository(private val tallImageUrl: String) : ThreadDetailRepository {
+        @Volatile var firstPageGateArmed = false
+        @Volatile var pageInterceptor: (suspend (Int) -> ThreadDetailLoadResult?)? = null
+
+        override suspend fun loadPage(
+            tid: String,
+            page: Int,
+            filter: ThreadDetailFilter,
+            recordHistory: Boolean,
+            forumName: String?,
+            priority: AccessPriority,
+        ): ThreadDetailLoadResult {
+            pageInterceptor?.invoke(page)?.let { return it }
+            return buildPageSuccess(page, tid, filter)
+        }
+
+        fun buildPageSuccess(
+            page: Int,
+            tid: String = "99001",
+            filter: ThreadDetailFilter = ThreadDetailFilter.All,
+        ): ThreadDetailLoadResult.Success {
+            val count = 15
+            val startFloor = (page - 1) * 15 + 1
+            val floors = (1..count).map { idx ->
+                val postId = "p${page}${idx.toString().padStart(2, '0')}"
+                val floorNum = startFloor + idx - 1
+                val blocks = if (page == 2 && idx == 1) {
+                    listOf(
+                        ContentBlock.Text(listOf(InlineSpan.Plain("P201 顶部说明文本"))),
+                        ContentBlock.Image(fullUrl = tallImageUrl, thumbUrl = tallImageUrl, fileSizeBytes = 4096L),
+                        ContentBlock.Text(
+                            listOf(
+                                InlineSpan.Plain(
+                                    "P201_TAIL_ANCHOR：图片下方的第一段正文内容，保持足够高度以跨过视口上缘。\n" +
+                                        "第二行：继续填充高度以保证图片越过顶线时 p201 仍为首可见楼层。\n" +
+                                        "第三行：用于精确测量尾段锚点相对屏幕顶部的像素偏移。\n" +
+                                        "第四行：验证 E2b 与 E2d 两种滚动补偿叠加后的最终一致性。",
+                                ),
+                            ),
+                        ),
+                    )
+                } else {
+                    listOf(
+                        ContentBlock.Text(
+                            listOf(
+                                InlineSpan.Plain(
+                                    "第 $page 页 $postId 楼层正文，包含多行文字用于区分混合楼层高度，确保前后页合并后首楼定位准确无误。",
+                                ),
+                            ),
+                        ),
+                    )
+                }
+                PostFloor(
+                    postId = postId,
+                    floor = floorNum,
+                    page = page,
+                    uid = "${200 + floorNum}",
+                    author = "坛友$floorNum",
+                    avatarUrl = null,
+                    timePost = "2026-11-26 04:00",
+                    isWarned = false,
+                    postStatus = null,
+                    signature = null,
+                    poll = null,
+                    blocks = blocks,
+                )
+            }
+            return ThreadDetailLoadResult.Success(
+                page = ThreadDetailPage(
+                    tid = tid,
+                    fid = 2,
+                    title = "E2b+E2d 合并探针主题",
+                    page = page,
+                    lastPage = 3,
+                    floors = floors,
+                    postsPerPageEstimate = 15,
+                    meta = emptyMeta(),
+                    hasPostList = true,
+                ),
+                filter = filter,
+                threadAuthorId = "201",
+            )
+        }
+
+        override suspend fun loadLastPage(tid: String, recordHistory: Boolean, forumName: String?, priority: AccessPriority) =
+            loadPage(tid, 3, ThreadDetailFilter.All, recordHistory, forumName, priority)
+        override suspend fun loadByPostId(pid: String, tid: String?, recordHistory: Boolean, forumName: String?, priority: AccessPriority) =
+            loadPage(tid ?: "99001", 1, ThreadDetailFilter.All, recordHistory, forumName, priority)
         override suspend fun getReadingPosition(tid: String): ReadingPositionEntity? = null
         override suspend fun saveReadingPosition(tid: String, page: Int, pid: String, offsetPx: Int, filterMode: ReadingFilterMode, filterUid: String?, filterUserName: String?) = Unit
         override fun observeFloors(floorsFlow: Flow<List<PostFloor>>): Flow<List<ThreadDetailFloorItem>> =
