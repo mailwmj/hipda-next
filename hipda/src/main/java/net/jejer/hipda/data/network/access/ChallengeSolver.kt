@@ -6,6 +6,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Inject
 import javax.inject.Singleton
+import net.jejer.hipda.ui.challenge.WebViewChallengeSolver
 import okhttp3.HttpUrl
 
 /** Outcome of a single Cloudflare challenge solve attempt. */
@@ -33,5 +34,5 @@ class DefaultChallengeSolver @Inject constructor() : ChallengeSolver {
 abstract class ChallengeSolverModule {
     @Binds
     @Singleton
-    abstract fun bindChallengeSolver(impl: DefaultChallengeSolver): ChallengeSolver
+    abstract fun bindChallengeSolver(impl: WebViewChallengeSolver): ChallengeSolver
 }

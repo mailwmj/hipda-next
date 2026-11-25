@@ -861,7 +861,7 @@ class SiteAccessGatewayTest {
 
         val bindMethod = ChallengeSolverModule::class.java.getDeclaredMethod(
             "bindChallengeSolver",
-            DefaultChallengeSolver::class.java,
+            net.jejer.hipda.ui.challenge.WebViewChallengeSolver::class.java,
         )
         assertTrue(bindMethod.isAnnotationPresent(Binds::class.java))
         assertTrue(bindMethod.isAnnotationPresent(Singleton::class.java))
