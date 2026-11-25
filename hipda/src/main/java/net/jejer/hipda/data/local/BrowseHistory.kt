@@ -36,6 +36,9 @@ interface BrowseHistoryDao {
     )
     fun observeRecent(limit: Int): Flow<List<BrowseHistoryEntity>>
 
+    @Query("SELECT tid FROM browse_history")
+    fun observeVisitedTids(): Flow<List<String>>
+
     @Upsert
     suspend fun upsert(entity: BrowseHistoryEntity)
 

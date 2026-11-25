@@ -383,6 +383,58 @@ class UserRepositoryTest {
         assertTrue((challengeErr as UserError.ChallengeRequired).abandoned)
     }
 
+    @Test
+    fun rD8bS3_4_getUserProfileResolvesFormhashFromUmenuLogoutLinkAndMetaInputFallback() = runBlocking {
+        val repo = createRepository()
+
+        // 1. No <input name="formhash">, only #umenu logout link formhash
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                userTestLoggedInHtml(
+                    uid = "10000",
+                    username = "HiUser",
+                    logoutFormhash = "fh_profile_logout_only",
+                    body = """
+                        <div id="profilecontent">
+                          <div class="itemtitle">
+                            <h1>HiUser</h1>
+                            <ul><li>(UID: 10000)</li></ul>
+                          </div>
+                        </div>
+                    """.trimIndent(),
+                ),
+            ),
+        )
+        val logoutFallback = repo.getUserProfile("10000")
+        assertTrue("Expected Success, got $logoutFallback", logoutFallback is UserProfileResult.Success)
+        assertEquals("fh_profile_logout_only", (logoutFallback as UserProfileResult.Success).profile.formhash)
+
+        // 2. No #umenu logout link formhash, falls back to parsed.meta.formhash from <input name="formhash">
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                """
+                <!DOCTYPE html>
+                <html>
+                <head><meta http-equiv="Content-Type" content="text/html; charset=gbk" /></head>
+                <body>
+                  <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+                  <input type="hidden" name="formhash" value="fh_meta_input_fallback" />
+                  <div id="profilecontent">
+                    <div class="itemtitle">
+                      <h1>HiUser</h1>
+                      <ul><li>(UID: 10000)</li></ul>
+                    </div>
+                  </div>
+                </body>
+                </html>
+                """.trimIndent(),
+            ),
+        )
+        val metaInputFallback = repo.getUserProfile("10000")
+        assertTrue("Expected Success, got $metaInputFallback", metaInputFallback is UserProfileResult.Success)
+        assertEquals("fh_meta_input_fallback", (metaInputFallback as UserProfileResult.Success).profile.formhash)
+    }
+
     private fun Any.isInvalidInput(): Boolean = this is UserError.InvalidInput
 
     companion object {

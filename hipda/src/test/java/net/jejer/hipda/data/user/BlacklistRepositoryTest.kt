@@ -16,6 +16,7 @@ import java.io.File
 import java.net.URLDecoder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Singleton
@@ -25,7 +26,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.Dispatcher
@@ -41,6 +44,7 @@ import net.jejer.hipda.data.network.HttpClientModule
 import net.jejer.hipda.data.network.InMemorySiteCookieStore
 import net.jejer.hipda.data.network.TransportInterceptor
 import net.jejer.hipda.data.network.UserAgentProvider
+import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeSolver
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.access.SolveResult
@@ -127,6 +131,7 @@ class BlacklistRepositoryTest {
 
     private fun createRepository(
         store: BlacklistStore = BlacklistStore(createDataStore()),
+        solver: ChallengeSolver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) },
     ): Pair<DefaultBlacklistRepository, BlacklistStore> {
         val client = HttpClientModule.provideOkHttpClient(
             siteCookieStore = cookieStore,
@@ -139,7 +144,7 @@ class BlacklistRepositoryTest {
         val gateway = SiteAccessGateway(
             client = client,
             detector = ChallengeDetector(),
-            solver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) },
+            solver = solver,
             clock = { nowMs.get() },
             gatewayScope = scope,
             solveTimeout = 5.seconds,
@@ -341,9 +346,8 @@ class BlacklistRepositoryTest {
 
     @Test
     fun addAndRemoveBlacklist_autoPrefetchesFormhashWhenMissingOrBlank() = runBlocking {
-        val (repo, _) = createRepository()
-
-        // 1. addToBlacklist with null formhash -> GET viewblack -> POST addblack
+        // 1. addToBlacklist with null formhash on cold cache -> GET viewblack -> POST addblack
+        val (repoForAdd, _) = createRepository()
         server.enqueue(
             userTestGbkHtmlResponse(
                 viewBlackHtml(accountA.uid, accountA.username, emptyList(), formhashInput = "fh_fetched_add"),
@@ -351,9 +355,9 @@ class BlacklistRepositoryTest {
         )
         server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountA.uid, accountA.username, "添加成功")))
 
-        val addResult = repo.addToBlacklist(username = "AutoHashUser", formhash = null)
+        val addResult = repoForAdd.addToBlacklist(username = "AutoHashUser", formhash = null)
         assertTrue("Expected Success, got $addResult", addResult is BlacklistMutationResult.Success)
-        assertTrue(repo.isBlocked("AutoHashUser"))
+        assertTrue(repoForAdd.isBlocked("AutoHashUser"))
 
         val getForAdd = server.takeRequest()
         assertEquals("GET", getForAdd.method)
@@ -363,7 +367,12 @@ class BlacklistRepositoryTest {
         assertEquals("/forum/pm.php?action=addblack", postAdd.target)
         assertEquals("fh_fetched_add", decodeGbkForm(postAdd.body?.utf8().orEmpty())["formhash"])
 
-        // 2. removeFromBlacklist with blank formhash -> GET viewblack -> POST delblack
+        // 2. removeFromBlacklist with blank formhash on cold cache -> GET viewblack -> POST delblack
+        val (repoForDel, storeForDel) = createRepository()
+        storeForDel.replace(accountA.uid, listOf("AutoHashUser"), syncedAtMs = 1_000L)
+        withTimeout(3.seconds) {
+            repoForDel.blockedUsernames.first { "AutoHashUser" in it }
+        }
         server.enqueue(
             userTestGbkHtmlResponse(
                 viewBlackHtml(accountA.uid, accountA.username, listOf("AutoHashUser"), formhashInput = "fh_fetched_del"),
@@ -371,9 +380,9 @@ class BlacklistRepositoryTest {
         )
         server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountA.uid, accountA.username, "移除成功")))
 
-        val removeResult = repo.removeFromBlacklist(username = "AutoHashUser", formhash = "   ")
+        val removeResult = repoForDel.removeFromBlacklist(username = "AutoHashUser", formhash = "   ")
         assertTrue("Expected Success, got $removeResult", removeResult is BlacklistMutationResult.Success)
-        assertFalse(repo.isBlocked("AutoHashUser"))
+        assertFalse(repoForDel.isBlocked("AutoHashUser"))
 
         val getForDel = server.takeRequest()
         assertEquals("GET", getForDel.method)
@@ -383,7 +392,8 @@ class BlacklistRepositoryTest {
         assertEquals("/forum/pm.php?action=delblack", postDel.target)
         assertEquals("fh_fetched_del", decodeGbkForm(postDel.body?.utf8().orEmpty())["formhash"])
 
-        // 3. When prefetched viewblack lacks formhash -> fail cleanly with InvalidPage and 0 POST requests
+        // 3. When prefetched viewblack lacks formhash on cold cache -> fail cleanly with InvalidPage and 0 POST requests
+        val (repoForMissingHash, _) = createRepository()
         val countBeforeMissingHash = server.requestCount
         server.enqueue(
             userTestGbkHtmlResponse(
@@ -395,10 +405,10 @@ class BlacklistRepositoryTest {
                 """.trimIndent(),
             ),
         )
-        val missingHashResult = repo.addToBlacklist(username = "NoHashTarget", formhash = null)
+        val missingHashResult = repoForMissingHash.addToBlacklist(username = "NoHashTarget", formhash = null)
         assertTrue("Expected InvalidPage when formhash absent, got $missingHashResult", missingHashResult is UserError.InvalidPage)
         assertEquals("Should only issue GET viewblack without POST", countBeforeMissingHash + 1, server.requestCount)
-        assertFalse(repo.isBlocked("NoHashTarget"))
+        assertFalse(repoForMissingHash.isBlocked("NoHashTarget"))
     }
 
     @Test
@@ -677,6 +687,338 @@ class BlacklistRepositoryTest {
         val context: Context = ApplicationProvider.getApplicationContext()
         val storeFile = UserModule.blacklistDataStoreFile(context)
         assertEquals("blacklist_cache.preferences_pb", storeFile.name)
+    }
+
+    @Test
+    fun rD8bS1_accountADiskWriteCompletingDuringAccountBInitialReadDoesNotDropAccountBSnapshot() = runBlocking {
+        val rawDataStore = createDataStore()
+        // Pre-populate both Account A and Account B persisted caches on disk.
+        // Using the same snapshot & clock for Account A keeps allBuckets.distinctUntilChanged() quiet
+        // on Account A's observer so subscription #1/#2 after switching to Account B are deterministically
+        // Account B's observe("10002") and read("10002").
+        val seedStore = BlacklistStore(rawDataStore)
+        seedStore.replace(accountA.uid, listOf("InitialA"), syncedAtMs = nowMs.get())
+        seedStore.replace(accountB.uid, listOf("SpammerB"), syncedAtMs = 200L)
+
+        val pauseNextUpdate = AtomicBoolean(false)
+        val accountAWritePaused = CountDownLatch(1)
+        val releaseAccountAWrite = CountDownLatch(1)
+
+        val pauseOnSecondDataRead = AtomicBoolean(false)
+        val dataReadCounter = AtomicInteger(0)
+        val accountBReadPaused = CountDownLatch(1)
+        val releaseAccountBRead = CountDownLatch(1)
+
+        val hookedDataStore = object : DataStore<Preferences> {
+            override val data: Flow<Preferences> = flow {
+                val subscriptionIndex = if (pauseOnSecondDataRead.get()) {
+                    dataReadCounter.incrementAndGet()
+                } else {
+                    0
+                }
+                rawDataStore.data.collect { prefs ->
+                    if (subscriptionIndex == 2) {
+                        accountBReadPaused.countDown()
+                        releaseAccountBRead.await(5, TimeUnit.SECONDS)
+                    }
+                    emit(prefs)
+                }
+            }
+
+            override suspend fun updateData(
+                transform: suspend (t: Preferences) -> Preferences,
+            ): Preferences {
+                val updated = rawDataStore.updateData(transform)
+                if (pauseNextUpdate.compareAndSet(true, false)) {
+                    accountAWritePaused.countDown()
+                    releaseAccountAWrite.await(5, TimeUnit.SECONDS)
+                }
+                return updated
+            }
+        }
+
+        val (repo, _) = createRepository(store = BlacklistStore(hookedDataStore))
+        withTimeout(3.seconds) {
+            repo.blockedUsernames.first { it == setOf("InitialA") }
+        }
+
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                viewBlackHtml(accountA.uid, accountA.username, listOf("InitialA")),
+            ),
+        )
+        pauseNextUpdate.set(true)
+        val syncJobA = async(Dispatchers.Default) { repo.syncBlacklist() }
+
+        try {
+            assertTrue("Account A disk write did not reach pause point", accountAWritePaused.await(5, TimeUnit.SECONDS))
+
+            // Switch to Account B while Account A is paused right after replace() and before stateLock update
+            dataReadCounter.set(0)
+            pauseOnSecondDataRead.set(true)
+            authRepository.setActiveAccount(accountB)
+            assertTrue("Account B initial read did not reach pause point", accountBReadPaused.await(5, TimeUnit.SECONDS))
+
+            // Let Account A finish its post-write block while Account B's read(uid) is still suspended
+            releaseAccountAWrite.countDown()
+            val syncResA = withTimeout(5.seconds) { syncJobA.await() }
+            assertTrue("Expected Account A sync to complete cleanly, got $syncResA", syncResA is BlacklistSyncResult.Success)
+
+            // Release Account B's read(uid) -> MUST publish Account B's persisted ["SpammerB"] rather than dropping it
+            releaseAccountBRead.countDown()
+            withTimeout(2.seconds) {
+                repo.blockedUsernames.first { it == setOf("SpammerB") }
+            }
+            assertTrue(repo.isBlocked("SpammerB"))
+            assertFalse(repo.isBlocked("InitialA"))
+        } finally {
+            releaseAccountAWrite.countDown()
+            releaseAccountBRead.countDown()
+        }
+    }
+
+    @Test
+    fun rD8bS2_syncExposesFormhashCachesPerAccountAndFallsBackWhenInvalidated() = runBlocking {
+        val (repo, _) = createRepository()
+
+        // 1. syncBlacklist exposes formhash in Success and caches it for accountA
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                viewBlackHtml(
+                    uid = accountA.uid,
+                    username = accountA.username,
+                    blockedUsers = listOf("Blocked1"),
+                    formhashInput = "fh_cached_a1",
+                ),
+            ),
+        )
+        val syncRes = repo.syncBlacklist()
+        assertTrue("Expected Success, got $syncRes", syncRes is BlacklistSyncResult.Success)
+        val syncSuccess = syncRes as BlacklistSyncResult.Success
+        assertEquals("fh_cached_a1", syncSuccess.formhash)
+        assertEquals("/forum/pm.php?action=viewblack", server.takeRequest().target)
+
+        // 2. removeFromBlacklist + undo addToBlacklist with null formhash reuse cached formhash with ZERO extra GETs
+        server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountA.uid, accountA.username, "移除成功")))
+        server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountA.uid, accountA.username, "撤销重加成功")))
+
+        val removeRes = repo.removeFromBlacklist(username = "Blocked1", formhash = null)
+        assertTrue("Expected Success, got $removeRes", removeRes is BlacklistMutationResult.Success)
+        val undoRes = repo.addToBlacklist(username = "Blocked1", formhash = null)
+        assertTrue("Expected Success, got $undoRes", undoRes is BlacklistMutationResult.Success)
+
+        val delReq = server.takeRequest()
+        assertEquals("POST", delReq.method)
+        assertEquals("/forum/pm.php?action=delblack", delReq.target)
+        assertEquals("fh_cached_a1", decodeGbkForm(delReq.body?.utf8().orEmpty())["formhash"])
+
+        val reAddReq = server.takeRequest()
+        assertEquals("POST", reAddReq.method)
+        assertEquals("/forum/pm.php?action=addblack", reAddReq.target)
+        assertEquals("fh_cached_a1", decodeGbkForm(reAddReq.body?.utf8().orEmpty())["formhash"])
+
+        // 3. Cached formhash rejected by server -> clears cache, fetches fresh viewblack formhash, retries POST once
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                userTestLoggedInHtml(
+                    uid = accountA.uid,
+                    username = accountA.username,
+                    body = """<div class="alert_error">您的请求来路不正确或表单验证串不符，无法提交<a href="index.php">返回</a></div>""",
+                ),
+            ),
+        )
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                viewBlackHtml(accountA.uid, accountA.username, listOf("Blocked1"), formhashInput = "fh_refreshed_a2"),
+            ),
+        )
+        server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountA.uid, accountA.username, "重取后成功")))
+
+        val recoveredRemove = repo.removeFromBlacklist(username = "Blocked1", formhash = null)
+        assertTrue("Expected Success after formhash refresh fallback, got $recoveredRemove", recoveredRemove is BlacklistMutationResult.Success)
+        assertFalse(repo.isBlocked("Blocked1"))
+
+        val stalePost = server.takeRequest()
+        assertEquals("POST", stalePost.method)
+        assertEquals("fh_cached_a1", decodeGbkForm(stalePost.body?.utf8().orEmpty())["formhash"])
+        val refreshGet = server.takeRequest()
+        assertEquals("GET", refreshGet.method)
+        assertEquals("/forum/pm.php?action=viewblack", refreshGet.target)
+        val retriedPost = server.takeRequest()
+        assertEquals("POST", retriedPost.method)
+        assertEquals("fh_refreshed_a2", decodeGbkForm(retriedPost.body?.utf8().orEmpty())["formhash"])
+
+        // 4. Account switch MUST NOT reuse Account A's cached formhash for Account B
+        authRepository.setActiveAccount(accountB)
+        withTimeout(3.seconds) {
+            repo.blockedUsernames.first { it.isEmpty() }
+        }
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                viewBlackHtml(accountB.uid, accountB.username, emptyList(), formhashInput = "fh_account_b"),
+            ),
+        )
+        server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountB.uid, accountB.username, "添加成功")))
+        val addB = repo.addToBlacklist(username = "TargetB", formhash = null)
+        assertTrue("Expected Success for Account B, got $addB", addB is BlacklistMutationResult.Success)
+        assertEquals("GET", server.takeRequest().method)
+        val postB = server.takeRequest()
+        assertEquals("POST", postB.method)
+        assertEquals("fh_account_b", decodeGbkForm(postB.body?.utf8().orEmpty())["formhash"])
+
+        // 5. Logout then re-login clears cached formhash so next mutation fetches fresh token
+        authRepository.logout()
+        withTimeout(3.seconds) {
+            repo.blockedUsernames.first { it.isEmpty() }
+        }
+        authRepository.bumpEpoch()
+        authRepository.setActiveAccount(accountB)
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                viewBlackHtml(accountB.uid, accountB.username, listOf("TargetB"), formhashInput = "fh_after_relogin"),
+            ),
+        )
+        server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountB.uid, accountB.username, "移除成功")))
+        val removeAfterLogout = repo.removeFromBlacklist(username = "TargetB", formhash = null)
+        assertTrue(removeAfterLogout is BlacklistMutationResult.Success)
+        assertEquals("GET", server.takeRequest().method)
+        val postAfterLogout = server.takeRequest()
+        assertEquals("POST", postAfterLogout.method)
+        assertEquals("fh_after_relogin", decodeGbkForm(postAfterLogout.body?.utf8().orEmpty())["formhash"])
+    }
+
+    @Test
+    fun rD8bS3_1_provideBlacklistDataStoreRecoversFromCorruptedFileOnDisk() = runBlocking {
+        val context: Context = ApplicationProvider.getApplicationContext()
+        val storeFile = UserModule.blacklistDataStoreFile(context)
+        storeFile.parentFile?.mkdirs()
+        storeFile.writeBytes(byteArrayOf(0x00, 0xFF.toByte(), 0x11, 0x22, 0x7F, 0x55))
+
+        // Directly call production UserModule.provideBlacklistDataStore(context)
+        val productionDataStore = UserModule.provideBlacklistDataStore(context)
+        // Reading directly (without BlacklistStore's .catch) fails if ReplaceFileCorruptionHandler is removed
+        assertEquals(emptyPreferences(), productionDataStore.data.first())
+
+        val store = BlacklistStore(productionDataStore)
+        val (repo, _) = createRepository(store = store)
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                viewBlackHtml(accountA.uid, accountA.username, listOf("RecoveredProd")),
+            ),
+        )
+        val syncResult = repo.syncBlacklist()
+        assertTrue("Expected Success after production DataStore corruption recovery, got $syncResult", syncResult is BlacklistSyncResult.Success)
+        assertEquals(setOf("RecoveredProd"), store.read(accountA.uid).usernames)
+    }
+
+    @Test
+    fun rD8bS3_2_verifySessionOwnershipRejectsServerUmenuMismatchEvenWhenLocalAccountUnchanged() = runBlocking {
+        val (repo, store) = createRepository()
+        store.replace(accountA.uid, listOf("KeepAccountA"), syncedAtMs = 1_000L)
+        withTimeout(3.seconds) {
+            repo.blockedUsernames.first { it == setOf("KeepAccountA") }
+        }
+
+        // Local active account remains accountA (10001), but server #umenu belongs to accountB (10002)
+        server.enqueue(
+            userTestGbkHtmlResponse(
+                viewBlackHtml(accountB.uid, accountB.username, listOf("BobOnlySpammer")),
+            ),
+        )
+        val syncMismatch = repo.syncBlacklist()
+        assertTrue("Expected AuthRequired on server #umenu UID mismatch, got $syncMismatch", syncMismatch is UserError.AuthRequired)
+        assertEquals(AuthRequiredReason.SESSION_STILL_UNAUTHENTICATED, (syncMismatch as UserError.AuthRequired).reason)
+        assertEquals(setOf("KeepAccountA"), repo.blockedUsernames.value)
+        assertEquals(setOf("KeepAccountA"), store.read(accountA.uid).usernames)
+        assertEquals(emptySet<String>(), store.read(accountB.uid).usernames)
+
+        // Same guard on mutation (addToBlacklist)
+        server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountB.uid, accountB.username, "ok")))
+        val addMismatch = repo.addToBlacklist(username = "ShouldNotPersist", formhash = "fh_a")
+        assertTrue("Expected AuthRequired on mutation #umenu UID mismatch, got $addMismatch", addMismatch is UserError.AuthRequired)
+        assertEquals(setOf("KeepAccountA"), repo.blockedUsernames.value)
+        assertFalse(repo.isBlocked("ShouldNotPersist"))
+    }
+
+    @Test
+    fun rD8bS3_3_allSuspendMethodsForwardBackgroundSilentPriorityWithoutInvokingChallengeSolver() = runBlocking {
+        val solverCalls = AtomicInteger(0)
+        val (repo, _) = createRepository(
+            solver = ChallengeSolver {
+                solverCalls.incrementAndGet()
+                SolveResult.Failed(AssertionError("ChallengeSolver must not run under BackgroundSilent"))
+            },
+        )
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = MockResponse.Builder()
+                .code(403)
+                .addHeader("cf-mitigated", "challenge")
+                .body("challenge")
+                .build()
+        }
+
+        val syncChallenge = repo.syncBlacklist(priority = AccessPriority.BackgroundSilent)
+        assertTrue("Expected ChallengeRequired, got $syncChallenge", syncChallenge is UserError.ChallengeRequired)
+        assertTrue((syncChallenge as UserError.ChallengeRequired).abandoned)
+
+        val addWithHashChallenge = repo.addToBlacklist(
+            username = "User1",
+            formhash = "fh1",
+            priority = AccessPriority.BackgroundSilent,
+        )
+        assertTrue("Expected ChallengeRequired, got $addWithHashChallenge", addWithHashChallenge is UserError.ChallengeRequired)
+        assertTrue((addWithHashChallenge as UserError.ChallengeRequired).abandoned)
+
+        val removeWithHashChallenge = repo.removeFromBlacklist(
+            username = "User1",
+            formhash = "fh1",
+            priority = AccessPriority.BackgroundSilent,
+        )
+        assertTrue("Expected ChallengeRequired, got $removeWithHashChallenge", removeWithHashChallenge is UserError.ChallengeRequired)
+        assertTrue((removeWithHashChallenge as UserError.ChallengeRequired).abandoned)
+
+        val addPrefetchChallenge = repo.addToBlacklist(
+            username = "User1",
+            formhash = null,
+            priority = AccessPriority.BackgroundSilent,
+        )
+        assertTrue("Expected ChallengeRequired on prefetch, got $addPrefetchChallenge", addPrefetchChallenge is UserError.ChallengeRequired)
+        assertTrue((addPrefetchChallenge as UserError.ChallengeRequired).abandoned)
+
+        assertEquals(0, solverCalls.get())
+    }
+
+    @Test
+    fun rD8bS3_4_viewBlackWithoutInputFormhashFallsBackToUmenuLogoutFormhash() = runBlocking {
+        val viewBlackWithoutInputHash = userTestLoggedInHtml(
+            uid = accountA.uid,
+            username = accountA.username,
+            logoutFormhash = "fh_umenu_logout_only",
+            body = """
+                <div class="blacklist">
+                  <p class="nodata">暂无数据</p>
+                </div>
+            """.trimIndent(),
+        )
+
+        // 1. syncBlacklist exposes fallback logoutFormhash
+        val (repoForSync, _) = createRepository()
+        server.enqueue(userTestGbkHtmlResponse(viewBlackWithoutInputHash))
+        val syncResult = repoForSync.syncBlacklist()
+        assertTrue("Expected Success, got $syncResult", syncResult is BlacklistSyncResult.Success)
+        assertEquals("fh_umenu_logout_only", (syncResult as BlacklistSyncResult.Success).formhash)
+        server.takeRequest()
+
+        // 2. fetchFormhash on cold cache falls back to #umenu logoutFormhash
+        val (repoForPrefetch, _) = createRepository()
+        server.enqueue(userTestGbkHtmlResponse(viewBlackWithoutInputHash))
+        server.enqueue(userTestGbkHtmlResponse(actionSuccessHtml(accountA.uid, accountA.username, "添加成功")))
+        val addResult = repoForPrefetch.addToBlacklist(username = "FallbackHashTarget", formhash = null)
+        assertTrue("Expected Success using logoutFormhash fallback, got $addResult", addResult is BlacklistMutationResult.Success)
+        assertEquals("GET", server.takeRequest().method)
+        val postReq = server.takeRequest()
+        assertEquals("POST", postReq.method)
+        assertEquals("fh_umenu_logout_only", decodeGbkForm(postReq.body?.utf8().orEmpty())["formhash"])
     }
 
     private fun viewBlackHtml(

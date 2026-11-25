@@ -90,6 +90,7 @@ sealed interface BlacklistSyncResult {
     data class Success(
         val snapshot: BlacklistSnapshot,
         val isEmptyConfirmed: Boolean,
+        val formhash: String? = null,
     ) : BlacklistSyncResult {
         val usernames: Set<String> get() = snapshot.usernames
         val lastSyncedAtMs: Long? get() = snapshot.lastSyncedAtMs
