@@ -73,26 +73,20 @@ object SimpleListParser {
         val items = buildList {
             for (i in 1 until rows.size) {
                 val row = rows[i]
-                if (i % 2 == 1) {
-                    pending = parseReplyHeaderRow(row)
+                val header = parseReplyHeaderRow(row)
+                if (header != null) {
+                    pending?.let { add(it.toMyReplyItem(replyText = null)) }
+                    pending = header
                 } else {
-                    val header = pending ?: continue
+                    val activeHeader = pending ?: continue
                     pending = null
                     val replyText = row.firstMatch("th")?.text()?.let {
                         DiscuzTextDecoder.decodeDoubleEscapedEntities(it)
                     }
-                    add(
-                        MyReplyItem(
-                            tid = header.tid,
-                            pid = header.pid,
-                            title = header.title,
-                            replyText = replyText,
-                            time = header.time,
-                            forumName = header.forumName,
-                        ),
-                    )
+                    add(activeHeader.toMyReplyItem(replyText = replyText))
                 }
             }
+            pending?.let { add(it.toMyReplyItem(replyText = null)) }
         }
 
         return MyRepliesPage(
@@ -174,5 +168,14 @@ object SimpleListParser {
         val title: String,
         val time: String,
         val forumName: String?,
-    )
+    ) {
+        fun toMyReplyItem(replyText: String?): MyReplyItem = MyReplyItem(
+            tid = tid,
+            pid = pid,
+            title = title,
+            replyText = replyText,
+            time = time,
+            forumName = forumName,
+        )
+    }
 }
