@@ -1,30 +1,42 @@
 package net.jejer.hipda.feature.forum
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import net.jejer.hipda.R
+import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeState
-import net.jejer.hipda.data.threadlist.ThreadListItem
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
+import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
+import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
+import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.*
 import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 import net.jejer.hipda.ui.shell.ShellContentScope
 
-/** 最薄可运行真实论坛/今日新帖列表面板（供 `E1` 原位加厚，顶层签名在此锁死）。 */
+private const val FORUM_PREFETCH_THRESHOLD: Int = 4
+
+/** 完整论坛/今日新帖列表面板（保持 `E0` 锁定顶层签名，透明顶栏与 `LazyColumn` 严格兄弟拓扑）。 */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ForumPane(
     source: ForumListSource,
@@ -48,96 +60,195 @@ fun ForumPane(
         is ForumListSource.Forum -> ForumMetadataRegistry.resolve(s.fid).fullName
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.statusBarsPadding()) {
-                Text(headerTitle, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp))
-                if (chromeSpec.showForumTabs) {
-                    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item(key = "today_new") {
-                            FilterChip(
-                                selected = uiState.source == ForumListSource.TodayNew,
-                                onClick = { onSelectSource(ForumListSource.TodayNew) },
-                                label = { Text(stringResource(R.string.shell_sidebar_today_new), maxLines = 1) },
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                            )
+    val snackbarController = LocalPaneSnackbarController.current
+    val resources = LocalResources.current
+    LaunchedEffect(viewModel, snackbarController, resources) {
+        viewModel.refreshErrors.collect { err ->
+            snackbarController.show(
+                message = resources.getString(err.messageRes),
+                target = PaneSnackbarTarget.ContentArea,
+                actionLabel = err.action?.let { resources.getString(it.labelRes) },
+                onAction = err.action?.let { act ->
+                    {
+                        when (act) {
+                            UiErrorAction.Retry -> viewModel.retry(AccessPriority.UserBlocking)
+                            UiErrorAction.Login -> onOpenLogin()
+                            UiErrorAction.Reverify -> viewModel.retry(AccessPriority.UserExplicit)
                         }
-                        items(items = uiState.followedForums, key = { "forum:$it" }) { tabFid ->
-                            val tabSource = ForumListSource.Forum(tabFid)
-                            FilterChip(
-                                selected = uiState.source == tabSource,
-                                onClick = { onSelectSource(tabSource) },
-                                label = { Text(ForumMetadataRegistry.resolve(tabFid).fullName, maxLines = 1) },
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                            )
+                    }
+                },
+            )
+        }
+    }
+
+    val topBarScrollState = rememberForumTopBarScrollState(collapsible = chromeSpec.showForumTabs)
+    LaunchedEffect(source) { topBarScrollState.expand() }
+
+    val ownGlassState = if (chromeSpec.useGlassTopBar && shellContentScope?.shellGlassState == null && chromeSpec.externalGlassState == null) {
+        rememberHiGlassState()
+    } else null
+    val topBarGlassState = if (chromeSpec.useGlassTopBar) {
+        shellContentScope?.shellGlassState ?: chromeSpec.externalGlassState ?: ownGlassState
+    } else null
+
+    val topBarExpandedHeight = forumTopBarExpandedHeight(chromeSpec.showForumTabs)
+    val layoutDir = LocalLayoutDirection.current
+    val listContentPadding = remember(contentPadding, topBarExpandedHeight, layoutDir) {
+        PaddingValues(
+            start = contentPadding.calculateStartPadding(layoutDir),
+            top = topBarExpandedHeight + contentPadding.calculateTopPadding(),
+            end = contentPadding.calculateEndPadding(layoutDir),
+            bottom = contentPadding.calculateBottomPadding(),
+        )
+    }
+
+    val isScrolledState = remember(listState) {
+        derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
+    }
+    val coroutineScope = rememberCoroutineScope()
+    val reducedMotion = HiTheme.isReducedMotion
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize().nestedScroll(topBarScrollState.nestedScrollConnection)) {
+        val compactRow = maxWidth < FORUM_COMPACT_ROW_WIDTH_THRESHOLD
+        val showChallenge = uiState.items.isEmpty() && (uiState.challengeState !is ChallengeState.Idle || uiState.challengeFailure != null)
+
+        when {
+            showChallenge -> Box(Modifier.fillMaxSize().padding(listContentPadding), Alignment.Center) {
+                ChallengeStatusView(uiState.challengeState, viewModel::retry, failure = uiState.challengeFailure, errorDetails = uiState.error?.details)
+            }
+            uiState.isLoading && uiState.items.isEmpty() -> ForumListSkeleton(compactRow, listContentPadding)
+            uiState.error != null && uiState.items.isEmpty() -> Box(Modifier.fillMaxSize().padding(listContentPadding), Alignment.Center) {
+                uiState.error!!.let { err -> HiErrorState(stringResource(err.messageRes), details = err.details, action = err.toStateAction(viewModel::retry, onOpenLogin)) }
+            }
+            !uiState.isLoading && uiState.items.isEmpty() -> Box(Modifier.fillMaxSize().padding(listContentPadding), Alignment.Center) {
+                HiEmptyState(stringResource(R.string.common_empty_threads), action = HiStateAction(stringResource(R.string.common_action_refresh)) { viewModel.refresh() })
+            }
+            else -> {
+                val pullState = rememberPullToRefreshState()
+                val glassSourceModifier = when {
+                    shellContentScope?.shellGlassState != null -> with(shellContentScope) { Modifier.shellGlassSource() }
+                    chromeSpec.externalGlassState != null -> Modifier.hiGlassSource(chromeSpec.externalGlassState)
+                    topBarGlassState != null -> Modifier.hiGlassSource(topBarGlassState)
+                    else -> Modifier
+                }
+                val shouldAutoLoadMore by remember(listState) {
+                    derivedStateOf {
+                        if (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0) return@derivedStateOf false
+                        val info = listState.layoutInfo
+                        val total = info.totalItemsCount
+                        total > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= total - FORUM_PREFETCH_THRESHOLD
+                    }
+                }
+                LaunchedEffect(shouldAutoLoadMore, uiState.hasMore, uiState.isLoading, uiState.isRefreshing, uiState.isLoadingMore, uiState.error, uiState.source) {
+                    if (shouldAutoLoadMore && uiState.hasMore && !uiState.isLoading && !uiState.isRefreshing && !uiState.isLoadingMore && uiState.error == null) {
+                        viewModel.loadMore()
+                    }
+                }
+
+                PullToRefreshBox(
+                    isRefreshing = uiState.isRefreshing,
+                    onRefresh = { viewModel.refresh() },
+                    state = pullState,
+                    modifier = Modifier.fillMaxSize(),
+                    indicator = {
+                        PullToRefreshDefaults.Indicator(
+                            state = pullState,
+                            isRefreshing = uiState.isRefreshing,
+                            modifier = Modifier.align(Alignment.TopCenter).padding(top = topBarExpandedHeight),
+                        )
+                    },
+                ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize().then(glassSourceModifier),
+                        contentPadding = listContentPadding,
+                    ) {
+                        items(items = uiState.items, key = { it.tid }) { item ->
+                            Column(
+                                Modifier.animateItem(
+                                    fadeInSpec = HiMotion.effectsDefault(),
+                                    placementSpec = HiMotion.spatialDefault(),
+                                    fadeOutSpec = HiMotion.exit(HiMotion.effectsDefault()),
+                                ),
+                            ) {
+                                ThreadListRow(
+                                    item = item,
+                                    selected = item.tid == selectedTid,
+                                    compactLayout = compactRow,
+                                    onClick = {
+                                        val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
+                                        onOpenThread(ThreadNavArgs(item.tid, item.summary.title, fid, if (fid > 0) headerTitle else item.summary.typeName, item.summary.author))
+                                    },
+                                )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+                            }
+                        }
+                        item(key = "forum_footer") {
+                            when {
+                                uiState.isLoadingMore -> HiListFooter(HiFooterState.Loading)
+                                uiState.error != null -> HiListFooter(HiFooterState.Failed { viewModel.loadMore() })
+                                uiState.hasMore -> Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), Alignment.Center) {
+                                    TextButton(onClick = { viewModel.loadMore() }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) {
+                                        Text(stringResource(R.string.common_action_load_more))
+                                    }
+                                }
+                                else -> HiListFooter(HiFooterState.End)
+                            }
                         }
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
 
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            val showChallenge = uiState.items.isEmpty() && (uiState.challengeState !is ChallengeState.Idle || uiState.challengeFailure != null)
-            when {
-                showChallenge -> ChallengeStatusView(uiState.challengeState, viewModel::retry, failure = uiState.challengeFailure, errorDetails = uiState.error?.details)
-                uiState.isLoading && uiState.items.isEmpty() -> Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    repeat(6) { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { HiSkeletonBlock(260.dp, 18.dp); HiSkeletonBlock(160.dp, 14.dp) } }
-                }
-                uiState.error != null && uiState.items.isEmpty() -> uiState.error!!.let { err ->
-                    HiErrorState(stringResource(err.messageRes), details = err.details, action = err.toStateAction(viewModel::retry, onOpenLogin))
-                }
-                !uiState.isLoading && uiState.items.isEmpty() -> HiEmptyState(stringResource(R.string.common_empty_threads), action = HiStateAction(stringResource(R.string.common_action_refresh)) { viewModel.refresh() })
-                else -> {
-                    val glassSourceModifier = when {
-                        shellContentScope?.shellGlassState != null -> with(shellContentScope) { Modifier.shellGlassSource() }
-                        chromeSpec.externalGlassState != null -> Modifier.hiGlassSource(chromeSpec.externalGlassState)
-                        else -> Modifier
-                    }
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().then(glassSourceModifier), contentPadding = contentPadding) {
-                    items(items = uiState.items, key = { it.tid }) { item ->
-                        ThreadRowItem(item, item.tid == selectedTid) {
-                            val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
-                            val forumName = if (fid > 0) headerTitle else item.summary.typeName
-                            onOpenThread(ThreadNavArgs(item.tid, item.summary.title, fid, forumName, item.summary.author))
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    }
-                    item(key = "forum_footer") {
-                        when {
-                            uiState.isLoadingMore -> HiListFooter(HiFooterState.Loading)
-                            uiState.error != null -> HiListFooter(HiFooterState.Failed { viewModel.loadMore() })
-                            uiState.hasMore -> Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), Alignment.Center) {
-                                TextButton(onClick = { viewModel.loadMore() }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text(stringResource(R.string.common_action_load_more)) }
-                            }
-                            else -> HiListFooter(HiFooterState.End)
-                        }
-                    }
-                }
-                }
-            }
-        }
+        NewThreadsPill(
+            count = uiState.newThreadsCount,
+            onClick = {
+                viewModel.dismissNewThreadsPill()
+                topBarScrollState.expand()
+                coroutineScope.launch { if (reducedMotion) listState.scrollToItem(0) else listState.animateScrollToItem(0) }
+            },
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = topBarExpandedHeight + 8.dp)
+                .graphicsLayer { translationY = -topBarScrollState.collapseOffsetPx },
+        )
+
+        ForumTopBar(
+            title = headerTitle,
+            source = uiState.source,
+            followedForums = uiState.followedForums,
+            sortByPostTime = uiState.sortByPostTime,
+            showForumTabs = chromeSpec.showForumTabs,
+            glassState = topBarGlassState,
+            isScrolled = { uiState.items.isNotEmpty() && isScrolledState.value },
+            scrollState = topBarScrollState,
+            onSelectSource = onSelectSource,
+            onNewThreadClick = onNewThreadClick,
+            onSelectSortByPostTime = viewModel::setSortByPostTime,
+            onManageForumsClick = onManageForumsClick,
+            modifier = Modifier.align(Alignment.TopStart),
+        )
     }
 }
 
 @Composable
-private fun ThreadRowItem(item: ThreadListItem, selected: Boolean, onClick: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
+private fun ForumListSkeleton(compactLayout: Boolean, contentPadding: PaddingValues) {
     Column(
-        modifier = Modifier.fillMaxWidth().background(if (selected) cs.secondaryContainer.copy(alpha = 0.45f) else cs.surface).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxSize().padding(contentPadding).padding(horizontal = if (compactLayout) 12.dp else 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Text(
-            text = item.summary.title,
-            style = if (item.isVisited) HiTheme.typography.threadTitleRead else HiTheme.typography.threadTitle,
-            color = if (item.isVisited) cs.onSurfaceVariant else cs.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(item.summary.author, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            if (item.summary.replyCountText.isNotEmpty()) Text(item.summary.replyCountText, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-            Text(item.summary.timeUpdate ?: item.summary.timeCreate, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1)
+        repeat(6) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                if (!compactLayout) HiSkeletonBlock(40.dp, 40.dp, HiShapeTokens.Full)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HiSkeletonBlock(Dp.Unspecified, 18.dp, modifier = Modifier.fillMaxWidth(0.92f))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (compactLayout) HiSkeletonBlock(20.dp, 20.dp, HiShapeTokens.Full)
+                        HiSkeletonBlock(76.dp, 14.dp)
+                        HiSkeletonBlock(48.dp, 14.dp)
+                    }
+                }
+            }
         }
     }
 }
