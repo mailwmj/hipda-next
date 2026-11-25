@@ -83,7 +83,7 @@ class SampleExportEngineTest {
 
     private val gbk: Charset = Charset.forName("GB18030")
     private val unifiedUa =
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36"
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 
     private lateinit var application: Application
     private lateinit var cookieStore: InMemorySiteCookieStore

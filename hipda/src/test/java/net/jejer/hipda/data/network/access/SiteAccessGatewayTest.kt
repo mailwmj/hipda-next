@@ -1306,6 +1306,6 @@ class SiteAccessGatewayTest {
     }
 
     private companion object {
-        const val TEST_UA = DefaultUserAgentProvider.DEFAULT_MOBILE_CHROME_UA
+        const val TEST_UA = DefaultUserAgentProvider.DEFAULT_DESKTOP_CHROME_UA
     }
 }

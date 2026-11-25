@@ -8,30 +8,45 @@ import javax.inject.Singleton
 import net.jejer.hipda.data.network.DefaultUserAgentProvider
 import net.jejer.hipda.data.network.UserAgentProvider
 
-private val VERSION_4_0_REGEX = Regex("""\bVersion/4\.0(?=\s|$)""", RegexOption.IGNORE_CASE)
-private val WV_TOKEN_REGEX = Regex("""\s*;\s*wv(?=\s*(?:[;)]|$))""", RegexOption.IGNORE_CASE)
-private val SPACE_BEFORE_DELIM_REGEX = Regex("""\s+([;)])""")
-private val MULTI_WHITESPACE_REGEX = Regex("""\s+""")
+private val CHROME_VERSION_REGEX = Regex("""(?:^|\s)Chrome/(\d+)(?:\.\d+)*(?=\s|$)""", RegexOption.IGNORE_CASE)
 
 /**
- * Strips Android WebView identity markers (`; wv` and `Version/4.0`) from [raw] so WebView and
- * OkHttp share a consistent mobile Chrome User-Agent. Falls back to
- * [DefaultUserAgentProvider.DEFAULT_MOBILE_CHROME_UA] when the input or cleaned result is blank.
+ * Extracts the positive Chrome major version from a raw WebView or browser User-Agent string
+ * (e.g. `Chrome/131.0.6778.200` -> `"131"`), returning `null` when absent or malformed.
+ */
+internal fun extractChromeMajorVersion(raw: String): String? {
+    if (raw.isBlank()) return null
+    return CHROME_VERSION_REGEX.findAll(raw)
+        .mapNotNull { match ->
+            match.groupValues[1].toIntOrNull()?.takeIf { it > 0 }?.toString()
+        }
+        .lastOrNull()
+}
+
+/** Builds the unified desktop Linux Chrome User-Agent string for [chromeMajorVersion]. */
+fun buildDesktopChromeUserAgent(chromeMajorVersion: String): String =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromeMajorVersion.0.0.0 Safari/537.36"
+
+/**
+ * Converts a raw Android WebView User-Agent [raw] into a desktop Linux Chrome User-Agent
+ * preserving the real Chrome major version (without `Android`, `Mobile`, `; wv`, or `Version/4.0`).
+ *
+ * 4d4y.com serves a broken mobile Discuz! template whenever `Android` appears in `User-Agent`;
+ * adopting desktop site identity ensures both WebView and OkHttp receive the desktop template
+ * while remaining bound to the same `cf_clearance` User-Agent string.
+ *
+ * Falls back to [DefaultUserAgentProvider.DEFAULT_DESKTOP_CHROME_UA] when [raw] is blank or
+ * contains no valid `Chrome/<major>` token.
  */
 fun normalizeWebViewUserAgent(raw: String): String {
-    if (raw.isBlank()) return DefaultUserAgentProvider.DEFAULT_MOBILE_CHROME_UA
-    val cleaned = raw
-        .replace(VERSION_4_0_REGEX, "")
-        .replace(WV_TOKEN_REGEX, "")
-        .replace(SPACE_BEFORE_DELIM_REGEX, "$1")
-        .replace(MULTI_WHITESPACE_REGEX, " ")
-        .trim()
-    return cleaned.ifBlank { DefaultUserAgentProvider.DEFAULT_MOBILE_CHROME_UA }
+    val major = extractChromeMajorVersion(raw)
+        ?: return DefaultUserAgentProvider.DEFAULT_DESKTOP_CHROME_UA
+    return buildDesktopChromeUserAgent(major)
 }
 
 /**
  * [UserAgentProvider] backed by the device's system WebView User-Agent, lazily resolved on the
- * calling thread, normalized, and cached for the process lifetime.
+ * calling thread, converted to desktop Linux Chrome identity, and cached for the process lifetime.
  */
 @Singleton
 class WebViewUserAgentProvider internal constructor(

@@ -37,11 +37,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import java.util.Locale
 import net.jejer.hipda.R
 import net.jejer.hipda.data.network.UserAgentProvider
+import net.jejer.hipda.data.network.webview.applyUnifiedDesktopUserAgent
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 
 /**
  * 配置内置登录 WebView：
- * - 显式统一 UA 为 [UserAgentProvider.userAgent]（落实 R-A5a）；
+ * - 通过统一入口 [applyUnifiedDesktopUserAgent] 设置桌面 UA 与 Client Hints 元数据（与挑战页 WebView、OkHttp 一致）；
  * - 开启 JS、DOM Storage 及一/三方 Cookie；
  * - 限制可导航协议为 http/https/about，并在页面导航变化时回调以触发 Cookie 同步。
  */
@@ -52,7 +53,7 @@ fun configureSampleLoginWebView(
     onPageNavigationChanged: (String?) -> Unit,
 ): WebView = webView.apply {
     settings.apply {
-        userAgentString = userAgentProvider.userAgent()
+        applyUnifiedDesktopUserAgent(this, userAgentProvider)
         javaScriptEnabled = true
         domStorageEnabled = true
         allowFileAccess = false
