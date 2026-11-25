@@ -1,5 +1,6 @@
 package net.jejer.hipda.data.network
 
+import java.io.IOException
 import java.net.ProtocolException
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
@@ -23,8 +24,16 @@ class ManualRedirectInterceptor(
         var followUpCount = 0
 
         while (true) {
+            if (chain.call().isCanceled()) {
+                throw IOException("Canceled")
+            }
             val response = chain.proceed(currentRequest)
             val nextRequest = buildFollowUpRequest(currentRequest, response) ?: return response
+
+            if (chain.call().isCanceled()) {
+                response.close()
+                throw IOException("Canceled")
+            }
 
             followUpCount++
             if (followUpCount > maxRedirects) {

@@ -1,7 +1,9 @@
 package net.jejer.hipda.data.network
 
+import android.content.Context
 import dagger.Binds
 import dagger.Provides
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Singleton
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -15,9 +17,12 @@ import org.junit.Test
 
 class HttpClientModuleTest {
 
-    private fun createClient() = HttpClientModule.provideOkHttpClient(
+    private fun createClient(
+        transportInterceptor: TransportInterceptor = TransportInterceptor(delegateFactory = { null }),
+    ) = HttpClientModule.provideOkHttpClient(
         siteCookieStore = InMemorySiteCookieStore(),
         userAgentProvider = DefaultUserAgentProvider(),
+        transportInterceptor = transportInterceptor,
     )
 
     @Test
@@ -34,13 +39,23 @@ class HttpClientModuleTest {
 
     @Test
     fun provideOkHttpClientConfiguresInterceptorsInOrderAndEmptyNetworkInterceptors() {
-        val client = createClient()
+        val factoryCalls = AtomicInteger(0)
+        val client = createClient(
+            transportInterceptor = TransportInterceptor(
+                delegateFactory = {
+                    factoryCalls.incrementAndGet()
+                    null
+                },
+            ),
+        )
 
-        assertEquals(3, client.interceptors.size)
+        assertEquals(4, client.interceptors.size)
         assertTrue(client.interceptors[0] is ManualRedirectInterceptor)
         assertTrue(client.interceptors[1] is BrowserHeaderInterceptor)
         assertTrue(client.interceptors[2] is AppCookieInterceptor)
+        assertTrue(client.interceptors[3] is TransportInterceptor)
         assertTrue(client.networkInterceptors.isEmpty())
+        assertEquals(0, factoryCalls.get())
     }
 
     @Test
@@ -77,10 +92,18 @@ class HttpClientModuleTest {
 
     @Test
     fun hiltModuleAnnotationsAreConfiguredForOkHttpClientAndUserAgent() {
+        val provideTransport = HttpClientModule::class.java.getDeclaredMethod(
+            "provideTransportInterceptor",
+            Context::class.java,
+        )
+        assertTrue(provideTransport.isAnnotationPresent(Provides::class.java))
+        assertTrue(provideTransport.isAnnotationPresent(Singleton::class.java))
+
         val provideClient = HttpClientModule::class.java.getDeclaredMethod(
             "provideOkHttpClient",
             SiteCookieStore::class.java,
             UserAgentProvider::class.java,
+            TransportInterceptor::class.java,
         )
         assertTrue(provideClient.isAnnotationPresent(Provides::class.java))
         assertTrue(provideClient.isAnnotationPresent(Singleton::class.java))

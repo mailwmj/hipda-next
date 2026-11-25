@@ -29,8 +29,10 @@ internal class InMemorySiteCookieStore(
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) = synchronized(lock) {
         val now = clock()
+        val requestHost = url.host
         this.cookies.entries.removeAll { it.value.expiresAt <= now }
         for (cookie in cookies) {
+            if (!cookie.matchesHost(requestHost)) continue
             val key = Key(cookie.name, cookie.domain, cookie.path)
             if (cookie.expiresAt <= now) {
                 this.cookies.remove(key)
@@ -47,10 +49,20 @@ internal class InMemorySiteCookieStore(
     override suspend fun clearForHost(host: String) {
         val normalized = host.trim().trim('.').lowercase(Locale.ROOT)
         synchronized(lock) {
-            cookies.entries.removeAll { (_, cookie) ->
-                cookie.domain == normalized || (!cookie.hostOnly && normalized.endsWith(".${cookie.domain}"))
-            }
+            cookies.entries.removeAll { (_, cookie) -> cookie.matchesHost(normalized) }
         }
+    }
+
+    private fun Cookie.matchesHost(canonicalHost: String): Boolean {
+        if (domain == canonicalHost) return true
+        if (hostOnly) return false
+        return canonicalHost.endsWith(".$domain") && !isIpAddress(canonicalHost)
+    }
+
+    private fun isIpAddress(host: String): Boolean {
+        if (host.contains(':')) return true
+        val lastLabel = host.substringAfterLast('.')
+        return lastLabel.isNotEmpty() && lastLabel.all(Char::isDigit)
     }
 
     override fun snapshot(): List<Cookie> = synchronized(lock) {
