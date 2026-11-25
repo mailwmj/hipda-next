@@ -80,7 +80,11 @@ class DefaultSearchRepository @Inject constructor(
             normalizedSearchId == null &&
             trimmedQuery.isNotEmpty()
         ) {
-            searchHistoryStore.record(trimmedQuery)
+            try {
+                searchHistoryStore.record(trimmedQuery)
+            } catch (_: IOException) {
+                // Best-effort local history persistence: never fail a completed search on disk I/O error.
+            }
         }
         return result
     }
@@ -272,6 +276,10 @@ class DefaultSearchRepository @Inject constructor(
             )
         }
 
+        if (!hasSearchPageStructure(response.html)) {
+            return SearchError.InvalidPage("搜索结果页面解析失败")
+        }
+
         return SearchResult.Success(
             page = page,
             fullText = fullText,
@@ -382,5 +390,15 @@ class DefaultSearchRepository @Inject constructor(
 
         private fun hasEmptyListMarker(html: String): Boolean =
             html.contains("nodata", ignoreCase = true) || html.contains("暂无数据")
+
+        private fun hasSearchPageStructure(html: String): Boolean =
+            html.contains("datatable", ignoreCase = true) ||
+                html.contains("searchlist", ignoreCase = true) ||
+                html.contains("searchform", ignoreCase = true) ||
+                html.contains("alert_info", ignoreCase = true) ||
+                html.contains("nodata", ignoreCase = true) ||
+                html.contains("暂无数据") ||
+                html.contains("找到相关主题") ||
+                html.contains("没有找到")
     }
 }

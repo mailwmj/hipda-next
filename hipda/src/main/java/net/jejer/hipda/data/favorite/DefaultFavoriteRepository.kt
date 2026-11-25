@@ -157,15 +157,22 @@ class DefaultFavoriteRepository internal constructor(
                             kindMutationVersionLocked(targetUid, kind) == mutationVersionBefore)
                 }
                 if (shouldMerge) {
-                    val updated = favoriteCacheStore.merge(
-                        ownerUid = targetUid,
-                        kind = kind,
-                        tids = validPageTids,
-                    )
-                    synchronized(stateLock) {
-                        if (currentActiveUid() == targetUid) {
-                            bumpAccountReadVersionLocked(targetUid)
-                            publishSnapshotLocked(updated)
+                    val updated = try {
+                        favoriteCacheStore.merge(
+                            ownerUid = targetUid,
+                            kind = kind,
+                            tids = validPageTids,
+                        )
+                    } catch (_: IOException) {
+                        // Best-effort cache merge on list load: never fail a completed list fetch on disk I/O error.
+                        null
+                    }
+                    if (updated != null) {
+                        synchronized(stateLock) {
+                            if (currentActiveUid() == targetUid) {
+                                bumpAccountReadVersionLocked(targetUid)
+                                publishSnapshotLocked(updated)
+                            }
                         }
                     }
                 }
@@ -188,54 +195,57 @@ class DefaultFavoriteRepository internal constructor(
             return FavoriteError.InvalidInput("同步页数上限必须大于等于 1")
         }
 
-        return operationMutex.withLock {
-            val accountUidBefore = currentActiveUid()
-                ?: return@withLock FavoriteError.AuthRequired(
-                    reason = AuthRequiredReason.NOT_LOGGED_IN,
-                    message = "当前未登录",
+        val accountUidBefore = currentActiveUid()
+            ?: return FavoriteError.AuthRequired(
+                reason = AuthRequiredReason.NOT_LOGGED_IN,
+                message = "当前未登录",
+            )
+        val mutationVersionBefore = synchronized(stateLock) {
+            kindMutationVersionLocked(accountUidBefore, kind)
+        }
+
+        val collectedTids = LinkedHashSet<String>()
+        var pagesSynced = 0
+        var lastPage = 1
+
+        for (page in 1..maxPages) {
+            val response = try {
+                forumHttpClient.getHtml(
+                    relativePath = buildListPath(kind, page),
+                    priority = priority,
+                    requireAuth = true,
                 )
-
-            val collectedTids = LinkedHashSet<String>()
-            var pagesSynced = 0
-            var lastPage = 1
-
-            for (page in 1..maxPages) {
-                val response = try {
-                    forumHttpClient.getHtml(
-                        relativePath = buildListPath(kind, page),
-                        priority = priority,
-                        requireAuth = true,
-                    )
-                } catch (e: IOException) {
-                    return@withLock mapFavoriteIoException(e)
-                }
-
-                when (val ownership = verifySessionOwnership(accountUidBefore, response)) {
-                    is SessionOwnership.Valid -> Unit
-                    is SessionOwnership.Invalid -> return@withLock ownership.error
-                }
-
-                val siteError = response.meta.errorMessage
-                if (siteError != null) {
-                    return@withLock FavoriteError.SiteError(siteError.trim().ifEmpty { "同步收藏缓存失败" })
-                }
-
-                val parsed = FavoriteParser.parseFavoriteIdsPage(response.html)
-                if (parsed.tids.isEmpty() && !hasFavoritesPageStructure(response.html)) {
-                    return@withLock FavoriteError.InvalidPage("收藏列表页面解析失败")
-                }
-
-                pagesSynced++
-                lastPage = parsed.lastPage
-                if (parsed.tids.isEmpty()) {
-                    break
-                }
-                collectedTids.addAll(parsed.tids)
-                if (page >= parsed.lastPage) {
-                    break
-                }
+            } catch (e: IOException) {
+                return mapFavoriteIoException(e)
             }
 
+            when (val ownership = verifySessionOwnership(accountUidBefore, response)) {
+                is SessionOwnership.Valid -> Unit
+                is SessionOwnership.Invalid -> return ownership.error
+            }
+
+            val siteError = response.meta.errorMessage
+            if (siteError != null) {
+                return FavoriteError.SiteError(siteError.trim().ifEmpty { "同步收藏缓存失败" })
+            }
+
+            val parsed = FavoriteParser.parseFavoriteIdsPage(response.html)
+            if (parsed.tids.isEmpty() && !hasFavoritesPageStructure(response.html)) {
+                return FavoriteError.InvalidPage("收藏列表页面解析失败")
+            }
+
+            pagesSynced++
+            lastPage = parsed.lastPage
+            if (parsed.tids.isEmpty()) {
+                break
+            }
+            collectedTids.addAll(parsed.tids)
+            if (page >= parsed.lastPage) {
+                break
+            }
+        }
+
+        return operationMutex.withLock {
             if (currentActiveUid() != accountUidBefore) {
                 return@withLock FavoriteError.AuthRequired(
                     reason = AuthRequiredReason.SESSION_STILL_UNAUTHENTICATED,
@@ -244,12 +254,35 @@ class DefaultFavoriteRepository internal constructor(
             }
 
             val syncedAtMs = clock()
-            val updated = favoriteCacheStore.replace(
-                ownerUid = accountUidBefore,
-                kind = kind,
-                tids = collectedTids,
-                syncedAtMs = syncedAtMs,
-            )
+            val hasConcurrentMutation = synchronized(stateLock) {
+                kindMutationVersionLocked(accountUidBefore, kind) != mutationVersionBefore
+            }
+            if (hasConcurrentMutation) {
+                val currentTids = synchronized(stateLock) {
+                    _activeSnapshot.value.tidsFor(kind)
+                }
+                return@withLock FavoriteSyncResult.Success(
+                    kind = kind,
+                    tids = currentTids,
+                    pagesSynced = pagesSynced,
+                    lastPage = lastPage,
+                    syncedAtMs = syncedAtMs,
+                )
+            }
+
+            val updated = try {
+                favoriteCacheStore.replace(
+                    ownerUid = accountUidBefore,
+                    kind = kind,
+                    tids = collectedTids,
+                    syncedAtMs = syncedAtMs,
+                )
+            } catch (e: IOException) {
+                return@withLock FavoriteError.StorageError(
+                    message = e.message ?: "本地收藏缓存写入失败",
+                    cause = e,
+                )
+            }
             synchronized(stateLock) {
                 if (currentActiveUid() == accountUidBefore) {
                     bumpKindMutationVersionLocked(accountUidBefore, kind)
@@ -335,11 +368,18 @@ class DefaultFavoriteRepository internal constructor(
                 return@withLock FavoriteError.SiteError(siteError.trim().ifEmpty { "移除失败" })
             }
 
-            val updated = favoriteCacheStore.remove(
-                ownerUid = targetUid,
-                kind = kind,
-                tid = normalizedTid,
-            )
+            val updated = try {
+                favoriteCacheStore.remove(
+                    ownerUid = targetUid,
+                    kind = kind,
+                    tid = normalizedTid,
+                )
+            } catch (e: IOException) {
+                return@withLock FavoriteError.StorageError(
+                    message = e.message ?: "本地收藏缓存写入失败",
+                    cause = e,
+                )
+            }
             synchronized(stateLock) {
                 if (currentActiveUid() == targetUid) {
                     bumpKindMutationVersionLocked(targetUid, kind)
@@ -403,10 +443,17 @@ class DefaultFavoriteRepository internal constructor(
             val outcome = classifyAjaxOutcome(message = message, isAdd = isAdd)
                 ?: return@withLock FavoriteError.SiteError(message)
 
-            val updated = if (isAdd) {
-                favoriteCacheStore.add(ownerUid = targetUid, kind = kind, tid = normalizedTid)
-            } else {
-                favoriteCacheStore.remove(ownerUid = targetUid, kind = kind, tid = normalizedTid)
+            val updated = try {
+                if (isAdd) {
+                    favoriteCacheStore.add(ownerUid = targetUid, kind = kind, tid = normalizedTid)
+                } else {
+                    favoriteCacheStore.remove(ownerUid = targetUid, kind = kind, tid = normalizedTid)
+                }
+            } catch (e: IOException) {
+                return@withLock FavoriteError.StorageError(
+                    message = e.message ?: "本地收藏缓存写入失败",
+                    cause = e,
+                )
             }
             synchronized(stateLock) {
                 if (currentActiveUid() == targetUid) {
@@ -519,20 +566,20 @@ class DefaultFavoriteRepository internal constructor(
             "无效",
             "错误",
             "无权",
+            "没有权限",
+            "未定义",
+            "不正确",
+            "禁止",
+            "超限",
+            "超出",
+            "被锁定",
+            "已关闭",
+            "参数有误",
         )
 
-        private val ADD_SUCCESS_MARKERS: List<String> = listOf(
-            "已成功添加",
-            "成功添加",
-            "添加成功",
-            "收藏成功",
-            "关注成功",
-            "成功收藏",
-            "成功关注",
-            "已添加到收藏",
-            "已添加到关注",
-            "已添加到您的收藏",
-            "已添加到您的关注",
+        private val APOLOGY_FAILURE_MARKERS: List<String> = listOf(
+            "对不起",
+            "抱歉",
         )
 
         private val ALREADY_ADDED_MARKERS: List<String> = listOf(
@@ -540,28 +587,12 @@ class DefaultFavoriteRepository internal constructor(
             "曾经关注",
             "已经收藏",
             "已经关注",
+            "正在收藏",
+            "正在关注",
             "已收藏过",
             "已关注过",
             "已在您的收藏",
             "已在您的关注",
-        )
-
-        private val REMOVE_SUCCESS_MARKERS: List<String> = listOf(
-            "已从您的收藏",
-            "已从您的关注",
-            "已从收藏",
-            "已从关注",
-            "从收藏夹中移除",
-            "从关注列表中移除",
-            "已取消收藏",
-            "已取消关注",
-            "移除成功",
-            "取消成功",
-            "删除成功",
-            "成功移除",
-            "成功删除",
-            "已移除",
-            "已删除",
         )
 
         private val ALREADY_REMOVED_MARKERS: List<String> = listOf(
@@ -615,24 +646,33 @@ class DefaultFavoriteRepository internal constructor(
             return UNAUTH_AJAX_MARKERS.any { marker -> textToCheck.contains(marker) }
         }
 
+        /**
+         * Classifies a non-empty `<root>` AJAX XML response aligned with legacy `FavoriteHelper.java`:
+         * instead of enumerating a fragile positive phrase allowlist that breaks on Discuz! 7.2
+         * wording variations (e.g. `此主题已成功从您的收藏夹中移除。`, `指定主题已成功加入到关注列表中`,
+         * `您正在关注这个主题`, `已取消对此主题的关注。`), any non-empty `<root>` response that is not
+         * an unauthenticated error, hard failure, or apology error is accepted as applied (with
+         * idempotent already-added/already-removed messages flagged as [AjaxOutcome.ALREADY_APPLIED]).
+         */
         private fun classifyAjaxOutcome(message: String, isAdd: Boolean): AjaxOutcome? {
             if (HARD_FAILURE_MARKERS.any { marker -> message.contains(marker) }) {
                 return null
             }
-            return if (isAdd) {
-                when {
-                    ADD_SUCCESS_MARKERS.any { message.contains(it) } -> AjaxOutcome.APPLIED
-                    ALREADY_ADDED_MARKERS.any { message.contains(it) } &&
-                        ALREADY_REMOVED_MARKERS.none { message.contains(it) } -> AjaxOutcome.ALREADY_APPLIED
-                    else -> null
+            if (isAdd) {
+                if (ALREADY_ADDED_MARKERS.any { message.contains(it) } &&
+                    ALREADY_REMOVED_MARKERS.none { message.contains(it) }
+                ) {
+                    return AjaxOutcome.ALREADY_APPLIED
                 }
             } else {
-                when {
-                    REMOVE_SUCCESS_MARKERS.any { message.contains(it) } -> AjaxOutcome.APPLIED
-                    ALREADY_REMOVED_MARKERS.any { message.contains(it) } -> AjaxOutcome.ALREADY_APPLIED
-                    else -> null
+                if (ALREADY_REMOVED_MARKERS.any { message.contains(it) }) {
+                    return AjaxOutcome.ALREADY_APPLIED
                 }
             }
+            if (APOLOGY_FAILURE_MARKERS.any { marker -> message.contains(marker) }) {
+                return null
+            }
+            return AjaxOutcome.APPLIED
         }
 
         private fun hasFavoritesPageStructure(html: String): Boolean =

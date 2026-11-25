@@ -72,6 +72,11 @@ sealed interface FavoriteError :
     data class InvalidInput(
         val message: String,
     ) : FavoriteError
+
+    data class StorageError(
+        val message: String,
+        val cause: Throwable? = null,
+    ) : FavoriteError
 }
 
 /** Result of loading a page of favorites or attention threads (`my.php?item={kind}&type=thread`). */

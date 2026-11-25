@@ -13,14 +13,17 @@ import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import java.io.File
+import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.Charset
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -664,6 +667,337 @@ class FavoriteRepositoryTest {
         val context: Context = ApplicationProvider.getApplicationContext()
         assertEquals("search_history.preferences_pb", SearchAndFavoriteModule.searchHistoryDataStoreFile(context).name)
         assertEquals("favorite_cache.preferences_pb", SearchAndFavoriteModule.favoriteCacheDataStoreFile(context).name)
+    }
+
+    @Test
+    fun b1_discuz72InAjaxFavoriteAndAttentionFullLifecycleAndFailureGuard() = runBlocking {
+        val reloginCalls = AtomicInteger(0)
+        authRepository.onTrySilentRelogin = { _, _ ->
+            reloginCalls.incrementAndGet()
+            SilentReloginResult.Recovered(authRepository.bumpEpoch())
+        }
+        val (repo, store) = createRepository()
+
+        // FAVORITE: add -> idempotent duplicate add -> remove -> undo (custom wording resilience)
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功添加到收藏夹中<br /><a href="my.php?item=favorites&amp;type=thread">[查看我收藏的所有主题]</a><script type="text/javascript" reload="1">hideWindow('fav');</script>]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[您曾经收藏过这个主题<br /><a href="my.php?item=favorites&amp;type=thread">[查看我收藏的所有主题]</a>]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功从您的收藏夹中移除。<script type="text/javascript" reload="1">hideWindow('fav');</script>]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[已更新您的收藏夹]]></root>""",
+            ),
+        )
+
+        val favAdd = repo.add(FavoriteKind.FAVORITE, "3468951")
+        assertTrue("Expected FAVORITE add Success, got $favAdd", favAdd is FavoriteMutationResult.Success)
+        assertFalse((favAdd as FavoriteMutationResult.Success).alreadyApplied)
+        assertTrue(repo.isFavorite("3468951"))
+        assertEquals(setOf("3468951"), store.read(accountA.uid).favoriteTids)
+
+        val favDup = repo.add(FavoriteKind.FAVORITE, "3468951")
+        assertTrue("Expected FAVORITE idempotent add Success, got $favDup", favDup is FavoriteMutationResult.Success)
+        assertTrue((favDup as FavoriteMutationResult.Success).alreadyApplied)
+        assertTrue(repo.isFavorite("3468951"))
+
+        val favRemove = repo.remove(FavoriteKind.FAVORITE, "3468951")
+        assertTrue("Expected FAVORITE remove Success, got $favRemove", favRemove is FavoriteMutationResult.Success)
+        assertFalse((favRemove as FavoriteMutationResult.Success).alreadyApplied)
+        assertFalse(repo.isFavorite("3468951"))
+        assertEquals(emptySet<String>(), store.read(accountA.uid).favoriteTids)
+
+        val favUndo = repo.add(FavoriteKind.FAVORITE, "3468951")
+        assertTrue("Expected FAVORITE undo Success, got $favUndo", favUndo is FavoriteMutationResult.Success)
+        assertTrue(repo.isFavorite("3468951"))
+        assertEquals(setOf("3468951"), store.read(accountA.uid).favoriteTids)
+
+        // ATTENTION: add -> idempotent duplicate add -> remove -> undo
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[指定主题已成功加入到关注列表中<br /><a href="my.php?item=attention&amp;type=thread">[查看我关注的所有主题]</a>]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[您正在关注这个主题<br /><a href="my.php?item=attention&amp;type=thread">[查看我关注的所有主题]</a>]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[已取消对此主题的关注。<script type="text/javascript" reload="1">hideWindow('fav');</script>]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[指定主题已成功加入到关注列表中]]></root>""",
+            ),
+        )
+
+        val attAdd = repo.add(FavoriteKind.ATTENTION, "3470589")
+        assertTrue("Expected ATTENTION add Success, got $attAdd", attAdd is FavoriteMutationResult.Success)
+        assertFalse((attAdd as FavoriteMutationResult.Success).alreadyApplied)
+        assertTrue(repo.isAttention("3470589"))
+        assertEquals(setOf("3470589"), store.read(accountA.uid).attentionTids)
+
+        val attDup = repo.add(FavoriteKind.ATTENTION, "3470589")
+        assertTrue("Expected ATTENTION idempotent add Success, got $attDup", attDup is FavoriteMutationResult.Success)
+        assertTrue((attDup as FavoriteMutationResult.Success).alreadyApplied)
+        assertTrue(repo.isAttention("3470589"))
+
+        val attRemove = repo.remove(FavoriteKind.ATTENTION, "3470589")
+        assertTrue("Expected ATTENTION remove Success, got $attRemove", attRemove is FavoriteMutationResult.Success)
+        assertFalse((attRemove as FavoriteMutationResult.Success).alreadyApplied)
+        assertFalse(repo.isAttention("3470589"))
+        assertEquals(emptySet<String>(), store.read(accountA.uid).attentionTids)
+
+        val attUndo = repo.add(FavoriteKind.ATTENTION, "3470589")
+        assertTrue("Expected ATTENTION undo Success, got $attUndo", attUndo is FavoriteMutationResult.Success)
+        assertTrue(repo.isAttention("3470589"))
+        assertEquals(setOf("3470589"), store.read(accountA.uid).attentionTids)
+
+        // Genuine site failures still return SiteError and never mutate cache
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，您的收藏夹已满，请在继续操作前删除一些不用的收藏。]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，您操作太快，请稍后再试]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[指定的主题不存在或已被删除或正在被审核，请返回。]]></root>""",
+            ),
+        )
+
+        val fullError = repo.add(FavoriteKind.FAVORITE, "999999")
+        assertTrue("Expected SiteError for full favorites, got $fullError", fullError is FavoriteError.SiteError)
+        assertFalse(repo.isFavorite("999999"))
+
+        val apologyError = repo.add(FavoriteKind.ATTENTION, "999998")
+        assertTrue("Expected SiteError for apology error, got $apologyError", apologyError is FavoriteError.SiteError)
+        assertFalse(repo.isAttention("999998"))
+
+        val missingError = repo.remove(FavoriteKind.ATTENTION, "3470589")
+        assertTrue("Expected SiteError for missing thread, got $missingError", missingError is FavoriteError.SiteError)
+        assertTrue("Cache must remain intact on failure", repo.isAttention("3470589"))
+
+        assertEquals(0, reloginCalls.get())
+    }
+
+    @Test
+    fun s2_dataStoreWriteIoExceptionMappedToStorageErrorOrDegradedAndCancellationPropagates() = runBlocking {
+        val backingDataStore = createDataStore()
+        val writeFailure = AtomicReference<Throwable?>(null)
+        val faultInjectingDataStore = object : DataStore<Preferences> {
+            override val data: Flow<Preferences> = backingDataStore.data
+            override suspend fun updateData(
+                transform: suspend (t: Preferences) -> Preferences,
+            ): Preferences {
+                writeFailure.get()?.let { throw it }
+                return backingDataStore.updateData(transform)
+            }
+        }
+        val (repo, _) = createRepository(store = FavoriteCacheStore(faultInjectingDataStore))
+        writeFailure.set(IOException("No space left on device"))
+
+        // 1. getList degrades gracefully without throwing IOException
+        server.enqueue(
+            favoriteTestGbkHtmlResponse(
+                favoriteListHtml(accountA.uid, accountA.username, FavoriteKind.FAVORITE, listOf("101"), 1, 1),
+            ),
+        )
+        val listRes = repo.getList(FavoriteKind.FAVORITE, page = 1)
+        assertTrue("Expected getList Success despite disk write IOException, got $listRes", listRes is FavoriteListResult.Success)
+        assertEquals(1, (listRes as FavoriteListResult.Success).items.size)
+
+        // 2. syncCache maps DataStore write IOException to FavoriteError.StorageError
+        server.enqueue(
+            favoriteTestGbkHtmlResponse(
+                favoriteListHtml(accountA.uid, accountA.username, FavoriteKind.FAVORITE, listOf("101"), 1, 1),
+            ),
+        )
+        val syncRes = repo.syncCache(FavoriteKind.FAVORITE)
+        assertTrue("Expected StorageError on syncCache disk failure, got $syncRes", syncRes is FavoriteError.StorageError)
+
+        // 3. add / remove / removeByForm map DataStore write IOException to FavoriteError.StorageError
+        server.enqueue(
+            favoriteTestGbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功添加到收藏夹中]]></root>"""),
+        )
+        val addRes = repo.add(FavoriteKind.FAVORITE, "101")
+        assertTrue("Expected StorageError on add disk failure, got $addRes", addRes is FavoriteError.StorageError)
+
+        server.enqueue(
+            favoriteTestGbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功从您的收藏夹中移除。]]></root>"""),
+        )
+        val removeRes = repo.remove(FavoriteKind.FAVORITE, "101")
+        assertTrue("Expected StorageError on remove disk failure, got $removeRes", removeRes is FavoriteError.StorageError)
+
+        server.enqueue(
+            favoriteTestGbkHtmlResponse(favoriteLoggedInHtml(accountA.uid, accountA.username, body = """<div class="alert_info">ok</div>""")),
+        )
+        val formRemoveRes = repo.removeByForm(FavoriteKind.FAVORITE, "101", formhash = "fh_io")
+        assertTrue("Expected StorageError on removeByForm disk failure, got $formRemoveRes", formRemoveRes is FavoriteError.StorageError)
+
+        // 4. CancellationException must still propagate untouched
+        writeFailure.set(CancellationException("caller cancelled"))
+        server.enqueue(
+            favoriteTestGbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功添加到收藏夹中]]></root>"""),
+        )
+        var cancellationPropagated = false
+        try {
+            repo.add(FavoriteKind.FAVORITE, "101")
+        } catch (e: CancellationException) {
+            cancellationPropagated = e.message == "caller cancelled"
+        }
+        assertTrue("Expected CancellationException to propagate", cancellationPropagated)
+    }
+
+    @Test
+    fun s3_syncCacheReleasesMutexDuringNetworkFetchSoForegroundAddRemoveAreNotBlocked() = runBlocking {
+        val (repo, store) = createRepository()
+        store.replace(accountA.uid, FavoriteKind.FAVORITE, listOf("101"), syncedAtMs = 1_000L)
+        withTimeout(3.seconds) {
+            repo.favoriteTids.first { it == setOf("101") }
+        }
+
+        val syncEntered = CountDownLatch(1)
+        val releaseSync = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val target = request.target
+                return when {
+                    target.contains("action=add") -> favoriteTestGbkXmlResponse(
+                        """<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功添加到收藏夹中]]></root>""",
+                    )
+
+                    target.contains("action=remove") -> favoriteTestGbkXmlResponse(
+                        """<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功从您的收藏夹中移除。]]></root>""",
+                    )
+
+                    else -> {
+                        syncEntered.countDown()
+                        releaseSync.await(5, TimeUnit.SECONDS)
+                        favoriteTestGbkHtmlResponse(
+                            favoriteListHtml(accountA.uid, accountA.username, FavoriteKind.FAVORITE, listOf("101", "102"), 1, 1),
+                        )
+                    }
+                }
+            }
+        }
+
+        val syncJob = async(Dispatchers.Default) { repo.syncCache(FavoriteKind.FAVORITE) }
+        assertTrue("syncCache did not enter network fetch", syncEntered.await(5, TimeUnit.SECONDS))
+        try {
+            // Foreground add & remove MUST complete immediately while syncCache is blocked on network
+            val fgAdd = withTimeout(2.seconds) { repo.add(FavoriteKind.FAVORITE, "99999") }
+            assertTrue("Foreground add must not be blocked by syncCache, got $fgAdd", fgAdd is FavoriteMutationResult.Success)
+            assertTrue(repo.isFavorite("99999"))
+
+            val fgRemove = withTimeout(2.seconds) { repo.remove(FavoriteKind.FAVORITE, "101") }
+            assertTrue("Foreground remove must not be blocked by syncCache, got $fgRemove", fgRemove is FavoriteMutationResult.Success)
+            assertFalse(repo.isFavorite("101"))
+
+            releaseSync.countDown()
+            val syncResult = withTimeout(5.seconds) { syncJob.await() }
+            assertTrue("Expected syncCache Success, got $syncResult", syncResult is FavoriteSyncResult.Success)
+
+            // Stale sync snapshot must NOT overwrite concurrent foreground add("99999") or resurrect remove("101")
+            assertEquals(setOf("99999"), repo.favoriteTids.value)
+            assertEquals(setOf("99999"), store.read(accountA.uid).favoriteTids)
+        } finally {
+            releaseSync.countDown()
+        }
+    }
+
+    @Test
+    fun s4_2_inFlightGetListDoesNotResurrectTidRemovedConcurrently() = runBlocking {
+        val (repo, store) = createRepository()
+        store.replace(accountA.uid, FavoriteKind.FAVORITE, listOf("101", "102"), syncedAtMs = 1_000L)
+        withTimeout(3.seconds) {
+            repo.favoriteTids.first { it == setOf("101", "102") }
+        }
+
+        val listEntered = CountDownLatch(1)
+        val releaseList = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return if (request.target.contains("action=remove")) {
+                    favoriteTestGbkXmlResponse(
+                        """<?xml version="1.0" encoding="gbk"?><root><![CDATA[此主题已成功从您的收藏夹中移除。]]></root>""",
+                    )
+                } else {
+                    listEntered.countDown()
+                    releaseList.await(5, TimeUnit.SECONDS)
+                    favoriteTestGbkHtmlResponse(
+                        favoriteListHtml(accountA.uid, accountA.username, FavoriteKind.FAVORITE, listOf("101", "102"), 1, 1),
+                    )
+                }
+            }
+        }
+
+        val listJob = async(Dispatchers.Default) { repo.getList(FavoriteKind.FAVORITE, page = 1) }
+        assertTrue("getList did not enter network fetch", listEntered.await(5, TimeUnit.SECONDS))
+        try {
+            val removeRes = withTimeout(2.seconds) { repo.remove(FavoriteKind.FAVORITE, "101") }
+            assertTrue("Expected remove Success, got $removeRes", removeRes is FavoriteMutationResult.Success)
+            assertEquals(setOf("102"), repo.favoriteTids.value)
+
+            releaseList.countDown()
+            val listRes = withTimeout(5.seconds) { listJob.await() }
+            assertTrue("Expected getList Success, got $listRes", listRes is FavoriteListResult.Success)
+
+            // Version guard must prevent stale getList merge from resurrecting removed "101"
+            assertEquals(setOf("102"), repo.favoriteTids.value)
+            assertEquals(setOf("102"), store.read(accountA.uid).favoriteTids)
+        } finally {
+            releaseList.countDown()
+        }
+    }
+
+    @Test
+    fun s4_3_idempotentAlreadyRemovedAjaxMessagesReturnAlreadyAppliedAndClearCache() = runBlocking {
+        val (repo, store) = createRepository()
+        store.add(accountA.uid, FavoriteKind.FAVORITE, "3468951")
+        store.add(accountA.uid, FavoriteKind.ATTENTION, "3470589")
+        withTimeout(3.seconds) {
+            repo.favoriteTids.first { it == setOf("3468951") }
+            repo.attentionTids.first { it == setOf("3470589") }
+        }
+
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[您没有收藏过这个主题]]></root>""",
+            ),
+        )
+        server.enqueue(
+            favoriteTestGbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[对不起，您没有关注过这个主题]]></root>""",
+            ),
+        )
+
+        val favAlreadyRemoved = repo.remove(FavoriteKind.FAVORITE, "3468951")
+        assertTrue("Expected idempotent remove Success, got $favAlreadyRemoved", favAlreadyRemoved is FavoriteMutationResult.Success)
+        assertTrue((favAlreadyRemoved as FavoriteMutationResult.Success).alreadyApplied)
+        assertFalse(repo.isFavorite("3468951"))
+
+        val attAlreadyRemoved = repo.remove(FavoriteKind.ATTENTION, "3470589")
+        assertTrue("Expected idempotent remove Success, got $attAlreadyRemoved", attAlreadyRemoved is FavoriteMutationResult.Success)
+        assertTrue((attAlreadyRemoved as FavoriteMutationResult.Success).alreadyApplied)
+        assertFalse(repo.isAttention("3470589"))
     }
 
     private fun favoriteListHtml(

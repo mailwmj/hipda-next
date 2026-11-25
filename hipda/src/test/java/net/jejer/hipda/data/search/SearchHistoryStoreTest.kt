@@ -142,6 +142,24 @@ class SearchHistoryStoreTest {
     }
 
     @Test
+    fun s4_4_restoreAtFullTwentyItemCapacityEnforcesMaxItemsCap() = runBlocking {
+        val store = SearchHistoryStore(createDataStore())
+        for (i in 1..20) {
+            store.record("q-$i")
+        }
+        assertEquals(20, store.history.first().size)
+        assertEquals("q-20", store.history.first().first())
+        assertEquals("q-1", store.history.first().last())
+
+        val restored = store.restore("restored-query", 2)
+        assertEquals(20, restored.size)
+        assertEquals("restored-query", restored[2])
+        assertEquals("q-20", restored.first())
+        assertEquals("q-2", restored.last())
+        assertEquals(restored, store.history.first())
+    }
+
+    @Test
     fun decodeAndReadFlow_recoversFromMalformedJsonAndIoException() = runBlocking {
         // 1. Malformed JSON value in preferences falls back to empty list
         val backingStore = createDataStore()

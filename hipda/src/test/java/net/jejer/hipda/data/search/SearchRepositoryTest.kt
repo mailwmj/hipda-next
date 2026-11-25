@@ -8,11 +8,14 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
+import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.Charset
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -528,6 +531,108 @@ class SearchRepositoryTest {
         repo.clearSearchHistory()
         assertEquals(emptyList<String>(), repo.searchHistory.first())
         assertNull(repo.resolveForumLink("普通搜索词"))
+    }
+
+    @Test
+    fun s1_truncatedOrMalformed200SearchAndNewPostsReturnInvalidPageWithoutRecordingHistory() = runBlocking {
+        val (repo, historyStore) = createRepository()
+        val truncated200Html = searchTestLoggedInHtml(body = """<div id="broken">网关截断响应</div>""")
+        server.enqueue(searchTestGbkHtmlResponse(truncated200Html))
+        server.enqueue(searchTestGbkHtmlResponse(truncated200Html))
+
+        val searchRes = repo.search(query = "截断关键词")
+        assertTrue("Expected InvalidPage for truncated 200 search page, got $searchRes", searchRes is SearchError.InvalidPage)
+        assertEquals(emptyList<String>(), historyStore.history.first())
+
+        val newPostsRes = repo.getNewPosts(page = 1)
+        assertTrue("Expected InvalidPage for truncated 200 new posts page, got $newPostsRes", newPostsRes is SearchError.InvalidPage)
+    }
+
+    @Test
+    fun s2_historyStoreWriteIoExceptionDoesNotFailSearchWhileCancellationPropagates() = runBlocking {
+        val backingDataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
+            corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+            scope = scope,
+            produceFile = { File(tempFolder.newFolder(), "search_history.preferences_pb") },
+        )
+        val writeFailure = AtomicReference<Throwable?>(IOException("disk full"))
+        val faultDataStore = object : DataStore<Preferences> {
+            override val data: Flow<Preferences> = backingDataStore.data
+            override suspend fun updateData(
+                transform: suspend (t: Preferences) -> Preferences,
+            ): Preferences {
+                writeFailure.get()?.let { throw it }
+                return backingDataStore.updateData(transform)
+            }
+        }
+        val (repo, _) = createRepository(historyStore = SearchHistoryStore(faultDataStore))
+
+        // 1. IOException during history write degrades cleanly and still returns SearchResult.Success
+        server.enqueue(searchTestGbkHtmlResponse(LegacyTestSupport.loadSample("search/search_result.html")))
+        val ok = repo.search(query = "磁盘满搜索")
+        assertTrue("Expected Success even when history write throws IOException, got $ok", ok is SearchResult.Success)
+        assertEquals(75, (ok as SearchResult.Success).items.size)
+
+        // 2. CancellationException during history write propagates cleanly
+        writeFailure.set(CancellationException("history cancelled"))
+        server.enqueue(searchTestGbkHtmlResponse(LegacyTestSupport.loadSample("search/search_result.html")))
+        var cancelled = false
+        try {
+            repo.search(query = "取消传播搜索")
+        } catch (e: CancellationException) {
+            cancelled = e.message == "history cancelled"
+        }
+        assertTrue("Expected CancellationException to propagate", cancelled)
+    }
+
+    @Test
+    fun s4_1_searchEncodesSupplementaryEmojiViaToGbkSafeDecimalEntities() = runBlocking {
+        val (repo, _) = createRepository()
+        server.enqueue(searchTestGbkHtmlResponse(LegacyTestSupport.loadSample("search/search_result.html")))
+
+        val res = repo.search(query = "苹果 🍎", author = "作者😀", recordHistory = false)
+        assertTrue("Expected Success, got $res", res is SearchResult.Success)
+
+        val target = server.takeRequest().target
+        // 🍎 = U+1F34E (127822), 😀 = U+1F600 (128512) -> &#127822; / &#128512; percent-encoded
+        assertTrue("Expected decimal entity encoding for 🍎 in $target", target.contains("%26%23127822%3B"))
+        assertTrue("Expected decimal entity encoding for 😀 in $target", target.contains("%26%23128512%3B"))
+        assertFalse("Must not replace Emoji with '?' (%3F) in $target", target.contains("%3F"))
+    }
+
+    @Test
+    fun s4_3_guestLoginFormPageOrLoggingRedirectReturnsAuthRequired() = runBlocking {
+        authRepository.setActiveAccount(null)
+        val (repo, _) = createRepository()
+
+        // 1. Guest hits 200 login form without div.alert_error
+        val loginFormHtml = """
+            <!DOCTYPE html>
+            <html><body>
+              <div id="umenu"><a href="logging.php?action=login">登录</a></div>
+              <form id="loginform" method="post" action="logging.php?action=login&amp;loginsubmit=yes">
+                <input type="text" name="username" />
+              </form>
+            </body></html>
+        """.trimIndent()
+        server.enqueue(searchTestGbkHtmlResponse(loginFormHtml))
+        val formAuthErr = repo.getNewPosts(page = 1)
+        assertTrue("Expected AuthRequired for login form page, got $formAuthErr", formAuthErr is SearchError.AuthRequired)
+        assertEquals(AuthRequiredReason.NOT_LOGGED_IN, (formAuthErr as SearchError.AuthRequired).reason)
+
+        // 2. Guest receives 302 redirect to logging.php
+        server.enqueue(
+            MockResponse.Builder()
+                .code(302)
+                .addHeader("Location", "logging.php?action=login")
+                .build(),
+        )
+        server.enqueue(
+            searchTestGbkHtmlResponse("<!DOCTYPE html><html><body><div>请登录</div></body></html>"),
+        )
+        val redirectAuthErr = repo.search(query = "需要登录")
+        assertTrue("Expected AuthRequired for logging.php redirect, got $redirectAuthErr", redirectAuthErr is SearchError.AuthRequired)
+        assertEquals(AuthRequiredReason.NOT_LOGGED_IN, (redirectAuthErr as SearchError.AuthRequired).reason)
     }
 
     companion object {
