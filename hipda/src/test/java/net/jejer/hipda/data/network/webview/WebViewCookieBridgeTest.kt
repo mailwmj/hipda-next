@@ -9,10 +9,15 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import net.jejer.hipda.data.network.InMemorySiteCookieStore
@@ -26,6 +31,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,10 +72,12 @@ class WebViewCookieBridgeTest {
         testDispatcher.close()
     }
 
-    private fun futureHttpDate(offsetSeconds: Long): String {
+    private fun offsetHttpDate(offsetSeconds: Long): String {
         val epochSeconds = (System.currentTimeMillis() / 1_000L) + offsetSeconds
         return httpDateFormatter.format(Instant.ofEpochSecond(epochSeconds))
     }
+
+    private fun futureHttpDate(offsetSeconds: Long): String = offsetHttpDate(offsetSeconds)
 
     private fun futureEpochMillis(offsetSeconds: Long): Long =
         ((System.currentTimeMillis() / 1_000L) + offsetSeconds) * 1_000L
@@ -91,19 +99,26 @@ class WebViewCookieBridgeTest {
             ),
         )
         fakeWebView.getCookieInfoSupported = true
-        fakeWebView.cookieInfoHeaders.addAll(
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=shared_token; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None",
+        )
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=wv_partitioned; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None; Partitioned",
+        )
+        fakeWebView.seedCookie(forumUrl, "cdb_sid=sid_val; Path=/")
+        fakeWebView.rawInjectedCookieInfoHeaders.addAll(
             listOf(
-                "cf_clearance=shared_token; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None",
-                "cf_clearance=wv_partitioned; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None; Partitioned",
                 "cf_clearance=   ; Domain=.4d4y.com; Path=/; Expires=$expires; Secure",
                 "cf_clearance=evil_token; Domain=.evil.com; Path=/; Expires=$expires; Secure",
-                "cdb_sid=sid_val; Path=/",
             ),
         )
 
         val snapshot = bridge.snapshotClearances(forumUrl)
 
         assertEquals(setOf("shared_token", "store_only", "wv_partitioned"), snapshot)
+        assertEquals(listOf(forumUrl.toString()), fakeWebView.queriedUrls)
         assertEquals(0, fakeWebView.flushCount)
     }
 
@@ -115,11 +130,13 @@ class WebViewCookieBridgeTest {
             listOf(parseCookie("cf_clearance=store_tok; Domain=.4d4y.com; Path=/; Expires=$expires; Secure")),
         )
         fakeWebView.getCookieInfoSupported = false
-        fakeWebView.legacyCookieHeader = "cdb_sid=123; cf_clearance=legacy_tok; cf_clearance=store_tok; cf_clearance= "
+        fakeWebView.rawLegacyHeaderOverride =
+            "cdb_sid=123; cf_clearance=legacy_tok; cf_clearance=store_tok; cf_clearance= "
 
         val snapshot = bridge.snapshotClearances(forumUrl)
 
         assertEquals(setOf("store_tok", "legacy_tok"), snapshot)
+        assertEquals(listOf(forumUrl.toString()), fakeWebView.queriedUrls)
         assertEquals(0, fakeWebView.flushCount)
     }
 
@@ -142,7 +159,9 @@ class WebViewCookieBridgeTest {
                 "cf_clearance=wv_chips; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None; Partitioned"
             val wvLogin = "cdb_auth=wv_auth; Domain=.4d4y.com; Path=/; HttpOnly"
             fakeWebView.getCookieInfoSupported = true
-            fakeWebView.cookieInfoHeaders.addAll(listOf(wvUnpartitioned, wvPartitioned, wvLogin))
+            fakeWebView.seedCookie(forumUrl, wvUnpartitioned)
+            fakeWebView.seedCookie(forumUrl, wvPartitioned)
+            fakeWebView.seedCookie(forumUrl, wvLogin)
 
             val backup = bridge.clearClearance(forumUrl)
 
@@ -156,6 +175,7 @@ class WebViewCookieBridgeTest {
 
             // WebView received matching expiration Set-Cookie headers for both variants + flush.
             assertEquals(2, fakeWebView.setCookieCalls.size)
+            assertTrue(fakeWebView.setCookieCalls.all { it.first == forumUrl.toString() })
             val expireHeaders = fakeWebView.setCookieCalls.map { it.second }
             assertTrue(
                 expireHeaders.any { h ->
@@ -184,7 +204,7 @@ class WebViewCookieBridgeTest {
                 },
             )
             assertEquals(1, fakeWebView.flushCount)
-            assertEquals(listOf(wvLogin), fakeWebView.cookieInfoHeaders)
+            assertEquals(listOf(wvLogin), fakeWebView.storedRawHeaders(forumUrl))
 
             // Now simulate challenge failure -> restore backup on both sides.
             fakeWebView.setCookieCalls.clear()
@@ -194,36 +214,112 @@ class WebViewCookieBridgeTest {
             assertEquals(listOf(storeClearance), restoredStoreClearance)
             assertEquals(listOf(wvUnpartitioned, wvPartitioned), fakeWebView.setCookieCalls.map { it.second })
             assertEquals(2, fakeWebView.flushCount)
-            assertTrue(fakeWebView.cookieInfoHeaders.contains(wvUnpartitioned))
-            assertTrue(fakeWebView.cookieInfoHeaders.contains(wvPartitioned))
+            assertTrue(fakeWebView.storedRawHeaders(forumUrl).contains(wvUnpartitioned))
+            assertTrue(fakeWebView.storedRawHeaders(forumUrl).contains(wvPartitioned))
         }
 
     @Test
-    fun clearClearanceAndRestoreClearance_legacyFallbackWritesHostOnlyPathRoot() = runBlocking {
+    fun clearClearance_legacyFallbackClearsDomainHostAndHostOnlyClearancesSoFreshChallengeSucceeds() = runBlocking {
+        val expires = futureHttpDate(1800)
         fakeWebView.getCookieInfoSupported = false
-        fakeWebView.legacyCookieHeader = "cdb_auth=keep; cf_clearance=legacy_val"
+
+        // Simulate WebView < 110 storing Cloudflare's Domain=.4d4y.com cookie plus Domain=www.4d4y.com & host-only variants.
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=old_domain_tok; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None",
+        )
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=old_exact_domain_tok; Domain=www.4d4y.com; Path=/; Expires=$expires; Secure; SameSite=None",
+        )
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=old_host_only_tok; Path=/; Expires=$expires; Secure; SameSite=None",
+        )
+        fakeWebView.seedCookie(forumUrl, "cdb_auth=keep_auth; Domain=.4d4y.com; Path=/; HttpOnly")
+        store.saveFromResponse(
+            forumUrl,
+            listOf(
+                parseCookie("cf_clearance=old_domain_tok; Domain=.4d4y.com; Path=/; Expires=$expires; Secure"),
+                parseCookie("cdb_auth=keep_auth; Domain=.4d4y.com; Path=/; HttpOnly"),
+            ),
+        )
+
+        val snapshot = bridge.snapshotClearances(forumUrl)
+        assertEquals(setOf("old_domain_tok", "old_exact_domain_tok", "old_host_only_tok"), snapshot)
+
+        val backup = bridge.clearClearance(forumUrl)
+
+        assertFalse(backup.isEmpty)
+        assertEquals(
+            setOf(
+                "cf_clearance=old_domain_tok; Path=/",
+                "cf_clearance=old_exact_domain_tok; Path=/",
+                "cf_clearance=old_host_only_tok; Path=/",
+            ),
+            backup.webViewSetCookieHeaders.toSet(),
+        )
+
+        // All three cf_clearance variants must be completely removed from WebView (not left behind on .4d4y.com).
+        assertEquals("cdb_auth=keep_auth", fakeWebView.getCookie(forumUrl.toString()))
+        assertEquals(listOf("cdb_auth"), store.loadForRequest(forumUrl).map { it.name })
+
+        // Verify the 3 expiration headers cover host-only, Domain=<host>, and Domain=.<topPrivateDomain>.
+        assertEquals(3, fakeWebView.setCookieCalls.size)
+        val expireHeaders = fakeWebView.setCookieCalls.map { it.second }
+        assertEquals(
+            listOf(
+                "cf_clearance=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; SameSite=None",
+                "cf_clearance=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Domain=www.4d4y.com; Path=/; Secure; SameSite=None",
+                "cf_clearance=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Domain=.4d4y.com; Path=/; Secure; SameSite=None",
+            ),
+            expireHeaders,
+        )
+        assertEquals(1, fakeWebView.flushCount)
+
+        // After WebView solves the challenge and writes a new .4d4y.com cf_clearance, sync adopts it cleanly.
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=fresh_domain_tok; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None",
+        )
+        val syncResult = bridge.syncFromWebView(forumUrl, excludeClearanceValues = snapshot)
+        assertEquals("fresh_domain_tok", syncResult.freshClearance)
+        assertEquals(
+            listOf("fresh_domain_tok"),
+            store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+        )
+    }
+
+    @Test
+    fun clearClearanceAndRestoreClearance_legacyFallbackRestoresAfterClear() = runBlocking {
+        val expires = futureHttpDate(1800)
+        fakeWebView.getCookieInfoSupported = false
+        fakeWebView.seedCookie(forumUrl, "cdb_auth=keep; Path=/")
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=legacy_val; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; SameSite=None",
+        )
 
         val backup = bridge.clearClearance(forumUrl)
 
         assertFalse(backup.isEmpty)
         assertTrue(backup.storeCookies.isEmpty())
         assertEquals(listOf("cf_clearance=legacy_val; Path=/"), backup.webViewSetCookieHeaders)
-        assertEquals(1, fakeWebView.setCookieCalls.size)
-        val expireHeader = fakeWebView.setCookieCalls.single().second
-        assertEquals("cf_clearance=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/", expireHeader)
+        assertEquals("cdb_auth=keep", fakeWebView.getCookie(forumUrl.toString()))
         assertEquals(1, fakeWebView.flushCount)
 
         fakeWebView.setCookieCalls.clear()
         bridge.restoreClearance(forumUrl, backup)
         assertEquals(listOf("cf_clearance=legacy_val; Path=/"), fakeWebView.setCookieCalls.map { it.second })
         assertEquals(2, fakeWebView.flushCount)
+        assertEquals(setOf("legacy_val"), bridge.snapshotClearances(forumUrl))
     }
 
     @Test
     fun clearClearanceAndRestoreClearance_noOpWhenEmpty() = runBlocking {
         store.saveFromResponse(forumUrl, listOf(parseCookie("cdb_sid=only_sid; Path=/")))
         fakeWebView.getCookieInfoSupported = true
-        fakeWebView.cookieInfoHeaders.add("cdb_sid=only_sid; Path=/")
+        fakeWebView.seedCookie(forumUrl, "cdb_sid=only_sid; Path=/")
 
         val backup = bridge.clearClearance(forumUrl)
 
@@ -234,6 +330,80 @@ class WebViewCookieBridgeTest {
         bridge.restoreClearance(forumUrl, backup)
         assertTrue(fakeWebView.setCookieCalls.isEmpty())
         assertEquals(0, fakeWebView.flushCount)
+    }
+
+    @Test
+    fun clearClearance_rollsBackStoreBackupWhenWebViewClearThrows() = runBlocking {
+        val expires = futureHttpDate(1800)
+        val storeClearance = parseCookie(
+            "cf_clearance=store_tok; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None",
+        )
+        val storeAuth = parseCookie("cdb_auth=keep_auth; Path=/")
+        store.saveFromResponse(forumUrl, listOf(storeClearance, storeAuth))
+
+        fakeWebView.getCookieInfoSupported = true
+        fakeWebView.onAccessHook = { event ->
+            if (event == "getCookieInfo") {
+                throw IllegalStateException("Simulated WebView CookieManager IPC failure")
+            }
+        }
+
+        try {
+            bridge.clearClearance(forumUrl)
+            fail("Expected IllegalStateException to propagate")
+        } catch (expected: IllegalStateException) {
+            assertEquals("Simulated WebView CookieManager IPC failure", expected.message)
+        }
+
+        // Store backup must be rolled back so cf_clearance is not lost.
+        assertEquals(
+            listOf(storeClearance),
+            store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME },
+        )
+        assertEquals(
+            listOf(storeAuth),
+            store.loadForRequest(forumUrl).filter { it.name == "cdb_auth" },
+        )
+    }
+
+    @Test
+    fun clearClearance_rollsBackStoreBackupWhenCancelledDuringWebViewClear() = runBlocking {
+        val expires = futureHttpDate(1800)
+        val storeClearance = parseCookie(
+            "cf_clearance=store_tok; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None",
+        )
+        store.saveFromResponse(forumUrl, listOf(storeClearance))
+
+        val enteredWebView = CountDownLatch(1)
+        val releaseWebView = CountDownLatch(1)
+        fakeWebView.getCookieInfoSupported = true
+        fakeWebView.onAccessHook = { event ->
+            if (event == "getCookieInfo") {
+                enteredWebView.countDown()
+                releaseWebView.await(5, TimeUnit.SECONDS)
+            }
+        }
+
+        var caughtCancellation = false
+        val job = launch(Dispatchers.Default) {
+            try {
+                bridge.clearClearance(forumUrl)
+            } catch (e: CancellationException) {
+                caughtCancellation = true
+                throw e
+            }
+        }
+
+        assertTrue("Bridge should enter cookieDispatcher", enteredWebView.await(5, TimeUnit.SECONDS))
+        job.cancel()
+        releaseWebView.countDown()
+        job.join()
+
+        assertTrue("Expected CancellationException", caughtCancellation)
+        assertEquals(
+            listOf(storeClearance),
+            store.loadForRequest(forumUrl).filter { it.name == CF_CLEARANCE_COOKIE_NAME },
+        )
     }
 
     // --- e. primeWebView ---
@@ -273,6 +443,7 @@ class WebViewCookieBridgeTest {
         bridge.primeWebView(forumUrl)
 
         assertEquals(2, fakeWebView.setCookieCalls.size)
+        assertTrue(fakeWebView.setCookieCalls.all { it.first == forumUrl.toString() })
         assertEquals(1, fakeWebView.flushCount)
         assertTrue(fakeWebView.setCookieCalls.none { it.second.startsWith("$CF_CLEARANCE_COOKIE_NAME=") })
 
@@ -330,7 +501,7 @@ class WebViewCookieBridgeTest {
         val newerExpectedMillis = parseCookie("cf_clearance=x; Expires=$newerDate; Path=/").expiresAt
 
         fakeWebView.getCookieInfoSupported = true
-        fakeWebView.cookieInfoHeaders.addAll(
+        fakeWebView.rawInjectedCookieInfoHeaders.addAll(
             listOf(
                 "cf_clearance=stale_old_value; Domain=.4d4y.com; Path=/; Expires=$loginDate; Secure; HttpOnly; SameSite=None",
                 "cf_clearance=fresh_earlier; Domain=.4d4y.com; Path=/; Expires=$olderDate; Secure; HttpOnly; SameSite=None",
@@ -375,15 +546,115 @@ class WebViewCookieBridgeTest {
     }
 
     @Test
-    fun syncFromWebView_returnsNullFreshClearanceWhenOnlyOldClearancePresentButStillSyncsLoginCookies() = runBlocking {
-        val expires = futureHttpDate(1800)
+    fun syncFromWebView_getCookieInfoPicksLatestClearanceWhenNewerAppearsBeforeOlder() = runBlocking {
+        val newerDate = futureHttpDate(3600)
+        val olderDate = futureHttpDate(900)
+        val newerExpectedMillis = parseCookie("cf_clearance=x; Expires=$newerDate; Path=/").expiresAt
+
         fakeWebView.getCookieInfoSupported = true
-        fakeWebView.cookieInfoHeaders.addAll(
+        // Reverse order [newer, older] ensures winner selection compares expiresAt rather than taking last item.
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=fresh_newer_first; Domain=.4d4y.com; Path=/; Expires=$newerDate; Secure; HttpOnly; SameSite=None; Partitioned",
+        )
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=fresh_older_second; Domain=.4d4y.com; Path=/; Expires=$olderDate; Secure; HttpOnly; SameSite=None",
+        )
+
+        val result = bridge.syncFromWebView(forumUrl)
+
+        assertEquals("fresh_newer_first", result.freshClearance)
+        val storedClearance = store.loadForRequest(forumUrl).single { it.name == CF_CLEARANCE_COOKIE_NAME }
+        assertEquals("fresh_newer_first", storedClearance.value)
+        assertEquals(newerExpectedMillis, storedClearance.expiresAt)
+    }
+
+    @Test
+    fun syncFromWebViewAndSnapshotAndClear_ignoreAlreadyExpiredCookiesFromGetCookieInfo() = runBlocking {
+        val pastDate = offsetHttpDate(-3600)
+        fakeWebView.getCookieInfoSupported = true
+        fakeWebView.rawInjectedCookieInfoHeaders.addAll(
             listOf(
-                "cf_clearance=old_only; Domain=.4d4y.com; Path=/; Expires=$expires; Secure",
-                "cdb_auth=fresh_login; Path=/",
+                "cf_clearance=expired_epoch; Domain=.4d4y.com; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure",
+                "cf_clearance=expired_past; Domain=.4d4y.com; Path=/; Expires=$pastDate; Secure; HttpOnly; SameSite=None",
+                "cdb_auth=expired_auth; Domain=.4d4y.com; Path=/; Expires=$pastDate; HttpOnly",
+                "cdb_sid=live_sid; Path=/",
             ),
         )
+
+        assertTrue(bridge.snapshotClearances(forumUrl).isEmpty())
+
+        val backup = bridge.clearClearance(forumUrl)
+        assertTrue(backup.isEmpty)
+        assertTrue(fakeWebView.setCookieCalls.isEmpty())
+        assertEquals(0, fakeWebView.flushCount)
+
+        val syncResult = bridge.syncFromWebView(forumUrl)
+        assertNull(syncResult.freshClearance)
+        assertEquals(listOf("cdb_sid"), syncResult.syncedCookies.map { it.name })
+        assertEquals(listOf("cdb_sid"), store.loadForRequest(forumUrl).map { it.name })
+    }
+
+    @Test
+    fun syncFromWebView_clearsOtherDomainAndPathVariantsOfOldCfClearanceInStoreWhenAdoptingFresh() = runBlocking {
+        val expires = futureHttpDate(1800)
+        val authCookie = parseCookie("cdb_auth=keep_auth; Domain=.4d4y.com; Path=/; HttpOnly")
+        store.saveFromResponse(
+            forumUrl,
+            listOf(
+                parseCookie("cf_clearance=old_host_only; Path=/; Expires=$expires; Secure"),
+                parseCookie("cf_clearance=old_subpath; Domain=.4d4y.com; Path=/forum; Expires=$expires; Secure"),
+                authCookie,
+            ),
+        )
+
+        // GET_COOKIE_INFO path adopts fresh Domain=.4d4y.com Path=/ cf_clearance -> old host-only & /forum variants must be deleted.
+        fakeWebView.getCookieInfoSupported = true
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=fresh_domain; Domain=.4d4y.com; Path=/; Expires=$expires; Secure; HttpOnly; SameSite=None",
+        )
+
+        val result1 = bridge.syncFromWebView(forumUrl, excludeClearanceValues = setOf("old_host_only", "old_subpath"))
+        assertEquals("fresh_domain", result1.freshClearance)
+        assertEquals(listOf("fresh_domain"), result1.syncedCookies.map { it.value })
+        val afterFirstSync = store.loadForRequest(forumUrl)
+        assertEquals(
+            listOf("fresh_domain"),
+            afterFirstSync.filter { it.name == CF_CLEARANCE_COOKIE_NAME }.map { it.value },
+        )
+        assertEquals(listOf(authCookie), afterFirstSync.filter { it.name == "cdb_auth" })
+
+        // Legacy getCookie path adopts fresh host-only cf_clearance -> old Domain=.4d4y.com variant in store must be deleted.
+        fakeWebView.getCookieInfoSupported = false
+        fakeWebView.rawLegacyHeaderOverride = "cf_clearance=fresh_legacy_host; cdb_sid=new_sid"
+
+        val result2 = bridge.syncFromWebView(forumUrl, excludeClearanceValues = setOf("fresh_domain"))
+        assertEquals("fresh_legacy_host", result2.freshClearance)
+        assertEquals(setOf("cf_clearance", "cdb_sid"), result2.syncedCookies.map { it.name }.toSet())
+        val afterSecondSync = store.loadForRequest(forumUrl)
+        val remainingClearances = afterSecondSync.filter { it.name == CF_CLEARANCE_COOKIE_NAME }
+        assertEquals(1, remainingClearances.size)
+        assertEquals("fresh_legacy_host", remainingClearances.single().value)
+        assertTrue(remainingClearances.single().hostOnly)
+        assertEquals(listOf(authCookie), afterSecondSync.filter { it.name == "cdb_auth" })
+    }
+
+    @Test
+    fun syncFromWebView_returnsNullFreshClearanceWhenOnlyOldClearancePresentButStillSyncsLoginCookies() = runBlocking {
+        val expires = futureHttpDate(1800)
+        val existingStoreClearance = parseCookie(
+            "cf_clearance=existing_store_ok; Domain=.4d4y.com; Path=/; Expires=$expires; Secure",
+        )
+        store.saveFromResponse(forumUrl, listOf(existingStoreClearance))
+
+        fakeWebView.getCookieInfoSupported = true
+        fakeWebView.seedCookie(
+            forumUrl,
+            "cf_clearance=old_only; Domain=.4d4y.com; Path=/; Expires=$expires; Secure",
+        )
+        fakeWebView.seedCookie(forumUrl, "cdb_auth=fresh_login; Path=/")
 
         val result = bridge.syncFromWebView(
             url = forumUrl,
@@ -392,7 +663,8 @@ class WebViewCookieBridgeTest {
 
         assertNull(result.freshClearance)
         assertEquals(listOf("cdb_auth"), result.syncedCookies.map { it.name })
-        assertEquals(listOf("cdb_auth"), store.loadForRequest(forumUrl).map { it.name })
+        // Because no fresh cf_clearance was adopted, existing store cf_clearance stays untouched.
+        assertEquals(setOf("cf_clearance", "cdb_auth"), store.loadForRequest(forumUrl).map { it.name }.toSet())
     }
 
     // --- g. syncFromWebView (getCookie fallback path) ---
@@ -400,7 +672,7 @@ class WebViewCookieBridgeTest {
     @Test
     fun syncFromWebView_legacyGetCookieFallbackParsesEqualsInValuesAndFiltersClearance() = runBlocking {
         fakeWebView.getCookieInfoSupported = false
-        fakeWebView.legacyCookieHeader =
+        fakeWebView.rawLegacyHeaderOverride =
             "cf_clearance=old_val; cf_clearance=new_val=with==eq; cdb_auth=base64==payload; =skip_empty_name; malformed; cdb_sid=sid_99"
 
         val result = bridge.syncFromWebView(
@@ -430,13 +702,13 @@ class WebViewCookieBridgeTest {
         assertEquals("/", sid.path)
     }
 
-    // --- h. Host validation ---
+    // --- h. Host validation & URL isolation ---
 
     @Test
     fun syncFromWebView_rejectsCookiesForMismatchedOrUnrelatedHosts() = runBlocking {
         val expires = futureHttpDate(1800)
         fakeWebView.getCookieInfoSupported = true
-        fakeWebView.cookieInfoHeaders.addAll(
+        fakeWebView.rawInjectedCookieInfoHeaders.addAll(
             listOf(
                 "cf_clearance=evil_clearance; Domain=.evil.com; Path=/; Expires=$expires; Secure",
                 "cdb_auth=other_subdomain; Domain=other.4d4y.com; Path=/; Expires=$expires",
@@ -454,6 +726,26 @@ class WebViewCookieBridgeTest {
         assertEquals(setOf("cdb_sid", "valid_host"), store.snapshot().map { it.name }.toSet())
     }
 
+    @Test
+    fun bridgeOperationsPassExactTargetUrlAndIsolateDomainsAndPaths() = runBlocking {
+        val expires = futureHttpDate(1800)
+        val adminUrl = "https://www.4d4y.com/admin/".toHttpUrl()
+        val otherHostUrl = "https://other.4d4y.com/forum/".toHttpUrl()
+
+        fakeWebView.getCookieInfoSupported = true
+        fakeWebView.seedCookie(forumUrl, "cf_clearance=forum_cf; Domain=.4d4y.com; Path=/forum; Expires=$expires; Secure")
+        fakeWebView.seedCookie(adminUrl, "cf_clearance=admin_cf; Domain=.4d4y.com; Path=/admin; Expires=$expires; Secure")
+        fakeWebView.seedCookie(otherHostUrl, "cf_clearance=other_cf; Path=/; Expires=$expires; Secure")
+
+        assertEquals(setOf("forum_cf"), bridge.snapshotClearances(forumUrl))
+        assertEquals(setOf("admin_cf"), bridge.snapshotClearances(adminUrl))
+        assertEquals(listOf(forumUrl.toString(), adminUrl.toString()), fakeWebView.queriedUrls)
+
+        val syncResult = bridge.syncFromWebView(forumUrl)
+        assertEquals("forum_cf", syncResult.freshClearance)
+        assertEquals(listOf("forum_cf"), syncResult.syncedCookies.map { it.value })
+    }
+
     // --- i. Dedicated single-thread dispatcher, flush ordering, and module wiring ---
 
     @Test
@@ -469,7 +761,8 @@ class WebViewCookieBridgeTest {
             ),
         )
         fakeWebView.getCookieInfoSupported = true
-        fakeWebView.cookieInfoHeaders.add(
+        fakeWebView.seedCookie(
+            forumUrl,
             "cf_clearance=old_cf; Domain=.4d4y.com; Path=/; Expires=$expires; Secure",
         )
 
@@ -542,25 +835,52 @@ class WebViewCookieBridgeTest {
     }
 
     /**
-     * In-memory fake for [WebViewCookieAccess] that simulates both `GET_COOKIE_INFO`
-     * and legacy `getCookie` modes, records thread affinity and call sequence, and
-     * applies `Max-Age=0` deletions on matching cookie scopes.
+     * Realistic in-memory [WebViewCookieAccess] backed by a cookie store keyed by
+     * `(name, domain, path, hostOnly, partitioned)` to match Chromium `CookieManager` behavior:
+     * - A host-only expiration header (`hostOnly = true`) does NOT delete a domain-scoped cookie
+     *   (`Domain=.4d4y.com` or `Domain=www.4d4y.com`, `hostOnly = false`), and vice versa.
+     * - Both `getCookieInfo(url)` and `getCookie(url)` parse [url] and filter via [Cookie.matches].
      */
     private class FakeWebViewCookieAccess : WebViewCookieAccess {
+        private data class CookieScopeKey(
+            val name: String,
+            val domain: String,
+            val path: String,
+            val hostOnly: Boolean,
+            val partitioned: Boolean,
+        )
+
+        private data class StoredEntry(
+            val cookie: Cookie,
+            val rawHeader: String,
+        )
+
         var getCookieInfoSupported: Boolean = true
-        val cookieInfoHeaders: MutableList<String> = mutableListOf()
-        var legacyCookieHeader: String? = null
+        var onAccessHook: ((String) -> Unit)? = null
+        val rawInjectedCookieInfoHeaders: MutableList<String> = mutableListOf()
+        var rawLegacyHeaderOverride: String? = null
+
+        private val entries = LinkedHashMap<CookieScopeKey, StoredEntry>()
 
         val setCookieCalls: MutableList<Pair<String, String>> = CopyOnWriteArrayList()
+        val queriedUrls: MutableList<String> = CopyOnWriteArrayList()
         val recordedThreads: MutableList<Pair<Thread, String>> = CopyOnWriteArrayList()
         val eventLog: MutableList<String> = CopyOnWriteArrayList()
         var flushCount: Int = 0
             private set
 
+        fun seedCookie(url: HttpUrl, setCookieHeader: String) {
+            applySetCookie(url, setCookieHeader)
+        }
+
+        fun storedRawHeaders(url: HttpUrl): List<String> =
+            matchingEntries(url).map { it.rawHeader }
+
         private fun record(event: String) {
             val current = Thread.currentThread()
             recordedThreads.add(current to current.name)
             eventLog.add(event)
+            onAccessHook?.invoke(event)
         }
 
         override fun isGetCookieInfoSupported(): Boolean {
@@ -570,43 +890,26 @@ class WebViewCookieBridgeTest {
 
         override fun getCookieInfo(url: String): List<String> {
             record("getCookieInfo")
-            return cookieInfoHeaders.toList()
+            val parsedUrl = url.toHttpUrl()
+            queriedUrls.add(url)
+            return matchingEntries(parsedUrl).map { it.rawHeader } + rawInjectedCookieInfoHeaders
         }
 
         override fun getCookie(url: String): String? {
             record("getCookie")
-            return legacyCookieHeader
+            val parsedUrl = url.toHttpUrl()
+            queriedUrls.add(url)
+            rawLegacyHeaderOverride?.let { return it }
+            val matched = matchingEntries(parsedUrl)
+            if (matched.isEmpty()) return null
+            return matched.joinToString("; ") { "${it.cookie.name}=${it.cookie.value}" }
         }
 
         override fun setCookie(url: String, value: String) {
             record("setCookie")
+            val parsedUrl = url.toHttpUrl()
             setCookieCalls.add(url to value)
-            if (getCookieInfoSupported) {
-                val targetKey = headerScopeKey(value)
-                val isDeletion = value.contains("Max-Age=0", ignoreCase = true) ||
-                    value.contains("1970", ignoreCase = true)
-                cookieInfoHeaders.removeAll { headerScopeKey(it) == targetKey }
-                if (!isDeletion) {
-                    cookieInfoHeaders.add(value)
-                }
-            } else {
-                val name = value.substringBefore('=').trim()
-                val rawVal = value.substringAfter('=', "").substringBefore(';').trim()
-                val isDeletion = value.contains("Max-Age=0", ignoreCase = true) || rawVal.isEmpty()
-                val pairs = legacyCookieHeader
-                    ?.split(';')
-                    ?.mapNotNull { seg ->
-                        val idx = seg.indexOf('=')
-                        if (idx <= 0) null else seg.substring(0, idx).trim() to seg.substring(idx + 1).trim()
-                    }
-                    ?.filterNot { it.first == name }
-                    ?.toMutableList()
-                    ?: mutableListOf()
-                if (!isDeletion) {
-                    pairs.add(name to rawVal)
-                }
-                legacyCookieHeader = pairs.takeIf { it.isNotEmpty() }?.joinToString("; ") { "${it.first}=${it.second}" }
-            }
+            applySetCookie(parsedUrl, value)
         }
 
         override fun flush() {
@@ -614,24 +917,35 @@ class WebViewCookieBridgeTest {
             flushCount++
         }
 
-        private fun headerScopeKey(raw: String): String {
-            val parts = raw.split(';')
-            val name = parts.firstOrNull()?.substringBefore('=')?.trim().orEmpty()
-            var domain = ""
-            var path = "/"
-            var partitioned = false
-            for (part in parts.drop(1)) {
-                val trimmed = part.trim()
-                val eq = trimmed.indexOf('=')
-                val attr = (if (eq >= 0) trimmed.substring(0, eq) else trimmed).trim().lowercase(Locale.ROOT)
-                val attrVal = if (eq >= 0) trimmed.substring(eq + 1).trim().lowercase(Locale.ROOT) else ""
-                when (attr) {
-                    "domain" -> domain = attrVal.trimStart('.')
-                    "path" -> path = attrVal
-                    "partitioned" -> partitioned = true
-                }
+        private fun applySetCookie(url: HttpUrl, rawHeader: String) {
+            val cookie = Cookie.parse(url, rawHeader) ?: return
+            if (cookie.sameSite.equals("None", ignoreCase = true) && !cookie.secure) return
+            if (cookie.secure && !url.isHttps) return
+            val partitioned = hasAttributeFlag(rawHeader, "partitioned")
+            val key = CookieScopeKey(
+                name = cookie.name,
+                domain = cookie.domain,
+                path = cookie.path,
+                hostOnly = cookie.hostOnly,
+                partitioned = partitioned,
+            )
+            val now = System.currentTimeMillis()
+            if (cookie.expiresAt <= now) {
+                entries.remove(key)
+            } else {
+                entries[key] = StoredEntry(cookie = cookie, rawHeader = rawHeader)
             }
-            return "$name|$domain|$path|$partitioned"
         }
+
+        private fun matchingEntries(url: HttpUrl): List<StoredEntry> {
+            val now = System.currentTimeMillis()
+            entries.entries.removeAll { it.value.cookie.expiresAt <= now }
+            return entries.values.filter { it.cookie.matches(url) }
+        }
+
+        private fun hasAttributeFlag(rawHeader: String, flagName: String): Boolean =
+            rawHeader.split(';')
+                .drop(1)
+                .any { it.trim().substringBefore('=').trim().equals(flagName, ignoreCase = true) }
     }
 }

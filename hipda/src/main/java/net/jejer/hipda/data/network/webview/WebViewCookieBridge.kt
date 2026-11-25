@@ -71,6 +71,8 @@ class WebViewCookieBridge @Inject constructor(
     /**
      * Backs up and removes `cf_clearance` cookies matching [url] from both [SiteCookieStore] and
      * WebView without disturbing login cookies such as `cdb_auth` or `cdb_sid`.
+     *
+     * Rolls back the [SiteCookieStore] backup if WebView clearing fails or is cancelled.
      */
     suspend fun clearClearance(url: HttpUrl): ClearanceBackup {
         val storeBackups = siteCookieStore.loadForRequest(url)
@@ -80,8 +82,16 @@ class WebViewCookieBridge @Inject constructor(
             siteCookieStore.saveFromResponse(url, expiredCookies)
         }
 
-        val webViewBackups = withContext(cookieDispatcher) {
-            clearWebViewClearances(url)
+        val webViewBackups = try {
+            withContext(cookieDispatcher) {
+                clearWebViewClearances(url)
+            }
+        } catch (t: Throwable) {
+            if (storeBackups.isNotEmpty()) {
+                runCatching { siteCookieStore.saveFromResponse(url, storeBackups) }
+                    .onFailure(t::addSuppressed)
+            }
+            throw t
         }
         return ClearanceBackup(
             storeCookies = storeBackups,
@@ -158,7 +168,18 @@ class WebViewCookieBridge @Inject constructor(
         val selectedClearances = clearanceWinners.values.toList()
         val toSave = otherCookies + selectedClearances
         if (toSave.isNotEmpty()) {
-            siteCookieStore.saveFromResponse(url, toSave)
+            val staleStoreClearances = if (selectedClearances.isNotEmpty()) {
+                val newClearanceScopes = selectedClearances.map { it.domain to it.path }.toSet()
+                siteCookieStore.loadForRequest(url)
+                    .filter { existing ->
+                        existing.name == CF_CLEARANCE_COOKIE_NAME &&
+                            (existing.domain to existing.path) !in newClearanceScopes
+                    }
+                    .map(::toExpiredStoreCookie)
+            } else {
+                emptyList()
+            }
+            siteCookieStore.saveFromResponse(url, staleStoreClearances + toSave)
         }
         val freshClearance = selectedClearances.maxByOrNull { it.expiresAt }?.value
         return CookieSyncResult(
@@ -201,7 +222,7 @@ class WebViewCookieBridge @Inject constructor(
                 backups.add("$CF_CLEARANCE_COOKIE_NAME=${cookie.value}; Path=/")
             }
             if (backups.isNotEmpty()) {
-                expireHeaders.add("$CF_CLEARANCE_COOKIE_NAME=; Max-Age=0; Expires=$EPOCH_HTTP_DATE; Path=/")
+                expireHeaders.addAll(buildLegacyClearanceExpirationHeaders(url))
             }
         }
 
@@ -301,6 +322,44 @@ class WebViewCookieBridge @Inject constructor(
                 append("; SameSite=").append(sameSite)
             }
             if (partitioned) append("; Partitioned")
+        }
+    }
+
+    /**
+     * Without `GET_COOKIE_INFO` (Android WebView < 110), `CookieManager.getCookie` omits `Domain`
+     * metadata, so we expire host-only, `Domain=<host>`, and parent/registrable `Domain=.<domain>`
+     * scopes on `Path=/` (`Secure; SameSite=None` on HTTPS) to clear any `cf_clearance` variant.
+     */
+    private fun buildLegacyClearanceExpirationHeaders(url: HttpUrl): List<String> {
+        val headers = LinkedHashSet<String>()
+        headers.add(legacyClearanceExpirationHeader(domain = null, isHttps = url.isHttps))
+        if (!isIpAddress(url.host)) {
+            headers.add(legacyClearanceExpirationHeader(domain = url.host, isHttps = url.isHttps))
+            val topPrivateDomain = url.topPrivateDomain()
+            if (!topPrivateDomain.isNullOrBlank()) {
+                var current = url.host
+                while (current.contains('.') && !current.equals(topPrivateDomain, ignoreCase = true)) {
+                    current = current.substringAfter('.')
+                    headers.add(legacyClearanceExpirationHeader(domain = ".$current", isHttps = url.isHttps))
+                }
+                if (url.host.equals(topPrivateDomain, ignoreCase = true)) {
+                    headers.add(legacyClearanceExpirationHeader(domain = ".$topPrivateDomain", isHttps = url.isHttps))
+                }
+            }
+        }
+        return headers.toList()
+    }
+
+    private fun legacyClearanceExpirationHeader(domain: String?, isHttps: Boolean): String = buildString {
+        append(CF_CLEARANCE_COOKIE_NAME)
+        append("=; Max-Age=0; Expires=")
+        append(EPOCH_HTTP_DATE)
+        if (domain != null) {
+            append("; Domain=").append(domain)
+        }
+        append("; Path=/")
+        if (isHttps) {
+            append("; Secure; SameSite=None")
         }
     }
 
