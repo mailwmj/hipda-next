@@ -67,6 +67,8 @@ import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * 扫描样本 HTML / XML 是否残留未脱敏的敏感内容，与 HtmlSanitizer 脱敏规则对称。
@@ -87,19 +89,14 @@ object SampleLeakScanner {
         val leaks = mutableListOf<Leak>()
         if (isXmlDocument(html)) {
             val xmlDoc = Jsoup.parse(html, "", Parser.xmlParser())
+            val cdataNodes = Collections.newSetFromMap(IdentityHashMap<TextNode, Boolean>())
             xmlDoc.forEachNode { node ->
-                when (node) {
-                    is CDataNode -> scanDocument(Jsoup.parseBodyFragment(node.text()), leaks)
-                    is Element -> node.attributes().asList().forEach { attr ->
-                        val key = attr.key.lowercase()
-                        if (attr.value.isNotEmpty() && key != "class" && key != "id") {
-                            scanString(attr.value, "xml-attr[${attr.key}]", leaks)
-                        }
-                    }
-                    is Comment -> scanString(node.data, "xml-comment", leaks)
-                    is TextNode -> scanString(node.wholeText, "xml-text", leaks)
+                if (node is CDataNode) {
+                    scanDocument(Jsoup.parseBodyFragment(node.text()), leaks)
+                    cdataNodes.add(node)
                 }
             }
+            scanDocument(xmlDoc, leaks, skippedTextNodes = cdataNodes)
             return leaks
         }
         scanDocument(Jsoup.parse(html), leaks)
@@ -130,7 +127,11 @@ object SampleLeakScanner {
         }
     }
 
-    private fun scanDocument(doc: Document, leaks: MutableList<Leak>) {
+    private fun scanDocument(
+        doc: Document,
+        leaks: MutableList<Leak>,
+        skippedTextNodes: Set<TextNode> = emptySet(),
+    ) {
         // 1. 表单中的 formhash 与其他敏感令牌（hash/sid/auth/seccode*）
         for (input in doc.select(FORMHASH_INPUT)) {
             val value = input.attr("value").trim()
@@ -169,7 +170,7 @@ object SampleLeakScanner {
                 }
                 is DataNode -> scanString(node.wholeData, "script", leaks)
                 is Comment -> scanString(node.data, "comment", leaks)
-                is TextNode -> scanString(node.wholeText, "text", leaks)
+                is TextNode -> if (node !in skippedTextNodes) scanString(node.wholeText, "text", leaks)
             }
         }
 

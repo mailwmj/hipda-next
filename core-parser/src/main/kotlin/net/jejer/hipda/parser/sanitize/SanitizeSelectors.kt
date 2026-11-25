@@ -122,16 +122,16 @@ object SanitizeSelectors {
     internal val BLOCKED_PLACEHOLDER_REGEX = Regex("""^HiBlocked\d+$""")
     internal val JUMP_FLOOR_REGEX = Regex("""^(回复\s+\d+#\s*)(.+)$""")
     internal val STATS_LABEL_REGEX = Regex("""^(?:查看|回复|主题|帖子|最后发表)\s*[:：]\s*\d.*$""")
+    // 出处：HiParser.java:393-396 (parseNotifyThread)
+    internal val NOTIFY_REPLY_PHRASE_REGEX = Regex("""回复了您(?:关注的主题|的帖子)""")
+    private val DISCUZ_XML_ROOT_REGEX = Regex("""(?is)^\s*(?:<\?xml[^>]*\?>\s*)?<root\b""")
 
     internal fun isSensitiveFieldName(name: String): Boolean {
         val lower = name.lowercase()
         return lower in FORMHASH_FIELD_NAMES || lower in OTHER_TOKEN_FIELD_NAMES || COOKIE_NAME_REGEX.matches(lower)
     }
 
-    internal fun isXmlDocument(content: String): Boolean {
-        val trimmed = content.trimStart()
-        return trimmed.startsWith("<?xml", ignoreCase = true) || trimmed.startsWith("<root", ignoreCase = true)
-    }
+    internal fun isXmlDocument(content: String): Boolean = DISCUZ_XML_ROOT_REGEX.containsMatchIn(content)
 
     internal fun buildSmsPlaceholder(length: Int): String = buildString(length.coerceAtLeast(0)) {
         while (this.length < length) {

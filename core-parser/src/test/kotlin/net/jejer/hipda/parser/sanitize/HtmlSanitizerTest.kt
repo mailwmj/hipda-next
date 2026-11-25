@@ -902,6 +902,82 @@ class HtmlSanitizerTest {
         assertTrue(SampleLeakScanner.scan(blacklistSanitized).isEmpty())
     }
 
+    @Test
+    fun r2Blocker1SanitizesChineseUsernamesWithoutSurroundingSpaces() {
+        val chineseSelf = Identity(uid = "54321", username = "张三")
+
+        // 1. 本人中文名在无空格的 title / attr / alt / 欢迎语中必须脱敏
+        val profileRaw = """<html><head><title>张三的个人资料 - Hi!PDA</title></head><body><div id="umenu"><cite><a href="space.php?uid=54321" class="noborder" title="查看张三的个人资料">张三</a></cite></div><img src="https://img02.4d4y.com/forum/uc_server/data/avatar/000/05/43/21_avatar_middle.jpg" alt="张三的头像"/><p>欢迎张三回来</p></body></html>"""
+        assertTrue(SampleLeakScanner.scan(profileRaw).any { it.type == LeakType.UMENU_IDENTITY })
+
+        val profileSanitized = HtmlSanitizer.sanitize(profileRaw, PageType.USER_INFO, chineseSelf)
+        assertFalse(profileSanitized.contains("张三"), "Chinese username leaked: $profileSanitized")
+        val profileDoc = Jsoup.parse(profileSanitized)
+        assertEquals("HiUser的个人资料 - Hi!PDA", profileDoc.title())
+        assertEquals("查看HiUser的个人资料", profileDoc.firstMatch("#umenu cite a")!!.attr("title"))
+        assertEquals("HiUser", profileDoc.firstMatch("#umenu cite a")!!.text())
+        assertEquals("HiUser的头像", profileDoc.firstMatch("img")!!.attr("alt"))
+        assertEquals("欢迎HiUser回来", profileDoc.firstMatch("p")!!.text())
+        assertTrue(SampleLeakScanner.scan(profileSanitized).isEmpty())
+
+        // 2. 短消息中文对方名在无空格标题与交谈页头中必须脱敏
+        val smsRaw = """<html><head><title>与李四的短消息 - Hi!PDA</title></head><body><div id="umenu"><cite><a href="space.php?uid=54321" class="noborder">张三</a></cite></div><div class="itemtitle s_clear"><h2>共有 1 条与李四的交谈记录</h2></div><ul class="pm_list"><li class="s_clear"><p class="cite"><cite><a href="space.php?uid=67890">李四</a></cite> 2026-11-20</p><div class="summary">你好</div></li></ul></body></html>"""
+        val smsRawLeaks = SampleLeakScanner.scan(smsRaw)
+        assertTrue(smsRawLeaks.any { it.type == LeakType.SMS_PEER })
+        assertTrue(smsRawLeaks.any { it.type == LeakType.SMS_CONTENT })
+        assertTrue(smsRawLeaks.any { it.type == LeakType.UMENU_IDENTITY })
+
+        val smsSanitized = HtmlSanitizer.sanitize(smsRaw, PageType.SMS_DETAIL, chineseSelf)
+        assertFalse(smsSanitized.contains("张三"))
+        assertFalse(smsSanitized.contains("李四"), "Chinese peer username leaked: $smsSanitized")
+        val smsDoc = Jsoup.parse(smsSanitized)
+        assertEquals("与HiPeer的短消息 - Hi!PDA", smsDoc.title())
+        assertEquals("共有 1 条与HiPeer的交谈记录", smsDoc.firstMatch("div.itemtitle h2")!!.text())
+        assertTrue(SampleLeakScanner.scan(smsSanitized).isEmpty())
+
+        // 3. 通知页固定短语保护：短名"回复"不误伤，正常中文名仍替换
+        val replyNotify = """<html><body><p>OtherUser 回复了您关注的主题</p></body></html>"""
+        assertEquals(
+            "OtherUser 回复了您关注的主题",
+            Jsoup.parse(HtmlSanitizer.sanitize(replyNotify, PageType.NOTIFY, Identity("54321", "回复"))).firstMatch("p")!!.text(),
+        )
+        val selfNotify = """<html><body><p>张三 回复了您关注的主题</p></body></html>"""
+        assertEquals(
+            "HiUser 回复了您关注的主题",
+            Jsoup.parse(HtmlSanitizer.sanitize(selfNotify, PageType.NOTIFY, chineseSelf)).firstMatch("p")!!.text(),
+        )
+    }
+
+    @Test
+    fun r2Blocker2HandlesXhtmlWithXmlDeclarationAndNonCdataXmlElements() {
+        // 1. 带 <?xml?> 声明的 XHTML 短消息页必须走 HTML 脱敏与扫描
+        val xhtmlSmsRaw = """<?xml version="1.0" encoding="gbk"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html><body><ul class="pm_list"><li class="s_clear"><p class="cite"><cite>PeerAlice</cite></p><div class="summary">未脱敏短消息</div></li></ul></body></html>"""
+        val xhtmlLeaks = SampleLeakScanner.scan(xhtmlSmsRaw)
+        assertTrue(xhtmlLeaks.any { it.type == LeakType.SMS_CONTENT }, "XHTML SMS body must be scanned")
+        assertTrue(xhtmlLeaks.any { it.type == LeakType.SMS_PEER }, "XHTML SMS peer must be scanned")
+
+        val xhtmlSanitized = HtmlSanitizer.sanitize(xhtmlSmsRaw, PageType.SMS_DETAIL, identity)
+        assertFalse(xhtmlSanitized.contains("PeerAlice"))
+        assertFalse(xhtmlSanitized.contains("未脱敏短消息"))
+        val xhtmlDoc = Jsoup.parse(xhtmlSanitized)
+        assertEquals("HiPeer", xhtmlDoc.firstMatch("p.cite cite")!!.text())
+        assertEquals("测试内容测试", xhtmlDoc.firstMatch("div.summary")!!.text())
+        assertTrue(SampleLeakScanner.scan(xhtmlSanitized).isEmpty())
+
+        // 2. 不含 CDATA 的 Discuz AJAX <root> XML 也必须脱敏并扫描非 CDATA 元素
+        val nonCdataXmlRaw = """<?xml version="1.0" encoding="gbk"?><root><input type="hidden" name="formhash" value="a1b2c3d4"/></root>"""
+        assertTrue(
+            SampleLeakScanner.scan(nonCdataXmlRaw).any { it.type == LeakType.FORMHASH },
+            "Non-CDATA XML input formhash must be detected by scanner",
+        )
+
+        val nonCdataXmlSanitized = HtmlSanitizer.sanitize(nonCdataXmlRaw, PageType.LOGIN, identity)
+        assertFalse(nonCdataXmlSanitized.contains("a1b2c3d4"))
+        val xmlDoc = Jsoup.parse(nonCdataXmlSanitized, "", Parser.xmlParser())
+        assertEquals("00000000", xmlDoc.firstMatch("input[name=formhash]")!!.attr("value"))
+        assertTrue(SampleLeakScanner.scan(nonCdataXmlSanitized).isEmpty())
+    }
+
     private fun assertStructureUnchanged(raw: String, sanitized: String, selectors: List<String>) {
         val rawDoc: Document = Jsoup.parse(raw)
         val sanitizedDoc: Document = Jsoup.parse(sanitized)

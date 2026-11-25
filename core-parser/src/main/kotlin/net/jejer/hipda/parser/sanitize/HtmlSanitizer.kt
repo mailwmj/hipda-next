@@ -17,6 +17,7 @@ import net.jejer.hipda.parser.sanitize.SanitizeSelectors.JS_FORMHASH_ASSIGN_REGE
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.JS_OBJECT_PROP_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.JS_OTHER_TOKEN_ASSIGN_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.JUMP_FLOOR_REGEX
+import net.jejer.hipda.parser.sanitize.SanitizeSelectors.NOTIFY_REPLY_PHRASE_REGEX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.NOTIFY_SENSITIVE_ITEMS
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_BLOCKED_PREFIX
 import net.jejer.hipda.parser.sanitize.SanitizeSelectors.PLACEHOLDER_EMAIL
@@ -121,27 +122,25 @@ object HtmlSanitizer {
         val doc = Jsoup.parse(xml, "", Parser.xmlParser()).apply {
             outputSettings().prettyPrint(false).syntax(Document.OutputSettings.Syntax.xml)
         }
-        val (selfUids, selfNames) = collectSelfIdentities(doc, identity)
-        val uidMap = selfUids.associateWith { PLACEHOLDER_UID }
-        val nameMap = selfNames.associate { it.lowercase() to PLACEHOLDER_USERNAME }
-        val ctx = buildReplaceContext(uidMap, nameMap)
-
+        val cdataNodes = Collections.newSetFromMap(IdentityHashMap<TextNode, Boolean>())
         doc.forEachNode { node ->
-            when (node) {
-                is CDataNode -> {
-                    val fragment = Jsoup.parseBodyFragment(node.text()).apply { outputSettings().prettyPrint(false) }
-                    sanitizeDocument(fragment, page, identity)
-                    node.text(fragment.body().html())
-                }
-                is Element -> sanitizeElementAttributes(node, ctx)
-                is Comment -> transformText(node.data, ctx, inScript = false).takeIf { it != node.data }?.let(node::setData)
-                is TextNode -> transformText(node.wholeText, ctx, inScript = false).takeIf { it != node.wholeText }?.let(node::text)
+            if (node is CDataNode) {
+                val fragment = Jsoup.parseBodyFragment(node.text()).apply { outputSettings().prettyPrint(false) }
+                sanitizeDocument(fragment, page, identity)
+                node.text(fragment.body().html())
+                cdataNodes.add(node)
             }
         }
+        sanitizeDocument(doc, page, identity, preSkippedTextNodes = cdataNodes)
         return doc.outerHtml()
     }
 
-    private fun sanitizeDocument(doc: Document, page: PageType, identity: Identity) {
+    private fun sanitizeDocument(
+        doc: Document,
+        page: PageType,
+        identity: Identity,
+        preSkippedTextNodes: Set<TextNode> = emptySet(),
+    ) {
         val (selfUids, selfNames) = collectSelfIdentities(doc, identity)
         val (peerUids, peerNames) = if (page.isSms) collectPeerIdentities(doc, selfUids, selfNames) else emptySet<String>() to emptySet()
 
@@ -157,6 +156,7 @@ object HtmlSanitizer {
 
         // 先按上下文脱敏结构化私有区域，记录已替换的 TextNode 避免后续重复改写
         val skippedTextNodes = Collections.newSetFromMap(IdentityHashMap<TextNode, Boolean>())
+        skippedTextNodes.addAll(preSkippedTextNodes)
         if (page.isSms) {
             sanitizeSmsSummaries(doc, uidMap, skippedTextNodes)
         }
@@ -367,9 +367,30 @@ object HtmlSanitizer {
             if (updated != whole) node.text(updated)
             return
         }
-        val updated = transformText(whole, ctx, inScript = false)
+        val updated = if (NOTIFY_REPLY_PHRASE_REGEX.containsMatchIn(whole)) {
+            transformPreservingMatches(whole, NOTIFY_REPLY_PHRASE_REGEX) { segment ->
+                transformText(segment, ctx, inScript = false)
+            }
+        } else {
+            transformText(whole, ctx, inScript = false)
+        }
         if (updated != whole) node.text(updated)
     }
+
+    private fun transformPreservingMatches(input: String, protectedRegex: Regex, transform: (String) -> String): String =
+        buildString(input.length) {
+            var cursor = 0
+            for (match in protectedRegex.findAll(input)) {
+                if (match.range.first > cursor) {
+                    append(transform(input.substring(cursor, match.range.first)))
+                }
+                append(match.value)
+                cursor = match.range.last + 1
+            }
+            if (cursor < input.length) {
+                append(transform(input.substring(cursor)))
+            }
+        }
 
     private fun isForumActionLink(element: Element): Boolean {
         if (!element.tagName().equals("a", ignoreCase = true)) return false
@@ -604,15 +625,11 @@ object HtmlSanitizer {
 
     private fun buildBoundedNamePattern(name: String): String {
         val escaped = Regex.escape(name)
-        val left = when {
-            isAsciiWord(name.first()) -> """(?<![A-Za-z0-9_])"""
-            isHan(name.first()) -> """(?<![\p{IsHan}A-Za-z0-9_])"""
-            else -> ""
-        }
-        val right = when {
-            isAsciiWord(name.last()) -> """(?![A-Za-z0-9_]|\.(?:php|html?|js|css|gif|png|jpe?g|ico|xml|svg)\b)"""
-            isHan(name.last()) -> """(?![\p{IsHan}A-Za-z0-9_])"""
-            else -> ""
+        val left = if (isAsciiWord(name.first())) """(?<![A-Za-z0-9_])""" else ""
+        val right = if (isAsciiWord(name.last())) {
+            """(?![A-Za-z0-9_]|\.(?:php|html?|js|css|gif|png|jpe?g|ico|xml|svg)\b)"""
+        } else {
+            ""
         }
         return "$left$escaped$right"
     }
@@ -644,7 +661,6 @@ object HtmlSanitizer {
     }
 
     private fun isAsciiWord(c: Char): Boolean = c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_'
-    private fun isHan(c: Char): Boolean = Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN
 
     private fun extractUidParam(url: String): String? = UID_QUERY_PARAM_REGEX.find(url)?.groupValues?.get(3)
     private fun isReplaceableUid(uid: String): Boolean = uid.isNotEmpty() && uid != PLACEHOLDER_UID && !isAllZeroMask(uid)
