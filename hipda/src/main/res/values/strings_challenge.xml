@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="challenge_panel_title">安全验证</string>
+    <string name="challenge_panel_subtitle">请完成页面上的验证以继续访问</string>
+    <string name="challenge_action_refresh">刷新</string>
+    <string name="challenge_action_cancel">取消</string>
+    <string name="challenge_status_checking">正在检查安全环境…</string>
+    <string name="challenge_status_incomplete">安全验证未完成</string>
+    <string name="challenge_status_rejected">验证未通过</string>
+    <string name="challenge_action_retry">重新验证</string>
+</resources>

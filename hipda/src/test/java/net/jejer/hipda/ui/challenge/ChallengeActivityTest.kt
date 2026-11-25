@@ -676,7 +676,7 @@ class ChallengeActivityTest {
 
         val bindPresenter = ChallengeInteractionModule::class.java.getDeclaredMethod(
             "bindChallengeInteractionPresenter",
-            DefaultChallengeInteractionPresenter::class.java,
+            ComposeChallengeInteractionPresenter::class.java,
         )
         assertTrue(bindPresenter.isAnnotationPresent(Binds::class.java))
         assertTrue(bindPresenter.isAnnotationPresent(Singleton::class.java))
