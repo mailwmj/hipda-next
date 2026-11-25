@@ -209,6 +209,43 @@ class PostFavoriteUploadParserTest {
     }
 
     @Test
+    fun favoriteParser_stripsTrailingActionLinkAndReadsLastPageStrong() {
+        // R-B9b S1：剥离收藏成功/已收藏 AJAX XML 尾随的 <a> 操作链接文案
+        val successWithLinkXml = """
+            <?xml version="1.0" encoding="gbk"?>
+            <root><![CDATA[此主题已成功添加到收藏夹中<br /><a href="my.php?item=favorites&amp;type=thread">[查看我收藏的所有主题]</a><script type="text/javascript" reload="1">hideWindow('fav');</script>]]></root>
+        """.trimIndent()
+        assertEquals(
+            FavoriteActionResult("此主题已成功添加到收藏夹中"),
+            FavoriteParser.parseFavoriteActionXml(successWithLinkXml),
+        )
+
+        val duplicateWithLinkXml = """
+            <?xml version="1.0" encoding="gbk"?>
+            <root><![CDATA[您曾经收藏过这个主题<br /><a href="my.php?item=favorites&amp;type=thread">[查看我收藏的所有主题]</a>]]></root>
+        """.trimIndent()
+        assertEquals(
+            FavoriteActionResult("您曾经收藏过这个主题"),
+            FavoriteParser.parseFavoriteActionXml(duplicateWithLinkXml),
+        )
+
+        // R-B9b S4：末页页码位于 <strong> 中时，parseFavoriteIdsPage 仍能读取 lastPage
+        val lastPageHtml = """
+            <html><body>
+              <div class="pages">
+                <a href="my.php?item=favorites&amp;type=thread&amp;page=2">2</a>
+                <a href="my.php?item=favorites&amp;type=thread&amp;page=3">3</a>
+                <strong>4</strong>
+              </div>
+              <input class="checkbox" type="checkbox" name="delete[]" value="88888" />
+            </body></html>
+        """.trimIndent()
+        val lastPage = FavoriteParser.parseFavoriteIdsPage(lastPageHtml)
+        assertEquals(4, lastPage.lastPage)
+        assertEquals(setOf("88888"), lastPage.tids)
+    }
+
+    @Test
     fun uploadResponseParser_parsesValidZeroMissingAndInvalidResponses() {
         assertEquals(
             UploadImageResult.Success("1721652"),

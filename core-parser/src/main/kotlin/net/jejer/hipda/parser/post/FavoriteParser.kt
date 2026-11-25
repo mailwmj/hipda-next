@@ -65,7 +65,7 @@ object FavoriteParser {
         val doc = Jsoup.parse(xml, "", Parser.xmlParser())
         val rootText = doc.select("root").lastOrNull()?.text().orEmpty()
         val fragment = Jsoup.parseBodyFragment(rootText)
-        fragment.select("script, style").remove()
+        fragment.select("script, style, a").remove()
         val cleaned = DiscuzTextDecoder.decodeDoubleEscapedEntities(fragment.body().text().trim())
         return FavoriteActionResult(message = cleaned)
     }

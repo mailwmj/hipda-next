@@ -54,6 +54,38 @@ class UserParserTest {
     }
 
     @Test
+    fun parseUserInfo_decodesDoubleEscapedEntitiesInProfileDetailSections() {
+        // R-B9b S4：锁死 UserParser.parseUserInfo 在 blocktitle 与 commonlist li 两处的二次实体解码
+        val html = """
+            <html><body>
+              <div id="profilecontent">
+                <div class="itemtitle">
+                  <h1>EmojiUser</h1>
+                  <ul><li>(UID: 30303)</li></ul>
+                </div>
+              </div>
+              <div class="main">
+                <h3 class="blocktitle">个人简介 &amp;#128512;</h3>
+                <div class="s_clear">
+                  <ul class="commonlist">
+                    <li>签名: 每日一果 &amp;#127822;</li>
+                  </ul>
+                </div>
+                <h3 class="blocktitle">论坛统计</h3>
+              </div>
+            </body></html>
+        """.trimIndent()
+
+        val profile = UserParser.parseUserInfo(html)
+        assertEquals("30303", profile.uid)
+        assertEquals("EmojiUser", profile.username)
+        assertTrue(profile.detail.contains("个人简介 😀"), "blocktitle double-escaped entity must be decoded")
+        assertTrue(profile.detail.contains("签名: 每日一果 🍎"), "commonlist li double-escaped entity must be decoded")
+        assertFalse(profile.detail.contains("&#128512;"))
+        assertFalse(profile.detail.contains("&#127822;"))
+    }
+
+    @Test
     fun parseBlacklist_coversPopulatedDeduplicatedEmptyConfirmedAndInvalidPages() {
         val populatedHtml = """
             <html><body>
