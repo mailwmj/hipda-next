@@ -9,6 +9,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -49,7 +51,11 @@ class ComposeChallengeInteractionPresenter internal constructor(
 
         return withContext(Dispatchers.Main.immediate) {
             val activity = binding.activity
-            if (activity.isFinishing || activity.isDestroyed) {
+            if (
+                activity.isFinishing ||
+                activity.isDestroyed ||
+                activity.lifecycle.currentState == Lifecycle.State.DESTROYED
+            ) {
                 return@withContext SolveResult.Cancelled
             }
 
@@ -66,6 +72,15 @@ class ComposeChallengeInteractionPresenter internal constructor(
                     dismissedDeferred.complete(Unit)
                 }
             }
+
+            val hostDestroyObserver = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_DESTROY) {
+                    resultDeferred.complete(SolveResult.Cancelled)
+                    dismissedDeferred.complete(Unit)
+                    panelVisible.value = false
+                }
+            }
+            activity.lifecycle.addObserver(hostDestroyObserver)
 
             val composeView = ComposeView(activity).apply {
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
@@ -134,6 +149,7 @@ class ComposeChallengeInteractionPresenter internal constructor(
             } finally {
                 pollJob.cancel()
                 withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    activity.lifecycle.removeObserver(hostDestroyObserver)
                     binding.setInteractiveMode(false)
                     composeView.disposeComposition()
                     (composeView.parent as? ViewGroup)?.removeView(composeView)

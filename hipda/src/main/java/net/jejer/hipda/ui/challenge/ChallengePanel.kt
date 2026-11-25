@@ -39,6 +39,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -155,8 +159,14 @@ fun ChallengePanelOverlay(
             enter = panelEnter,
             exit = panelExit,
         ) {
+            val panelTitle = stringResource(R.string.challenge_panel_title)
             Surface(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .semantics {
+                        paneTitle = panelTitle
+                        isTraversalGroup = true
+                    },
                 shape = if (isDialog) HiShapeTokens.Large else SheetTopRoundedShape,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 shadowElevation = 6.dp,
@@ -169,6 +179,7 @@ fun ChallengePanelOverlay(
                     },
                 ) {
                     ChallengePanelHeader(
+                        title = panelTitle,
                         onRefresh = onRefresh,
                         onCancel = onCancel,
                     )
@@ -184,6 +195,7 @@ fun ChallengePanelOverlay(
 
 @Composable
 private fun ChallengePanelHeader(
+    title: String,
     onRefresh: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -199,7 +211,8 @@ private fun ChallengePanelHeader(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                text = stringResource(R.string.challenge_panel_title),
+                text = title,
+                modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,

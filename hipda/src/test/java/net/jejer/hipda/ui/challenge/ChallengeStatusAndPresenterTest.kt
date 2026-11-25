@@ -15,8 +15,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -377,6 +381,15 @@ class ChallengeStatusAndPresenterTest {
             assertEquals(SolveResult.Cancelled, result)
             onNodeWithText("安全验证").assertDoesNotExist()
             assertEquals(0, binding.rootContainer.childCount)
+            val restoredFlags = activity.window.attributes.flags
+            assertTrue(
+                "Window must restore FLAG_NOT_TOUCHABLE after dismiss",
+                (restoredFlags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0,
+            )
+            assertTrue(
+                "Window must restore FLAG_NOT_FOCUSABLE after dismiss",
+                (restoredFlags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0,
+            )
 
             rawHandle.close()
             shadowOf(Looper.getMainLooper()).idle()
@@ -385,6 +398,91 @@ class ChallengeStatusAndPresenterTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun presenter_hostOnDestroyCompletesCancelledAndCleansUpWithoutOuterCancellation() = runEmptyComposeUiTest {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val host = AndroidChallengeWebViewHost(application)
+            val acquireDeferred = scope.async { host.acquire(forumUrl, unifiedUa) }
+            val intent = awaitStartedActivityIntent(application)
+            val controller = Robolectric.buildActivity(ChallengeActivity::class.java, intent).setup()
+            shadowOf(Looper.getMainLooper()).idle()
+
+            val handle = runBlocking { acquireDeferred.await() }
+            val binding = requireNotNull(handle.activityBinding)
+            val pollCalls = AtomicInteger(0)
+            val session = ChallengeInteractionSession(
+                triggerUrl = forumUrl,
+                reason = ChallengeInteractionReason.InteractiveBegin,
+                webViewHandle = handle,
+                activityBinding = binding,
+                clearanceChecker = {
+                    pollCalls.incrementAndGet()
+                    false
+                },
+            )
+            // Use a long dismissTimeoutMs so completion proves ON_DESTROY resolved immediately.
+            val presenter = ComposeChallengeInteractionPresenter(
+                pollIntervalMs = 20L,
+                dismissTimeoutMs = 5_000L,
+            )
+
+            val presentDeferred = scope.async { presenter.present(session) }
+            waitForPanelShown()
+            assertFalse("Presenter must stay active before host destruction", presentDeferred.isCompleted)
+
+            // Destroy host directly without cancelling presentDeferred externally.
+            controller.pause().stop().destroy()
+            val result = awaitDeferredWithMainIdle(presentDeferred)
+            assertEquals(SolveResult.Cancelled, result)
+            assertEquals(0, binding.rootContainer.childCount)
+
+            val pollsAfterDestroy = pollCalls.get()
+            Thread.sleep(60)
+            assertEquals("Polling must stop after host ON_DESTROY cleanup", pollsAfterDestroy, pollCalls.get())
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun accessibilitySemantics_panelPaneTitleHeadingAndCheckingPoliteLiveRegion() =
+        withAnimatorDurationScale(0f) {
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    Box(Modifier.fillMaxSize()) {
+                        ChallengePanelOverlay(
+                            visible = true,
+                            onRefresh = {},
+                            onCancel = {},
+                            webViewSlot = {
+                                ChallengeStatusView(
+                                    state = ChallengeState.Solving(startedAtMs = 0L),
+                                    onRetry = {},
+                                    clock = { 2_500L },
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+            waitForIdle()
+
+            onNode(
+                SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "安全验证") and
+                    SemanticsMatcher.expectValue(SemanticsProperties.IsTraversalGroup, true),
+            ).assertIsDisplayed()
+
+            onNodeWithText("安全验证")
+                .assertIsDisplayed()
+                .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+
+            onNodeWithText("正在检查安全环境…")
+                .assertIsDisplayed()
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite))
+        }
 
     @Test
     fun presenter_systemBackCancelsAndDismissesPanel() = runEmptyComposeUiTest {

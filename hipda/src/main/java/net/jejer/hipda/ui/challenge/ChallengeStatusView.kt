@@ -1,6 +1,7 @@
 package net.jejer.hipda.ui.challenge
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.togetherWith
@@ -27,6 +28,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import net.jejer.hipda.R
@@ -125,26 +129,30 @@ fun ChallengeStatusView(
     }
 
     val nowMs = currentClock()
-    val visualState = when (state) {
+    val effectiveState = when (state) {
+        is ChallengeState.Cooldown -> if (cooldownExpired) ChallengeState.Idle else state.effectiveAt(nowMs)
+        else -> state
+    }
+    val visualState = when (effectiveState) {
         is ChallengeState.Solving -> {
             val reachedThreshold = checkingDelayElapsed ||
-                (nowMs - state.startedAtMs) >= ChallengeStatusDefaults.CheckingDelayMs
+                (nowMs - effectiveState.startedAtMs) >= ChallengeStatusDefaults.CheckingDelayMs
             if (reachedThreshold) ChallengeVisualState.Checking else ChallengeVisualState.None
         }
-        is ChallengeState.Cooldown -> {
-            if (!cooldownExpired && nowMs < state.untilMs) {
-                if (state.rejected) ChallengeVisualState.Rejected else ChallengeVisualState.Incomplete
-            } else {
-                failure.toVisualState()
-            }
-        }
+        is ChallengeState.Cooldown ->
+            if (effectiveState.rejected) ChallengeVisualState.Rejected else ChallengeVisualState.Incomplete
         ChallengeState.Idle -> failure.toVisualState()
     }
 
     AnimatedContent(
         targetState = visualState,
         modifier = modifier,
-        transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) },
+        contentAlignment = Alignment.Center,
+        transitionSpec = {
+            (hiFadeIn() togetherWith hiFadeOut()).using(
+                SizeTransform(clip = false) { _, _ -> HiMotion.spatialDefault() },
+            )
+        },
         label = "ChallengeStatusView",
     ) { target ->
         when (target) {
@@ -181,6 +189,9 @@ private fun ChallengeCheckingIndicator() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics(mergeDescendants = true) {
+                liveRegion = LiveRegionMode.Polite
+            }
             .padding(horizontal = 24.dp, vertical = 24.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,

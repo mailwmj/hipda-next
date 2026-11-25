@@ -2,19 +2,26 @@ package net.jejer.hipda.ui.challenge
 
 import android.app.Application
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
+import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.testing.assertFrameContinuity
 import net.jejer.hipda.testing.withAnimatorDurationScale
 import net.jejer.hipda.ui.designsystem.HiColorPresets
@@ -258,6 +265,105 @@ class ChallengePanelMotionTest {
 
         onNodeWithTag(SLOT_TEST_TAG).assertDoesNotExist()
         assertEquals("onDismissed should fire once after exit", 1, dismissedCount)
+    }
+
+    // endregion
+
+    // region V-A6: ChallengeStatusView Checking -> Incomplete centered stability & smooth height transition
+
+    @Test
+    @Config(qualifiers = HiScreenshotTestSupport.Qualifiers.PHONE_411)
+    fun statusView_checkingToIncomplete_keepsCenteredTextStableAndAnimatesHeightSmoothly() {
+        // 1) Centered container: fading-out "正在检查安全环境…" must not jump vertically on transition
+        withAnimatorDurationScale(1f) {
+            var state by mutableStateOf<ChallengeState>(ChallengeState.Solving(startedAtMs = 0L))
+
+            mainClock.autoAdvance = false
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    Surface(Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            ChallengeStatusView(
+                                state = state,
+                                onRetry = {},
+                                clock = { 2_500L },
+                            )
+                        }
+                    }
+                }
+            }
+            mainClock.advanceTimeByFrame()
+            waitForIdle()
+            onNodeWithText("正在检查安全环境…").assertIsDisplayed()
+            val initialCheckingY = onNodeWithText("正在检查安全环境…").fetchSemanticsNode().positionInRoot.y
+            val maxAllowedDriftPx = with(density) { 1.dp.toPx() }
+
+            state = ChallengeState.Cooldown(untilMs = 30_000L, rejected = false)
+            Snapshot.sendApplyNotifications()
+            var observedFadeFrames = 0
+            repeat(20) { frame ->
+                mainClock.advanceTimeByFrame()
+                val nodes = onAllNodes(androidx.compose.ui.test.hasText("正在检查安全环境…")).fetchSemanticsNodes()
+                if (nodes.isNotEmpty()) {
+                    observedFadeFrames++
+                    val currentY = nodes.first().positionInRoot.y
+                    assertTrue(
+                        "Frame $frame: centered checking text drifted ${with(density) { abs(currentY - initialCheckingY).toDp() }} (> 1dp)",
+                        abs(currentY - initialCheckingY) <= maxAllowedDriftPx,
+                    )
+                }
+            }
+            assertTrue("Expected checking text to remain visible across fade-out frames", observedFadeFrames >= 1)
+            mainClock.autoAdvance = true
+            waitForIdle()
+            onNodeWithText("安全验证未完成").assertIsDisplayed()
+        }
+
+        // 2) Column layout: sibling below ChallengeStatusView transitions smoothly via HiMotion.spatialDefault()
+        withAnimatorDurationScale(1f) {
+            var state by mutableStateOf<ChallengeState>(ChallengeState.Solving(startedAtMs = 0L))
+
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    Surface(Modifier.fillMaxSize()) {
+                        Column(Modifier.fillMaxWidth()) {
+                            ChallengeStatusView(
+                                state = state,
+                                onRetry = {},
+                                clock = { 2_500L },
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(16.dp)
+                                    .testTag("anchor_below_challenge_status"),
+                            )
+                        }
+                    }
+                }
+            }
+            waitForIdle()
+            onNodeWithText("正在检查安全环境…").assertIsDisplayed()
+
+            val result = assertFrameContinuity(
+                nodeProvider = { onNodeWithTag("anchor_below_challenge_status") },
+                frameCount = 24,
+                maxStepDp = 24.dp,
+                minTotalTravelDp = 30.dp,
+                onFrame = { frame ->
+                    if (frame == 0) {
+                        state = ChallengeState.Cooldown(untilMs = 30_000L, rejected = false)
+                    }
+                },
+            )
+            assertTrue(
+                "Anchor below ChallengeStatusView should move smoothly downward (maxStep=${result.maxStepDp}, travel=${result.totalTravelDp})",
+                result.positionsPx.last().y > result.positionsPx.first().y + with(density) { 30.dp.toPx() },
+            )
+        }
     }
 
     // endregion
