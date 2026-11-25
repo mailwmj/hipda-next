@@ -144,16 +144,11 @@ object SmsParser {
             return SmsSendResult.Success
         }
         val doc = Jsoup.parse(xml, "", Parser.xmlParser())
-        var result = ""
-        for (root in doc.select("root")) {
-            var text = root.text()
-            val ltIndex = text.indexOf('<')
-            if (ltIndex >= 0) {
-                text = text.substring(0, ltIndex)
-            }
-            result = text
-        }
-        val decoded = DiscuzTextDecoder.decodeDoubleEscapedEntities(result)
+        val rootText = doc.select("root").lastOrNull()?.text().orEmpty()
+        val fragment = Jsoup.parseBodyFragment(rootText)
+        fragment.select("script, style").remove()
+        val cleaned = fragment.body().text().trim()
+        val decoded = DiscuzTextDecoder.decodeDoubleEscapedEntities(cleaned)
         return if (decoded.isNotEmpty()) {
             SmsSendResult.Failed(decoded)
         } else {

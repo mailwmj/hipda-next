@@ -171,4 +171,37 @@ class NotifyParserTest {
         assertTrue(page.hasFeedContainer)
         assertTrue(page.items.isEmpty())
     }
+
+    @Test
+    fun parseSystemInfo_fallsBackToPtidWhenTidMissingAndRespectsReadStatus() {
+        val html = """
+            <html><body>
+              <ul class="feed">
+                <li>
+                  <div class="f_manage">
+                    您的主题 <a href="redirect.php?goto=findpost&amp;pid=9901&amp;ptid=8804">管理通知帖</a> 已被移动
+                  </div>
+                </li>
+                <li>
+                  <div class="f_buddy">
+                    <a href="space.php?uid=44444">Eve</a> 成为了您的好友
+                  </div>
+                </li>
+              </ul>
+            </body></html>
+        """.trimIndent()
+
+        val page = NotifyParser.parseNotifyList(html)
+        assertEquals(2, page.items.size)
+
+        val sys = page.items[0]
+        assertEquals(NotifyKind.SYSTEM, sys.kind)
+        assertEquals("8804", sys.tid)
+        assertFalse(sys.isNew)
+
+        val friend = page.items[1]
+        assertEquals(NotifyKind.FRIEND, friend.kind)
+        assertEquals("44444", friend.authorUid)
+        assertFalse(friend.isNew)
+    }
 }

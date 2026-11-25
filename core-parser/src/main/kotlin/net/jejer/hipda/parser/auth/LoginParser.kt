@@ -32,7 +32,7 @@ object LoginParser {
             )
         }
 
-        val formhash = doc.firstMatch("input[name=formhash]")?.attr("value")?.trim()?.ifEmpty { null }
+        val formhash = DiscuzCommonParser.parseFormhash(doc)
         if (formhash != null) {
             return LoginFormParseResult.Ready(formhash)
         }
@@ -57,17 +57,15 @@ object LoginParser {
 
         val visibleText = extractVisibleMessageText(xml)
 
-        if (visibleText.contains(LOGIN_SUCCESS_MARKER) || xml.contains(LOGIN_SUCCESS_MARKER)) {
-            val message = visibleText.ifEmpty { LOGIN_SUCCESS_MARKER }
-            return LoginSubmitResult.Success(DiscuzTextDecoder.decodeDoubleEscapedEntities(message))
+        if (visibleText.contains(LOGIN_SUCCESS_MARKER)) {
+            return LoginSubmitResult.Success(DiscuzTextDecoder.decodeDoubleEscapedEntities(visibleText))
         }
 
-        val failSource = if (visibleText.contains(LOGIN_FAIL_MARKER)) visibleText else xml
-        val failIndex = failSource.indexOf(LOGIN_FAIL_MARKER)
+        val failIndex = visibleText.indexOf(LOGIN_FAIL_MARKER)
         if (failIndex >= 0) {
-            val attemptsSuffixIndex = failSource.indexOf(ATTEMPTS_SUFFIX, failIndex)
+            val attemptsSuffixIndex = visibleText.indexOf(ATTEMPTS_SUFFIX, failIndex)
             return if (attemptsSuffixIndex >= failIndex) {
-                val extracted = failSource.substring(failIndex, attemptsSuffixIndex + ATTEMPTS_SUFFIX.length)
+                val extracted = visibleText.substring(failIndex, attemptsSuffixIndex + ATTEMPTS_SUFFIX.length)
                 val remaining = REMAINING_ATTEMPTS_REGEX.find(extracted)?.groupValues?.get(1)?.toIntOrNull()
                 LoginSubmitResult.Failed(
                     message = DiscuzTextDecoder.decodeDoubleEscapedEntities(extracted),
@@ -86,9 +84,15 @@ object LoginParser {
 
     private fun extractVisibleMessageText(xml: String): String {
         val xmlDoc = Jsoup.parse(xml, "", Parser.xmlParser())
-        val rootText = xmlDoc.select("root").lastOrNull()?.text() ?: xml
-        val scriptIdx = rootText.indexOf("<script", ignoreCase = true)
-        val withoutScript = if (scriptIdx >= 0) rootText.substring(0, scriptIdx) else rootText
-        return Jsoup.parseBodyFragment(withoutScript).text().trim()
+        val rootElement = xmlDoc.select("root").lastOrNull()
+        return if (rootElement != null) {
+            val fragment = Jsoup.parseBodyFragment(rootElement.text())
+            fragment.select("script, style").remove()
+            fragment.body().text().trim()
+        } else {
+            val htmlDoc = Jsoup.parse(xml)
+            htmlDoc.select("script, style").remove()
+            htmlDoc.body().text().trim().ifEmpty { htmlDoc.text().trim() }
+        }
     }
 }

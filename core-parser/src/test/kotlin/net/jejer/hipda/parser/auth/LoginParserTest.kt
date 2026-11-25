@@ -93,4 +93,70 @@ class LoginParserTest {
 
         assertEquals(LoginSubmitResult.UnknownError(""), LoginParser.parseLoginSubmitResponse("   "))
     }
+
+    @Test
+    fun parseLoginPage_reusesCommonFormhashFallbackForIdOnlyInput() {
+        val idOnlyFormhashHtml = """
+            <html><body>
+              <div id="umenu"><a href="logging.php?action=login">登录</a></div>
+              <form method="post" action="logging.php?action=login">
+                <input type="hidden" id="formhash" value="f9e8d7c6" />
+              </form>
+            </body></html>
+        """.trimIndent()
+        assertEquals(LoginFormParseResult.Ready("f9e8d7c6"), LoginParser.parseLoginPage(idOnlyFormhashHtml))
+    }
+
+    @Test
+    fun parseLoginSubmitResponse_stripsHeadScriptStyleOnFullPageFallbackAndIgnoresXmlComments() {
+        val fullPageSuccessHtml = """
+            <html>
+              <head>
+                <title>4D4Y</title>
+                <script type="text/javascript">var err = '登录失败，您还可以尝试 1 次';</script>
+                <style>.alert { color: red; }</style>
+              </head>
+              <body>
+                <div class="alert_info"><p>欢迎您回来，HiUser。正在跳转</p></div>
+              </body>
+            </html>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Success("欢迎您回来，HiUser。正在跳转"),
+            LoginParser.parseLoginSubmitResponse(fullPageSuccessHtml),
+        )
+
+        val fullPageFailHtml = """
+            <html>
+              <head>
+                <script>var ok = '欢迎您回来';</script>
+                <style>body { display: block; }</style>
+              </head>
+              <body>
+                <div class="alert_error">登录失败，您还可以尝试 2 次</div>
+              </body>
+            </html>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Failed(message = "登录失败，您还可以尝试 2 次", remainingAttempts = 2),
+            LoginParser.parseLoginSubmitResponse(fullPageFailHtml),
+        )
+
+        val commentedFailXml = """
+            <?xml version="1.0" encoding="gbk"?>
+            <!-- 欢迎您回来 -->
+            <root><!-- 欢迎您回来 --><![CDATA[登录失败，您还可以尝试 3 次<script>hide()</script>]]></root>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Failed(message = "登录失败，您还可以尝试 3 次", remainingAttempts = 3),
+            LoginParser.parseLoginSubmitResponse(commentedFailXml),
+        )
+
+        val commentedUnknownXml = """
+            <?xml version="1.0" encoding="gbk"?>
+            <!-- 登录失败，您还可以尝试 1 次 -->
+            <root><![CDATA[系统维护中]]></root>
+        """.trimIndent()
+        assertTrue(LoginParser.parseLoginSubmitResponse(commentedUnknownXml) is LoginSubmitResult.UnknownError)
+    }
 }
