@@ -4,6 +4,7 @@ import java.io.IOException
 import net.jejer.hipda.R
 import net.jejer.hipda.data.auth.*
 import net.jejer.hipda.data.network.access.*
+import net.jejer.hipda.data.search.SearchError
 import net.jejer.hipda.data.threaddetail.ThreadDetailError
 import net.jejer.hipda.data.threadlist.ThreadListError
 
@@ -14,58 +15,46 @@ object UiErrorMapper {
         is ThreadListError.AuthRequired -> mapAuthRequired(error.reason, buildDetails(error.reason.name, error.message, error.reloginResult?.toString()))
         is ThreadListError.ChallengeRequired -> mapChallenge(error.rejected, error.abandoned, error.cooldownUntilMs)
         is ThreadListError.NetworkError -> mapNetwork(error.statusCode, error.message, error.cause)
-        is ThreadListError.SiteError -> if (PERMISSION_KEYWORDS.any { it in error.message }) {
-            UiError(R.string.common_error_no_forum_permission, error.message.trim().ifEmpty { null })
-        } else {
-            UiError(R.string.common_error_load_failed, error.message.trim().ifEmpty { null }, UiErrorAction.Retry)
-        }
-        is ThreadListError.InvalidInput -> UiError(R.string.common_error_load_failed, error.message.trim().ifEmpty { null }, UiErrorAction.Retry)
+        is ThreadListError.SiteError -> mapSiteError(error.message, checkNotFound = false)
+        is ThreadListError.InvalidInput -> mapLoadFailed(error.message)
     }
 
     fun map(error: ThreadDetailError): UiError = when (error) {
         is ThreadDetailError.AuthRequired -> mapAuthRequired(error.reason, buildDetails(error.reason.name, error.message, error.reloginResult?.toString()))
         is ThreadDetailError.ChallengeRequired -> mapChallenge(error.rejected, error.abandoned, error.cooldownUntilMs)
         is ThreadDetailError.NetworkError -> mapNetwork(error.statusCode, error.message, error.cause)
-        is ThreadDetailError.SiteError -> when {
-            NOT_FOUND_KEYWORDS.any { it in error.message } -> UiError(R.string.common_error_thread_not_found, error.message.trim().ifEmpty { null })
-            PERMISSION_KEYWORDS.any { it in error.message } -> UiError(R.string.common_error_no_forum_permission, error.message.trim().ifEmpty { null })
-            else -> UiError(R.string.common_error_load_failed, error.message.trim().ifEmpty { null }, UiErrorAction.Retry)
-        }
-        is ThreadDetailError.InvalidPage, is ThreadDetailError.InvalidInput -> {
-            val msg = if (error is ThreadDetailError.InvalidPage) error.message else (error as ThreadDetailError.InvalidInput).message
-            UiError(R.string.common_error_load_failed, msg.trim().ifEmpty { null }, UiErrorAction.Retry)
-        }
+        is ThreadDetailError.SiteError -> mapSiteError(error.message, checkNotFound = true)
+        is ThreadDetailError.InvalidPage -> mapLoadFailed(error.message)
+        is ThreadDetailError.InvalidInput -> mapLoadFailed(error.message)
+    }
+
+    fun map(error: SearchError): UiError = when (error) {
+        is SearchError.AuthRequired -> mapAuthRequired(error.reason, buildDetails(error.reason.name, error.message, error.reloginResult?.toString()))
+        is SearchError.ChallengeRequired -> mapChallenge(error.rejected, error.abandoned, error.cooldownUntilMs)
+        is SearchError.NetworkError -> mapNetwork(error.statusCode, error.message, error.cause)
+        is SearchError.SiteError -> mapSiteError(error.message, checkNotFound = false)
+        is SearchError.InvalidPage -> mapLoadFailed(error.message)
+        is SearchError.InvalidInput -> mapLoadFailed(error.message)
     }
 
     fun mapLoginResult(result: LoginResult): UiError? = when (result) {
         is LoginResult.Success -> null
         is LoginResult.InvalidCredentials -> UiError(
-            messageRes = if (SECURITY_ANSWER_KEYWORDS.any { it in result.message }) R.string.common_error_login_security_answer else R.string.common_error_login_credentials,
-            details = buildDetails(result.message, result.remainingAttempts?.let { "remainingAttempts=$it" }),
+            if (SECURITY_ANSWER_KEYWORDS.any { it in result.message }) R.string.common_error_login_security_answer else R.string.common_error_login_credentials,
+            buildDetails(result.message, result.remainingAttempts?.let { "remainingAttempts=$it" }),
         )
-        is LoginResult.ChallengeRequired -> mapChallenge(result.rejected, abandoned = false, cooldownUntilMs = result.cooldownUntilMs)
+        is LoginResult.ChallengeRequired -> mapChallenge(result.rejected, false, result.cooldownUntilMs)
         is LoginResult.NetworkError -> UiError(R.string.common_error_network, buildDetails(result.message, result.cause?.let(::formatThrowable)), UiErrorAction.Retry)
-        is LoginResult.Failure -> UiError(R.string.common_error_load_failed, result.message.trim().ifEmpty { null }, UiErrorAction.Retry)
-    }
-
-    fun mapSilentReloginFailure(failed: SilentReloginResult.Failed): UiError {
-        val details = buildDetails(failed.reason.name, failed.message, failed.cause?.let(::formatThrowable))
-        return when (failed.reason) {
-            SilentReloginFailureReason.CHALLENGE_REJECTED -> UiError(R.string.challenge_status_rejected, details, UiErrorAction.Reverify)
-            SilentReloginFailureReason.CHALLENGE_INCOMPLETE, SilentReloginFailureReason.CHALLENGE_ABANDONED -> UiError(R.string.challenge_status_incomplete, details, UiErrorAction.Reverify)
-            SilentReloginFailureReason.NETWORK_ERROR -> UiError(R.string.common_error_network, details, UiErrorAction.Retry)
-            SilentReloginFailureReason.INVALID_CREDENTIALS, SilentReloginFailureReason.SESSION_INVALIDATED -> UiError(R.string.common_error_session_expired, details, UiErrorAction.Login)
-            SilentReloginFailureReason.SERVER_ERROR -> UiError(R.string.common_error_load_failed, details, UiErrorAction.Retry)
-        }
+        is LoginResult.Failure -> mapLoadFailed(result.message)
     }
 
     fun mapAuthRequired(reason: AuthRequiredReason, details: String? = null): UiError = UiError(
-        messageRes = when (reason) {
+        when (reason) {
             AuthRequiredReason.RELOGIN_FAILED, AuthRequiredReason.SESSION_STILL_UNAUTHENTICATED -> R.string.common_error_session_expired
             AuthRequiredReason.NOT_LOGGED_IN, AuthRequiredReason.MANUALLY_LOGGED_OUT -> R.string.common_error_login_required
         },
-        details = details?.trim()?.ifEmpty { null },
-        action = UiErrorAction.Login,
+        details?.trim()?.ifEmpty { null },
+        UiErrorAction.Login,
     )
 
     fun map(throwable: Throwable): UiError = when (throwable) {
@@ -77,26 +66,17 @@ object UiErrorMapper {
         else -> UiError(R.string.common_error_load_failed, formatThrowable(throwable), UiErrorAction.Retry)
     }
 
-    private fun mapNetwork(statusCode: Int?, message: String, cause: Throwable?) = UiError(
-        messageRes = if (statusCode != null) R.string.common_error_load_failed else R.string.common_error_network,
-        details = buildDetails(statusCode?.let { "HTTP $it" }, message, cause?.let(::formatThrowable)),
-        action = UiErrorAction.Retry,
-    )
-
-    private fun mapChallenge(rejected: Boolean, abandoned: Boolean, cooldownUntilMs: Long?) = UiError(
-        messageRes = if (rejected) R.string.challenge_status_rejected else R.string.challenge_status_incomplete,
-        details = buildDetails(if (abandoned) "challenge_abandoned" else null, cooldownUntilMs?.let { "cooldownUntilMs=$it" }),
-        action = UiErrorAction.Reverify,
-    )
-
-    private fun formatThrowable(t: Throwable): String {
-        val name = t::class.java.simpleName.ifBlank { t::class.java.name }
-        val msg = t.message?.trim().orEmpty()
-        return if (msg.isEmpty()) name else "$name: $msg"
+    private fun mapSiteError(message: String, checkNotFound: Boolean): UiError = when {
+        checkNotFound && NOT_FOUND_KEYWORDS.any { it in message } -> UiError(R.string.common_error_thread_not_found, message.trim().ifEmpty { null })
+        PERMISSION_KEYWORDS.any { it in message } -> UiError(R.string.common_error_no_forum_permission, message.trim().ifEmpty { null })
+        else -> mapLoadFailed(message)
     }
 
-    private fun buildDetails(vararg parts: String?): String? =
-        parts.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }.distinct().joinToString("\n").ifEmpty { null }
+    private fun mapLoadFailed(message: String) = UiError(R.string.common_error_load_failed, message.trim().ifEmpty { null }, UiErrorAction.Retry)
+    private fun mapNetwork(code: Int?, msg: String, cause: Throwable?) = UiError(if (code != null) R.string.common_error_load_failed else R.string.common_error_network, buildDetails(code?.let { "HTTP $it" }, msg, cause?.let(::formatThrowable)), UiErrorAction.Retry)
+    private fun mapChallenge(rejected: Boolean, abandoned: Boolean, cooldownMs: Long?) = UiError(if (rejected) R.string.challenge_status_rejected else R.string.challenge_status_incomplete, buildDetails(if (abandoned) "challenge_abandoned" else null, cooldownMs?.let { "cooldownUntilMs=$it" }), UiErrorAction.Reverify)
+    private fun formatThrowable(t: Throwable): String = t.message?.trim().orEmpty().let { m -> val n = t::class.java.simpleName.ifBlank { t::class.java.name }; if (m.isEmpty()) n else "$n: $m" }
+    private fun buildDetails(vararg parts: String?): String? = parts.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }.distinct().joinToString("\n").ifEmpty { null }
 
     private val PERMISSION_KEYWORDS = listOf("无权", "权限", "不允许访问", "等级不够")
     private val NOT_FOUND_KEYWORDS = listOf("不存在", "已被删除", "已删除", "找不到")

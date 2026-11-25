@@ -1,5 +1,6 @@
 package net.jejer.hipda.feature.common
 
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Immutable
@@ -7,6 +8,13 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.geometry.Rect
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
+
+/** 论坛列表页单一列表来源（供 `NextAppState` 与 `ForumPane`/`E1` 共享，统一宽屏左栏与窄屏标签行）。 */
+@Immutable
+sealed interface ForumListSource {
+    data object TodayNew : ForumListSource
+    data class Forum(val fid: Int) : ForumListSource
+}
 
 @Immutable
 data class ThreadNavArgs(
@@ -70,7 +78,8 @@ object NoOpPaneSnackbarController : PaneSnackbarController {
 
 class SingleHostPaneSnackbarController(private val hostState: SnackbarHostState) : PaneSnackbarController {
     override suspend fun show(message: String, target: PaneSnackbarTarget, actionLabel: String?, onAction: (() -> Unit)?) {
-        if (hostState.showSnackbar(message = message, actionLabel = actionLabel) == SnackbarResult.ActionPerformed) {
+        val duration = if (actionLabel != null) SnackbarDuration.Long else SnackbarDuration.Short
+        if (hostState.showSnackbar(message = message, actionLabel = actionLabel, duration = duration) == SnackbarResult.ActionPerformed) {
             onAction?.invoke()
         }
     }

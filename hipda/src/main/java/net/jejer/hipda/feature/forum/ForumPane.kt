@@ -24,13 +24,13 @@ import net.jejer.hipda.ui.designsystem.state.*
 import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 import net.jejer.hipda.ui.shell.ShellContentScope
 
-/** 最薄可运行真实论坛列表面板（供 `E1` 原位加厚，顶层签名在此锁死）。 */
+/** 最薄可运行真实论坛/今日新帖列表面板（供 `E1` 原位加厚，顶层签名在此锁死）。 */
 @Composable
 fun ForumPane(
-    fid: Int,
+    source: ForumListSource,
     chromeSpec: ForumChromeSpec,
     selectedTid: String?,
-    onSelectForum: (Int) -> Unit,
+    onSelectSource: (ForumListSource) -> Unit,
     onOpenThread: (ThreadNavArgs) -> Unit,
     onOpenLogin: () -> Unit,
     modifier: Modifier = Modifier,
@@ -41,31 +41,32 @@ fun ForumPane(
     onManageForumsClick: () -> Unit = {},
     viewModel: ForumViewModel = viewModel(),
 ) {
-    LaunchedEffect(fid) { viewModel.bindForum(fid) }
+    LaunchedEffect(source) { viewModel.bindSource(source) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val glassSourceModifier = when {
-        shellContentScope?.shellGlassState != null -> with(shellContentScope) { Modifier.shellGlassSource() }
-        chromeSpec.externalGlassState != null -> Modifier.hiGlassSource(chromeSpec.externalGlassState)
-        else -> Modifier
+    val headerTitle = when (val s = uiState.source) {
+        ForumListSource.TodayNew -> stringResource(R.string.shell_sidebar_today_new)
+        is ForumListSource.Forum -> ForumMetadataRegistry.resolve(s.fid).fullName
     }
 
     Column(modifier = modifier.fillMaxSize()) {
         Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.statusBarsPadding()) {
-                Text(
-                    text = uiState.forumName,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                )
-                if (chromeSpec.showForumTabs && uiState.followedForums.isNotEmpty()) {
+                Text(headerTitle, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp))
+                if (chromeSpec.showForumTabs) {
                     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(items = uiState.followedForums, key = { it }) { tabFid ->
+                        item(key = "today_new") {
                             FilterChip(
-                                selected = tabFid == uiState.fid,
-                                onClick = { onSelectForum(tabFid) },
+                                selected = uiState.source == ForumListSource.TodayNew,
+                                onClick = { onSelectSource(ForumListSource.TodayNew) },
+                                label = { Text(stringResource(R.string.shell_sidebar_today_new), maxLines = 1) },
+                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                            )
+                        }
+                        items(items = uiState.followedForums, key = { "forum:$it" }) { tabFid ->
+                            val tabSource = ForumListSource.Forum(tabFid)
+                            FilterChip(
+                                selected = uiState.source == tabSource,
+                                onClick = { onSelectSource(tabSource) },
                                 label = { Text(ForumMetadataRegistry.resolve(tabFid).fullName, maxLines = 1) },
                                 modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                             )
@@ -87,10 +88,18 @@ fun ForumPane(
                     HiErrorState(stringResource(err.messageRes), details = err.details, action = err.toStateAction(viewModel::retry, onOpenLogin))
                 }
                 !uiState.isLoading && uiState.items.isEmpty() -> HiEmptyState(stringResource(R.string.common_empty_threads), action = HiStateAction(stringResource(R.string.common_action_refresh)) { viewModel.refresh() })
-                else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize().then(glassSourceModifier), contentPadding = contentPadding) {
+                else -> {
+                    val glassSourceModifier = when {
+                        shellContentScope?.shellGlassState != null -> with(shellContentScope) { Modifier.shellGlassSource() }
+                        chromeSpec.externalGlassState != null -> Modifier.hiGlassSource(chromeSpec.externalGlassState)
+                        else -> Modifier
+                    }
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().then(glassSourceModifier), contentPadding = contentPadding) {
                     items(items = uiState.items, key = { it.tid }) { item ->
                         ThreadRowItem(item, item.tid == selectedTid) {
-                            onOpenThread(ThreadNavArgs(item.tid, item.summary.title, uiState.fid, uiState.forumName, item.summary.author))
+                            val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
+                            val forumName = if (fid > 0) headerTitle else item.summary.typeName
+                            onOpenThread(ThreadNavArgs(item.tid, item.summary.title, fid, forumName, item.summary.author))
                         }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     }
@@ -104,6 +113,7 @@ fun ForumPane(
                             else -> HiListFooter(HiFooterState.End)
                         }
                     }
+                }
                 }
             }
         }
@@ -126,7 +136,7 @@ private fun ThreadRowItem(item: ThreadListItem, selected: Boolean, onClick: () -
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(item.summary.author, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            Text(item.summary.replyCountText, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            if (item.summary.replyCountText.isNotEmpty()) Text(item.summary.replyCountText, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
             Text(item.summary.timeUpdate ?: item.summary.timeCreate, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1)
         }
     }

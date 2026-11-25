@@ -6,6 +6,7 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.*
+import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.ui.shell.*
@@ -18,24 +19,14 @@ class ThreadScopedViewModelStoreOwner(
     override val defaultViewModelCreationExtras: CreationExtras = CreationExtras.Empty,
 ) : ViewModelStoreOwner, HasDefaultViewModelProviderFactory
 
-/** `tid -> ViewModelStore` 映射表（零 Context/Activity 引用，安全跨旋转存活）。 */
-class ScopedThreadViewModelStoreRegistry {
-    private val stores = LinkedHashMap<String, ViewModelStore>()
-    fun getOrCreateStore(tid: String): ViewModelStore = stores.getOrPut(tid) { ViewModelStore() }
-    fun hasStore(tid: String): Boolean = tid in stores
-    fun release(tid: String) { stores.remove(tid)?.clear() }
-    fun clearAll() { stores.values.toList().also { stores.clear() }.forEach(ViewModelStore::clear) }
-}
-
 /** Activity 级宿主 ViewModel：仅管 `tid -> ViewModelStore` 映射、列表状态与导航状态（不含业务 Repository）。 */
 @HiltViewModel
 class NextAppHostViewModel @Inject constructor() : ViewModel() {
 
-    private val storeRegistry = ScopedThreadViewModelStoreRegistry()
-    private val forumListStates = LinkedHashMap<Int, LazyListState>()
+    private val threadStores = LinkedHashMap<String, ViewModelStore>()
+    private val forumListStates = LinkedHashMap<ForumListSource, LazyListState>()
     private val threadListStates = LinkedHashMap<String, LazyListState>()
     private var hasUserSelectedForum = false
-
     private val _state = MutableStateFlow(NextAppState())
     val state: StateFlow<NextAppState> = _state.asStateFlow()
 
@@ -45,64 +36,51 @@ class NextAppHostViewModel @Inject constructor() : ViewModel() {
         defaultViewModelCreationExtras: CreationExtras = CreationExtras.Empty,
     ): ThreadScopedViewModelStoreOwner = ThreadScopedViewModelStoreOwner(
         tid,
-        storeRegistry.getOrCreateStore(tid),
+        threadStores.getOrPut(tid) { ViewModelStore() },
         defaultViewModelProviderFactory,
         defaultViewModelCreationExtras,
     )
 
-    fun releaseThreadStore(tid: String) {
-        storeRegistry.release(tid)
-        threadListStates.remove(tid)
-    }
-
-    fun hasThreadStore(tid: String): Boolean = storeRegistry.hasStore(tid)
-    fun forumListStateFor(fid: Int): LazyListState = forumListStates.getOrPut(fid) { LazyListState() }
+    fun releaseThreadStore(tid: String) { threadStores.remove(tid)?.clear(); threadListStates.remove(tid) }
+    fun forumListStateFor(source: ForumListSource): LazyListState = forumListStates.getOrPut(source) { LazyListState() }
     fun threadListStateFor(tid: String): LazyListState = threadListStates.getOrPut(tid) { LazyListState() }
 
     fun syncDefaultForum(followedForums: List<Int>) {
         if (hasUserSelectedForum) return
-        val preferred = followedForums.firstOrNull() ?: NextAppState.DEFAULT_FORUM_FID
+        val preferred = ForumListSource.Forum(followedForums.firstOrNull() ?: NextAppState.DEFAULT_FORUM_FID)
         _state.update { cur ->
-            if (cur.activeForumFid == preferred) cur
-            else cur.copy(
-                activeForumFid = preferred,
-                selectedSidebarEntry = if (cur.selectedDestination == ShellDestination.Forum) ShellSidebarEntry.Forum(preferred) else cur.selectedSidebarEntry,
-            )
+            if (cur.activeForumSource == preferred) cur
+            else cur.copy(activeForumSource = preferred, selectedSidebarEntry = if (cur.selectedDestination == ShellDestination.Forum) preferred.toSidebarEntry() else cur.selectedSidebarEntry)
         }
     }
 
     fun selectDestination(destination: ShellDestination) = _state.update { cur ->
         cur.copy(
             selectedDestination = destination,
-            selectedSidebarEntry = mapDestinationToSidebarEntry(destination, cur.activeForumFid, cur.activeMessageEntry, lastVisitedMineEntry = cur.lastVisitedMineEntry),
+            selectedSidebarEntry = mapDestinationToSidebarEntry(destination, (cur.activeForumSource as? ForumListSource.Forum)?.fid, cur.activeMessageEntry, lastVisitedMineEntry = cur.lastVisitedMineEntry),
         )
     }
 
     fun selectSidebarEntry(entry: ShellSidebarEntry) {
-        if (entry is ShellSidebarEntry.Forum) hasUserSelectedForum = true
+        val nextSource = entry.toForumListSourceOrNull()
+        if (nextSource != null) hasUserSelectedForum = true
         updateReleasingStaleThread { cur ->
-            val changed = cur.selectedSidebarEntry != entry
             cur.copy(
                 selectedDestination = entry.toShellDestination(),
                 selectedSidebarEntry = entry,
-                activeForumFid = (entry as? ShellSidebarEntry.Forum)?.fid ?: cur.activeForumFid,
+                activeForumSource = nextSource ?: cur.activeForumSource,
                 activeMessageEntry = if (entry == ShellSidebarEntry.Sms || entry == ShellSidebarEntry.Notify) entry else cur.activeMessageEntry,
                 lastVisitedMineEntry = if (entry.isMineGroupChild || entry == ShellSidebarEntry.Settings) entry else cur.lastVisitedMineEntry,
-                selectedThread = if (changed) null else cur.selectedThread,
+                selectedThread = if (cur.selectedSidebarEntry != entry) null else cur.selectedThread,
             )
         }
     }
 
-    fun selectForum(fid: Int) {
+    fun selectForumSource(source: ForumListSource) {
         hasUserSelectedForum = true
         updateReleasingStaleThread { cur ->
-            val changed = cur.activeForumFid != fid || cur.selectedDestination != ShellDestination.Forum
-            cur.copy(
-                selectedDestination = ShellDestination.Forum,
-                selectedSidebarEntry = ShellSidebarEntry.Forum(fid),
-                activeForumFid = fid,
-                selectedThread = if (changed) null else cur.selectedThread,
-            )
+            val changed = cur.activeForumSource != source || cur.selectedDestination != ShellDestination.Forum
+            cur.copy(selectedDestination = ShellDestination.Forum, selectedSidebarEntry = source.toSidebarEntry(), activeForumSource = source, selectedThread = if (changed) null else cur.selectedThread)
         }
     }
 
@@ -122,7 +100,18 @@ class NextAppHostViewModel @Inject constructor() : ViewModel() {
     }
 
     override fun onCleared() {
-        storeRegistry.clearAll()
+        threadStores.values.toList().also { threadStores.clear() }.forEach(ViewModelStore::clear)
         threadListStates.clear()
     }
+}
+
+private fun ForumListSource.toSidebarEntry(): ShellSidebarEntry = when (this) {
+    ForumListSource.TodayNew -> ShellSidebarEntry.TodayNew
+    is ForumListSource.Forum -> ShellSidebarEntry.Forum(fid)
+}
+
+private fun ShellSidebarEntry.toForumListSourceOrNull(): ForumListSource? = when (this) {
+    ShellSidebarEntry.TodayNew -> ForumListSource.TodayNew
+    is ShellSidebarEntry.Forum -> ForumListSource.Forum(fid)
+    else -> null
 }

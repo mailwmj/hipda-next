@@ -8,7 +8,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.ImageLoader
@@ -39,7 +38,6 @@ fun NextAppRoot(
     loginOverlayRenderer: LoginOverlayRenderer? = null,
     hostViewModel: NextAppHostViewModel = viewModel(),
     forumViewModel: ForumViewModel = viewModel(),
-    threadViewModelFactory: ViewModelProvider.Factory? = null,
     onFallbackLoginClick: (() -> Unit)? = null,
 ) {
     val settings by settingsFlow.collectAsStateWithLifecycle(initialValue = AppSettings())
@@ -86,16 +84,15 @@ fun NextAppRoot(
                             contentPadding = contentPadding,
                             onCloseThread = hostViewModel::closeThread,
                             shellGlassState = shellGlassState,
-                            threadViewModelFactory = threadViewModelFactory,
                             forumContent = { chromeSpec, padding ->
                                 ForumPane(
-                                    fid = appState.activeForumFid,
+                                    source = appState.activeForumSource,
                                     chromeSpec = chromeSpec,
                                     selectedTid = appState.selectedThread?.tid,
-                                    onSelectForum = hostViewModel::selectForum,
+                                    onSelectSource = hostViewModel::selectForumSource,
                                     onOpenThread = hostViewModel::openThread,
                                     onOpenLogin = { openLoginOrAccount(LoginOverlayMode.Login) },
-                                    listState = hostViewModel.forumListStateFor(appState.activeForumFid),
+                                    listState = hostViewModel.forumListStateFor(appState.activeForumSource),
                                     contentPadding = padding,
                                     shellContentScope = this,
                                     viewModel = forumViewModel,
@@ -119,7 +116,11 @@ fun NextAppRoot(
                         ShellDestination.Mine -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                             HiEmptyState(
                                 message = account?.username ?: stringResource(R.string.shell_sidebar_mine),
-                                action = if (account == null) HiStateAction(stringResource(R.string.common_action_login)) { openLoginOrAccount(LoginOverlayMode.Login) } else null,
+                                action = if (account == null) {
+                                    HiStateAction(stringResource(R.string.common_action_login)) { openLoginOrAccount(LoginOverlayMode.Login) }
+                                } else {
+                                    HiStateAction(stringResource(R.string.shell_sidebar_account)) { openLoginOrAccount(LoginOverlayMode.AccountMenu) }
+                                },
                             )
                         }
                     }

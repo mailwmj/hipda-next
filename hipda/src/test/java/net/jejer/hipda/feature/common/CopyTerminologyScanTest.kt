@@ -1,6 +1,7 @@
 package net.jejer.hipda.feature.common
 
 import java.io.File
+import kotlin.io.path.createTempDirectory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,15 +9,15 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * 界面文案术语与错误泄漏门禁（product-design.md §8、§10.1、R-BATCH5 B1-1）。
+ * 界面文案术语与错误泄漏门禁（product-design.md §8、§10.1、R-BATCH5 B1-1、R-E0 S5）。
  *
- * 扫描 `src/main/res/values/strings_*.xml` 与 `src/debug/res/values/strings_*.xml`（显式排除旧 `strings.xml`）：
+ * 扫描 `src/main/res/values` 及 `values-*` 与 `src/debug/res/values` 及 `values-*` 下的 `strings_*.xml`（显式排除旧 `strings.xml`），
+ * 覆盖 `<string>`、`<string-array>`、`<plurals>`、单双引号 `name` 与 `<![CDATA[...]]>`：
  * 1. `product-design.md` §8 右栏全部 30 个精确禁止词组；
  * 2. 楼层误用正则 `(?:第\s*)?(?:\d+|%\d*\$?[ds])\s*层`（不误报 `楼层`/`层级`/`图层`）；
  * 3. 用户可见错误泄漏模式（异常类名 `*Exception`/`*Throwable`、HTTP 状态码模板 `HTTP 4xx/5xx`、`错误代码 (xxx)`）。
  *
- * 白名单采用与 `MotionTokenScanTest` 一致的“只能缩短、过期即报错”机制，仅豁免现网遗留 `strings_preference.xml` 两处旧条目，
- * 任何新增 `strings_<功能>.xml` 严格 0 豁免。
+ * 白名单采用“只能缩短、过期即报错”机制，仅豁免现网遗留 `strings_preference.xml` 两处旧条目，新增 `strings_<功能>.xml` 严格 0 豁免。
  */
 class CopyTerminologyScanTest {
 
@@ -126,12 +127,13 @@ class CopyTerminologyScanTest {
         val HTTP_STATUS_TEMPLATE_REGEX: Regex = Regex("""(?:HTTP\s*[45]\d{2}|错误代码\s*\(\s*\d{3}\s*\))""")
 
         private val XML_COMMENT_REGEX = Regex("<!--.*?-->", setOf(RegexOption.DOT_MATCHES_ALL))
+        private val CDATA_REGEX = Regex("""<!\[CDATA\[(.*?)]]>""", setOf(RegexOption.DOT_MATCHES_ALL))
         private val STRING_TAG_REGEX = Regex(
-            """<string\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</string>""",
+            """<string\b[^>]*\bname\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>(.*?)</string>""",
             setOf(RegexOption.DOT_MATCHES_ALL),
         )
-        private val STRING_ARRAY_REGEX = Regex(
-            """<string-array\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</string-array>""",
+        private val ITEM_CONTAINER_REGEX = Regex(
+            """<(?:string-array|plurals)\b[^>]*\bname\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>(.*?)</(?:string-array|plurals)>""",
             setOf(RegexOption.DOT_MATCHES_ALL),
         )
         private val ITEM_TAG_REGEX = Regex(
@@ -147,19 +149,23 @@ class CopyTerminologyScanTest {
         }
 
         internal fun collectTargetXmlFiles(moduleDir: File): List<File> {
-            val roots = listOf(
-                File(moduleDir, "src/main/res/values"),
-                File(moduleDir, "src/debug/res/values"),
+            val resRoots = listOf(
+                File(moduleDir, "src/main/res"),
+                File(moduleDir, "src/debug/res"),
             )
-            return roots
+            return resRoots
                 .filter { it.isDirectory }
-                .flatMap { dir ->
-                    dir.listFiles().orEmpty()
-                        .filter { file ->
-                            file.isFile &&
-                                file.name.startsWith("strings_") &&
-                                file.name.endsWith(".xml") &&
-                                file.name != "strings.xml"
+                .flatMap { resDir ->
+                    resDir.listFiles().orEmpty()
+                        .filter { it.isDirectory && (it.name == "values" || it.name.startsWith("values-")) }
+                        .flatMap { valuesDir ->
+                            valuesDir.listFiles().orEmpty()
+                                .filter { file ->
+                                    file.isFile &&
+                                        file.name.startsWith("strings_") &&
+                                        file.name.endsWith(".xml") &&
+                                        file.name != "strings.xml"
+                                }
                         }
                 }
                 .sortedBy { it.relativeTo(moduleDir).invariantSeparatorsPath }
@@ -215,20 +221,20 @@ class CopyTerminologyScanTest {
             val violations = mutableListOf<Violation>()
 
             for (match in STRING_TAG_REGEX.findAll(stripped)) {
-                val name = match.groupValues[1]
-                val value = unescapeXml(match.groupValues[2]).trim()
+                val name = match.groupValues[1].ifEmpty { match.groupValues[2] }
+                val value = extractXmlValue(match.groupValues[3])
                 val line = lineNumberAt(lineStarts, match.range.first)
                 violations += checkEntry(relativePath, line, name, value)
             }
 
-            for (arrayMatch in STRING_ARRAY_REGEX.findAll(stripped)) {
-                val arrayName = arrayMatch.groupValues[1]
-                val body = arrayMatch.groupValues[2]
-                val bodyOffset = arrayMatch.groups[2]!!.range.first
+            for (containerMatch in ITEM_CONTAINER_REGEX.findAll(stripped)) {
+                val containerName = containerMatch.groupValues[1].ifEmpty { containerMatch.groupValues[2] }
+                val body = containerMatch.groupValues[3]
+                val bodyOffset = containerMatch.groups[3]!!.range.first
                 for (itemMatch in ITEM_TAG_REGEX.findAll(body)) {
-                    val value = unescapeXml(itemMatch.groupValues[1]).trim()
+                    val value = extractXmlValue(itemMatch.groupValues[1])
                     val line = lineNumberAt(lineStarts, bodyOffset + itemMatch.range.first)
-                    violations += checkEntry(relativePath, line, arrayName, value)
+                    violations += checkEntry(relativePath, line, containerName, value)
                 }
             }
 
@@ -246,61 +252,39 @@ class CopyTerminologyScanTest {
 
             for (phrase in FORBIDDEN_PHRASES) {
                 if (value.contains(phrase)) {
-                    hits += Violation(
-                        relativePath = relativePath,
-                        line = line,
-                        resourceName = resourceName,
-                        rule = phrase,
-                        matchedText = phrase,
-                        value = value,
-                    )
+                    hits += Violation(relativePath, line, resourceName, phrase, phrase, value)
                 }
             }
-
             for (m in FLOOR_MISUSE_REGEX.findAll(value)) {
-                hits += Violation(
-                    relativePath = relativePath,
-                    line = line,
-                    resourceName = resourceName,
-                    rule = "楼层误用(第N层/N层)",
-                    matchedText = m.value,
-                    value = value,
-                )
+                hits += Violation(relativePath, line, resourceName, "楼层误用(第N层/N层)", m.value, value)
             }
-
             for (m in EXCEPTION_CLASS_REGEX.findAll(value)) {
-                hits += Violation(
-                    relativePath = relativePath,
-                    line = line,
-                    resourceName = resourceName,
-                    rule = "异常类名泄漏",
-                    matchedText = m.value,
-                    value = value,
-                )
+                hits += Violation(relativePath, line, resourceName, "异常类名泄漏", m.value, value)
             }
-
             for (m in HTTP_STATUS_TEMPLATE_REGEX.findAll(value)) {
-                hits += Violation(
-                    relativePath = relativePath,
-                    line = line,
-                    resourceName = resourceName,
-                    rule = "HTTP状态码模板泄漏",
-                    matchedText = m.value,
-                    value = value,
-                )
+                hits += Violation(relativePath, line, resourceName, "HTTP状态码模板泄漏", m.value, value)
             }
-
             return hits
         }
 
         private fun stripXmlCommentsPreservingLines(xml: String): String =
             XML_COMMENT_REGEX.replace(xml) { match ->
                 buildString(match.value.length) {
-                    for (ch in match.value) {
-                        append(if (ch == '\n') '\n' else ' ')
-                    }
+                    for (ch in match.value) append(if (ch == '\n') '\n' else ' ')
                 }
             }
+
+        private fun extractXmlValue(raw: String): String {
+            var cursor = 0
+            val out = StringBuilder(raw.length)
+            for (m in CDATA_REGEX.findAll(raw)) {
+                if (m.range.first > cursor) out.append(unescapeXml(raw.substring(cursor, m.range.first)))
+                out.append(m.groupValues[1])
+                cursor = m.range.last + 1
+            }
+            if (cursor < raw.length) out.append(unescapeXml(raw.substring(cursor)))
+            return out.toString().trim()
+        }
 
         private fun unescapeXml(raw: String): String = raw
             .replace("&lt;", "<")
@@ -349,12 +333,12 @@ class CopyTerminologyScanTest {
     }
 
     @Test
-    fun scanner_catchesForbiddenPhrasesFloorMisuseExceptionNamesAndHttpStatusTemplates() {
+    fun scanner_catchesForbiddenPhrasesPluralsSingleQuotesCdataAndValuesQualifiers() {
         val badXml = """
             <resources>
                 <string name="bad_reply">快速回帖</string>
                 <string name="bad_new_thread">发表新帖</string>
-                <string name="bad_pm">查看私信</string>
+                <string name='bad_single_quote'>查看站内信</string>
                 <string name="bad_wait">请稍候…</string>
                 <string name="bad_floor_1">第3层引用</string>
                 <string name="bad_floor_2">共 5层</string>
@@ -362,20 +346,24 @@ class CopyTerminologyScanTest {
                 <string name="bad_floor_4">跳转%d层</string>
                 <string name="bad_exception">发生 SocketTimeoutException</string>
                 <string name="bad_throwable">未知 Throwable</string>
+                <string name="bad_cdata"><![CDATA[出现 IOException 故障]]></string>
                 <string name="bad_http">请求失败 HTTP 403</string>
                 <string name="bad_code">错误代码 (502)</string>
                 <string-array name="bad_array">
                     <item>只看该作者</item>
                 </string-array>
+                <plurals name='bad_plurals'>
+                    <item quantity="other">共 %d层</item>
+                </plurals>
             </resources>
         """.trimIndent()
 
-        val violations = scanXmlContent("src/main/res/values/strings_bad.xml", badXml)
+        val violations = scanXmlContent("src/main/res/values-zh-rCN/strings_bad.xml", badXml)
         val byResource = violations.associateBy { it.resourceName }
 
         assertEquals("回帖", byResource["bad_reply"]?.rule)
         assertEquals("发表新帖", byResource["bad_new_thread"]?.rule)
-        assertEquals("私信", byResource["bad_pm"]?.rule)
+        assertEquals("站内信", byResource["bad_single_quote"]?.rule)
         assertEquals("请稍候", byResource["bad_wait"]?.rule)
         assertEquals("楼层误用(第N层/N层)", byResource["bad_floor_1"]?.rule)
         assertEquals("楼层误用(第N层/N层)", byResource["bad_floor_2"]?.rule)
@@ -383,9 +371,33 @@ class CopyTerminologyScanTest {
         assertEquals("楼层误用(第N层/N层)", byResource["bad_floor_4"]?.rule)
         assertEquals("异常类名泄漏", byResource["bad_exception"]?.rule)
         assertEquals("异常类名泄漏", byResource["bad_throwable"]?.rule)
+        assertEquals("异常类名泄漏", byResource["bad_cdata"]?.rule)
         assertEquals("HTTP状态码模板泄漏", byResource["bad_http"]?.rule)
         assertEquals("HTTP状态码模板泄漏", byResource["bad_code"]?.rule)
         assertEquals("只看该作者", byResource["bad_array"]?.rule)
+        assertEquals("楼层误用(第N层/N层)", byResource["bad_plurals"]?.rule)
+
+        val tempModule = createTempDirectory("copy-scan-qualifiers").toFile()
+        try {
+            File(tempModule, "src/main/res/values").apply { mkdirs() }
+                .resolve("strings.xml").writeText("<resources><string name=\"old\">回帖</string></resources>")
+            File(tempModule, "src/main/res/values-zh-rCN").apply { mkdirs() }
+                .resolve("strings_locale.xml").writeText("<resources><plurals name=\"p\"><item quantity=\"other\">私信</item></plurals></resources>")
+            File(tempModule, "src/debug/res/values-night").apply { mkdirs() }
+                .resolve("strings_debug_night.xml").writeText("<resources><string name=\"d\">正在处理</string></resources>")
+
+            val dirReport = scanDirectory(tempModule, allowlist = emptyList())
+            assertEquals(
+                listOf(
+                    "src/debug/res/values-night/strings_debug_night.xml",
+                    "src/main/res/values-zh-rCN/strings_locale.xml",
+                ),
+                dirReport.scannedFiles,
+            )
+            assertEquals(setOf("私信", "正在处理"), dirReport.unexpectedViolations.map { it.rule }.toSet())
+        } finally {
+            tempModule.deleteRecursively()
+        }
     }
 
     @Test
@@ -400,6 +412,9 @@ class CopyTerminologyScanTest {
                 <string name="ok_floor_title">第 1 楼 · 作者</string>
                 <string name="ok_sort">按发帖排序</string>
                 <string name="ok_account">账号信息</string>
+                <plurals name="ok_plurals">
+                    <item quantity="other">%d 个楼层</item>
+                </plurals>
             </resources>
         """.trimIndent()
 

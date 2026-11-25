@@ -5,16 +5,15 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import java.io.IOException
 import java.net.SocketTimeoutException
+import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRequiredException
 import net.jejer.hipda.data.auth.AuthRequiredReason
 import net.jejer.hipda.data.auth.ForumHttpException
 import net.jejer.hipda.data.auth.LoginResult
-import net.jejer.hipda.data.auth.SilentReloginFailureReason
-import net.jejer.hipda.data.auth.SilentReloginResult
-import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.network.access.ChallengeAbandonedException
 import net.jejer.hipda.data.network.access.ChallengeIncompleteException
 import net.jejer.hipda.data.network.access.ChallengeRejectedException
+import net.jejer.hipda.data.search.SearchError
 import net.jejer.hipda.data.threaddetail.ThreadDetailError
 import net.jejer.hipda.data.threadlist.ThreadListError
 import org.junit.Assert.assertEquals
@@ -80,8 +79,8 @@ class UiErrorMapperTest {
     }
 
     @Test
-    fun threadDetailErrors_mapAllBranchesToCleanCopyPhrasesAndHideTechDetails() {
-        val cases = listOf(
+    fun threadDetailAndSearchErrors_mapAllBranchesToCleanCopyPhrasesAndHideTechDetails() {
+        val detailCases = listOf(
             ThreadDetailError.AuthRequired(AuthRequiredReason.NOT_LOGGED_IN, message = "detail_unauth") to
                 Triple("需要登录才能查看", UiErrorAction.Login, "detail_unauth"),
             ThreadDetailError.AuthRequired(AuthRequiredReason.RELOGIN_FAILED, message = "detail_expired") to
@@ -105,12 +104,37 @@ class UiErrorMapperTest {
             ThreadDetailError.InvalidInput("invalid tid=abc") to
                 Triple("加载失败", UiErrorAction.Retry, "tid=abc"),
         )
-
-        for ((error, expected) in cases) {
+        for ((error, expected) in detailCases) {
             val (expectedMessage, expectedAction, expectedDetailSnippet) = expected
             val mapped = UiErrorMapper.map(error)
             val resolved = context.getString(mapped.messageRes)
             assertEquals("Error=$error", expectedMessage, resolved)
+            assertEquals("Action for $error", expectedAction, mapped.action)
+            assertSafePrimaryMessage(resolved, forbiddenRaw = expectedDetailSnippet)
+            assertTrue("Details missing '$expectedDetailSnippet': ${mapped.details}", mapped.details.orEmpty().contains(expectedDetailSnippet))
+        }
+
+        val searchCases = listOf(
+            SearchError.AuthRequired(AuthRequiredReason.NOT_LOGGED_IN, message = "search_unauth") to
+                Triple("需要登录才能查看", UiErrorAction.Login, "search_unauth"),
+            SearchError.ChallengeRequired(cooldownUntilMs = 300L, rejected = true) to
+                Triple("验证未通过", UiErrorAction.Reverify, "300"),
+            SearchError.NetworkError(message = "IOException: offline", statusCode = null, cause = IOException("search_net")) to
+                Triple("网络连接失败", UiErrorAction.Retry, "search_net"),
+            SearchError.SiteError("您无权使用搜索") to
+                Triple("当前账号无权查看这个版块", null, "无权使用"),
+            SearchError.SiteError("搜索冷却中") to
+                Triple("加载失败", UiErrorAction.Retry, "搜索冷却中"),
+            SearchError.InvalidPage("empty search table") to
+                Triple("加载失败", UiErrorAction.Retry, "empty search table"),
+            SearchError.InvalidInput("bad page") to
+                Triple("加载失败", UiErrorAction.Retry, "bad page"),
+        )
+        for ((error, expected) in searchCases) {
+            val (expectedMessage, expectedAction, expectedDetailSnippet) = expected
+            val mapped = UiErrorMapper.map(error)
+            val resolved = context.getString(mapped.messageRes)
+            assertEquals("SearchError=$error", expectedMessage, resolved)
             assertEquals("Action for $error", expectedAction, mapped.action)
             assertSafePrimaryMessage(resolved, forbiddenRaw = expectedDetailSnippet)
             assertTrue("Details missing '$expectedDetailSnippet': ${mapped.details}", mapped.details.orEmpty().contains(expectedDetailSnippet))
@@ -142,25 +166,6 @@ class UiErrorMapperTest {
             assertEquals(expected.first, resolved)
             assertEquals(expected.second, mapped.action)
             assertSafePrimaryMessage(resolved, forbiddenRaw = "pipe_secret")
-        }
-
-        val reloginCases = listOf(
-            SilentReloginFailureReason.INVALID_CREDENTIALS to Pair("登录已失效", UiErrorAction.Login),
-            SilentReloginFailureReason.SESSION_INVALIDATED to Pair("登录已失效", UiErrorAction.Login),
-            SilentReloginFailureReason.CHALLENGE_REJECTED to Pair("验证未通过", UiErrorAction.Reverify),
-            SilentReloginFailureReason.CHALLENGE_INCOMPLETE to Pair("安全验证未完成", UiErrorAction.Reverify),
-            SilentReloginFailureReason.CHALLENGE_ABANDONED to Pair("安全验证未完成", UiErrorAction.Reverify),
-            SilentReloginFailureReason.NETWORK_ERROR to Pair("网络连接失败", UiErrorAction.Retry),
-            SilentReloginFailureReason.SERVER_ERROR to Pair("加载失败", UiErrorAction.Retry),
-        )
-        for ((reason, expected) in reloginCases) {
-            val mapped = UiErrorMapper.mapSilentReloginFailure(
-                SilentReloginResult.Failed(reason = reason, message = "raw_secret_$reason"),
-            )
-            val resolved = context.getString(mapped.messageRes)
-            assertEquals(expected.first, resolved)
-            assertEquals(expected.second, mapped.action)
-            assertSafePrimaryMessage(resolved, forbiddenRaw = "raw_secret_$reason")
         }
 
         val throwableCases = listOf(

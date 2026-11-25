@@ -37,7 +37,6 @@ fun BasicMultiPaneContainer(
     onCloseThread: () -> Unit,
     modifier: Modifier = Modifier,
     shellGlassState: HiGlassState? = null,
-    threadViewModelFactory: ViewModelProvider.Factory? = null,
     forumContent: @Composable (ForumChromeSpec, PaddingValues) -> Unit,
     detailContent: @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues) -> Unit,
 ) {
@@ -50,9 +49,9 @@ fun BasicMultiPaneContainer(
             saveableStateHolder.SaveableStateProvider("forum_pane") { currentForumContent(chromeSpec, padding) }
         }
     }
-    val detailMovable = remember(hostViewModel, threadViewModelFactory) {
+    val detailMovable = remember(hostViewModel) {
         movableContentOf { args: ThreadNavArgs, chromeSpec: DetailChromeSpec, padding: PaddingValues ->
-            val factory = rememberThreadViewModelProviderFactory(threadViewModelFactory)
+            val factory = rememberThreadViewModelProviderFactory()
             val parentOwner = LocalViewModelStoreOwner.current
             val extras = remember(parentOwner) {
                 (parentOwner as? HasDefaultViewModelProviderFactory)?.defaultViewModelCreationExtras ?: CreationExtras.Empty
@@ -92,10 +91,7 @@ fun BasicMultiPaneContainer(
 }
 
 @Composable
-internal fun rememberThreadViewModelProviderFactory(
-    overrideFactory: ViewModelProvider.Factory? = null,
-): ViewModelProvider.Factory {
-    if (overrideFactory != null) return overrideFactory
+internal fun rememberThreadViewModelProviderFactory(): ViewModelProvider.Factory {
     val context = LocalContext.current
     val parentOwner = LocalViewModelStoreOwner.current
     val delegateFactory = remember(parentOwner) {
@@ -107,7 +103,7 @@ internal fun rememberThreadViewModelProviderFactory(
     }
 }
 
-private tailrec fun Context.findHiltComponentActivity(): ComponentActivity? = when (this) {
+internal tailrec fun Context.findHiltComponentActivity(): ComponentActivity? = when (this) {
     is ComponentActivity -> if (this is GeneratedComponentManagerHolder) this else null
     is ContextWrapper -> baseContext.findHiltComponentActivity()
     else -> null
