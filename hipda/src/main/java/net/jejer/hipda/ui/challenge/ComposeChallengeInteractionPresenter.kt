@@ -4,13 +4,16 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -18,28 +21,46 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.jejer.hipda.data.network.access.SolveResult
+import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.data.settings.SettingsRepository
+import net.jejer.hipda.feature.common.HiThemeSettingsAdapter
 import net.jejer.hipda.ui.designsystem.HiTheme
 
 /**
  * 生产用 [ChallengeInteractionPresenter]：在现有 [ChallengeActivity] 窗口中挂载 [ChallengePanelOverlay]，
+ * 实时订阅 [SettingsRepository] 同步用户主题/纯黑/种子色/字号至 [HiTheme]，
  * 将后台运行中的同一 `WebView` 从隐藏状态切换为可见可交互（不重新调用 `loadUrl`），
  * 并在用户点击刷新/取消、按下系统返回或后台轮询检测到验证通过时完成收起与结果回传。
  */
 @Singleton
 class ComposeChallengeInteractionPresenter internal constructor(
-    private val pollIntervalMs: Long,
-    private val dismissTimeoutMs: Long,
+    private val settingsFlow: Flow<AppSettings>,
+    private val pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
+    private val dismissTimeoutMs: Long = DEFAULT_DISMISS_TIMEOUT_MS,
 ) : ChallengeInteractionPresenter {
 
     @Inject
-    constructor() : this(
+    constructor(settingsRepository: SettingsRepository) : this(
+        settingsFlow = settingsRepository.settings,
         pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
         dismissTimeoutMs = DEFAULT_DISMISS_TIMEOUT_MS,
+    )
+
+    internal constructor(
+        pollIntervalMs: Long,
+        dismissTimeoutMs: Long,
+    ) : this(
+        settingsFlow = flowOf(AppSettings()),
+        pollIntervalMs = pollIntervalMs,
+        dismissTimeoutMs = dismissTimeoutMs,
     )
 
     override suspend fun present(session: ChallengeInteractionSession): SolveResult {
@@ -48,6 +69,8 @@ class ComposeChallengeInteractionPresenter internal constructor(
         if (safeCheckClearance(session)) {
             return SolveResult.Cleared
         }
+
+        val initialSettings = readInitialSettings()
 
         return withContext(Dispatchers.Main.immediate) {
             val activity = binding.activity
@@ -85,7 +108,15 @@ class ComposeChallengeInteractionPresenter internal constructor(
             val composeView = ComposeView(activity).apply {
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
                 setContent {
-                    HiTheme {
+                    val settings by settingsFlow.collectAsStateWithLifecycle(initialValue = initialSettings)
+                    val themeConfig = remember(settings) { HiThemeSettingsAdapter.toThemeConfig(settings) }
+                    HiTheme(
+                        themeMode = themeConfig.themeMode,
+                        pureBlack = themeConfig.pureBlack,
+                        seed = themeConfig.seed,
+                        fontSizeStep = themeConfig.fontSizeStep,
+                        lineHeightPreset = themeConfig.lineHeightPreset,
+                    ) {
                         LaunchedEffect(Unit) {
                             if (!resultDeferred.isCompleted) {
                                 panelShown = true
@@ -162,6 +193,15 @@ class ComposeChallengeInteractionPresenter internal constructor(
         }
     }
 
+    private suspend fun readInitialSettings(): AppSettings =
+        try {
+            withTimeoutOrNull(INITIAL_SETTINGS_TIMEOUT_MS) { settingsFlow.first() } ?: AppSettings()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            AppSettings()
+        }
+
     private suspend fun safeCheckClearance(session: ChallengeInteractionSession): Boolean =
         try {
             session.checkAndSyncClearance()
@@ -174,5 +214,6 @@ class ComposeChallengeInteractionPresenter internal constructor(
     companion object {
         const val DEFAULT_POLL_INTERVAL_MS: Long = 500L
         const val DEFAULT_DISMISS_TIMEOUT_MS: Long = 1_000L
+        private const val INITIAL_SETTINGS_TIMEOUT_MS: Long = 100L
     }
 }
