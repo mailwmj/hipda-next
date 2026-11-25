@@ -145,7 +145,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
-    // Large screen, Adaptive, Navigation 3 & Haze
+    // Large screen, Adaptive, Navigation 3 & Backdrop
     implementation(libs.androidx.compose.material3.adaptive)
     implementation(libs.androidx.compose.material3.adaptive.layout)
     implementation(libs.androidx.compose.material3.adaptive.navigation)
@@ -153,9 +153,7 @@ dependencies {
     implementation(libs.androidx.window)
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.navigation3.ui)
-    implementation(libs.haze)
-    implementation(libs.haze.blur)
-    implementation(libs.haze.blur.materials)
+    implementation(libs.backdrop)
 
     // DI (Hilt + KSP)
     implementation(libs.hilt.android)

@@ -43,22 +43,28 @@ class GlassTuningPanelTest {
             Locale.setDefault(Locale.FRANCE)
             val defaultLine = formatGlassStyleParams(HiGlassStyle.Navigation)
             assertEquals(
-                "blur=10.0dp lightTint=0.45 darkTint=0.46 sat=1.18 noise=0.040 border=1.00 indicator=0.12",
+                "blur=10.0dp refractH=16.0dp refractAmt=24.0dp depth=off ca=off vibrancy=on " +
+                    "lightTint=0.45 darkTint=0.46 sat=1.18 border=1.00 indicator=0.12",
                 defaultLine,
             )
             assertFalse("输出应为单行文本", defaultLine.contains('\n'))
 
             val custom = HiGlassStyle.Navigation.copy(
                 blurRadius = 16.5.dp,
+                refractionHeight = 20.0.dp,
+                refractionAmount = 32.5.dp,
+                depthEffect = true,
+                chromaticAberration = true,
+                vibrancyEnabled = false,
                 lightTintAlpha = 0.52f,
                 darkTintAlpha = 0.64f,
                 saturation = 1.25f,
-                noiseFactor = 0.025f,
                 borderHighlightStrength = 1.35f,
                 indicatorAlpha = 0.18f,
             )
             assertEquals(
-                "blur=16.5dp lightTint=0.52 darkTint=0.64 sat=1.25 noise=0.025 border=1.35 indicator=0.18",
+                "blur=16.5dp refractH=20.0dp refractAmt=32.5dp depth=on ca=on vibrancy=off " +
+                    "lightTint=0.52 darkTint=0.64 sat=1.25 border=1.35 indicator=0.18",
                 formatGlassStyleParams(custom),
             )
         } finally {
@@ -67,7 +73,7 @@ class GlassTuningPanelTest {
     }
 
     @Test
-    fun draggingSliders_updatesShellGlassStyleResetAndCopyClipboard() {
+    fun draggingSlidersAndSwitches_updatesShellGlassStyleResetAndCopyClipboard() {
         var currentStyle by mutableStateOf(HiGlassStyle.Navigation)
         val context = ApplicationProvider.getApplicationContext<Application>()
         val clipboard = context.getSystemService(ClipboardManager::class.java)
@@ -109,7 +115,13 @@ class GlassTuningPanelTest {
             currentStyle.blurRadius > HiGlassStyle.Navigation.blurRadius,
         )
 
-        // 通过 Slider 语义动作精确设定其余 6 项滑杆参数
+        // 通过 Slider 语义动作精确设定折射与其余滑杆参数
+        composeRule.onNodeWithContentDescription("折射高度")
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(24f) }
+        composeRule.onNodeWithContentDescription("折射强度")
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(36f) }
         composeRule.onNodeWithContentDescription("浅色着色透明度")
             .performScrollTo()
             .performSemanticsAction(SemanticsActions.SetProgress) { it(0.55f) }
@@ -119,23 +131,35 @@ class GlassTuningPanelTest {
         composeRule.onNodeWithContentDescription("饱和度")
             .performScrollTo()
             .performSemanticsAction(SemanticsActions.SetProgress) { it(1.30f) }
-        composeRule.onNodeWithContentDescription("噪点")
-            .performScrollTo()
-            .performSemanticsAction(SemanticsActions.SetProgress) { it(0.08f) }
         composeRule.onNodeWithContentDescription("描边高光强度")
             .performScrollTo()
             .performSemanticsAction(SemanticsActions.SetProgress) { it(1.50f) }
         composeRule.onNodeWithContentDescription("指示器透明度")
             .performScrollTo()
             .performSemanticsAction(SemanticsActions.SetProgress) { it(0.25f) }
+
+        // 切换 vibrancy / depthEffect / chromaticAberration 三个开关
+        composeRule.onNodeWithContentDescription("活色增强（Vibrancy）")
+            .performScrollTo()
+            .performClick()
+        composeRule.onNodeWithContentDescription("景深折射（Depth）")
+            .performScrollTo()
+            .performClick()
+        composeRule.onNodeWithContentDescription("边缘色散（Chromatic）")
+            .performScrollTo()
+            .performClick()
         composeRule.waitForIdle()
 
+        assertEquals(24f, currentStyle.refractionHeight.value, 0.5f)
+        assertEquals(36f, currentStyle.refractionAmount.value, 0.5f)
         assertEquals(0.55f, currentStyle.lightTintAlpha, 0.01f)
         assertEquals(0.62f, currentStyle.darkTintAlpha, 0.01f)
         assertEquals(1.30f, currentStyle.saturation, 0.01f)
-        assertEquals(0.08f, currentStyle.noiseFactor, 0.005f)
         assertEquals(1.50f, currentStyle.borderHighlightStrength, 0.02f)
         assertEquals(0.25f, currentStyle.indicatorAlpha, 0.01f)
+        assertFalse(currentStyle.vibrancyEnabled)
+        assertTrue(currentStyle.depthEffect)
+        assertTrue(currentStyle.chromaticAberration)
         assertNotEquals(HiGlassStyle.Navigation, currentStyle)
 
         // 复制当前参数到剪贴板，校验单行稳定格式

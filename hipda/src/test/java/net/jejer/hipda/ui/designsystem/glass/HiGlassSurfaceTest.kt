@@ -13,20 +13,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.unit.dp
-import dev.chrisbanes.haze.blur.HazeBlurDefaults
-import dev.chrisbanes.haze.blur.HazeBlurStyle
-import dev.chrisbanes.haze.blur.HazeColorEffect
 import java.io.File
 import net.jejer.hipda.ui.designsystem.HiColorPresets
+import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.hiColorSchemeFromSeed
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Rule
@@ -43,82 +43,103 @@ class HiGlassSurfaceTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun defaultTokensAndPresets_matchGlassReportRecommendations() {
+    fun defaultTokensAndPresets_matchBackdropLiquidGlassConfig() {
         assertEquals(10.dp, HiGlassTokens.BlurRadius)
-        assertEquals(0.04f, HiGlassTokens.NoiseFactor, 0.0001f)
         assertEquals(0.45f, HiGlassTokens.LightBlurTintAlpha, 0.0001f)
         assertEquals(0.46f, HiGlassTokens.DarkBlurTintAlpha, 0.0001f)
         assertEquals(1.18f, HiGlassTokens.BlurSaturation, 0.0001f)
+        assertEquals(16.dp, HiGlassTokens.RefractionHeight)
+        assertEquals(24.dp, HiGlassTokens.RefractionAmount)
+        assertFalse(HiGlassTokens.DepthEffect)
+        assertFalse(HiGlassTokens.ChromaticAberration)
+        assertTrue(HiGlassTokens.VibrancyEnabled)
         assertEquals(0.07f, HiGlassTokens.LightShadowAlpha, 0.0001f)
         assertEquals(0.18f, HiGlassTokens.DarkShadowAlpha, 0.0001f)
         assertEquals(0.12f, HiGlassTokens.IndicatorAlpha, 0.0001f)
         assertEquals(0.94f, HiGlassTokens.DegradedSurfaceAlpha, 0.0001f)
+        assertEquals(3, HiGlassTokens.MaxGlassSurfacesOnScreen)
 
         assertEquals(10.dp, HiGlassStyle.Navigation.blurRadius)
         assertEquals(0.45f, HiGlassStyle.Navigation.lightTintAlpha, 0.0001f)
         assertEquals(0.46f, HiGlassStyle.Navigation.darkTintAlpha, 0.0001f)
         assertEquals(1.18f, HiGlassStyle.Navigation.saturation, 0.0001f)
-        assertEquals(0.04f, HiGlassStyle.Navigation.noiseFactor, 0.0001f)
+        assertEquals(16.dp, HiGlassStyle.Navigation.refractionHeight)
+        assertEquals(24.dp, HiGlassStyle.Navigation.refractionAmount)
+        assertFalse(HiGlassStyle.Navigation.depthEffect)
+        assertFalse(HiGlassStyle.Navigation.chromaticAberration)
+        assertTrue(HiGlassStyle.Navigation.vibrancyEnabled)
         assertEquals(0.12f, HiGlassStyle.Navigation.indicatorAlpha, 0.0001f)
 
         assertEquals(16.dp, HiGlassStyle.Toolbar.blurRadius)
         assertEquals(0.60f, HiGlassStyle.Toolbar.lightTintAlpha, 0.0001f)
         assertEquals(0.68f, HiGlassStyle.Toolbar.darkTintAlpha, 0.0001f)
         assertEquals(1.08f, HiGlassStyle.Toolbar.saturation, 0.0001f)
-        assertEquals(0.04f, HiGlassStyle.Toolbar.noiseFactor, 0.0001f)
+        assertEquals(12.dp, HiGlassStyle.Toolbar.refractionHeight)
+        assertEquals(24.dp, HiGlassStyle.Toolbar.refractionAmount)
+        assertFalse(HiGlassStyle.Toolbar.depthEffect)
+        assertFalse(HiGlassStyle.Toolbar.chromaticAberration)
+        assertTrue(HiGlassStyle.Toolbar.vibrancyEnabled)
     }
 
     @Test
-    fun resolveStyleSpec_matchesLightDarkPureBlackAndDegradedValues() {
+    fun resolveStyleSpec_matchesLightDarkPureBlackBlurOnlyAndDegradedValues() {
         val lightScheme = hiColorSchemeFromSeed(HiColorPresets.Brand.color, darkTheme = false)
         val darkScheme = hiColorSchemeFromSeed(HiColorPresets.Brand.color, darkTheme = true)
         val pureBlackScheme = hiColorSchemeFromSeed(HiColorPresets.Brand.color, darkTheme = true, pureBlack = true)
 
-        val lightBlur = resolveHiGlassStyleSpec(
+        val lightRefraction = resolveHiGlassStyleSpec(
             colorScheme = lightScheme,
             darkTheme = false,
-            blurEnabled = true,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
             floating = true,
         )
-        assertEquals(10.dp, lightBlur.blurRadius)
-        assertEquals(0.04f, lightBlur.noiseFactor, 0.0001f)
-        assertEquals(1.18f, lightBlur.saturation, 0.0001f)
-        assertEquals(lightScheme.surfaceContainerLowest, lightBlur.surfaceColor)
-        assertEquals(lightScheme.surfaceContainerLowest.copy(alpha = 0.45f), lightBlur.activeTintColor)
-        assertEquals(lightScheme.surface.copy(alpha = 0.94f), lightBlur.degradedSurfaceColor)
-        assertEquals(HiGlassTokens.BorderWidth, lightBlur.borderWidth)
+        assertEquals(GlassRenderTier.REFRACTION_AND_BLUR, lightRefraction.renderTier)
+        assertTrue(lightRefraction.blurEnabled)
+        assertTrue(lightRefraction.refractionEnabled)
+        assertEquals(10.dp, lightRefraction.blurRadius)
+        assertEquals(16.dp, lightRefraction.refractionHeight)
+        assertEquals(24.dp, lightRefraction.refractionAmount)
+        assertTrue(lightRefraction.vibrancyEnabled)
+        assertEquals(1.18f, lightRefraction.saturation, 0.0001f)
+        assertEquals(lightScheme.surfaceContainerLowest, lightRefraction.surfaceColor)
+        assertEquals(lightScheme.surfaceContainerLowest.copy(alpha = 0.45f), lightRefraction.activeTintColor)
+        assertEquals(lightScheme.surface.copy(alpha = 0.94f), lightRefraction.degradedSurfaceColor)
+        assertEquals(HiGlassTokens.BorderWidth, lightRefraction.borderWidth)
         assertEquals(
             listOf(
                 Color.White.copy(alpha = HiGlassTokens.LightBorderHighlightTopLeftAlpha),
                 Color.White.copy(alpha = HiGlassTokens.LightBorderHighlightMidAlpha),
                 Color.White.copy(alpha = HiGlassTokens.LightBorderHighlightBottomRightAlpha),
             ),
-            lightBlur.borderHighlightColors,
+            lightRefraction.borderHighlightColors,
         )
-        assertEquals(Color.Black.copy(alpha = HiGlassTokens.LightBorderOutlineAlpha), lightBlur.borderOutlineColor)
-        assertEquals(HiGlassTokens.FloatingShadowElevation, lightBlur.shadowElevation)
-        assertEquals(Color.Black.copy(alpha = 0.07f), lightBlur.shadowColor)
+        assertEquals(Color.Black.copy(alpha = HiGlassTokens.LightBorderOutlineAlpha), lightRefraction.borderOutlineColor)
+        assertEquals(HiGlassTokens.FloatingShadowElevation, lightRefraction.shadowElevation)
+        assertEquals(Color.Black.copy(alpha = 0.07f), lightRefraction.shadowColor)
 
-        val darkBlur = resolveHiGlassStyleSpec(
+        val darkBlurOnly = resolveHiGlassStyleSpec(
             colorScheme = darkScheme,
             darkTheme = true,
-            blurEnabled = true,
+            renderTier = GlassRenderTier.BLUR_ONLY,
             floating = false,
         )
-        assertEquals(10.dp, darkBlur.blurRadius)
-        assertEquals(darkScheme.surfaceContainer, darkBlur.surfaceColor)
-        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.46f), darkBlur.activeTintColor)
+        assertEquals(GlassRenderTier.BLUR_ONLY, darkBlurOnly.renderTier)
+        assertTrue(darkBlurOnly.blurEnabled)
+        assertFalse(darkBlurOnly.refractionEnabled)
+        assertEquals(10.dp, darkBlurOnly.blurRadius)
+        assertEquals(darkScheme.surfaceContainer, darkBlurOnly.surfaceColor)
+        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.46f), darkBlurOnly.activeTintColor)
         assertEquals(
             listOf(
                 Color.White.copy(alpha = HiGlassTokens.DarkBorderHighlightTopLeftAlpha),
                 Color.White.copy(alpha = HiGlassTokens.DarkBorderHighlightMidAlpha),
                 Color.White.copy(alpha = HiGlassTokens.DarkBorderHighlightBottomRightAlpha),
             ),
-            darkBlur.borderHighlightColors,
+            darkBlurOnly.borderHighlightColors,
         )
-        assertEquals(Color.Transparent, darkBlur.borderOutlineColor)
-        assertEquals(0.dp, darkBlur.shadowElevation)
-        assertEquals(Color.Black.copy(alpha = 0.18f), darkBlur.shadowColor)
+        assertEquals(Color.Transparent, darkBlurOnly.borderOutlineColor)
+        assertEquals(0.dp, darkBlurOnly.shadowElevation)
+        assertEquals(Color.Black.copy(alpha = 0.18f), darkBlurOnly.shadowColor)
 
         val pureBlackBlur = resolveHiGlassStyleSpec(
             colorScheme = pureBlackScheme,
@@ -145,9 +166,11 @@ class HiGlassSurfaceTest {
         val lightDegraded = resolveHiGlassStyleSpec(
             colorScheme = lightScheme,
             darkTheme = false,
-            blurEnabled = false,
+            renderTier = GlassRenderTier.SOLID_DEGRADED,
             floating = true,
         )
+        assertFalse(lightDegraded.blurEnabled)
+        assertFalse(lightDegraded.refractionEnabled)
         assertEquals(lightScheme.surface.copy(alpha = 0.94f), lightDegraded.degradedSurfaceColor)
         assertEquals(HiGlassTokens.DegradedBorderWidth, lightDegraded.borderWidth)
         assertEquals(lightScheme.outlineVariant, lightDegraded.borderColor)
@@ -156,107 +179,92 @@ class HiGlassSurfaceTest {
     }
 
     @Test
-    fun toHazeConfigAndBlurStyle_passesSaturationNoiseBlurAndTintIntoHaze() {
+    fun toBackdropConfig_coversAllRenderTiersAndRefractionTokens() {
         val lightScheme = hiColorSchemeFromSeed(HiColorPresets.Brand.color, darkTheme = false)
         val darkScheme = hiColorSchemeFromSeed(HiColorPresets.Brand.color, darkTheme = true)
 
+        // 1) API 33+ 导航默认档（折射 + 模糊 + vibrancy）
         val navSpec = resolveHiGlassStyleSpec(
             colorScheme = lightScheme,
             darkTheme = false,
-            blurEnabled = true,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
             style = HiGlassStyle.Navigation,
         )
-        val navConfig = navSpec.toHazeConfig()
-        assertTrue(navConfig.blurEnabled)
-        assertEquals(10.dp, navConfig.blurRadius)
-        assertEquals(0.04f, navConfig.noiseFactor, 0.0001f)
-        assertEquals(lightScheme.surfaceContainerLowest, navConfig.backgroundColor)
-        assertEquals(2, navConfig.colorEffects.size)
+        val navRefraction = navSpec.toBackdropConfig(GlassRenderTier.REFRACTION_AND_BLUR)
+        assertEquals(GlassRenderTier.REFRACTION_AND_BLUR, navRefraction.renderTier)
+        assertTrue(navRefraction.backdropEnabled)
+        assertTrue(navRefraction.refractionEnabled)
+        assertEquals(10.dp, navRefraction.blurRadius)
+        assertEquals(16.dp, navRefraction.refractionHeight)
+        assertEquals(24.dp, navRefraction.refractionAmount)
+        assertFalse(navRefraction.depthEffect)
+        assertFalse(navRefraction.chromaticAberration)
+        assertTrue(navRefraction.vibrancyEnabled)
+        assertEquals(1.18f, navRefraction.saturation, 0.0001f)
+        assertEquals(navSpec.activeTintColor, navRefraction.tintColor)
+        assertEquals(navSpec.degradedSurfaceColor, navRefraction.fallbackColor)
 
-        val expectedNavSatEffect = HazeColorEffect.colorFilter(
-            ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(1.18f) }),
-        )
-        val expectedToolbarSatEffect = HazeColorEffect.colorFilter(
-            ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(1.08f) }),
-        )
-        assertEquals(expectedNavSatEffect, navConfig.colorEffects[0])
-        assertNotEquals(expectedToolbarSatEffect, navConfig.colorEffects[0])
-        assertEquals(HazeColorEffect.tint(navSpec.activeTintColor), navConfig.colorEffects[1])
-        assertEquals(HazeColorEffect.tint(navSpec.degradedSurfaceColor), navConfig.fallbackColorEffect)
-
-        // 同时验证 toHazeBlurStyle() 在 Haze 2.1.0 内部解析后的实际值与 HiGlassHazeConfig 完全一致
-        val resolvedNav = resolveHazeStyleForTest(navConfig.toHazeBlurStyle())
-        assertEquals(true, resolvedNav.blurEnabled)
-        assertEquals(10f, resolvedNav.blurRadiusDp, 0.001f)
-        assertEquals(0.04f, resolvedNav.noiseFactor, 0.0001f)
-        assertEquals(navConfig.colorEffects, resolvedNav.colorEffects)
-        assertEquals(navConfig.fallbackColorEffect, resolvedNav.fallbackColorEffect)
-
-        // 工具条档验证
-        val toolbarSpec = resolveHiGlassStyleSpec(
+        // 2) API 33+ 自定义景深与色散开关（工具条档）
+        val customToolbarSpec = resolveHiGlassStyleSpec(
             colorScheme = darkScheme,
             darkTheme = true,
-            blurEnabled = true,
-            style = HiGlassStyle.Toolbar,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
+            style = HiGlassStyle.Toolbar.copy(
+                refractionHeight = 20.dp,
+                refractionAmount = 36.dp,
+                depthEffect = true,
+                chromaticAberration = true,
+                vibrancyEnabled = false,
+            ),
         )
-        val toolbarConfig = toolbarSpec.toHazeConfig()
-        assertEquals(16.dp, toolbarConfig.blurRadius)
-        assertEquals(0.04f, toolbarConfig.noiseFactor, 0.0001f)
-        assertEquals(darkScheme.surfaceContainer, toolbarConfig.backgroundColor)
-        assertEquals(2, toolbarConfig.colorEffects.size)
-        assertEquals(expectedToolbarSatEffect, toolbarConfig.colorEffects[0])
-        assertEquals(
-            HazeColorEffect.tint(darkScheme.surfaceContainer.copy(alpha = 0.68f)),
-            toolbarConfig.colorEffects[1],
-        )
-        val resolvedToolbar = resolveHazeStyleForTest(toolbarConfig.toHazeBlurStyle())
-        assertEquals(16f, resolvedToolbar.blurRadiusDp, 0.001f)
-        assertEquals(toolbarConfig.colorEffects, resolvedToolbar.colorEffects)
+        val customToolbarConfig = customToolbarSpec.toBackdropConfig(GlassRenderTier.REFRACTION_AND_BLUR)
+        assertEquals(16.dp, customToolbarConfig.blurRadius)
+        assertEquals(20.dp, customToolbarConfig.refractionHeight)
+        assertEquals(36.dp, customToolbarConfig.refractionAmount)
+        assertTrue(customToolbarConfig.depthEffect)
+        assertTrue(customToolbarConfig.chromaticAberration)
+        assertFalse(customToolbarConfig.vibrancyEnabled)
+        assertEquals(1.08f, customToolbarConfig.saturation, 0.0001f)
+        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.68f), customToolbarConfig.tintColor)
 
-        // 饱和度 == 1.0f 时省略 ColorFilter，保留单 tint 走单 pass 优化
-        val neutralSatSpec = resolveHiGlassStyleSpec(
+        // 3) API 31–32 仅模糊档：严禁开启 lens 折射（高度/强度/景深/色散均归零关闭）
+        val blurOnlyConfig = customToolbarSpec.toBackdropConfig(GlassRenderTier.BLUR_ONLY)
+        assertEquals(GlassRenderTier.BLUR_ONLY, blurOnlyConfig.renderTier)
+        assertTrue(blurOnlyConfig.backdropEnabled)
+        assertFalse("API 31–32 BLUR_ONLY must never enable lens refraction", blurOnlyConfig.refractionEnabled)
+        assertEquals(16.dp, blurOnlyConfig.blurRadius)
+        assertEquals(0.dp, blurOnlyConfig.refractionHeight)
+        assertEquals(0.dp, blurOnlyConfig.refractionAmount)
+        assertFalse(blurOnlyConfig.depthEffect)
+        assertFalse(blurOnlyConfig.chromaticAberration)
+        assertFalse(blurOnlyConfig.vibrancyEnabled)
+        assertEquals(1.08f, blurOnlyConfig.saturation, 0.0001f)
+        assertEquals(customToolbarSpec.activeTintColor, blurOnlyConfig.tintColor)
+        assertEquals(customToolbarSpec.degradedSurfaceColor, blurOnlyConfig.fallbackColor)
+
+        // 4) API ≤ 30 / 系统降级档：关闭全部 backdrop 效果，纯色回退 94%
+        val degradedConfig = navSpec.toBackdropConfig(GlassRenderTier.SOLID_DEGRADED)
+        assertEquals(GlassRenderTier.SOLID_DEGRADED, degradedConfig.renderTier)
+        assertFalse(degradedConfig.backdropEnabled)
+        assertFalse(degradedConfig.refractionEnabled)
+        assertEquals(0.dp, degradedConfig.blurRadius)
+        assertEquals(0.dp, degradedConfig.refractionHeight)
+        assertEquals(0.dp, degradedConfig.refractionAmount)
+        assertFalse(degradedConfig.depthEffect)
+        assertFalse(degradedConfig.chromaticAberration)
+        assertFalse(degradedConfig.vibrancyEnabled)
+        assertEquals(1f, degradedConfig.saturation, 0.0001f)
+        assertEquals(navSpec.degradedSurfaceColor, degradedConfig.tintColor)
+        assertEquals(navSpec.degradedSurfaceColor, degradedConfig.fallbackColor)
+
+        // 5) 折射高度或强度为 0dp 时自动跳过 lens
+        val zeroRefractionSpec = resolveHiGlassStyleSpec(
             colorScheme = lightScheme,
             darkTheme = false,
-            blurEnabled = true,
-            style = HiGlassStyle.Navigation.copy(saturation = 1.0f),
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
+            style = HiGlassStyle.Navigation.copy(refractionHeight = 0.dp),
         )
-        val neutralConfig = neutralSatSpec.toHazeConfig()
-        assertEquals(1, neutralConfig.colorEffects.size)
-        assertEquals(HazeColorEffect.tint(neutralSatSpec.activeTintColor), neutralConfig.colorEffects[0])
-        val resolvedNeutral = resolveHazeStyleForTest(neutralConfig.toHazeBlurStyle())
-        assertEquals(neutralConfig.colorEffects, resolvedNeutral.colorEffects)
-    }
-
-    private data class ResolvedHazeSnapshot(
-        val blurEnabled: Boolean,
-        val blurRadiusDp: Float,
-        val noiseFactor: Float,
-        val colorEffects: List<HazeColorEffect>,
-        val fallbackColorEffect: HazeColorEffect?,
-    )
-
-    private fun resolveHazeStyleForTest(style: HazeBlurStyle): ResolvedHazeSnapshot {
-        val styleKt = Class.forName("dev.chrisbanes.haze.blur.HazeBlurStyleKt")
-        val resolveMethod = styleKt.getDeclaredMethod(
-            "resolveHazeBlurStyle",
-            HazeBlurStyle::class.java,
-            HazeBlurStyle::class.java,
-        )
-        val resolved = resolveMethod.invoke(null, HazeBlurDefaults.style, style)
-        val cls = resolved.javaClass
-        val blurEnabled = cls.getMethod("getBlurEnabled").invoke(resolved) as Boolean
-        val blurRadiusDp = cls.methods.first { it.name.startsWith("getBlurRadius") }.invoke(resolved) as Float
-        val noiseFactor = cls.getMethod("getNoiseFactor").invoke(resolved) as Float
-        @Suppress("UNCHECKED_CAST")
-        val colorEffects = cls.getMethod("getColorEffects").invoke(resolved) as List<HazeColorEffect>
-        val fallback = cls.getMethod("getFallbackColorEffect").invoke(resolved) as HazeColorEffect?
-        return ResolvedHazeSnapshot(
-            blurEnabled = blurEnabled,
-            blurRadiusDp = blurRadiusDp,
-            noiseFactor = noiseFactor,
-            colorEffects = colorEffects,
-            fallbackColorEffect = fallback,
-        )
+        assertFalse(zeroRefractionSpec.toBackdropConfig().refractionEnabled)
     }
 
     @Test
@@ -266,6 +274,8 @@ class HiGlassSurfaceTest {
         var localOverriddenGlass: HiGlassStyle? = null
         val customStyle = HiGlassStyle.Navigation.copy(
             blurRadius = 14.dp,
+            refractionHeight = 20.dp,
+            refractionAmount = 32.dp,
             saturation = 1.25f,
             indicatorAlpha = 0.20f,
         )
@@ -336,12 +346,19 @@ class HiGlassSurfaceTest {
     }
 
     @Test
-    fun assertGlassSurfaceCountAtMost_passesWhenTwoSurfacesRendered() {
+    fun assertGlassSurfaceCountAtMost_passesWhenThreeSurfacesRendered() {
         composeRule.setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                ProvideGlassEnvironment(state = GlassEnvironmentState.BlurEnabled) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
                     val glassState = rememberHiGlassState()
                     Column {
+                        HiGlassSurface(
+                            state = glassState,
+                            modifier = Modifier.size(160.dp, 48.dp),
+                            style = HiGlassStyle.Toolbar,
+                        ) {
+                            Text("顶栏标签")
+                        }
                         HiGlassSurface(
                             state = glassState,
                             modifier = Modifier.size(160.dp, 48.dp),
@@ -357,24 +374,27 @@ class HiGlassSurfaceTest {
             }
         }
 
-        composeRule.assertGlassSurfaceCountAtMost(2)
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
     }
 
     @Test
-    fun assertGlassSurfaceCountAtMost_failsWhenThreeSurfacesRendered() {
+    fun assertGlassSurfaceCountAtMost_failsWhenFourSurfacesRendered() {
         composeRule.setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
-                ProvideGlassEnvironment(state = GlassEnvironmentState.BlurEnabled) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
                     val glassState = rememberHiGlassState()
                     Column {
                         HiGlassSurface(state = glassState, modifier = Modifier.size(160.dp, 48.dp)) {
-                            Text("工具条")
-                        }
-                        HiGlassSurface(state = glassState, modifier = Modifier.size(200.dp, 64.dp)) {
-                            Text("导航胶囊")
+                            Text("第 1 块")
                         }
                         HiGlassSurface(state = glassState, modifier = Modifier.size(160.dp, 48.dp)) {
-                            Text("多余的第 3 块毛玻璃")
+                            Text("第 2 块")
+                        }
+                        HiGlassSurface(state = glassState, modifier = Modifier.size(200.dp, 64.dp)) {
+                            Text("第 3 块")
+                        }
+                        HiGlassSurface(state = glassState, modifier = Modifier.size(160.dp, 48.dp)) {
+                            Text("多余的第 4 块毛玻璃")
                         }
                     }
                 }
@@ -382,14 +402,79 @@ class HiGlassSurfaceTest {
         }
 
         try {
-            composeRule.assertGlassSurfaceCountAtMost(2)
-            fail("Expected AssertionError when 3 HiGlassSurface nodes are rendered")
+            composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+            fail("Expected AssertionError when 4 glass regions are rendered")
         } catch (expected: AssertionError) {
             assertTrue(
-                "Error message should mention 2 and 3, was: ${expected.message}",
-                expected.message?.contains("2") == true && expected.message?.contains("3") == true,
+                "Error message should mention 3 and 4, was: ${expected.message}",
+                expected.message?.contains("3") == true && expected.message?.contains("4") == true,
             )
         }
+    }
+
+    @Test
+    fun hiGlassRegion_countsSegmentedToolbarAsSingleGlassRegion() {
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    val glassState = rememberHiGlassState()
+                    Column {
+                        // 区域 1：透明吸顶顶栏
+                        HiGlassSurface(
+                            state = glassState,
+                            modifier = Modifier.size(200.dp, 48.dp),
+                            style = HiGlassStyle.Toolbar,
+                        ) {
+                            Text("顶栏")
+                        }
+                        // 区域 2：三段式底部工具条（3 枚胶囊共享同一区域，仅计为 1 个玻璃区域）
+                        HiGlassRegion {
+                            Column {
+                                HiGlassSurface(
+                                    state = glassState,
+                                    modifier = Modifier.size(80.dp, 48.dp),
+                                    style = HiGlassStyle.Toolbar,
+                                ) {
+                                    Text("回复")
+                                }
+                                HiGlassSurface(
+                                    state = glassState,
+                                    modifier = Modifier.size(120.dp, 48.dp),
+                                    style = HiGlassStyle.Toolbar,
+                                ) {
+                                    Text("第 2 / 8 页")
+                                }
+                                HiGlassSurface(
+                                    state = glassState,
+                                    modifier = Modifier.size(80.dp, 48.dp),
+                                    style = HiGlassStyle.Toolbar,
+                                ) {
+                                    Text("收藏/更多")
+                                }
+                            }
+                        }
+                        // 区域 3：底部导航胶囊
+                        HiGlassSurface(state = glassState, modifier = Modifier.size(200.dp, 64.dp)) {
+                            Text("导航胶囊")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 共 5 个 HiGlassSurface 节点但归属 3 个玻璃区域，应通过上限 3 断言，且 5 个表面均处于模糊激活态
+        val regionCount = composeRule.onAllNodes(
+            matcher = SemanticsMatcher.expectValue(HiGlassMarker, true),
+            useUnmergedTree = true,
+        ).fetchSemanticsNodes().size
+        val surfaceCount = composeRule.onAllNodes(
+            matcher = SemanticsMatcher.keyIsDefined(HiGlassBlurActive),
+            useUnmergedTree = true,
+        ).fetchSemanticsNodes().size
+        assertEquals("三段工具条应合并为 1 个区域，总计 3 个玻璃区域", 3, regionCount)
+        assertEquals("底层仍包含 5 个 HiGlassSurface 表面", 5, surfaceCount)
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+        composeRule.assertAllGlassSurfacesBlurActive(true)
     }
 
     @Test
@@ -403,7 +488,7 @@ class HiGlassSurfaceTest {
                 val spec = resolveHiGlassStyleSpec(
                     colorScheme = scheme,
                     darkTheme = darkTheme,
-                    blurEnabled = false,
+                    renderTier = GlassRenderTier.SOLID_DEGRADED,
                 )
                 val worstBackdrop = if (darkTheme) Color.White else Color.Black
                 listOf("bg" to scheme.background, "worstBackdrop" to worstBackdrop).forEach { (bgName, backdrop) ->
@@ -434,8 +519,8 @@ class HiGlassSurfaceTest {
     }
 
     @Test
-    fun degradedMode_detachesHazeBlurAndReleasesSourceDemand() {
-        var envState by mutableStateOf(GlassEnvironmentState.BlurEnabled)
+    fun degradedMode_detachesBackdropAndReleasesSourceRecordingDemand() {
+        var envState by mutableStateOf(GlassEnvironmentState.RefractionAndBlur)
         var capturedGlassState: HiGlassState? = null
 
         composeRule.setContent {
@@ -460,19 +545,77 @@ class HiGlassSurfaceTest {
                 }
             }
         }
+        composeRule.waitForIdle()
 
-        val hazeState = requireNotNull(capturedGlassState).hazeState
-        val demandGetter = hazeState.javaClass.methods.first { it.name.startsWith("getHasSourceDemand") }
-        assertTrue("Active blur should demand haze source", demandGetter.invoke(hazeState) as Boolean)
+        val state = requireNotNull(capturedGlassState)
+        val layerBackdrop = requireNotNull(state.layerBackdrop)
+        val coordinatesGetter = layerBackdrop.javaClass.methods.first { it.name.startsWith("getLayerCoordinates") }
+        assertTrue("Active refraction/blur should demand backdrop recording", state.hasSourceDemand)
+        assertNotNull(
+            "Active layerBackdrop should attach coordinates for recording",
+            coordinatesGetter.invoke(layerBackdrop),
+        )
         composeRule.assertAllGlassSurfacesBlurActive(true)
 
+        // 切换至省电降级：释放需求并卸载 LayerBackdropNode，停止离屏录制
         envState = GlassEnvironmentState(setOf(GlassDegradationReason.POWER_SAVE_MODE))
         composeRule.waitForIdle()
-        assertEquals(
-            "Degraded mode must detach hazeBlur so HazeSourceNode releases offscreen layer",
-            false,
-            demandGetter.invoke(hazeState) as Boolean,
+        assertFalse("Degraded mode must release backdrop recording demand", state.hasSourceDemand)
+        assertNull(
+            "Degraded mode must detach LayerBackdropNode so coordinates are cleared and recording stops",
+            coordinatesGetter.invoke(layerBackdrop),
         )
         composeRule.assertAllGlassSurfacesBlurActive(false)
+
+        // 切换至 API 31 仅模糊档：重新激活录制但不开启折射
+        envState = GlassEnvironmentState.BlurOnly
+        composeRule.waitForIdle()
+        assertTrue("Blur-only mode should re-enable backdrop recording demand", state.hasSourceDemand)
+        assertNotNull(
+            "Blur-only mode should re-attach layerBackdrop coordinates",
+            coordinatesGetter.invoke(layerBackdrop),
+        )
+        composeRule.assertAllGlassSurfacesBlurActive(true)
+    }
+
+    @Test
+    @Config(sdk = [35])
+    fun api35RefractionTier_capsuleAndRectangleShape_renderRealLensWithoutCrash() {
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    val glassState = rememberHiGlassState()
+                    Box(modifier = Modifier.size(240.dp, 160.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .hiGlassSource(glassState)
+                                .background(Color(0xFF1E88E5)),
+                        )
+                        Column {
+                            HiGlassSurface(
+                                state = glassState,
+                                modifier = Modifier.size(200.dp, 48.dp),
+                                shape = RectangleShape,
+                                style = HiGlassStyle.Toolbar.copy(depthEffect = true),
+                            ) {
+                                Text("矩形顶栏折射")
+                            }
+                            HiGlassSurface(
+                                state = glassState,
+                                modifier = Modifier.size(200.dp, 64.dp),
+                                shape = HiShapeTokens.Full,
+                                style = HiGlassStyle.Navigation.copy(chromaticAberration = true),
+                            ) {
+                                Text("胶囊折射色散")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+        composeRule.assertAllGlassSurfacesBlurActive(true)
     }
 }

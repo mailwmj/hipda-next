@@ -68,6 +68,7 @@ import net.jejer.hipda.R
 import net.jejer.hipda.debug.sampleexport.SampleExportActivity
 import net.jejer.hipda.ui.designsystem.glass.GlassDegradationReason
 import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.GlassRenderTier
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
 import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassStyle
@@ -136,6 +137,7 @@ internal fun PreviewRootContent() {
 enum class GlassPreviewMode {
     SYSTEM,
     FORCE_BLUR,
+    FORCE_BLUR_ONLY,
     SIMULATE_POWER_SAVE,
     SIMULATE_REDUCE_TRANSPARENCY,
 }
@@ -588,13 +590,15 @@ private fun GlassSpecimenSection(
     val systemGlassState by rememberGlassEnvironmentState()
     val effectiveGlassState = when (state.glassPreviewMode) {
         GlassPreviewMode.SYSTEM -> systemGlassState
-        GlassPreviewMode.FORCE_BLUR -> GlassEnvironmentState.BlurEnabled
+        GlassPreviewMode.FORCE_BLUR -> GlassEnvironmentState.RefractionAndBlur
+        GlassPreviewMode.FORCE_BLUR_ONLY -> GlassEnvironmentState.BlurOnly
         GlassPreviewMode.SIMULATE_POWER_SAVE -> GlassEnvironmentState(setOf(GlassDegradationReason.POWER_SAVE_MODE))
         GlassPreviewMode.SIMULATE_REDUCE_TRANSPARENCY -> GlassEnvironmentState(setOf(GlassDegradationReason.REDUCE_TRANSPARENCY))
     }
     val glassModes = listOf(
         GlassPreviewMode.SYSTEM to R.string.preview_glass_mode_system,
         GlassPreviewMode.FORCE_BLUR to R.string.preview_glass_mode_blur,
+        GlassPreviewMode.FORCE_BLUR_ONLY to R.string.preview_glass_mode_blur_only,
         GlassPreviewMode.SIMULATE_POWER_SAVE to R.string.preview_glass_mode_power_save,
         GlassPreviewMode.SIMULATE_REDUCE_TRANSPARENCY to R.string.preview_glass_mode_reduce_transparency,
     )
@@ -622,10 +626,18 @@ private fun GlassSpecimenSection(
             }
         }
         Text(
-            text = if (effectiveGlassState.blurEnabled) {
-                stringResource(R.string.preview_glass_status_blur, HiTheme.glass.blurRadius.value.toInt())
-            } else {
-                stringResource(R.string.preview_glass_status_degraded)
+            text = when (effectiveGlassState.renderTier) {
+                GlassRenderTier.REFRACTION_AND_BLUR -> stringResource(
+                    R.string.preview_glass_status_refraction,
+                    HiTheme.glass.blurRadius.value.toInt(),
+                    HiTheme.glass.refractionHeight.value.toInt(),
+                    HiTheme.glass.refractionAmount.value.toInt(),
+                )
+                GlassRenderTier.BLUR_ONLY -> stringResource(
+                    R.string.preview_glass_status_blur,
+                    HiTheme.glass.blurRadius.value.toInt(),
+                )
+                GlassRenderTier.SOLID_DEGRADED -> stringResource(R.string.preview_glass_status_degraded)
             },
             style = MaterialTheme.typography.bodySmall,
             color = cs.onSurfaceVariant,

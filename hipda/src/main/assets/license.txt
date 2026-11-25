@@ -26,3 +26,9 @@ MaterialDrawer - https://github.com/mikepenz/MaterialDrawer
 OkHttp - https://github.com/square/okhttp
 
 Subsampling Scale Image View - https://github.com/davemorrissey/subsampling-scale-image-view
+
+Backdrop (AndroidLiquidGlass) - https://github.com/Kyant0/AndroidLiquidGlass (Apache License 2.0)
+
+Shapes - https://github.com/Kyant0/Shapes (Apache License 2.0)
+
+kudo-android - https://github.com/woliubang256/kudo-android (Apache License 2.0)
