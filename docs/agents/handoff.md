@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-25 10:30 +07）
+# 负责人交接说明（2026-11-25 11:40 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -12,21 +12,27 @@
   - C5b 反馈组件（R-C5b APPROVE `2387ded`，按建议简化 1120→686 行后复核 APPROVE `dd89039`）→ `3ed1f9e`
   - C4a 自适应外壳（R-C4a 2 阻断：窄窗二次测量崩溃、预览不保态；修复后复核 APPROVE + V-C4a 视觉复验 PASS `dbb97ae`）→ `92e01d3`（CI 全绿）
   - C5a 状态组件（R-C5a APPROVE `64bf594`，简化 816→534 行并修正主动操作同帧显示、重建保态后复核 APPROVE `8d55671`）→ `461eb91`
-- 卡片全文在 `/home/mir/Documents/hipda-next.wt/_cards/<卡号>.md`（含 `-fix1` 修改轮与 `R-`/`V-` 审查验证卡），通用条款在 `_cards/_common.md`。
+  - A3b Cronet 传输（HttpEngine → Play 服务 Cronet → OkHttp 兜底；V-A3b PASS + R-A3b APPROVE `@6e91c6e`）→ `fe6b553`
+  - A4a Cloudflare 验证页检测器与 TransportInterceptor 遗留收口（V-A4a PASS + R-A4a APPROVE `@e75ef76`）→ `294c705`
+  - C4b 导航随滚动与键盘隐藏、内容留白、按压缩放（R-C4b APPROVE + V-C4b PASS `@6e92adc`，C4b-fix1 核对 PASS `@6396593`）→ `4229253`
+- 卡片全文在 `/home/mir/Documents/hipda-next.wt/_cards/<卡号>.md`（含 `-fix1` 修改轮与 `R-`/`V-` 审查验证卡），详细报告在 `_reports/`，通用条款在 `_cards/_common.md`。
 
 ## 2. 进行中
 
 | 卡号 | 分支 / worktree | 会话 | 状态 |
 |---|---|---|---|
-| A3b Cronet 传输（HttpEngine → Play 服务 Cronet → OkHttp 兜底） | `card/A3b-cronet` / `../hipda-next.wt/A3b` | 实现 `5ff4f475`；验证 V-A3b `9c4f76e5`；审查 R-A3b `c07cd701` | 交付 `6e91c6e`（CI + 模拟器冒烟绿），验证与审查进行中 |
-| C4b 导航随滚动隐藏、键盘隐藏、内容留白、导航项按压缩放、R-C4a 遗留简化 | `card/C4b-shell-scroll` / `../hipda-next.wt/C4b` | 实现 `427be0b9` | 实现中 |
+| A4b 站点访问网关与独立恢复 Dispatcher | `card/A4b-access-gateway` / `../hipda-next.wt/A4b` | 实现 `5e9d6bfe` | V-A4b FAIL → 修改轮：solver 挂起导致网关卡死 + 一次性请求体 |
+| A5a WebView UA 统一与 Cookie 桥 | `card/A5a-webview-identity` / `../hipda-next.wt/A5a` | 实现 `4a0702b3` | R-A5a 阻断 → 修改轮：清除 `cf_clearance` 未覆盖域变体 |
+| A5b 透明 ChallengeActivity 与后台自动过盾 | `card/A5b-challenge-host` / `../hipda-next.wt/A5b` | 待派发 | 卡片已起草（`_cards/A5b.md`），待 A4b、A5a 合并后填基线派发 |
+| OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 助理 `1b4eb15f` | 常驻复用中 |
 
+- M4 外壳阶段验收（C1–C5b 全部已合并）待用户真机核验真实模糊与帧率。
 - D3d 暂缓：“收藏缓存”的字段取决于 B9 的收藏解析模型；搜索历史部分可在 D8a 前单独做。
 - 本机有 Android SDK（mise 安装，见 lesson.md），可本地录制 Roborazzi 基线。
 
 ## 3. 后续主干路径
-- A 线：`A3b → A4（验证检测/协程层排队/60s 冷却/独立恢复 Dispatcher/后台直接放弃）→ A5（透明 ChallengeActivity + 不可见 WebView + Cookie 同步 + UA 统一，替换 A3a 的 `UserAgentProvider` 默认绑定）→ A6 → B1b`。**B1b 完成后找用户**：登录、确认抓到版块页（M1 验收）、按清单导出脱敏样本，随后解锁 B2–B9 与 D2/D4–D9。
-- C 线：C4b 完成后进入 M4 外壳阶段验收（需要真机核验真实模糊与帧率）。
+- A 线：`A4b、A5a 修改轮收口 → A5b → A6（遗留见 _cards/A6-notes.md）→ B1b`。**B1b 完成后找用户**：登录、确认抓到版块页（M1 验收）、按清单导出脱敏样本，随后解锁 B2–B9 与 D2/D4–D9。
+- C 线：C1–C5b 已全部合入 `main`，M4 外壳阶段验收待用户真机（核验真实模糊与帧率）。
 - 第三批建议（未落实，后续卡带上）：R-C5b 复核建议 `HiPressFeedbackNode.onDetach` 复位 `anim`、`displayedCount`/`displayedChar` 改普通引用；V-C4a 浅色毛玻璃在强对比文字上的真实模糊观感待 M4 真机校准。
 
 ## 4. 派发后续卡时必须带入的审查遗留建议（尚待处理项）

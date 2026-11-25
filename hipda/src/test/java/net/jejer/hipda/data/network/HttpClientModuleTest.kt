@@ -13,6 +13,7 @@ import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import net.jejer.hipda.data.network.cookie.SiteCookieStore
+import net.jejer.hipda.data.network.webview.WebViewUserAgentProvider
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.CookieJar
@@ -128,7 +129,7 @@ class HttpClientModuleTest {
 
         val bindUa = UserAgentModule::class.java.getDeclaredMethod(
             "bindUserAgentProvider",
-            DefaultUserAgentProvider::class.java,
+            WebViewUserAgentProvider::class.java,
         )
         assertTrue(bindUa.isAnnotationPresent(Binds::class.java))
         assertTrue(bindUa.isAnnotationPresent(Singleton::class.java))

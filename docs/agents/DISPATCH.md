@@ -16,7 +16,8 @@
 ## 2. 并发与工作目录
 - 每张卡一个 worktree：`git worktree add ../hipda-next.wt/<卡号> -b card/<卡号>-<简名> origin/main`。一个目录同时只有一个写入者；只读的审查、调研可以并行。
 - 编译以 GitHub Actions 为准：推送分支 → `gh run watch <id> --interval 60` → 失败时 `gh run view --log-failed`。不用默认间隔（3 秒），不写循环轮询：多个代理同时轮询会在一小时内耗尽 GitHub API 的 5000 次额度。遇到 `API rate limit exceeded` 时，用 `gh api rate_limit` 查重置时间，等到重置后再查，不要当成 CI 失败。
-- 本地编译只用于 CI 上复现不了的问题，必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
+- 先本地、后 CI：代理改完先在本地跑本卡相关的测试（按下一条的方式），本地变绿后才推送或 `gh workflow run`；CI 只作最终证据，不拿 CI 调试半成品（失败的运行会给负责人发邮件）。本机 SDK 路径见 `lesson.md`。
+- 本地编译必须这样运行：`flock /tmp/hipda-gradle.lock nice -n 10 ionice -c3 ./gradlew <任务> -Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.workers.max=4`，结束后执行 `./gradlew --stop`。
 - 同时运行的代理（含只读）最多 8 个；本地编译仍按上一条串行。
 
 ## 3. 模型路由
@@ -39,7 +40,8 @@
 - 敏感区（轻量卡也要审查）：`okhttp/`、`async/LoginHelper.java`、`utils/HiParser*`、`bean/HiSettingsHelper.java`、`db/`、`async/PostHelper.java`、`job/PostJob.java`、Cloudflare 验证相关代码。
 
 ## 5. 卡片约定
-- 卡片大小按改动量和可验证性来定，不按时间：一个行为，2–5 条验收；生产代码约 150–400 行，最多 5 个文件；敏感区约 200 行以内；纯搬代码的卡例外。详见 `docs/design/backlog.md` 的拆分规则。
+- 流程强度（2026-11-25 起）：审查 APPROVE 即合并，只有阻断项或真机风险才开修改轮，纯简化建议带进下一张碰到同一区域的卡；修改轮的小改动由负责人对照审查项核对，大段重写或修阻断项才复核；独立探针验证（Hydrogen）只用于并发/状态机类卡（如 A4b、A5）和界面卡（视觉复验），其他卡只做 Carbon 审查；生产代码不足约 120 行的卡与相邻卡合并，不单独开卡。
+- 拆卡标准（2026-11-25 修订，按第一性原理，不按行数）：一张卡的目的是用最低总成本把一个可判定的结果合进 main；总成本 = 固定开销（第三批实测约 45 分钟：起会话、读背景、CI、审查）+ 实现 + 预期返工。拆或合只看四个问题：(1) 能否用同一组“改错就会失败”的测试判定？能就是一张；判定方式不同（JVM 单测 / 模拟器或真机 / 视觉复验）就按判定方式拆。(2) 拆出来的前半能否让另一条线提前开工？能才拆；只喂给下一张卡的不拆。(3) 有没有未知领域（如 Cronet 反射与 R8、WebView 行为）？未知部分单独成卡，失败不连累已确定的部分。(4) 审查者要同时掌握的状态有多少（并发、状态机、跨模块契约）？多则拆小。行数只作信号：实际超过卡片估计 1.5 倍时实现者先自查简化（见界面卡条款），不作为拆卡规则。第三批对照：A3a/A3b 拆得对（判定方式不同 + Cronet 未知）；A4a/A4b 拆错了（检测器只供网关使用、判定方式相同、不解锁并行）；A5a/A5b 拆得对（A5a 不依赖 A4b 可并行，WebView 部分只能真机判定）。
 - 卡号按阶段编：`M0-1`、`M0-2`……；分支 `card/<卡号>-<简名>`。
 - 提交用 Conventional Commits，类型用英文，描述可以写中文。
 - 自检以 CI 为准：编译 `assembleDebug`、单元测试 `testDebugUnitTest`、`lint`；有截图测试后加 `verifyRoborazziDebug`（以 M0/M4 卡实际落地的任务名为准）。
@@ -50,6 +52,8 @@
   - 完成标准以 CI 运行结果为证据（给出 run 链接和 commit hash）。
 - 界面字符串放在 `res/values/strings_<功能>.xml`。
 - 界面卡另加：优先用 Compose 标准组件，手写 `Layout`/`Modifier.Node`/状态机要说明理由；生产代码不含只为测试存在的代码；超过估计行数 1.5 倍先自查简化。（第三批三张 C 卡都写到估计的 2–3 倍，见 lesson.md）
+- 代理最后一条回复不超过 600 字，结论在前；详细证据写到 `/home/mir/Documents/hipda-next.wt/_reports/<卡号>.md`。
+- 修改轮的小改动由负责人助理（Neon 新会话或 OPS 会话，不是实现者本人）对照审查项核对，结论写到 `_reports/<卡号>-fixcheck.md`；大段重写或修阻断项仍由原审查者复核。
 
 ## 6. 决策记录
 - 用户的决定记在 `docs/agents/decisions.md`。
