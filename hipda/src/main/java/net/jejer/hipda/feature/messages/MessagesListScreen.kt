@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material3.*
@@ -24,6 +25,7 @@ import androidx.compose.ui.unit.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import kotlinx.coroutines.flow.collectLatest
 import net.jejer.hipda.R
 import net.jejer.hipda.data.message.NotifyEntry
 import net.jejer.hipda.data.network.access.*
@@ -59,10 +61,12 @@ fun MessagesListScreen(
     val snackbarController = LocalPaneSnackbarController.current
     val resources = LocalResources.current
     LaunchedEffect(viewModel, snackbarController, resources, activeEntry) {
-        viewModel.events.collect { event ->
+        viewModel.events.collectLatest { event ->
             when (event) {
                 MessagesListEvent.AllNotificationsMarkedRead ->
                     snackbarController.show(resources.getString(R.string.messages_snackbar_all_read), PaneSnackbarTarget.ContentArea)
+                MessagesListEvent.RequireLogin ->
+                    snackbarController.show(resources.getString(R.string.messages_login_to_operate), PaneSnackbarTarget.ContentArea, resources.getString(R.string.common_action_login), onOpenLogin)
                 is MessagesListEvent.ShowError ->
                     snackbarController.showMessageUiError(event.error, resources, PaneSnackbarTarget.ContentArea, { viewModel.refresh(activeEntry, it, forceFullLoad = true) }, onOpenLogin)
             }
@@ -141,6 +145,11 @@ fun MessagesListScreen(
                     TextButton(onClick = viewModel::markAllNotificationsRead, enabled = canMarkAllRead, interactionSource = interaction, shape = HiShapeTokens.Small, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(interaction)) {
                         Text(stringResource(R.string.messages_action_mark_all_read), maxLines = 1, softWrap = false)
                     }
+                } else {
+                    val interaction = remember { MutableInteractionSource() }
+                    IconButton(onClick = viewModel::onNewSmsClick, interactionSource = interaction, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(interaction)) {
+                        Icon(Icons.Rounded.Edit, stringResource(R.string.messages_action_new_sms), tint = cs.onSurface, modifier = Modifier.size(22.dp))
+                    }
                 }
             },
             belowRow = {
@@ -181,6 +190,9 @@ fun MessagesListScreen(
 
     clearDialogTarget?.let { target ->
         ClearConversationConfirmDialog(target.author, { clearDialogTarget = null }) { clearDialogTarget = null; viewModel.clearConversation(target.uid) }
+    }
+    if (uiState.compose.isVisible) {
+        NewSmsDialog(uiState.compose, viewModel::onNewSmsRecipientChange, viewModel::onNewSmsBodyChange, viewModel::sendNewSms, viewModel::dismissNewSmsDialog, onOpenLogin)
     }
 }
 

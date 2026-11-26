@@ -1,8 +1,13 @@
 package net.jejer.hipda.feature.messages
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -16,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.res.stringResource
@@ -59,17 +65,18 @@ fun SmsConversationScreen(
     val coroutineScope = rememberCoroutineScope()
     val snackbarController = LocalPaneSnackbarController.current
     val resources = LocalResources.current
+    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val onSafeLinkClick: (String) -> Unit = remember(uriHandler) { { rawUrl -> sanitizeMessageLinkUrl(rawUrl)?.let { runCatching { uriHandler.openUri(it) } } } }
 
-    var undoSnackbarJob by remember { mutableStateOf<Job?>(null) }
+    var activeSnackbarJob by remember { mutableStateOf<Job?>(null) }
     LaunchedEffect(uiState.scrollToBottomEventId) {
         if (uiState.scrollToBottomEventId > 0L && uiState.messages.isNotEmpty()) listState.scrollToItem(uiState.messages.lastIndex)
     }
     LaunchedEffect(viewModel, snackbarController, resources) {
         viewModel.events.collectLatest { event ->
-            undoSnackbarJob?.cancel()
-            undoSnackbarJob = null
+            activeSnackbarJob?.cancel()
+            activeSnackbarJob = null
             when (event) {
                 is SmsConversationEvent.CooldownBlocked ->
                     snackbarController.show(resources.getString(R.string.messages_error_cooldown, event.remainingSeconds), PaneSnackbarTarget.DetailPane)
@@ -119,11 +126,22 @@ fun SmsConversationScreen(
                     ) {
                         items(uiState.messages, key = { it.id }) { bubble ->
                             SmsBubbleRow(
-                                item = bubble, onLinkClick = onSafeLinkClick, onResend = { viewModel.resendMessage(bubble.id) },
+                                item = bubble,
+                                onLinkClick = onSafeLinkClick,
+                                onCopy = {
+                                    val copiedLabel = resources.getString(R.string.messages_action_copy)
+                                    if (copySmsBubblePlainTextToClipboard(context, copiedLabel, bubble.rawMessage ?: bubble.contentHtml, isPlainText = bubble.rawMessage != null)) {
+                                        activeSnackbarJob?.cancel()
+                                        activeSnackbarJob = coroutineScope.launch {
+                                            snackbarController.show(resources.getString(R.string.messages_snackbar_copied), PaneSnackbarTarget.DetailPane)
+                                        }
+                                    }
+                                },
+                                onResend = { viewModel.resendMessage(bubble.id) },
                                 onDelete = {
                                     val token = viewModel.deleteFailedMessage(bubble.id) ?: return@SmsBubbleRow
-                                    undoSnackbarJob?.cancel()
-                                    undoSnackbarJob = coroutineScope.launch {
+                                    activeSnackbarJob?.cancel()
+                                    activeSnackbarJob = coroutineScope.launch {
                                         snackbarController.show(resources.getString(R.string.messages_snackbar_deleted), PaneSnackbarTarget.DetailPane, resources.getString(R.string.feedback_action_undo)) {
                                             viewModel.restoreDeletedMessage(token)
                                         }
@@ -142,21 +160,61 @@ fun SmsConversationScreen(
         }
     }
 
-    if (showClearDialog) ClearConversationConfirmDialog(peerName, { showClearDialog = false }) { showClearDialog = false; undoSnackbarJob?.cancel(); viewModel.clearConversation() }
+    if (showClearDialog) ClearConversationConfirmDialog(peerName, { showClearDialog = false }) { showClearDialog = false; activeSnackbarJob?.cancel(); viewModel.clearConversation() }
 }
 
+/** 提取短消息气泡纯文本（剥离 HTML 标签并将论坛表情转回规范代码），专供 [ClipData.newPlainText] 复制。 */
+fun extractSmsBubblePlainText(content: String, isPlainText: Boolean): String {
+    if (content.isBlank()) return ""
+    val parsed = if (isPlainText) parseSmsBubblePlainText(content) else parseSmsBubbleContent(content)
+    return parsed.segments.filterIsInstance<SmsBubbleSegment.Text>().mapNotNull { seg ->
+        buildString {
+            for (part in seg.parts) when (part) {
+                is SmsTextPart.Plain -> append(part.text)
+                is SmsTextPart.Link -> append(part.label)
+                is SmsTextPart.Emoji -> append(part.code ?: part.imageSrc?.let(EmojiMap::codeForImageSrc) ?: part.imageSrc?.let { "[$it]" }.orEmpty())
+                SmsTextPart.LineBreak -> append('\n')
+            }
+        }.trim().takeIf { it.isNotEmpty() }
+    }.joinToString("\n")
+}
+
+/** 将短消息气泡纯文本严格以 `ClipData.newPlainText` 写入系统剪贴板；内容为空时安全返回 `false`。 */
+fun copySmsBubblePlainTextToClipboard(context: Context, label: String, content: String, isPlainText: Boolean): Boolean {
+    val plainText = extractSmsBubblePlainText(content, isPlainText).ifEmpty { return false }
+    val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return false
+    return runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, plainText)) }.isSuccess
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SmsBubbleRow(item: SmsBubbleUiItem, onLinkClick: (String) -> Unit, onResend: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
+private fun SmsBubbleRow(item: SmsBubbleUiItem, onLinkClick: (String) -> Unit, onCopy: () -> Unit, onResend: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
+    val haptic = LocalHapticFeedback.current
     val bubbleBg = if (item.isMine) cs.primaryContainer else cs.surfaceContainerHigh
     val bubbleFg = if (item.isMine) cs.onPrimaryContainer else cs.onSurface
+    var copyMenuExpanded by remember(item.id) { mutableStateOf(false) }
+    val bubbleInteraction = remember { MutableInteractionSource() }
+    val copyLabel = stringResource(R.string.messages_action_copy)
 
     Row(modifier.fillMaxWidth(), horizontalArrangement = if (item.isMine) Arrangement.End else Arrangement.Start, verticalAlignment = Alignment.Bottom) {
         if (!item.isMine) MessageAvatar(item.avatarUrl, item.author, 32.dp, Modifier.padding(end = 8.dp))
         else SmsDeliveryStatusSlot(item.deliveryStatus, onResend, onDelete)
         Column(horizontalAlignment = if (item.isMine) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Surface(shape = HiShapeTokens.Medium, color = bubbleBg, contentColor = bubbleFg, modifier = Modifier.widthIn(max = BUBBLE_MAX_WIDTH)) {
-                SmsBubbleBody(item.rawMessage ?: item.contentHtml, bubbleFg, cs.primary, onLinkClick, Modifier.padding(horizontal = 12.dp, vertical = 9.dp), isPlainText = item.rawMessage != null)
+            Box {
+                Surface(shape = HiShapeTokens.Medium, color = bubbleBg, contentColor = bubbleFg, modifier = Modifier.widthIn(max = BUBBLE_MAX_WIDTH)) {
+                    SmsBubbleBody(
+                        item.rawMessage ?: item.contentHtml, bubbleFg, cs.primary, onLinkClick,
+                        Modifier.combinedClickable(
+                            interactionSource = bubbleInteraction, indication = hiListItemPressIndication(), onClick = {}, onLongClickLabel = copyLabel, hapticFeedbackEnabled = false,
+                            onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); copyMenuExpanded = true },
+                        ).padding(horizontal = 12.dp, vertical = 9.dp),
+                        isPlainText = item.rawMessage != null,
+                    )
+                }
+                DropdownMenu(expanded = copyMenuExpanded, onDismissRequest = { copyMenuExpanded = false }, modifier = Modifier.background(cs.surfaceContainerHigh)) {
+                    DropdownMenuItem(text = { Text(copyLabel) }, onClick = { copyMenuExpanded = false; onCopy() })
+                }
             }
             if (item.time.isNotBlank()) Text(item.time, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
         }
