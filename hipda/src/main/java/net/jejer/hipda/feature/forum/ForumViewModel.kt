@@ -23,6 +23,8 @@ import net.jejer.hipda.parser.search.SearchItem
 import net.jejer.hipda.parser.threadlist.ThreadSummary
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
 
+internal const val BUY_AND_SELL_FID: Int = 6
+
 @Immutable
 data class ForumUiState(
     val source: ForumListSource = ForumListSource.Forum(AppSettings.DEFAULT_FOLLOWED_FORUMS.first()),
@@ -37,6 +39,7 @@ data class ForumUiState(
     val error: UiError? = null,
     val challengeFailure: ChallengeFailureKind? = null,
     val challengeState: ChallengeState = ChallengeState.Idle,
+    val selectedTypeId: String? = null,
 )
 
 private data class TodayNewState(
@@ -75,6 +78,7 @@ class ForumViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val activeSource = MutableStateFlow<ForumListSource>(ForumListSource.Forum(AppSettings.DEFAULT_FOLLOWED_FORUMS.first()))
+    private val buyAndSellTypeId = MutableStateFlow<String?>(null)
     private val latestSettings = settingsRepository.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
     private val initializedQueries = HashSet<ThreadListQuery>()
     private var todayNewInitialized = false
@@ -86,16 +90,18 @@ class ForumViewModel @Inject constructor(
 
     val refreshErrors: SharedFlow<UiError> = _refreshErrors.asSharedFlow()
 
-    val uiState: StateFlow<ForumUiState> = combine(activeSource, latestSettings) { src, s -> src to s }
+    val uiState: StateFlow<ForumUiState> = combine(activeSource, latestSettings, buyAndSellTypeId) { src, s, bsType ->
+        Triple(src, s, effectiveTypeId(src, bsType))
+    }
         .distinctUntilChanged()
-        .flatMapLatest { (src, s) ->
+        .flatMapLatest { (src, s, typeId) ->
             when (src) {
                 ForumListSource.TodayNew -> combine(todayNewState, todayNewItems, auxState, siteAccessGateway.challengeState) { tn, items, aux, ch ->
                     val loading = tn.isLoading || (!tn.hasLoadedOnce && items.isEmpty() && tn.error == null)
-                    ForumUiState(src, s.followedForums, false, items, loading && items.isEmpty(), tn.isLoading && items.isNotEmpty(), tn.isLoadingMore, tn.hasMore, aux.newThreadsBySource[src] ?: 0, tn.error, tn.challengeFailure, ch)
+                    ForumUiState(src, s.followedForums, false, items, loading && items.isEmpty(), tn.isLoading && items.isNotEmpty(), tn.isLoadingMore, tn.hasMore, aux.newThreadsBySource[src] ?: 0, tn.error, tn.challengeFailure, ch, null)
                 }
                 is ForumListSource.Forum -> {
-                    val q = ThreadListQuery(fid = src.fid, sortByPostTime = s.isSortByPostTime(src.fid))
+                    val q = ThreadListQuery(fid = src.fid, sortByPostTime = s.isSortByPostTime(src.fid), typeId = typeId)
                     combine(threadListRepository.observeThreadList(q), auxState, siteAccessGateway.challengeState) { load, aux, ch ->
                         val err = load.error
                         val cf = (err as? ThreadListError.ChallengeRequired)?.let { if (it.rejected) ChallengeFailureKind.Rejected else ChallengeFailureKind.Incomplete }
@@ -103,7 +109,7 @@ class ForumViewModel @Inject constructor(
                         val visibleItems = if (staleUidCache) emptyList() else load.items
                         val unsettled = (staleUidCache || (load.fetchedPage == 0 && load.stopReason == null)) && err == null
                         val loading = load.isLoading || (unsettled && visibleItems.isEmpty())
-                        ForumUiState(src, s.followedForums, load.query.sortByPostTime ?: s.isSortByPostTime(src.fid), visibleItems, loading && visibleItems.isEmpty(), load.isLoading && visibleItems.isNotEmpty(), load.isLoadingMore, !staleUidCache && load.hasMore, aux.newThreadsBySource[src] ?: 0, err?.let(UiErrorMapper::map), cf, ch)
+                        ForumUiState(src, s.followedForums, load.query.sortByPostTime ?: s.isSortByPostTime(src.fid), visibleItems, loading && visibleItems.isEmpty(), load.isLoading && visibleItems.isNotEmpty(), load.isLoadingMore, !staleUidCache && load.hasMore, aux.newThreadsBySource[src] ?: 0, err?.let(UiErrorMapper::map), cf, ch, typeId)
                     }
                 }
             }
@@ -112,9 +118,11 @@ class ForumViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            combine(activeSource, latestSettings) { src, s -> src to (src as? ForumListSource.Forum)?.let { s.isSortByPostTime(it.fid) } }
+            combine(activeSource, latestSettings, buyAndSellTypeId) { src, s, bsType ->
+                Triple(src, (src as? ForumListSource.Forum)?.let { s.isSortByPostTime(it.fid) }, effectiveTypeId(src, bsType))
+            }
                 .distinctUntilChanged()
-                .collectLatest { (src, sort) ->
+                .collectLatest { (src, sort, typeId) ->
                     when (src) {
                         ForumListSource.TodayNew -> if (!todayNewInitialized) {
                             todayNewInitialized = true
@@ -122,7 +130,7 @@ class ForumViewModel @Inject constructor(
                             catch (e: CancellationException) { todayNewInitialized = false; throw e }
                         }
                         is ForumListSource.Forum -> {
-                            val q = ThreadListQuery(src.fid, sort ?: latestSettings.value.isSortByPostTime(src.fid))
+                            val q = ThreadListQuery(src.fid, sort ?: latestSettings.value.isSortByPostTime(src.fid), typeId)
                             if (initializedQueries.add(q)) {
                                 try { executeForumRefresh(src, q, AccessPriority.UserBlocking, emptyList()) }
                                 catch (e: CancellationException) { initializedQueries.remove(q); throw e }
@@ -157,11 +165,27 @@ class ForumViewModel @Inject constructor(
 
     fun setSortByPostTime(sortByPostTime: Boolean) {
         val src = activeSource.value as? ForumListSource.Forum ?: return
-        val q = ThreadListQuery(fid = src.fid, sortByPostTime = sortByPostTime)
+        val q = forumQuery(src.fid, sortByPostTime = sortByPostTime)
         initializedQueries.add(q)
         clearNewThreadsCount(src)
         viewModelScope.launch {
             settingsRepository.setSortByPostTime(src.fid, sortByPostTime)
+            executeForumRefresh(src, q, AccessPriority.UserBlocking, emptyList())
+        }
+    }
+
+    /** Buy & Sell（`fid=6`）分类筛选：仅对 `fid=6` 生效，其他版块/今日新帖直接忽略且不透传 `typeId`。 */
+    fun selectTypeId(typeId: String?) {
+        val src = activeSource.value as? ForumListSource.Forum ?: return
+        if (src.fid != BUY_AND_SELL_FID) return
+        val normalized = typeId?.trim()?.takeIf { it.isNotEmpty() }
+        if (buyAndSellTypeId.value == normalized) return
+        buyAndSellTypeId.value = normalized
+        val q = forumQuery(src.fid, bsTypeId = normalized)
+        initializedQueries.add(q)
+        clearNewThreadsCount(src)
+        activeRefreshJob?.cancel()
+        activeRefreshJob = viewModelScope.launch {
             executeForumRefresh(src, q, AccessPriority.UserBlocking, emptyList())
         }
     }
@@ -261,7 +285,18 @@ class ForumViewModel @Inject constructor(
     private fun clearNewThreadsCount(src: ForumListSource) =
         auxState.update { if ((it.newThreadsBySource[src] ?: 0) == 0) it else it.copy(newThreadsBySource = it.newThreadsBySource - src) }
 
-    private fun forumQuery(fid: Int) = ThreadListQuery(fid = fid, sortByPostTime = latestSettings.value.isSortByPostTime(fid))
+    private fun effectiveTypeId(source: ForumListSource, bsTypeId: String? = buyAndSellTypeId.value): String? =
+        if (source is ForumListSource.Forum && source.fid == BUY_AND_SELL_FID) bsTypeId?.trim()?.takeIf { it.isNotEmpty() } else null
+
+    private fun forumQuery(
+        fid: Int,
+        sortByPostTime: Boolean = latestSettings.value.isSortByPostTime(fid),
+        bsTypeId: String? = buyAndSellTypeId.value,
+    ) = ThreadListQuery(
+        fid = fid,
+        sortByPostTime = sortByPostTime,
+        typeId = if (fid == BUY_AND_SELL_FID) bsTypeId?.trim()?.takeIf { it.isNotEmpty() } else null,
+    )
 }
 
 internal fun computeTopNewThreadsCount(previousItems: List<ThreadListItem>, updatedItems: List<ThreadListItem>): Int {

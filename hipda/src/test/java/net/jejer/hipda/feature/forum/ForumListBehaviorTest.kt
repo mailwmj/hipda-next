@@ -28,7 +28,10 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import net.jejer.hipda.feature.common.ThreadNavArgs
 import androidx.compose.ui.unit.dp
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.roundToInt
@@ -289,6 +292,127 @@ class ForumListBehaviorTest {
         composeRule.onNodeWithContentDescription("更多").assertDoesNotExist()
     }
 
+    /** #1：Buy & Sell（fid=6）显示 48×48dp「分类」按钮、展开全部 9 项旧版文案、选「手机」传 typeId="1" 并回顶、选「全部」恢复 null；fid=2/今日新帖隐藏。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun buyAndSellCategoryFilter_onlyInFid6_selectsPhoneUpdatesAndScrollsTop_thenResetsAll() {
+        val harness = UiHarness()
+        var source by mutableStateOf<ForumListSource>(ForumListSource.Forum(2))
+        var listState: LazyListState? = null
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                val state = rememberLazyListState()
+                listState = state
+                ForumPane(
+                    source = source,
+                    chromeSpec = ForumChromeSpec(showForumTabs = true, useGlassTopBar = true),
+                    selectedTid = null,
+                    onSelectSource = { source = it },
+                    onOpenThread = {},
+                    onOpenLogin = {},
+                    listState = state,
+                    viewModel = harness.viewModel,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // fid=2 不显示「分类」
+        composeRule.onNodeWithContentDescription("分类").assertDoesNotExist()
+
+        // 切至「今日新帖」不显示「分类」
+        source = ForumListSource.TodayNew
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("分类").assertDoesNotExist()
+
+        // 切至 fid=6（Buy & Sell）：显示 48×48dp「分类」按钮
+        source = ForumListSource.Forum(6)
+        composeRule.waitForIdle()
+        val filterBtn = composeRule.onNodeWithContentDescription("分类").assertIsDisplayed()
+        val min48Px = with(composeRule.density) { 48.dp.toPx() }
+        val btnSize = filterBtn.fetchSemanticsNode().size
+        assertTrue("分类按钮宽必须 >= 48dp", btnSize.width >= min48Px - 1f)
+        assertTrue("分类按钮高必须 >= 48dp", btnSize.height >= min48Px - 1f)
+
+        // 先向下滚动，再点选第 2 项「手机」(typeId = "1")
+        val lazyState = requireNotNull(listState)
+        composeRule.runOnIdle { lazyState.requestScrollToItem(10) }
+        composeRule.waitForIdle()
+        assertTrue(lazyState.firstVisibleItemIndex >= 10)
+
+        filterBtn.performClick()
+        composeRule.waitForIdle()
+        val expectedLabels = listOf(
+            "全部", "手机", "掌上电脑", "笔记本电脑", "无线产品",
+            "数码相机、摄像机", "MP3随身听", "各类配件", "其他好玩的",
+        )
+        expectedLabels.forEach { label ->
+            composeRule.onNodeWithText(label).assertIsDisplayed()
+        }
+
+        composeRule.onNodeWithText("手机").performClick()
+        composeRule.waitForIdle()
+        assertEquals(ThreadListQuery(fid = 6, sortByPostTime = false, typeId = "1"), harness.lastRefreshQuery)
+        assertEquals("选分类后列表应回到顶部", 0, lazyState.firstVisibleItemIndex)
+        composeRule.onNodeWithText("手机分类测试帖 1").assertIsDisplayed()
+        assertEquals(
+            "选中非全部时应提供语义状态提示",
+            "手机",
+            composeRule.onNodeWithContentDescription("分类").fetchSemanticsNode().config[SemanticsProperties.StateDescription],
+        )
+
+        // 再次展开并选「全部」恢复 typeId = null
+        composeRule.onNodeWithContentDescription("分类").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("全部").performClick()
+        composeRule.waitForIdle()
+        assertEquals(ThreadListQuery(fid = 6, sortByPostTime = false, typeId = null), harness.lastRefreshQuery)
+        composeRule.onNodeWithText("论坛列表测试帖 1").assertIsDisplayed()
+
+        // 切回 fid=2：隐藏按钮且绝不透传 typeId
+        source = ForumListSource.Forum(2)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("分类").assertDoesNotExist()
+        assertTrue(harness.refreshQueries.filter { it.fid == 2 }.all { it.typeId == null })
+    }
+
+    /** #4：版块列表与今日新帖项单击 openLastPage=false、长按 openLastPage=true。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun threadListRows_clickOpensNormally_andLongClickOpensLastPage() {
+        val harness = UiHarness()
+        val opened = mutableListOf<ThreadNavArgs>()
+        var source by mutableStateOf<ForumListSource>(ForumListSource.Forum(2))
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ForumPane(
+                    source = source,
+                    chromeSpec = ForumChromeSpec(showForumTabs = true, useGlassTopBar = true),
+                    selectedTid = null,
+                    onSelectSource = { source = it },
+                    onOpenThread = opened::add,
+                    onOpenLogin = {},
+                    viewModel = harness.viewModel,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        val row = composeRule.onNodeWithText("论坛列表测试帖 1").assertIsDisplayed()
+        row.performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, opened.size)
+        assertFalse("单击应保持 openLastPage=false", opened.last().openLastPage)
+
+        row.performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        assertEquals(2, opened.size)
+        assertTrue("长按帖子列表项必须触发 openLastPage=true", opened.last().openLastPage)
+        assertEquals("1001", opened.last().tid)
+    }
+
     /** 验收 3 / §3.1 / §10.1：BalancedForumTabRow 少项等分居中、多项横向滑动，且所有标签与管理版块触控区 >= 48dp。 */
     @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
@@ -470,6 +594,7 @@ class ForumListBehaviorTest {
     ) {
         val settingsFlow = MutableStateFlow(AppSettings())
         val loadMoreCalls = AtomicInteger(0)
+        val refreshQueries = java.util.concurrent.CopyOnWriteArrayList<ThreadListQuery>()
         @Volatile var lastRefreshQuery: ThreadListQuery? = null
         @Volatile var failNextLoadMore: Boolean = false
         private var pendingNewThreads = 0
@@ -489,6 +614,7 @@ class ForumListBehaviorTest {
                 refresh(query, minVisibleItems, maxAutoBackfillPages, priority)
 
             override suspend fun refresh(query: ThreadListQuery, minVisibleItems: Int, maxAutoBackfillPages: Int, priority: AccessPriority): ThreadListLoadResult {
+                refreshQueries += query
                 lastRefreshQuery = query
                 if (holdInitialRefresh != null) {
                     stateFor(query).value = ThreadListLoadState(query, emptyList(), 0, 0, false, 0, null, isLoading = true)
@@ -501,9 +627,14 @@ class ForumListBehaviorTest {
                     currentRaw = added + currentRaw
                     pendingNewThreads = 0
                 }
-                val items = currentRaw.map { ThreadListItem(it, false) }
+                val rawForQuery = if (query.fid == 6 && query.typeId == "1") {
+                    (1..20).map { idx -> sampleSummary((6100 + idx).toString(), "手机分类测试帖 $idx") }
+                } else {
+                    currentRaw
+                }
+                val items = rawForQuery.map { ThreadListItem(it, false) }
                 stateFor(query).value = ThreadListLoadState(query, items, 1, 2, true, 1, emptyMeta(), false)
-                return ThreadListBatchResult(query, query.sortByPostTime == true, currentRaw, items, 1, 2, true, 1, emptyMeta())
+                return ThreadListBatchResult(query, query.sortByPostTime == true, rawForQuery, items, 1, 2, true, 1, emptyMeta())
             }
 
             override suspend fun loadMore(query: ThreadListQuery, minVisibleItems: Int, maxAutoBackfillPages: Int, priority: AccessPriority): ThreadListLoadResult {

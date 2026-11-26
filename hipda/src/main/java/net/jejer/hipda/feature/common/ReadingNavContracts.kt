@@ -24,6 +24,7 @@ data class ThreadNavArgs(
     val forumName: String? = null,
     val author: String? = null,
     val targetPid: String? = null,
+    val openLastPage: Boolean = false,
 )
 
 @Immutable

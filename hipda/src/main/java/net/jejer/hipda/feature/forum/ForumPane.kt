@@ -27,11 +27,11 @@ import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
-import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.*
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 import net.jejer.hipda.ui.shell.ShellContentScope
 
@@ -93,7 +93,18 @@ fun ForumPane(
             .collect { isListScrolled = it }
     }
     val coroutineScope = rememberCoroutineScope()
-    val reducedMotion = HiTheme.isReducedMotion
+    val scrollToTop = rememberHiScrollToTopAction(listState) { topBarScrollState.expand() }
+    val latestSelectedTypeId by rememberUpdatedState(uiState.selectedTypeId)
+    val onSelectTypeId = remember(viewModel, listState, topBarScrollState, coroutineScope) {
+        { typeId: String? ->
+            val normalized = typeId?.trim()?.takeIf { it.isNotEmpty() }
+            if (normalized != latestSelectedTypeId) {
+                viewModel.selectTypeId(normalized)
+                topBarScrollState.expand()
+                coroutineScope.launch { listState.scrollToItem(0) }
+            }
+        }
+    }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize().nestedScroll(topBarScrollState.nestedScrollConnection)) {
         val compactRow = maxWidth < FORUM_COMPACT_ROW_WIDTH_THRESHOLD
@@ -138,10 +149,15 @@ fun ForumPane(
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize().then(glassSourceModifier), contentPadding = listContentPadding) {
                         items(items = uiState.items, key = { it.tid }) { item ->
                             Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
-                                ThreadListRow(item, item.tid == selectedTid, compactRow, onClick = {
-                                    val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
-                                    onOpenThread(ThreadNavArgs(item.tid, item.summary.title, fid, if (fid > 0) headerTitle else item.summary.typeName, item.summary.author))
-                                })
+                                val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
+                                val navArgs = ThreadNavArgs(item.tid, item.summary.title, fid, if (fid > 0) headerTitle else item.summary.typeName, item.summary.author)
+                                ThreadListRow(
+                                    item = item,
+                                    selected = item.tid == selectedTid,
+                                    compactLayout = compactRow,
+                                    onClick = { onOpenThread(navArgs) },
+                                    onLongClick = { onOpenThread(navArgs.copy(openLastPage = true)) },
+                                )
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
                             }
                         }
@@ -166,8 +182,7 @@ fun ForumPane(
             count = uiState.newThreadsCount,
             onClick = {
                 viewModel.dismissNewThreadsPill()
-                topBarScrollState.expand()
-                coroutineScope.launch { if (reducedMotion) listState.scrollToItem(0) else listState.animateScrollToItem(0) }
+                scrollToTop()
             },
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -189,6 +204,9 @@ fun ForumPane(
             onSelectSortByPostTime = viewModel::setSortByPostTime,
             onManageForumsClick = onManageForumsClick,
             modifier = Modifier.align(Alignment.TopStart),
+            selectedTypeId = uiState.selectedTypeId,
+            onSelectTypeId = onSelectTypeId,
+            onScrollToTop = scrollToTop,
         )
     }
 }

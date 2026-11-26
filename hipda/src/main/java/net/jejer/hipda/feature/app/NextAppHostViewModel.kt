@@ -237,12 +237,45 @@ class NextAppHostViewModel private constructor(
         }
     }
 
-    /** 中栏点击帖子只替换右栏根帖子并清空下钻栈，绝不压栈（product-design.md §4.2）。 */
+    /** 中栏点击帖子只替换右栏根帖子并清空下钻栈，绝不压栈（product-design.md §4.2）；`openLastPage == true` 复用末页解析链路。 */
     fun openThread(args: ThreadNavArgs) {
+        if (args.openLastPage) {
+            openThreadLastPage(args, clearOverlay = false)
+            return
+        }
         cancelDeepLinkResolve()
+        commitOpenThread(args)
+    }
+
+    private fun commitOpenThread(args: ThreadNavArgs) {
         hasMutatedState = true
         updateReleasingStaleThreads { cur ->
             cur.copy(selectedThread = args, selectedSmsConversation = null, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
+        }
+    }
+
+    private fun openThreadLastPage(args: ThreadNavArgs, clearOverlay: Boolean) {
+        val fallback = args.copy(targetPid = null, openLastPage = false)
+        val repo = threadDetailRepository
+        if (repo == null) {
+            cancelDeepLinkResolve()
+            commitOpenThread(fallback)
+            if (clearOverlay) clearOverlayIfOpen()
+            return
+        }
+        cancelDeepLinkResolve()
+        resolveThreadTargetAsync(fallbackArgs = fallback, clearOverlay = clearOverlay) {
+            val res = repo.loadLastPage(args.tid, recordHistory = false, priority = AccessPriority.UserBlocking)
+            (res as? ThreadDetailLoadResult.Success)?.let { ok ->
+                ThreadNavArgs(
+                    tid = args.tid,
+                    title = ok.title.ifBlank { args.title },
+                    fid = if (ok.fid > 0) ok.fid else args.fid,
+                    forumName = ok.forumName ?: args.forumName,
+                    author = args.author,
+                    targetPid = ok.page.floors.lastOrNull()?.postId,
+                )
+            }
         }
     }
 
@@ -319,7 +352,7 @@ class NextAppHostViewModel private constructor(
             }
             is DeepLinkTarget.Thread -> {
                 if (target.page > 1 && threadDetailRepository != null) {
-                    resolveThreadTargetAsync(fallbackTid = target.tid) {
+                    resolveThreadTargetAsync(fallbackArgs = ThreadNavArgs(tid = target.tid)) {
                         val res = threadDetailRepository.loadPage(target.tid, target.page, recordHistory = false, priority = AccessPriority.UserBlocking)
                         (res as? ThreadDetailLoadResult.Success)?.let { ok ->
                             ThreadNavArgs(
@@ -337,23 +370,7 @@ class NextAppHostViewModel private constructor(
                 }
             }
             is DeepLinkTarget.ThreadLastPage -> {
-                if (threadDetailRepository != null) {
-                    resolveThreadTargetAsync(fallbackTid = target.tid) {
-                        val res = threadDetailRepository.loadLastPage(target.tid, recordHistory = false, priority = AccessPriority.UserBlocking)
-                        (res as? ThreadDetailLoadResult.Success)?.let { ok ->
-                            ThreadNavArgs(
-                                tid = target.tid,
-                                title = ok.title,
-                                fid = ok.fid,
-                                forumName = ok.forumName,
-                                targetPid = ok.page.floors.lastOrNull()?.postId,
-                            )
-                        }
-                    }
-                } else {
-                    openThread(ThreadNavArgs(tid = target.tid))
-                    clearOverlayIfOpen()
-                }
+                openThreadLastPage(ThreadNavArgs(tid = target.tid, openLastPage = true), clearOverlay = true)
             }
             is DeepLinkTarget.Post -> {
                 val explicitTid = target.tid?.takeIf { it.isNotBlank() }
@@ -361,7 +378,7 @@ class NextAppHostViewModel private constructor(
                     openThread(ThreadNavArgs(tid = explicitTid, targetPid = target.pid))
                     clearOverlayIfOpen()
                 } else if (threadDetailRepository != null) {
-                    resolveThreadTargetAsync(fallbackTid = null) {
+                    resolveThreadTargetAsync(fallbackArgs = null) {
                         val res = threadDetailRepository.loadByPostId(target.pid, tid = null, recordHistory = false, priority = AccessPriority.UserBlocking)
                         val ok = res as? ThreadDetailLoadResult.Success ?: return@resolveThreadTargetAsync null
                         val resolvedTid = ok.tid?.takeIf { it.isNotBlank() } ?: return@resolveThreadTargetAsync null
@@ -397,7 +414,8 @@ class NextAppHostViewModel private constructor(
     }
 
     private fun resolveThreadTargetAsync(
-        fallbackTid: String?,
+        fallbackArgs: ThreadNavArgs?,
+        clearOverlay: Boolean = true,
         resolver: suspend () -> ThreadNavArgs?,
     ) {
         hasMutatedState = true
@@ -407,12 +425,12 @@ class NextAppHostViewModel private constructor(
             if (gen != deepLinkResolveGen) return@launch
             when {
                 resolved != null -> {
-                    openThread(resolved)
-                    clearOverlayIfOpen()
+                    commitOpenThread(resolved)
+                    if (clearOverlay) clearOverlayIfOpen()
                 }
-                fallbackTid != null -> {
-                    openThread(ThreadNavArgs(tid = fallbackTid))
-                    clearOverlayIfOpen()
+                fallbackArgs != null -> {
+                    commitOpenThread(fallbackArgs)
+                    if (clearOverlay) clearOverlayIfOpen()
                 }
                 else -> _deepLinkFeedback.tryEmit(DeepLinkFeedbackEvent.PostResolveFailed)
             }

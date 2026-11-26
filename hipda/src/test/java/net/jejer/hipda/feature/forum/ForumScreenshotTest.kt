@@ -239,6 +239,26 @@ class ForumScreenshotTest {
     @Config(qualifiers = "w860dp-h744dp-xhdpi")
     fun forum_hinge_w860_h744_dark() = captureHingeForum("forum_hinge_w860_h744_dark", HiThemeMode.DARK)
 
+    // ---- M7-G1 Buy & Sell (fid=6) 分类筛选顶栏新增截图（2 张，供 R 目视浅/深色及选中态） ----
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun forum_bs_filter_w411_light() = captureForum(
+        name = "forum_bs_filter_w411_light",
+        themeMode = HiThemeMode.LIGHT,
+        source = ForumListSource.Forum(BUY_AND_SELL_FID),
+        initialTypeId = "1",
+    )
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun forum_bs_filter_w411_dark() = captureForum(
+        name = "forum_bs_filter_w411_dark",
+        themeMode = HiThemeMode.DARK,
+        source = ForumListSource.Forum(BUY_AND_SELL_FID),
+        initialTypeId = null,
+    )
+
     @Suppress("RestrictedApi")
     private fun captureHingeForum(name: String, themeMode: HiThemeMode) {
         val density = 2f
@@ -273,6 +293,8 @@ class ForumScreenshotTest {
         scrollToCollapseTopBar: Boolean = false,
         triggerNewThreadsPill: Int = 0,
         expectHingeSolidTopBar: Boolean = false,
+        source: ForumListSource = ForumListSource.Forum(2),
+        initialTypeId: String? = null,
     ) {
         val harness = ScreenshotHarness(mode, followedForums)
         val offlineLoader = ImageLoader.Builder(ApplicationProvider.getApplicationContext()).build()
@@ -297,7 +319,7 @@ class ForumScreenshotTest {
                             selected = ShellDestination.Forum,
                             onSelect = {},
                             sidebarState = HiSidebarState(
-                                selectedEntry = ShellSidebarEntry.Forum(2),
+                                selectedEntry = if (source is ForumListSource.Forum) ShellSidebarEntry.Forum(source.fid) else ShellSidebarEntry.TodayNew,
                                 followedForumIds = followedForums,
                                 unreadSmsCount = 2,
                                 unreadNotifyCount = 5,
@@ -316,7 +338,7 @@ class ForumScreenshotTest {
                             latestUseGlassTopBar = chromeSpec.useGlassTopBar
                             val forumSlot: @Composable (Modifier) -> Unit = { slotModifier ->
                                 ForumPane(
-                                    source = ForumListSource.Forum(2),
+                                    source = source,
                                     chromeSpec = chromeSpec,
                                     selectedTid = selectedTid,
                                     onSelectSource = {},
@@ -354,6 +376,11 @@ class ForumScreenshotTest {
                 composeRule.mainClock.advanceTimeByFrame()
                 composeRule.mainClock.advanceTimeByFrame()
             } else {
+                composeRule.waitForIdle()
+            }
+
+            if (initialTypeId != null) {
+                composeRule.runOnIdle { harness.viewModel.selectTypeId(initialTypeId) }
                 composeRule.waitForIdle()
             }
 
