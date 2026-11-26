@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 设置 5 组与子页文案（逐字取自 docs/design/copy.md） -->
+    <string name="settings_title">设置</string>
+    <string name="settings_group_appearance">外观与阅读</string>
+    <string name="settings_group_forum_post">论坛与发帖</string>
+    <string name="settings_group_notification">通知与免打扰</string>
+    <string name="settings_group_network_cache">网络与缓存</string>
+    <string name="settings_group_about">关于</string>
+
+    <!-- 外观与阅读 -->
+    <string name="settings_theme_title">主题</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_pure_black_title">纯黑深色背景</string>
+    <string name="settings_pure_black_summary">深色模式下使用纯黑背景，适合 OLED 屏幕</string>
+    <string name="settings_theme_color_title">主题色</string>
+    <string name="settings_theme_color_wallpaper">跟随壁纸</string>
+    <string name="settings_font_size_title">字号</string>
+    <string name="settings_font_preview_title">字号与行距预览</string>
+    <string name="settings_font_preview_body">读得舒服，找得快，回得顺手。调整字号与行距时，这里的排版效果会实时变化。</string>
+    <string name="settings_line_spacing_title">行距</string>
+    <string name="settings_line_spacing_compact">紧凑</string>
+    <string name="settings_line_spacing_standard">标准</string>
+    <string name="settings_line_spacing_loose">宽松</string>
+
+    <!-- 论坛与发帖 -->
+    <string name="settings_manage_forums_title">管理版块</string>
+    <string name="settings_manage_forums_followed">已关注</string>
+    <string name="settings_manage_forums_available">更多版块</string>
+    <string name="settings_manage_forums_move_up">上移</string>
+    <string name="settings_manage_forums_move_down">下移</string>
+    <string name="settings_manage_forums_remove">移除</string>
+    <string name="settings_manage_forums_add">添加</string>
+    <string name="settings_show_sticky_title">显示置顶帖</string>
+    <string name="settings_tail_title">小尾巴</string>
+    <string name="settings_tail_text_title">尾巴文字</string>
+    <string name="settings_tail_url_title">尾巴链接</string>
+    <string name="settings_blacklist_title">黑名单</string>
+    <string name="settings_blacklist_empty">黑名单是空的</string>
+    <string name="settings_blacklist_remove">移出黑名单</string>
+    <string name="settings_blacklist_removed_snackbar">已将 %1$s 移出黑名单</string>
+    <string name="settings_blacklist_removing_cd">正在移除…</string>
+
+    <!-- 通知与免打扰 -->
+    <string name="settings_notifications_title">接收提醒通知</string>
+    <string name="settings_notification_sound_title">通知声音与样式</string>
+    <string name="settings_notification_sound_summary">在系统设置中调整</string>
+    <string name="settings_quiet_hours_title">免打扰时段</string>
+    <string name="settings_quiet_hours_begin">开始时间</string>
+    <string name="settings_quiet_hours_end">结束时间</string>
+
+    <!-- 网络与缓存 -->
+    <string name="settings_forum_server_title">论坛服务器</string>
+    <string name="settings_image_cache_limit_title">图片缓存上限</string>
+    <string name="settings_clear_image_cache_title">清除图片缓存</string>
+    <string name="settings_clear_web_cache_title">清除网页缓存</string>
+    <string name="settings_cache_used">已占用 %1$s</string>
+    <string name="settings_cache_clearing">正在清除…</string>
+    <string name="settings_cache_cleared">已清除 %1$s</string>
+
+    <!-- 关于 -->
+    <string name="settings_version_title">版本</string>
+    <string name="settings_release_thread_title">客户端发布帖</string>
+    <string name="settings_error_logs_title">错误日志</string>
+    <string name="settings_error_logs_view">查看</string>
+    <string name="settings_error_logs_copy">复制</string>
+    <string name="settings_error_logs_share">分享</string>
+    <string name="settings_error_logs_empty">暂无错误日志</string>
+    <string name="settings_copied_content">内容已复制</string>
+
+    <!-- 校验与通用按钮（docs/design/copy.md） -->
+    <string name="settings_url_invalid">请输入以 http:// 或 https:// 开头的有效网址</string>
+    <string name="settings_action_cancel">取消</string>
+    <string name="settings_action_confirm">确定</string>
+    <string name="settings_action_close">关闭</string>
+    <string name="settings_action_undo">撤销</string>
+    <string name="settings_action_login_prompt">登录后即可操作</string>
+
+    <!-- 账号管理（docs/design/copy.md §登录与账号） -->
+    <string name="settings_account_title">账号</string>
+    <string name="settings_account_current">当前账号</string>
+    <string name="settings_account_add">添加账号</string>
+    <string name="settings_account_logout">退出登录</string>
+    <string name="settings_account_clear">清除登录信息</string>
+    <string name="settings_account_switched">已切换到 %1$s</string>
+    <string name="settings_account_logged_out">已退出登录</string>
+    <string name="settings_account_clear_confirm_title">清除 %1$s 的保存密码并退出？</string>
+    <string name="settings_account_clear_confirm_action">清除</string>
+</resources>

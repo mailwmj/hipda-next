@@ -17,7 +17,6 @@ import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.network.access.SiteAccessGateway
-import net.jejer.hipda.feature.common.PaneSnackbarController
 import net.jejer.hipda.feature.common.UiErrorMapper
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
 
@@ -51,7 +50,6 @@ data class LoginUiState(
     val securityQuestionId: Int = SavedAccount.NO_SECURITY_QUESTION,
     val securityAnswer: String = "",
     val isSubmitting: Boolean = false,
-    val isLoggingOut: Boolean = false,
     val fieldError: LoginFieldError? = null,
     @param:StringRes val generalErrorRes: Int? = null,
     val challengeState: ChallengeState = ChallengeState.Idle,
@@ -63,12 +61,12 @@ data class LoginUiState(
 
     override fun toString(): String =
         "LoginUiState(username=$username, password=***, securityQuestionId=$securityQuestionId, " +
-            "securityAnswer=***, isSubmitting=$isSubmitting, isLoggingOut=$isLoggingOut, " +
+            "securityAnswer=***, isSubmitting=$isSubmitting, " +
             "fieldError=$fieldError, generalErrorRes=$generalErrorRes, challengeState=$challengeState, " +
             "challengeFailure=$challengeFailure, focusRequest=$focusRequest, loginSuccessEventId=$loginSuccessEventId)"
 }
 
-/** 登录与临时退出登录 ViewModel（净化安全提问载荷、保留失败输入、精确路由出错字段焦点）。 */
+/** 登录 ViewModel（净化安全提问载荷、保留失败输入、精确路由出错字段焦点）。 */
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
@@ -79,7 +77,6 @@ class LoginViewModel @Inject constructor(
     private var submitJob: Job? = null
     private val _uiState = MutableStateFlow(LoginUiState(challengeState = siteAccessGateway.challengeState.value))
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
-    val currentAccount: StateFlow<SavedAccount?> = authRepository.currentAccount
 
     init {
         viewModelScope.launch {
@@ -123,7 +120,7 @@ class LoginViewModel @Inject constructor(
     fun resetForm() {
         submitJob?.cancel()
         submitJob = null
-        _uiState.update { LoginUiState(isLoggingOut = it.isLoggingOut, challengeState = siteAccessGateway.challengeState.value) }
+        _uiState.update { LoginUiState(challengeState = siteAccessGateway.challengeState.value) }
     }
 
     fun submit() {
@@ -149,36 +146,6 @@ class LoginViewModel @Inject constructor(
                 LoginResult.NetworkError(t.message.orEmpty(), t)
             }
             handleLoginResult(result)
-        }
-    }
-
-    fun logout(
-        snackbarController: PaneSnackbarController,
-        loggedOutMessage: String,
-        failureMessage: String? = null,
-        onDismiss: () -> Unit,
-    ) {
-        if (_uiState.value.isLoggingOut) return
-        _uiState.update { it.copy(isLoggingOut = true) }
-        viewModelScope.launch {
-            var loggedOut = false
-            var failed = false
-            try {
-                authRepository.logout()
-                loggedOut = true
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                failed = true
-            } finally {
-                _uiState.update { it.copy(isLoggingOut = false) }
-            }
-            if (loggedOut) {
-                onDismiss()
-                snackbarController.show(loggedOutMessage)
-            } else if (failed && failureMessage != null) {
-                snackbarController.show(failureMessage)
-            }
         }
     }
 

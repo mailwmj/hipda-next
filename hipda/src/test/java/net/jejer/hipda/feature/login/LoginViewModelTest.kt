@@ -1,7 +1,6 @@
 package net.jejer.hipda.feature.login
 
 import java.io.IOException
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -25,8 +24,6 @@ import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeSolver
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.access.SolveResult
-import net.jejer.hipda.feature.common.PaneSnackbarController
-import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
 import okhttp3.OkHttpClient
 import org.junit.After
@@ -232,65 +229,6 @@ class LoginViewModelTest {
         assertFalse(state.isSubmitting)
         assertEquals("登录成功后必须立即清空内存中的明文密码", "", state.password)
         assertEquals("登录成功后必须立即清空内存中的安全提问回答", "", state.securityAnswer)
-    }
-
-    @Test
-    fun logout_catchesNonCancellationExceptionAndRethrowsCancellationException() = runTest(testDispatcher) {
-        val repo = FakeAuthRepository(initialAccount = sampleAccount("old_user"))
-        val vm = LoginViewModel(repo, createIdleGateway(this))
-        val events = mutableListOf<String>()
-        val snackbar = object : PaneSnackbarController {
-            override suspend fun show(
-                message: String,
-                target: PaneSnackbarTarget,
-                actionLabel: String?,
-                onAction: (() -> Unit)?,
-            ) {
-                events += "snackbar:$message"
-            }
-        }
-
-        // 1) 普通异常（如磁盘 I/O）：兜底捕获不崩溃，复位 isLoggingOut，不误关浮层，发出失败提示
-        repo.logoutFailure = IOException("disk full")
-        vm.logout(snackbar, "已退出登录", failureMessage = "加载失败") { events += "dismiss" }
-        advanceUntilIdle()
-
-        assertFalse(vm.uiState.value.isLoggingOut)
-        assertEquals(listOf("snackbar:加载失败"), events)
-
-        // 2) CancellationException：照常重抛取消协程（不按失败提示，且 finally 复位 isLoggingOut）
-        events.clear()
-        repo.logoutFailure = CancellationException("cancelled")
-        vm.logout(snackbar, "已退出登录", failureMessage = "加载失败") { events += "dismiss" }
-        advanceUntilIdle()
-
-        assertFalse(vm.uiState.value.isLoggingOut)
-        assertEquals(emptyList<String>(), events)
-    }
-
-    @Test
-    fun logout_invokesRepositoryDismissesOverlayAndEmitsSnackbar() = runTest(testDispatcher) {
-        val repo = FakeAuthRepository(initialAccount = sampleAccount("old_user"))
-        val vm = LoginViewModel(repo, createIdleGateway(this))
-        val events = mutableListOf<String>()
-        val snackbar = object : PaneSnackbarController {
-            override suspend fun show(
-                message: String,
-                target: PaneSnackbarTarget,
-                actionLabel: String?,
-                onAction: (() -> Unit)?,
-            ) {
-                events += "snackbar:$message"
-            }
-        }
-
-        vm.logout(snackbar, "已退出登录") { events += "dismiss" }
-        advanceUntilIdle()
-
-        assertEquals(1, repo.logoutCalls)
-        assertNull(repo.currentAccount.value)
-        assertEquals(listOf("dismiss", "snackbar:已退出登录"), events)
-        assertFalse(vm.uiState.value.isLoggingOut)
     }
 
     private fun createIdleGateway(scope: TestScope): SiteAccessGateway = SiteAccessGateway(

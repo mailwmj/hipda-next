@@ -374,8 +374,9 @@ class LoginScreenTest {
             onNodeWithText("账号").assertIsDisplayed()
             onNodeWithText("hipda_veteran").assertIsDisplayed()
             onNodeWithText("当前账号").assertIsDisplayed()
+            onNodeWithText("添加账号").assertIsDisplayed()
             onNodeWithText("退出登录").assertIsDisplayed()
-            onNodeWithText("关闭").assertIsDisplayed()
+            onNodeWithText("清除登录信息").assertIsDisplayed()
 
             // 直接点击退出登录：无二次确认框，立即调 AuthRepository.logout()、关闭浮层并在宿主中展示“已退出登录”
             onNodeWithText("退出登录").performClick()
