@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 看图全屏浮层文案（逐字取自 docs/design/copy.md 与 product-design.md，0 豁免） -->
+    <string name="image_viewer_pane_title">看图</string>
+    <string name="image_viewer_title_floor_author">第 %1$d 楼 · %2$s</string>
+    <string name="image_viewer_page_indicator">%1$d / %2$d</string>
+    <string name="image_viewer_action_close">关闭</string>
+    <string name="image_viewer_action_view_original">查看原图</string>
+    <string name="image_viewer_original_loaded">已加载原图</string>
+    <string name="image_viewer_loading_cancel">正在加载图片，点击取消</string>
+    <string name="image_viewer_action_save">保存图片</string>
+    <string name="image_viewer_action_share">分享</string>
+    <string name="image_viewer_saved_to_gallery">已保存到相册</string>
+    <string name="image_viewer_save_failed">保存失败</string>
+    <string name="image_viewer_load_failed">图片加载失败</string>
+    <string name="image_viewer_action_retry">重试</string>
+    <string name="image_viewer_action_cancel">取消</string>
+    <string name="image_viewer_gif_badge">GIF</string>
+</resources>
