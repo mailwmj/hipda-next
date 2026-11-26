@@ -7,6 +7,7 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.androidx.baselineprofile)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
@@ -44,7 +45,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
-            isShrinkResources = false
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.txt",
@@ -72,6 +73,14 @@ roborazzi {
     outputDir.set(layout.projectDirectory.dir("src/test/snapshots/images"))
 }
 
+baselineProfile {
+    automaticGenerationDuringBuild = false
+    mergeIntoMain = true
+    filter {
+        exclude("net.jejer.hipda.baselineprofile.**")
+    }
+}
+
 java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(17))
@@ -87,6 +96,11 @@ androidComponents {
         variant.outputs.forEach { output ->
             output.outputFileName.set("hipda-ng-release.apk")
         }
+    }
+    onVariants(selector().withBuildType("nonMinifiedRelease")) { variant ->
+        variant.sources.manifests.addStaticManifestFile(
+            "src/nonMinifiedRelease/AndroidManifest.xml",
+        )
     }
 }
 
@@ -134,6 +148,8 @@ dependencies {
     // Core & Compose
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.profileinstaller)
+    baselineProfile(project(":baselineprofile"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)

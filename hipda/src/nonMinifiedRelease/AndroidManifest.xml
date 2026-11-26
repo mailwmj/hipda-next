@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          Baseline Profile generation host activity.
+          Lives exclusively in the nonMinifiedRelease source set created by androidx.baselineprofile
+          and is never compiled into release or debug APKs.
+        -->
+        <activity
+            android:name=".baselineprofile.BaselineProfileHostActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+    </application>
+</manifest>
