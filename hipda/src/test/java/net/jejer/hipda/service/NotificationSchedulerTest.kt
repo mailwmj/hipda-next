@@ -9,8 +9,11 @@ import androidx.startup.InitializationProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
 import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.Worker
+import androidx.work.WorkerParameters
 import androidx.work.testing.SynchronousExecutor
 import androidx.work.testing.TestListenableWorkerBuilder
 import androidx.work.testing.WorkManagerTestInitHelper
@@ -37,6 +40,13 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(application = HiNextApplication::class, sdk = [34])
 class NotificationSchedulerTest {
+
+    class PlainFallbackTestWorker(
+        appContext: Context,
+        workerParams: WorkerParameters,
+    ) : Worker(appContext, workerParams) {
+        override fun doWork(): Result = Result.success()
+    }
 
     private lateinit var app: HiNextApplication
     private lateinit var workManager: WorkManager
@@ -87,20 +97,20 @@ class NotificationSchedulerTest {
     }
 
     @Test
-    fun hiltWorkerFactory_constructsBothNewNotificationPollingWorkerAndLegacyNotiWorkerFallback() {
+    fun hiltWorkerFactory_constructsNotificationPollingWorkerAndPlainWorkerFallback() {
         val provider = (app as Any) as? Configuration.Provider
         assertNotNull("HiNextApplication must implement Configuration.Provider", provider)
         val factory = provider!!.workManagerConfiguration.workerFactory
         assertTrue(factory is HiltWorkerFactory)
 
-        // 1. Legacy NotiWorker (no @HiltWorker) must still instantiate cleanly via default reflection fallback
-        val legacyWorker = TestListenableWorkerBuilder<NotiWorker>(app)
+        // 1. Non-@HiltWorker workers still instantiate cleanly via default reflection fallback
+        val fallbackWorker = TestListenableWorkerBuilder<PlainFallbackTestWorker>(app)
             .setWorkerFactory(factory)
             .build()
-        assertNotNull(legacyWorker)
-        assertEquals(NotiWorker::class.java, legacyWorker::class.java)
+        assertNotNull(fallbackWorker)
+        assertEquals(PlainFallbackTestWorker::class.java, fallbackWorker::class.java)
 
-        // 2. New @HiltWorker NotificationPollingWorker must instantiate via HiltWorkerFactory
+        // 2. @HiltWorker NotificationPollingWorker instantiates via HiltWorkerFactory
         val newWorker = TestListenableWorkerBuilder<NotificationPollingWorker>(app)
             .setWorkerFactory(factory)
             .build()
@@ -111,8 +121,8 @@ class NotificationSchedulerTest {
     @Test
     fun schedule_enqueuesUnique15MinutePeriodicWorkWithConnectedNetworkAndKeepIdempotency() {
         assertNotEquals(
-            "New unique work name must not collide with legacy NotiWorker 'noti_work'",
-            "noti_work",
+            "New unique work name must not collide with legacy 'noti_work'",
+            WorkManagerNotificationScheduler.LEGACY_WORK_NAME,
             WorkManagerNotificationScheduler.WORK_NAME,
         )
 
@@ -134,22 +144,56 @@ class NotificationSchedulerTest {
         assertEquals(1, secondInfos.size)
         assertEquals(firstInfo.id, secondInfos.single().id)
         assertEquals(WorkInfo.State.ENQUEUED, secondInfos.single().state)
+    }
 
-        // Coexistence with legacy NotiWorker ("noti_work"): cancelling new scheduler leaves legacy work untouched
-        val legacyRequest = androidx.work.PeriodicWorkRequestBuilder<NotiWorker>(15L, TimeUnit.MINUTES).build()
-        workManager.enqueueUniquePeriodicWork(
-            "noti_work",
-            androidx.work.ExistingPeriodicWorkPolicy.KEEP,
-            legacyRequest,
+    @Test
+    fun rD9S3_schedulerInitAndSyncPaths_cancelLegacyNotiWorkRegardlessOfEnabledSetting() = runBlocking {
+        // Case 1: Startup syncFromSettings() with notificationsEnabled = true cancels legacy "noti_work"
+        enqueueResidualLegacyNotiWork()
+        assertEquals(
+            WorkInfo.State.ENQUEUED,
+            workManager.getWorkInfosForUniqueWork(WorkManagerNotificationScheduler.LEGACY_WORK_NAME).get().single().state,
         )
-        scheduler.cancel()
+
+        settingsRepository.setNotificationsEnabled(true)
+        scheduler.syncFromSettings()
+        assertEquals(
+            "syncFromSettings(enabled=true) must cancel residual legacy 'noti_work' (R-D9 S3)",
+            WorkInfo.State.CANCELLED,
+            workManager.getWorkInfosForUniqueWork(WorkManagerNotificationScheduler.LEGACY_WORK_NAME).get().single().state,
+        )
+        assertEquals(
+            WorkInfo.State.ENQUEUED,
+            workManager.getWorkInfosForUniqueWork(WorkManagerNotificationScheduler.WORK_NAME).get().single().state,
+        )
+
+        // Case 2: Startup syncFromSettings() with notificationsEnabled = false also cancels legacy "noti_work"
+        enqueueResidualLegacyNotiWork()
+        settingsRepository.setNotificationsEnabled(false)
+        scheduler.syncFromSettings()
+        assertEquals(
+            "syncFromSettings(enabled=false) must cancel residual legacy 'noti_work' (R-D9 S3)",
+            WorkInfo.State.CANCELLED,
+            workManager.getWorkInfosForUniqueWork(WorkManagerNotificationScheduler.LEGACY_WORK_NAME).get().single().state,
+        )
         assertEquals(
             WorkInfo.State.CANCELLED,
             workManager.getWorkInfosForUniqueWork(WorkManagerNotificationScheduler.WORK_NAME).get().single().state,
         )
+
+        // Case 3: Direct schedule() and cancel() also cancel legacy "noti_work"
+        enqueueResidualLegacyNotiWork()
+        scheduler.schedule()
         assertEquals(
-            WorkInfo.State.ENQUEUED,
-            workManager.getWorkInfosForUniqueWork("noti_work").get().single().state,
+            WorkInfo.State.CANCELLED,
+            workManager.getWorkInfosForUniqueWork(WorkManagerNotificationScheduler.LEGACY_WORK_NAME).get().single().state,
+        )
+
+        enqueueResidualLegacyNotiWork()
+        scheduler.cancel()
+        assertEquals(
+            WorkInfo.State.CANCELLED,
+            workManager.getWorkInfosForUniqueWork(WorkManagerNotificationScheduler.LEGACY_WORK_NAME).get().single().state,
         )
     }
 
@@ -212,5 +256,14 @@ class NotificationSchedulerTest {
         assertTrue(provideClock.isAnnotationPresent(Provides::class.java))
         assertTrue(provideClock.isAnnotationPresent(Singleton::class.java))
         assertEquals(PollingClock::class.java, provideClock.returnType)
+    }
+
+    private fun enqueueResidualLegacyNotiWork() {
+        val legacyRequest = PeriodicWorkRequestBuilder<PlainFallbackTestWorker>(15L, TimeUnit.MINUTES).build()
+        workManager.enqueueUniquePeriodicWork(
+            WorkManagerNotificationScheduler.LEGACY_WORK_NAME,
+            androidx.work.ExistingPeriodicWorkPolicy.REPLACE,
+            legacyRequest,
+        ).result.get()
     }
 }

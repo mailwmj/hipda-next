@@ -56,7 +56,7 @@ import net.jejer.hipda.data.settings.LineSpacing
 import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okio.Buffer
@@ -206,7 +206,7 @@ class SmsRepositoryTest {
     @Test
     fun getConversations_realSmsListSample_parsesAll50ConversationsAndSyncsUnreadCount() = runBlocking {
         val stack = createStack()
-        val sampleHtml = LegacyTestSupport.loadSample("sms/sms_list.html")
+        val sampleHtml = SampleTestLoader.loadSample("sms/sms_list.html")
         server.enqueue(gbkHtmlResponse(sampleHtml))
 
         val result = stack.smsRepo.getConversations(unreadOnly = false)
@@ -285,7 +285,7 @@ class SmsRepositoryTest {
         stack.notifyRepo.updateSmsUnreadState(setOf("20000", "20001"))
         assertEquals(2, stack.notifyRepo.smsUnreadCount.value)
 
-        val detailSampleHtml = LegacyTestSupport.loadSample("sms/sms_detail.html")
+        val detailSampleHtml = SampleTestLoader.loadSample("sms/sms_detail.html")
         server.enqueue(gbkHtmlResponse(detailSampleHtml))
 
         val result = stack.smsRepo.getConversationDetail(uid = "20000")

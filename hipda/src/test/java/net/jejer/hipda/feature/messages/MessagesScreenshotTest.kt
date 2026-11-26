@@ -19,6 +19,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import coil3.ImageLoader
+import java.util.Optional
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,7 @@ import net.jejer.hipda.data.network.access.SolveResult
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
 import net.jejer.hipda.feature.common.LocalHiImageLoader
 import net.jejer.hipda.feature.common.SmsConversationArgs
+import net.jejer.hipda.feature.compose.emoji.EmojiPanelRendererImpl
 import net.jejer.hipda.parser.message.NotifyItem
 import net.jejer.hipda.parser.message.NotifyKind
 import net.jejer.hipda.parser.message.SmsConversationItem
@@ -202,7 +204,7 @@ class MessagesScreenshotTest {
         )
         val authRepo = FakeAuthRepository(signedIn = signedIn)
         val gateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled }, clock = System::currentTimeMillis, gatewayScope = scope)
-        val renderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway)
+        val renderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway, Optional.of(EmojiPanelRendererImpl()))
 
         try {
             setContent {
@@ -333,6 +335,7 @@ class MessagesScreenshotTest {
                             onOpenLogin = {},
                             contentPadding = PaddingValues(0.dp),
                             viewModel = vm,
+                            emojiPanelSlot = { host -> EmojiPanelRendererImpl().Content(host, Modifier) },
                         )
                     }
                 }

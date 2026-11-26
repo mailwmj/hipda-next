@@ -76,10 +76,10 @@ import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.feature.app.MainActivity
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.feature.common.AppIntentConstants
+import net.jejer.hipda.parser.SampleTestLoader
 import net.jejer.hipda.parser.common.PromptCounts
 import net.jejer.hipda.parser.message.SmsConversationItem
-import net.jejer.hipda.utils.Constants
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okio.Buffer
@@ -421,16 +421,16 @@ class NotificationPollingWorkerTest {
         assertNotNull(pendingIntent)
         val launchedIntent = shadowOf(pendingIntent).savedIntent
         assertEquals(MainActivity::class.java.name, launchedIntent.component?.className)
-        assertEquals(Constants.INTENT_NOTIFICATION, launchedIntent.action)
+        assertEquals(AppIntentConstants.INTENT_NOTIFICATION, launchedIntent.action)
         assertTrue(
             "通知 PendingIntent 应带 FLAG_ACTIVITY_SINGLE_TOP | FLAG_ACTIVITY_CLEAR_TOP 防止重复实例",
             (launchedIntent.flags and Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0 &&
                 (launchedIntent.flags and Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0,
         )
-        assertEquals(1, launchedIntent.getIntExtra(Constants.EXTRA_SMS_COUNT, -1))
-        assertEquals(0, launchedIntent.getIntExtra(Constants.EXTRA_THREAD_COUNT, -1))
-        assertEquals("20000", launchedIntent.getStringExtra(Constants.EXTRA_UID))
-        assertNull("单人短消息通知 PendingIntent 不应携带原始用户名（只消费 uid 隐私约定）", launchedIntent.getStringExtra(Constants.EXTRA_USERNAME))
+        assertEquals(1, launchedIntent.getIntExtra(AppIntentConstants.EXTRA_SMS_COUNT, -1))
+        assertEquals(0, launchedIntent.getIntExtra(AppIntentConstants.EXTRA_THREAD_COUNT, -1))
+        assertEquals("20000", launchedIntent.getStringExtra(AppIntentConstants.EXTRA_UID))
+        assertNull("单人短消息通知 PendingIntent 不应携带原始用户名（只消费 uid 隐私约定）", launchedIntent.getStringExtra(AppIntentConstants.EXTRA_USERNAME))
     }
 
     @Test
@@ -480,7 +480,7 @@ class NotificationPollingWorkerTest {
         )
 
         // 4. Both counts drop to 0 (real empty sample) -> cancels previously posted notification
-        val emptyNotifySample = LegacyTestSupport.loadSample("notify/notify_list.html")
+        val emptyNotifySample = SampleTestLoader.loadSample("notify/notify_list.html")
         server.enqueue(gbkHtmlResponse(emptyNotifySample))
         val fourthResult = buildWorker(stack = stack).doWork()
         assertEquals(ListenableWorker.Result.success(), fourthResult)

@@ -60,7 +60,7 @@ import net.jejer.hipda.data.user.BlacklistRepository
 import net.jejer.hipda.data.user.BlacklistSnapshot
 import net.jejer.hipda.data.user.BlacklistSyncResult
 import net.jejer.hipda.di.ThreadListModule
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import net.jejer.hipda.parser.threadlist.ThreadSummary
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
@@ -171,9 +171,9 @@ class ThreadListRepositoryTest {
         val baseServer = server.url("").toString().trimEnd('/')
         settingsRepository.setForumServer("$baseServer/forum")
 
-        val p1Lastpost = LegacyTestSupport.loadSample("thread_list/forum_2_p1_lastpost.html")
-        val p2Lastpost = LegacyTestSupport.loadSample("thread_list/forum_2_p2_lastpost.html")
-        val p1Dateline = LegacyTestSupport.loadSample("thread_list/forum_2_p1_dateline.html")
+        val p1Lastpost = SampleTestLoader.loadSample("thread_list/forum_2_p1_lastpost.html")
+        val p2Lastpost = SampleTestLoader.loadSample("thread_list/forum_2_p2_lastpost.html")
+        val p1Dateline = SampleTestLoader.loadSample("thread_list/forum_2_p1_dateline.html")
 
         server.enqueue(gbkHtmlResponse(p1Lastpost))
         server.enqueue(gbkHtmlResponse(p2Lastpost))

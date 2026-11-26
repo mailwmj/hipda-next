@@ -13,7 +13,7 @@ import net.jejer.hipda.service.NotificationPoster
 import net.jejer.hipda.service.NotificationScheduler
 import net.jejer.hipda.service.PollingClock
 import net.jejer.hipda.service.WorkManagerNotificationScheduler
-import net.jejer.hipda.ui.HiApplication
+import net.jejer.hipda.ui.HiNextApplication
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -33,7 +33,7 @@ abstract class NotificationWorkModule {
         @Provides
         @Singleton
         fun provideAppVisibilityProvider(): AppVisibilityProvider =
-            AppVisibilityProvider { HiApplication.isAppVisible() }
+            AppVisibilityProvider { HiNextApplication.isAppVisible() }
 
         @Provides
         @Singleton

@@ -62,7 +62,7 @@ import net.jejer.hipda.data.user.BlacklistRepository
 import net.jejer.hipda.data.user.BlacklistSnapshot
 import net.jejer.hipda.data.user.BlacklistSyncResult
 import net.jejer.hipda.di.ThreadDetailModule
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.parser.threaddetail.InlineSpan
 import net.jejer.hipda.parser.threaddetail.PostFloor
@@ -177,9 +177,9 @@ class ThreadDetailRepositoryTest {
 
     @Test
     fun loadPage_realSamplesP1P2AndAuthorOnly_parseAllFieldsAndDeriveBaseUrls() = runBlocking {
-        val sampleP1 = LegacyTestSupport.loadSample("thread_detail/thread_p1.html")
-        val sampleP2 = LegacyTestSupport.loadSample("thread_detail/thread_p2.html")
-        val sampleAuthorOnly = LegacyTestSupport.loadSample("thread_detail/thread_author_only.html")
+        val sampleP1 = SampleTestLoader.loadSample("thread_detail/thread_p1.html")
+        val sampleP2 = SampleTestLoader.loadSample("thread_detail/thread_p2.html")
+        val sampleAuthorOnly = SampleTestLoader.loadSample("thread_detail/thread_author_only.html")
         server.enqueue(gbkHtmlResponse(sampleP1))
         server.enqueue(gbkHtmlResponse(sampleP2))
         server.enqueue(gbkHtmlResponse(sampleAuthorOnly))
@@ -256,8 +256,8 @@ class ThreadDetailRepositoryTest {
 
     @Test
     fun loadPage_authorOnlyWithoutAuthorId_fetchesPage1ToResolveOpUidThenFilteredPage() = runBlocking {
-        val sampleP1 = LegacyTestSupport.loadSample("thread_detail/thread_p1.html")
-        val sampleAuthorOnly = LegacyTestSupport.loadSample("thread_detail/thread_author_only.html")
+        val sampleP1 = SampleTestLoader.loadSample("thread_detail/thread_p1.html")
+        val sampleAuthorOnly = SampleTestLoader.loadSample("thread_detail/thread_author_only.html")
         // 1) page > 1 with authorId = null -> fetches page 1 then page 2 with &authorid=26171
         server.enqueue(gbkHtmlResponse(sampleP1))
         server.enqueue(gbkHtmlResponse(sampleAuthorOnly))
@@ -319,7 +319,7 @@ class ThreadDetailRepositoryTest {
 
     @Test
     fun loadLastPage_and_loadByPostId_followRedirectsAndResolveTidAndTargetPid() = runBlocking {
-        val sampleP2 = LegacyTestSupport.loadSample("thread_detail/thread_p2.html")
+        val sampleP2 = SampleTestLoader.loadSample("thread_detail/thread_p2.html")
         val repo = createRepository()
 
         // 1. loadLastPage -> 302 redirect to page 2
@@ -420,7 +420,7 @@ class ThreadDetailRepositoryTest {
 
     @Test
     fun loadPage_authPoliciesForLoggedInAndGuestAndErrorMapping() = runBlocking {
-        val sampleP1 = LegacyTestSupport.loadSample("thread_detail/thread_p1.html")
+        val sampleP1 = SampleTestLoader.loadSample("thread_detail/thread_p1.html")
         val repo = createRepository()
 
         // 1. Logged-in state: expired response triggers single silent relogin and succeeds on retry

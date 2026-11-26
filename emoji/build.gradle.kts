@@ -44,5 +44,5 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
-    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.annotation)
 }

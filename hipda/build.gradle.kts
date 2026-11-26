@@ -215,38 +215,6 @@ dependencies {
     }
     implementation(libs.tink.android)
 
-    // Legacy dependencies (retained until M7 removal)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.preference)
-    implementation(libs.material)
-    implementation(libs.androidx.security.crypto)
-    implementation(libs.androidx.swiperefreshlayout)
-    implementation(libs.androidx.documentfile)
-    implementation(libs.cookie.store)
-    implementation(libs.cookie.store.okhttp)
-    implementation(libs.gson)
-    implementation(libs.glide)
-    implementation(libs.glide.okhttp3.integration)
-    annotationProcessor(libs.glide.compiler)
-    implementation(libs.android.priority.jobqueue)
-    implementation(libs.eventbus)
-    implementation(libs.subsampling.scale.image.view)
-    implementation(libs.materialdrawer)
-    implementation(libs.iconics.core)
-    implementation(libs.google.material.typeface) {
-        isTransitive = false
-    }
-    implementation(libs.fontawesome.typeface) {
-        isTransitive = false
-    }
-    implementation(libs.bubble.layout)
-    implementation(libs.emoji.java) {
-        exclude(group = "org.json", module = "json")
-    }
-    implementation(libs.calligraphy3)
-    implementation(libs.viewpump)
-    implementation(libs.compressor)
-
     // Unit testing
     testImplementation(libs.junit4)
     testImplementation(libs.kotlinx.coroutines.test)

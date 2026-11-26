@@ -70,7 +70,7 @@ import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.di.AuthModule
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Cookie
@@ -222,7 +222,7 @@ class AuthRepositoryTest {
     fun login_formSubmitSuccess_encodesGbkEscapesPasswordPersistsCanonicalAccountAndClearsManualLogout() = runBlocking {
         val rawPassword = """P@ss'word"\中文"""
         val expectedMd5 = computeLegacyPasswordMd5(rawPassword)
-        val realLoginSample = LegacyTestSupport.loadSample("login/login_page.html")
+        val realLoginSample = SampleTestLoader.loadSample("login/login_page.html")
 
         credentialsStore.markManualLogout()
         val repo = createRepository()
@@ -315,7 +315,7 @@ class AuthRepositoryTest {
     @Test
     fun login_alreadyLoggedInSamplePage_sameUserPersistsImmediatelyWithoutPosting() = runBlocking {
         val repo = createRepository()
-        val realLoginSample = LegacyTestSupport.loadSample("login/login_page.html")
+        val realLoginSample = SampleTestLoader.loadSample("login/login_page.html")
         server.enqueue(gbkHtmlResponse(realLoginSample))
 
         val result = repo.login(username = "hiuser", passwordOrMd5 = "SecretPass123")
@@ -342,7 +342,7 @@ class AuthRepositoryTest {
 
         val repo = createRepository()
         // First GET sees old user HiUser (uid=10000)
-        server.enqueue(gbkHtmlResponse(LegacyTestSupport.loadSample("login/login_page.html")))
+        server.enqueue(gbkHtmlResponse(SampleTestLoader.loadSample("login/login_page.html")))
         // After clearing cdb_* while keeping cf_clearance, second GET returns login form
         server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_second")))
         server.enqueue(
@@ -1648,7 +1648,7 @@ class AuthRepositoryTest {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.target) {
                 "/forum/logging.php?action=login" -> {
                     if (request.headers["Cookie"].orEmpty().contains("cdb_auth=existing_hiuser_cookie")) {
-                        gbkHtmlResponse(LegacyTestSupport.loadSample("login/login_page.html"))
+                        gbkHtmlResponse(SampleTestLoader.loadSample("login/login_page.html"))
                     } else {
                         gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_s1_verify"))
                     }
@@ -1980,7 +1980,7 @@ class AuthRepositoryTest {
                 headers = listOf("Set-Cookie" to "cdb_auth=no_secq_token; Path=/"),
             ),
         )
-        server.enqueue(gbkHtmlResponse(LegacyTestSupport.loadSample("login/login_page.html")))
+        server.enqueue(gbkHtmlResponse(SampleTestLoader.loadSample("login/login_page.html")))
 
         val result = repo.login(
             username = "HiUser",

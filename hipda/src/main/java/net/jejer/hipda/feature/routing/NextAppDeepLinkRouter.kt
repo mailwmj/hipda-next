@@ -5,8 +5,8 @@ import androidx.compose.runtime.Immutable
 import net.jejer.hipda.data.search.ForumLinkResolver
 import net.jejer.hipda.data.search.ResolvedForumLink
 import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.feature.common.AppIntentConstants
 import net.jejer.hipda.feature.common.SafeLinkPolicy
-import net.jejer.hipda.utils.Constants
 
 /**
  * 统一外部 Intent / 桌面快捷方式 / 系统通知点击解析目标（不可变值模型）。
@@ -50,7 +50,7 @@ const val EXTRA_DEEP_LINK_URL: String = "net.jejer.hipda.extra.DEEP_LINK_URL"
  * 纯解析外部 Intent、桌面快捷方式与通知点击目标。
  *
  * - 快捷方式 4 个动作与 `res/xml/shortcuts.xml` 一致：`new_posts`、`search`、`sms`、`favorite`；
- * - 通知点击（[Constants.INTENT_NOTIFICATION]）遵循 M6-polish 隐私约定，忽略 [Constants.EXTRA_USERNAME]；
+ * - 通知点击（[AppIntentConstants.INTENT_NOTIFICATION]）遵循 M6-polish 隐私约定，忽略 [AppIntentConstants.EXTRA_USERNAME]；
  * - 外部链接强制先经 [SafeLinkPolicy.sanitizeHttpUrl] 严格白名单校验，任何危险或非 `http`/`https` scheme 一律返回 `null`。
  */
 fun parseIncomingIntent(
@@ -59,11 +59,11 @@ fun parseIncomingIntent(
 ): DeepLinkTarget? {
     if (intent == null) return null
     return when (intent.action) {
-        Constants.INTENT_NEW_POSTS -> DeepLinkTarget.TodayNew
-        Constants.INTENT_SEARCH -> DeepLinkTarget.Search
-        Constants.INTENT_SMS -> DeepLinkTarget.Sms
-        Constants.INTENT_FAVORITE -> DeepLinkTarget.Favorites
-        Constants.INTENT_NOTIFICATION -> parseNotificationIntent(intent)
+        AppIntentConstants.INTENT_NEW_POSTS -> DeepLinkTarget.TodayNew
+        AppIntentConstants.INTENT_SEARCH -> DeepLinkTarget.Search
+        AppIntentConstants.INTENT_SMS -> DeepLinkTarget.Sms
+        AppIntentConstants.INTENT_FAVORITE -> DeepLinkTarget.Favorites
+        AppIntentConstants.INTENT_NOTIFICATION -> parseNotificationIntent(intent)
         Intent.ACTION_VIEW -> {
             val rawUrl = intent.dataString ?: intent.getStringExtra(EXTRA_DEEP_LINK_URL)
             parseDeepLinkUrl(rawUrl, forumServer)
@@ -92,9 +92,9 @@ fun parseDeepLinkUrl(
 }
 
 private fun parseNotificationIntent(intent: Intent): DeepLinkTarget? {
-    val smsCount = intent.getIntExtra(Constants.EXTRA_SMS_COUNT, 0)
-    val threadCount = intent.getIntExtra(Constants.EXTRA_THREAD_COUNT, 0)
-    val uid = parsePositiveNumericId(intent.getStringExtra(Constants.EXTRA_UID))
+    val smsCount = intent.getIntExtra(AppIntentConstants.EXTRA_SMS_COUNT, 0)
+    val threadCount = intent.getIntExtra(AppIntentConstants.EXTRA_THREAD_COUNT, 0)
+    val uid = parsePositiveNumericId(intent.getStringExtra(AppIntentConstants.EXTRA_UID))
     return when {
         smsCount == 1 && threadCount <= 0 && uid != null -> DeepLinkTarget.SmsConversation(uid)
         smsCount > 0 -> DeepLinkTarget.Sms
