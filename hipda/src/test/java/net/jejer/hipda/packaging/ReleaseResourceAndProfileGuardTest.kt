@@ -75,8 +75,6 @@ class ReleaseResourceAndProfileGuardTest {
             add("@drawable/win")
             add("@drawable/ic_stat_hi")
             extractShortcutDrawableRefs(File(repoRoot, "hipda/src/main/res/xml/shortcuts.xml")).forEach { add(it) }
-            add("@string/define_font_GoogleMaterial")
-            add("@string/define_font_fontawesome")
         }
 
         val uncovered = requiredKeptResources.filterNot { res -> matchesAnyKeepPattern(res, patterns) }
@@ -243,8 +241,6 @@ class ReleaseResourceAndProfileGuardTest {
                 "drawable:ic_shortcut_search",
                 "drawable:ic_shortcut_mail",
                 "drawable:ic_shortcut_favorite",
-                "string:define_font_GoogleMaterial",
-                "string:define_font_fontawesome",
             )
             val reportText = resourcesReport.readText(Charsets.UTF_8)
             val missingOrUnreachable = findUnreachableOrMissingInShrinkReport(reportText, expectedResources)
