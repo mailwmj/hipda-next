@@ -549,17 +549,9 @@ fun ThreadDetailPane(
         snapshotFlow {
             val s = latestUiState
             if (s.isLoading || s.pendingScroll != null || s.floors.isEmpty()) return@snapshotFlow null
-            val header = if (s.showPrependHeader) 1 else 0
-            val firstFloor = firstVisibleFloor(listState) ?: return@snapshotFlow null
-            val floorIdx = resolveFloorIndex(firstFloor, s.floors, header)
-            val item = s.floors.getOrNull(floorIdx) ?: return@snapshotFlow null
-            val floorPage = item.floor.page.takeIf { it > 0 } ?: s.page
-            val offsetPx = (-firstFloor.offset).coerceAtLeast(0)
-            Triple(floorPage, item.postId, offsetPx)
-        }.distinctUntilChanged().collect { triple ->
-            if (triple != null) {
-                viewModel.onReadingPositionChanged(triple.first, triple.second, triple.third)
-            }
+            resolveViewportAnchor(s, listState, fallbackToFirst = false)
+        }.distinctUntilChanged().collect { anchor ->
+            anchor?.postId?.let { pid -> viewModel.onReadingPositionChanged(anchor.page, pid, anchor.scrollOffsetPx) }
         }
     }
 
@@ -613,28 +605,10 @@ fun ThreadDetailPane(
     val linkCopiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_link_copied)
     val shareChooserTitle = stringResource(R.string.thread_detail_more_share)
     val bottomInset = contentPadding.calculateBottomPadding()
-    val fixedBottomClearance = bottomInset + if (chromeSpec.suppressBottomGlass) 8.dp else ThreadBottomToolbarClearance
+    val fixedBottomClearance = bottomInset + ThreadBottomToolbarClearance
 
     LaunchedEffect(bodySlot, chromeSpec.suppressBottomGlass) {
-        if (bodySlot != DetailBodySlot.CONTENT || chromeSpec.suppressBottomGlass) {
-            isJumpBarExpanded = false
-        }
-    }
-
-    val captureViewportAnchor: () -> ReadingPositionAnchor? = {
-        val s = latestUiState
-        val header = if (s.showPrependHeader) 1 else 0
-        val firstFloor = firstVisibleFloor(listState)
-        val floorIdx = resolveFloorIndex(firstFloor, s.floors, header)
-        val item = s.floors.getOrNull(floorIdx) ?: s.floors.firstOrNull()
-        item?.let {
-            ReadingPositionAnchor(
-                page = it.floor.page.takeIf { p -> p > 0 } ?: s.page,
-                postId = it.postId,
-                scrollOffsetPx = firstFloor?.let { f -> (-f.offset).coerceAtLeast(0) } ?: 0,
-                filter = s.filter,
-            )
-        }
+        if (bodySlot != DetailBodySlot.CONTENT || chromeSpec.suppressBottomGlass) isJumpBarExpanded = false
     }
 
     Surface(modifier = modifier.fillMaxSize(), color = cs.background, contentColor = cs.onBackground) {
@@ -707,10 +681,7 @@ fun ThreadDetailPane(
                                         onAuthorClick = onOpenUserProfile,
                                         modifier = floorPositionedModifier,
                                         onJumpToFloor = { targetPid, targetTid ->
-                                            captureViewportAnchor()?.let { a ->
-                                                a.postId?.let { pid -> viewModel.onReadingPositionChanged(a.page, pid, a.scrollOffsetPx) }
-                                            }
-                                            viewModel.jumpToFloor(targetPid, targetTid)
+                                            viewModel.jumpToFloor(targetPid, targetTid, resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true))
                                         },
                                         onLongPress = onOpenFloorMenu,
                                         highlightToken = highlightToken,
@@ -745,9 +716,8 @@ fun ThreadDetailPane(
                     glassState = detailGlassState,
                     onBack = onBack,
                     onToggleAuthorOnly = {
-                        val anchorItem = firstVisibleFloor(listState)
-                        val anchorPid = (anchorItem?.key as? String)?.removePrefix(FLOOR_KEY_PREFIX) ?: uiState.floors.getOrNull(listState.firstVisibleItemIndex)?.postId
-                        viewModel.toggleAuthorOnly(anchorPid, anchorItem?.let { (-it.offset).coerceAtLeast(0) } ?: listState.firstVisibleItemScrollOffset)
+                        val anchor = resolveViewportAnchor(uiState, listState, fallbackToFirst = true)
+                        viewModel.toggleAuthorOnly(anchor?.postId, anchor?.scrollOffsetPx ?: listState.firstVisibleItemScrollOffset)
                     },
                 )
                 FilterCapsuleBar(uiState.filter, viewModel::clearFilter)
@@ -756,36 +726,22 @@ fun ThreadDetailPane(
             // 严格兄弟节点 3：底部三段式液态玻璃工具条与内联跳页条（suppressBottomGlass == true 时整块卸载 HiGlassRegion）
             if (!chromeSpec.suppressBottomGlass && bodySlot == DetailBodySlot.CONTENT) {
                 ThreadBottomToolbar(
-                    page = visiblePage,
-                    lastPage = uiState.lastPage,
-                    isFavorited = uiState.isFavorited,
-                    isAttention = uiState.isAttention,
-                    glassState = detailGlassState,
-                    suppressBottomGlass = chromeSpec.suppressBottomGlass,
-                    isJumpBarExpanded = isJumpBarExpanded,
-                    onExpandedChange = { isJumpBarExpanded = it },
+                    page = visiblePage, lastPage = uiState.lastPage, isFavorited = uiState.isFavorited, isAttention = uiState.isAttention,
+                    glassState = detailGlassState, suppressBottomGlass = chromeSpec.suppressBottomGlass,
+                    isJumpBarExpanded = isJumpBarExpanded, onExpandedChange = { isJumpBarExpanded = it },
                     onReplyClick = { onOpenReply(ReplyRequest(tid = uiState.tid)) },
-                    onJumpToPage = { targetPage ->
-                        viewModel.jumpToPage(targetPage, captureViewportAnchor())
-                    },
-                    onToggleFavorite = viewModel::toggleFavorite,
-                    onRefreshClick = viewModel::refreshCurrentPage,
+                    onJumpToPage = { targetPage -> viewModel.jumpToPage(targetPage, resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)) },
+                    onToggleFavorite = viewModel::toggleFavorite, onRefreshClick = viewModel::refreshCurrentPage,
                     onToggleAttention = viewModel::toggleAttention,
                     onCopyLinkClick = {
                         val url = buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)
                         if (copyThreadLinkPlainText(context, copyLinkLabel, url)) {
-                            coroutineScope.launch {
-                                snackbarController.show(linkCopiedSnackbarMessage, target = PaneSnackbarTarget.DetailPane)
-                            }
+                            coroutineScope.launch { snackbarController.show(linkCopiedSnackbarMessage, target = PaneSnackbarTarget.DetailPane) }
                         }
                     },
-                    onOpenInBrowserClick = {
-                        val url = buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)
-                        openExternalHttpUrl(context, url)
-                    },
+                    onOpenInBrowserClick = { openExternalHttpUrl(context, buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)) },
                     onShareClick = {
-                        val url = buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)
-                        shareExternalHttpUrl(context, uiState.title.ifBlank { args.title }, url, shareChooserTitle)
+                        shareExternalHttpUrl(context, uiState.title.ifBlank { args.title }, buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage), shareChooserTitle)
                     },
                     bottomInset = bottomInset,
                 )
@@ -818,6 +774,25 @@ fun ThreadDetailPane(
                 onDismiss = { activeMenuFloor = null },
             )
         }
+    }
+}
+
+private fun resolveViewportAnchor(
+    s: ThreadDetailUiState,
+    listState: LazyListState,
+    fallbackToFirst: Boolean,
+): ReadingPositionAnchor? {
+    val header = if (s.showPrependHeader) 1 else 0
+    val firstFloor = firstVisibleFloor(listState)
+    val floorIdx = resolveFloorIndex(firstFloor, s.floors, header)
+    val item = s.floors.getOrNull(floorIdx) ?: if (fallbackToFirst) s.floors.firstOrNull() else null
+    return item?.let {
+        ReadingPositionAnchor(
+            page = it.floor.page.takeIf { p -> p > 0 } ?: s.page,
+            postId = it.postId,
+            scrollOffsetPx = firstFloor?.let { f -> (-f.offset).coerceAtLeast(0) } ?: 0,
+            filter = s.filter,
+        )
     }
 }
 

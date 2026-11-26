@@ -85,6 +85,7 @@ import net.jejer.hipda.data.threaddetail.ThreadDetailLoadResult
 import net.jejer.hipda.data.threaddetail.ThreadDetailRepository
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.Alignment
+import net.jejer.hipda.feature.app.auditGlassModifiers
 import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarController
@@ -93,6 +94,8 @@ import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
+import androidx.compose.ui.test.onRoot
+import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
 import net.jejer.hipda.ui.designsystem.feedback.HiSnackbarHost
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
@@ -201,6 +204,143 @@ class ThreadBottomToolbarTest {
         composeRule.waitForIdle()
         assertEquals(0, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
         assertFalse(glassState.hasSourceDemand)
+    }
+
+    /** R-E4 S2 ② 回归：`suppressBottomGlass` 切换时 `LazyColumn` 底部留白保持恒定（`ThreadBottomToolbarClearance`），帖尾零跳动。 */
+    @Test
+    fun suppressBottomGlass_keepsFixedBottomClearance_noScrollJumpAtThreadTail() {
+        var suppress by mutableStateOf(false)
+        val gateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled })
+        val vm = ThreadDetailViewModel(SimpleDetailRepository(floorCount = 18), gateway)
+        lateinit var listState: androidx.compose.foundation.lazy.LazyListState
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                    ThreadDetailPane(
+                        args = ThreadNavArgs(tid = "2602999", title = "底部留白固定测试"),
+                        chromeSpec = DetailChromeSpec(showBack = true, suppressBottomGlass = suppress),
+                        onBack = {},
+                        onOpenLogin = {},
+                        listState = listState,
+                        viewModel = vm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 滚至帖尾最后一个条目（含末尾 footer），记录 afterContentPadding 与滚动位置
+        composeRule.runOnIdle { listState.requestScrollToItem(index = listState.layoutInfo.totalItemsCount - 1, scrollOffset = 0) }
+        composeRule.waitForIdle()
+        val paddingBefore = listState.layoutInfo.afterContentPadding
+        val indexBefore = listState.firstVisibleItemIndex
+        val offsetBefore = listState.firstVisibleItemScrollOffset
+        assertTrue("正常态底部留白应至少为 ThreadBottomToolbarClearance", paddingBefore >= with(composeRule.density) { ThreadBottomToolbarClearance.roundToPx() })
+
+        // 开启 suppressBottomGlass=true：卸载底部工具条但固定底部留白不得收缩，帖尾滚位严格 0 跳动
+        suppress = true
+        composeRule.waitForIdle()
+        assertEquals("suppressBottomGlass=true 时 afterContentPadding 必须保持恒定", paddingBefore, listState.layoutInfo.afterContentPadding)
+        assertEquals("suppressBottomGlass=true 时帖尾首可见项索引不得跳动", indexBefore, listState.firstVisibleItemIndex)
+        assertEquals("suppressBottomGlass=true 时帖尾首可见项偏移不得跳动", offsetBefore, listState.firstVisibleItemScrollOffset)
+    }
+
+    /**
+     * 对齐 `origin/main@1cffcd9` E14 看图浮层玻璃暂停契约（`LocalHiGlassSuspended`）：
+     * 当 `LocalHiGlassSuspended = true`（如全屏看图覆盖底层帖子）时，底部三段式工具条（含收起态与展开跳页态）及详情页整体
+     * 必须立即归零 `HiGlassMarker`、`HiGlassBlurActive(true)`、`DrawBackdrop` pass 与 `LayerBackdrop` / `hasSourceDemand` 采样，
+     * 退出看图恢复 `false` 后完整恢复正常玻璃渲染。
+     */
+    @Test
+    fun localHiGlassSuspended_stopsToolbarGlassMarkersBlurAndSourceDemand_thenRestores() {
+        var suspended by mutableStateOf(false)
+        var expanded by mutableStateOf(false)
+        var showDetailPane by mutableStateOf(false)
+        lateinit var toolbarGlassState: HiGlassState
+        val gateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled })
+        val vm = ThreadDetailViewModel(SimpleDetailRepository(floorCount = 6), gateway)
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    CompositionLocalProvider(LocalHiGlassSuspended provides suspended) {
+                        if (!showDetailPane) {
+                            toolbarGlassState = rememberHiGlassState()
+                            Box(Modifier.fillMaxSize()) {
+                                ThreadBottomToolbar(
+                                    page = 2, lastPage = 10, isFavorited = false, isAttention = false,
+                                    glassState = toolbarGlassState, suppressBottomGlass = false,
+                                    isJumpBarExpanded = expanded, onExpandedChange = { expanded = it },
+                                    onReplyClick = {}, onJumpToPage = {}, onToggleFavorite = {},
+                                    onRefreshClick = {}, onToggleAttention = {}, onCopyLinkClick = {},
+                                    onOpenInBrowserClick = {}, onShareClick = {},
+                                )
+                            }
+                        } else {
+                            ThreadDetailPane(
+                                args = ThreadNavArgs(tid = "2603001", title = "看图暂停底层玻璃测试"),
+                                chromeSpec = DetailChromeSpec(showBack = true),
+                                onBack = {},
+                                onOpenLogin = {},
+                                viewModel = vm,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 独立工具条收起态：正常态 1 Marker + 3 激活模糊 + 有采样需求；暂停后全部归零
+        assertEquals(1, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals(3, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
+        assertTrue(toolbarGlassState.hasSourceDemand)
+
+        suspended = true
+        composeRule.waitForIdle()
+        assertEquals("LocalHiGlassSuspended=true 时工具条 HiGlassMarker 必须为 0", 0, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals("LocalHiGlassSuspended=true 时工具条激活模糊必须为 0", 0, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
+        assertFalse("LocalHiGlassSuspended=true 时必须停用 glassState 采样源需求", toolbarGlassState.hasSourceDemand)
+
+        // 展开内联跳页条下依然保持 0 玻璃、停采样
+        expanded = true
+        composeRule.waitForIdle()
+        assertEquals(0, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals(0, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
+        assertFalse(toolbarGlassState.hasSourceDemand)
+
+        // 恢复 false 后恢复正常
+        expanded = false
+        suspended = false
+        composeRule.waitForIdle()
+        assertEquals(1, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals(3, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
+        assertTrue(toolbarGlassState.hasSourceDemand)
+
+        // 2. 完整 ThreadDetailPane（顶栏 + 底部三段工具条 + LazyColumn.hiGlassSource）：暂停时全树 0 玻璃 / 0 LayerBackdrop / 0 DrawBackdrop
+        showDetailPane = true
+        composeRule.waitForIdle()
+        val activeAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertEquals(2, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals(1, activeAudit.layerBackdropCount)
+        assertEquals(4, activeAudit.drawBackdropCount)
+
+        suspended = true
+        composeRule.waitForIdle()
+        val suspendedAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertEquals("看图覆盖期间帖子详情 HiGlassMarker 必须为 0", 0, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals("看图覆盖期间帖子详情激活模糊节点必须为 0", 0, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
+        assertEquals("看图覆盖期间必须停止 LazyColumn LayerBackdrop 离屏采样", 0, suspendedAudit.layerBackdropCount)
+        assertEquals("看图覆盖期间必须停止全部 DrawBackdrop 渲染 pass", 0, suspendedAudit.drawBackdropCount)
+
+        suspended = false
+        composeRule.waitForIdle()
+        val restoredAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertEquals(2, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals(1, restoredAudit.layerBackdropCount)
+        assertEquals(4, restoredAudit.drawBackdropCount)
     }
 
     @Test
@@ -823,7 +963,7 @@ class ThreadBottomToolbarTest {
         override suspend fun setSidebarCollapsedLandscape(collapsed: Boolean) = Unit
     }
 
-    private class SimpleDetailRepository : ThreadDetailRepository {
+    private class SimpleDetailRepository(private val floorCount: Int = 1) : ThreadDetailRepository {
         override suspend fun loadPage(
             tid: String,
             page: Int,
@@ -838,12 +978,13 @@ class ThreadBottomToolbarTest {
                 title = "收藏关注与更多菜单测试",
                 page = page,
                 lastPage = 3,
-                floors = listOf(
+                floors = (1..floorCount).map { idx ->
                     PostFloor(
-                        "f1", 1, page, "1001", "楼主", null, "2026-11-26 10:00", false, null, null, null,
-                        listOf(ContentBlock.Text(listOf(InlineSpan.Plain("1 楼正文")))),
-                    ),
-                ),
+                        "f$idx", idx, page, if (idx == 1) "1001" else "${1000 + idx}", if (idx == 1) "楼主" else "坛友$idx",
+                        null, "2026-11-26 10:${idx.toString().padStart(2, '0')}", false, null, null, null,
+                        listOf(ContentBlock.Text(listOf(InlineSpan.Plain("$idx 楼正文内容：用于验证底部工具条与固定留白在帖尾不跳动。")))),
+                    )
+                },
                 postsPerPageEstimate = 12,
                 meta = DiscuzPageMeta(DiscuzSessionInfo(true, "1001", "测试账号"), "fh1", null, PromptCounts()),
                 hasPostList = true,

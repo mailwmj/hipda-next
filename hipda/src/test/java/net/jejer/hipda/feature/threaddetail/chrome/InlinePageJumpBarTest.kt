@@ -226,6 +226,10 @@ class InlinePageJumpBarTest {
 
         val expandedAnnouncement = composeRule.onNodeWithContentDescription("已展开跳页，当前第 1 页，共 10 页").fetchSemanticsNode()
         assertEquals(LiveRegionMode.Polite, expandedAnnouncement.config[SemanticsProperties.LiveRegion])
+        assertTrue(
+            "R-E4 S2：无障碍播报节点不得为 0.dp 尺寸，实际 bounds=${expandedAnnouncement.boundsInRoot}",
+            expandedAnnouncement.boundsInRoot.width > 0f && expandedAnnouncement.boundsInRoot.height > 0f,
+        )
         composeRule.onNodeWithText("首页").assertIsNotEnabled()
         composeRule.onNodeWithText("末页").assertIsEnabled()
         composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed()

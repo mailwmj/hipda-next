@@ -10,6 +10,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
@@ -28,6 +29,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -52,12 +54,8 @@ internal val InlinePageJumpSingleRowHeight: Dp = 56.dp
 private const val MAX_PAGE_DIGITS = 6
 
 /**
- * 帖子详情底部原地展开内联跳页条（`product-design.md` §6.3、§7.3，`R-Dkudo`）：
- * - 容器可用宽 `< 480dp` 自动采用紧凑双行（上行 `首页` + `第 {目标} / {总页} 页` + `末页`；下行滑块 + 输入框 + `/ {M}` + `关闭`/`跳转`），
- *   `≥ 480dp` 排布为单行；
- * - 滑块严格使用 `Modifier.weight(1f)` 自适应填充且绝不写死最小宽，保证 `340dp` + `1.25×` 零挤压且全部控件触控区 `≥ 48dp`；
- * - 拖动滑块仅本地实时更新预览与输入框数字（零滚屏、零发网）；`首页` 在第 1 页禁用、`末页` 在末页禁用；
- * - 动作按钮按输入合法且变更与否动态切换 `关闭`（`×`）与 `跳转`（`✓`），任何跳转触发 [onJumpToPage] 并由外层压栈且收起。
+ * 帖子详情底部原地展开内联跳页条（`< 480dp` 紧凑双行 / `≥ 480dp` 单行，滑块 `Modifier.weight(1f)` 无硬编码最小宽）：
+ * 单一 `TextFieldState` 驱动页码输入与动态 `关闭`/`跳转` 按钮，拖动滑块仅本地实时预览（零滚屏、零发网）。
  */
 @Composable
 fun InlinePageJumpBar(
@@ -70,11 +68,16 @@ fun InlinePageJumpBar(
 ) {
     val safeLastPage = lastPage.coerceAtLeast(1)
     val safeCurrentPage = currentPage.coerceIn(1, safeLastPage)
-    var previewPage by remember(safeCurrentPage, safeLastPage) { mutableIntStateOf(safeCurrentPage) }
-    var inputText by remember(safeCurrentPage, safeLastPage) { mutableStateOf(safeCurrentPage.toString()) }
+    var sliderPreviewPage by remember(safeCurrentPage, safeLastPage) { mutableIntStateOf(safeCurrentPage) }
     var sliderInteracted by remember(safeCurrentPage, safeLastPage) { mutableStateOf(false) }
+    val textFieldState = rememberTextFieldState(initialText = safeCurrentPage.toString())
+    LaunchedEffect(safeCurrentPage, safeLastPage) {
+        val targetText = safeCurrentPage.toString()
+        if (textFieldState.text.toString() != targetText) textFieldState.setTextAndPlaceCursorAtEnd(targetText)
+    }
 
-    val parsedInput = inputText.toIntOrNull()
+    val parsedInput = textFieldState.text.toString().toIntOrNull()
+    val previewPage = parsedInput?.takeIf { it in 1..safeLastPage } ?: sliderPreviewPage
     val validChangedTarget = parsedInput?.takeIf { it in 1..safeLastPage && it != safeCurrentPage }
     val canJump = validChangedTarget != null
 
@@ -89,29 +92,16 @@ fun InlinePageJumpBar(
     val liveAnnouncement = if (sliderInteracted) previewLabel else expandedAnnouncement
 
     val submitIfValid: () -> Unit = {
-        if (validChangedTarget != null) {
-            onJumpToPage(validChangedTarget)
-        } else {
-            onCollapse()
-        }
+        if (validChangedTarget != null) onJumpToPage(validChangedTarget) else onCollapse()
     }
-
     val onSliderChange: (Float) -> Unit = { raw ->
         val next = raw.roundToInt().coerceIn(1, safeLastPage)
-        previewPage = next
-        inputText = next.toString()
+        sliderPreviewPage = next
         sliderInteracted = true
+        val nextText = next.toString()
+        if (textFieldState.text.toString() != nextText) textFieldState.setTextAndPlaceCursorAtEnd(nextText)
     }
 
-    val onInputChange: (String) -> Unit = { raw ->
-        val digits = raw.filter { it.isDigit() }.take(MAX_PAGE_DIGITS)
-        inputText = digits
-        digits.toIntOrNull()?.takeIf { it in 1..safeLastPage }?.let { parsed ->
-            previewPage = parsed
-        }
-    }
-
-    val isCompactTwoRow = containerWidth < InlinePageJumpCompactBreakpoint
     val cs = MaterialTheme.colorScheme
     val tabularLabelStyle = MaterialTheme.typography.labelLarge.let { style ->
         remember(style) { style.copy(fontFeatureSettings = "tnum") }
@@ -119,55 +109,30 @@ fun InlinePageJumpBar(
 
     HiCappedFontScale {
         Box(modifier = modifier.fillMaxWidth()) {
-            // 展开与滑块步进的无障碍礼貌播报节点（零视觉占位）
+            // 展开与滑块步进的无障碍礼貌播报节点（保留 1.dp 非零尺寸以防系统无障碍服务过滤 0×0 节点）
             Box(
                 modifier = Modifier
-                    .size(0.dp)
+                    .size(1.dp)
                     .semantics {
                         liveRegion = LiveRegionMode.Polite
                         contentDescription = liveAnnouncement
                     },
             )
 
-            if (isCompactTwoRow) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 4.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        QuickPageJumpButton(
-                            label = firstPageLabel,
-                            enabled = safeCurrentPage > 1,
-                            onClick = { onJumpToPage(1) },
-                        )
+            if (containerWidth < InlinePageJumpCompactBreakpoint) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        QuickPageJumpButton(firstPageLabel, enabled = safeCurrentPage > 1) { onJumpToPage(1) }
                         Text(
-                            text = previewLabel,
-                            style = tabularLabelStyle,
-                            color = cs.onSurface,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 4.dp),
+                            text = previewLabel, style = tabularLabelStyle, color = cs.onSurface,
+                            textAlign = TextAlign.Center, maxLines = 1, softWrap = false,
+                            modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
                         )
-                        QuickPageJumpButton(
-                            label = lastPageLabel,
-                            enabled = safeCurrentPage < safeLastPage,
-                            onClick = { onJumpToPage(safeLastPage) },
-                        )
+                        QuickPageJumpButton(lastPageLabel, enabled = safeCurrentPage < safeLastPage) { onJumpToPage(safeLastPage) }
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         PageJumpSlider(previewPage, safeLastPage, previewLabel, onSliderChange, Modifier.weight(1f))
-                        PageJumpTailControls(inputText, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, onInputChange, submitIfValid)
+                        PageJumpTailControls(textFieldState, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, submitIfValid)
                     }
                 }
             } else {
@@ -179,7 +144,7 @@ fun InlinePageJumpBar(
                     QuickPageJumpButton(firstPageLabel, enabled = safeCurrentPage > 1) { onJumpToPage(1) }
                     PageJumpSlider(previewPage, safeLastPage, previewLabel, onSliderChange, Modifier.weight(1f))
                     QuickPageJumpButton(lastPageLabel, enabled = safeCurrentPage < safeLastPage) { onJumpToPage(safeLastPage) }
-                    PageJumpTailControls(inputText, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, onInputChange, submitIfValid)
+                    PageJumpTailControls(textFieldState, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, submitIfValid)
                 }
             }
         }
@@ -188,28 +153,22 @@ fun InlinePageJumpBar(
 
 @Composable
 private fun PageJumpTailControls(
-    inputText: String,
+    textFieldState: TextFieldState,
     inputHint: String,
     totalSuffix: String,
     canJump: Boolean,
     closeDesc: String,
     goDesc: String,
-    labelStyle: androidx.compose.ui.text.TextStyle,
-    onInputChange: (String) -> Unit,
+    labelStyle: TextStyle,
     onSubmit: () -> Unit,
 ) {
-    val cs = MaterialTheme.colorScheme
-    PageJumpNumberInput(inputText, inputHint, onInputChange, onSubmit)
-    Text(totalSuffix, style = labelStyle, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+    PageJumpNumberInput(textFieldState, inputHint, onSubmit)
+    Text(totalSuffix, style = labelStyle, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
     DynamicJumpActionButton(canJump, closeDesc, goDesc, onSubmit)
 }
 
 @Composable
-private fun QuickPageJumpButton(
-    label: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
+private fun QuickPageJumpButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
     Box(
@@ -217,23 +176,11 @@ private fun QuickPageJumpButton(
             .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .hiPressScale(interaction)
             .clip(HiShapeTokens.Small)
-            .clickable(
-                interactionSource = interaction,
-                indication = LocalIndication.current,
-                enabled = enabled,
-                role = Role.Button,
-                onClick = onClick,
-            )
+            .clickable(interaction, LocalIndication.current, enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (enabled) cs.primary else cs.onSurface.copy(alpha = 0.38f),
-            maxLines = 1,
-            softWrap = false,
-        )
+        Text(label, style = MaterialTheme.typography.labelLarge, color = if (enabled) cs.primary else cs.onSurface.copy(alpha = 0.38f), maxLines = 1, softWrap = false)
     }
 }
 
@@ -246,77 +193,33 @@ private fun PageJumpSlider(
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val safeMax = lastPage.coerceAtLeast(1).toFloat()
-    val rangeEnd = if (safeMax > 1f) safeMax else 2f
+    val rangeEnd = lastPage.coerceAtLeast(1).toFloat().let { if (it > 1f) it else 2f }
     val targetValue = previewPage.toFloat().coerceIn(1f, rangeEnd)
-    val sliderState = remember(rangeEnd) {
-        SliderState(
-            value = targetValue,
-            steps = 0,
-            trackRange = 1f..rangeEnd,
-        )
-    }
-    if (sliderState.value != targetValue) {
-        sliderState.value = targetValue
-    }
+    val sliderState = remember(rangeEnd) { SliderState(value = targetValue, steps = 0, trackRange = 1f..rangeEnd) }
+    if (sliderState.value != targetValue) sliderState.value = targetValue
     val interactionSource = remember { MutableInteractionSource() }
-    // 用标准 Box（默认不传递 minWidth）解除 Row.weight(1f) 的紧定最小宽约束，
-    // 并为 M3 Slider 内置的 10dp 水平无障碍聚焦外扩留白，避免聚焦框压到输入框或被胶囊左缘裁切。
-    Box(
-        modifier = modifier.heightIn(min = 48.dp),
-        contentAlignment = Alignment.Center,
-    ) {
+    // 标准 Box 解除 Row.weight(1f) 紧最小宽约束，并为 M3 Slider 10dp 水平无障碍聚焦外扩留白
+    Box(modifier = modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
         Slider(
             state = sliderState,
             onValueChange = onValueChange,
             enabled = lastPage > 1,
             interactionSource = interactionSource,
             thumb = {
-                Box(
-                    modifier = Modifier.height(48.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    SliderDefaults.Thumb(
-                        interactionSource = interactionSource,
-                        enabled = lastPage > 1,
-                        thumbSize = DpSize(4.dp, 36.dp),
-                    )
+                Box(Modifier.height(48.dp), contentAlignment = Alignment.Center) {
+                    SliderDefaults.Thumb(interactionSource, enabled = lastPage > 1, thumbSize = DpSize(4.dp, 36.dp))
                 }
             },
-            modifier = Modifier
-                .padding(horizontal = 10.dp)
-                .heightIn(min = 48.dp)
-                .semantics { stateDescription = stateDesc },
+            modifier = Modifier.padding(horizontal = 10.dp).heightIn(min = 48.dp).semantics { stateDescription = stateDesc },
         )
     }
 }
 
 @Composable
-private fun PageJumpNumberInput(
-    value: String,
-    hint: String,
-    onValueChange: (String) -> Unit,
-    onSubmit: () -> Unit,
-) {
+private fun PageJumpNumberInput(textFieldState: TextFieldState, hint: String, onSubmit: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val textFieldState = rememberTextFieldState(initialText = value)
-    val latestOnValueChange by rememberUpdatedState(onValueChange)
     val latestOnSubmit by rememberUpdatedState(onSubmit)
-    LaunchedEffect(value) {
-        if (textFieldState.text.toString() != value) {
-            textFieldState.setTextAndPlaceCursorAtEnd(value)
-        }
-    }
-    LaunchedEffect(textFieldState) {
-        snapshotFlow { textFieldState.text.toString() }.collect { current ->
-            latestOnValueChange(current)
-        }
-    }
-    val inputTextStyle = MaterialTheme.typography.labelLarge.copy(
-        color = cs.onSurface,
-        textAlign = TextAlign.Center,
-        fontFeatureSettings = "tnum",
-    )
+    val inputTextStyle = MaterialTheme.typography.labelLarge.copy(color = cs.onSurface, textAlign = TextAlign.Center, fontFeatureSettings = "tnum")
     BasicTextField(
         state = textFieldState,
         lineLimits = TextFieldLineLimits.SingleLine,
@@ -325,19 +228,11 @@ private fun PageJumpNumberInput(
         inputTransformation = InputTransformation {
             val raw = asCharSequence()
             val filtered = raw.filter { it.isDigit() }.take(MAX_PAGE_DIGITS)
-            if (filtered != raw.toString()) {
-                replace(0, length, filtered)
-            }
+            if (filtered != raw.toString()) replace(0, length, filtered)
         },
-        keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Number,
-            imeAction = ImeAction.Go,
-        ),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Go),
         onKeyboardAction = { latestOnSubmit() },
-        modifier = Modifier
-            .width(48.dp)
-            .heightIn(min = 48.dp)
-            .semantics { contentDescription = hint },
+        modifier = Modifier.width(48.dp).heightIn(min = 48.dp).semantics { contentDescription = hint },
         decorator = { innerTextField ->
             Box(
                 modifier = Modifier
@@ -350,13 +245,7 @@ private fun PageJumpNumberInput(
                 contentAlignment = Alignment.Center,
             ) {
                 if (textFieldState.text.isEmpty()) {
-                    Text(
-                        text = hint,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = cs.onSurfaceVariant,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
+                    Text(hint, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
                 innerTextField()
             }
@@ -365,12 +254,7 @@ private fun PageJumpNumberInput(
 }
 
 @Composable
-private fun DynamicJumpActionButton(
-    canJump: Boolean,
-    closeDescription: String,
-    goDescription: String,
-    onClick: () -> Unit,
-) {
+private fun DynamicJumpActionButton(canJump: Boolean, closeDescription: String, goDescription: String, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
     Box(
@@ -378,19 +262,11 @@ private fun DynamicJumpActionButton(
             .size(48.dp)
             .hiPressScale(interaction)
             .clip(HiShapeTokens.Full)
-            .clickable(
-                interactionSource = interaction,
-                indication = LocalIndication.current,
-                role = Role.Button,
-                onClick = onClick,
-            ),
+            .clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(HiShapeTokens.Full)
-                .background(if (canJump) cs.primaryContainer else cs.surfaceContainerHigh.copy(alpha = 0.72f)),
+            modifier = Modifier.size(36.dp).clip(HiShapeTokens.Full).background(if (canJump) cs.primaryContainer else cs.surfaceContainerHigh.copy(alpha = 0.72f)),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
