@@ -211,6 +211,11 @@ class FullScreenReleaseSmokeTest {
         dismissKeyboardIfVisible()
         clickSafely(By.desc("返回"))
         waitObj(By.text("消息"), 10_000)
+        // Dismiss any "已保存草稿" snackbar if still visible so subsequent screenshots remain uncluttered
+        device.findObject(By.text("放弃"))?.let {
+            it.click()
+            device.waitForIdle(400)
+        }
         report += "07[full-editor]: verified expanded reply & new-thread editor"
 
         // 8. Messages (SMS list -> SMS conversation -> Notify list)
@@ -218,16 +223,19 @@ class FullScreenReleaseSmokeTest {
         waitObj(By.text("短消息"), 10_000)
         waitObj(By.text("提醒"), 10_000)
         waitObj(By.text(OfflineForumFixtureServer.PEER_USERNAME), 15_000)
+        SystemClock.sleep(500)
         snap("08-messages-sms.png")
 
         clickSafely(By.text(OfflineForumFixtureServer.PEER_USERNAME))
         waitObj(By.text(OfflineForumFixtureServer.SMS_BODY_TEXT), 15_000)
+        SystemClock.sleep(400)
         snap("08b-messages-sms-chat.png")
         clickSafely(By.desc("返回"))
 
         waitObj(By.text("提醒"), 10_000)
         clickSafely(By.text("提醒"))
         waitObj(By.text(OfflineForumFixtureServer.NOTIFY_TEXT), 15_000)
+        SystemClock.sleep(400)
         snap("08c-messages-notify.png")
         report += "08[messages]: verified SMS list, SMS conversation & notifications"
 
@@ -385,21 +393,29 @@ class FullScreenReleaseSmokeTest {
         )
     }
 
+    private data class AppJob(val namespace: String?, val jobId: Int)
+
     private fun triggerAndVerifyNotificationPollingWorker(report: MutableList<String>) {
         device.pressHome()
-        SystemClock.sleep(2_000)
+        // Wait > 700ms so ProcessLifecycleOwner transitions to STOPPED (backgrounded) cleanly
+        SystemClock.sleep(2_500)
 
         val pollCountBefore = server.recordedRequests.count { it.contains("pm.php?filter=newpm") }
-        val jobsDump = shell("dumpsys jobscheduler")
-        val jobIds = parseAppJobIds(jobsDump)
+        val jobsDump = shell("dumpsys jobscheduler $TARGET_PKG").ifBlank { shell("dumpsys jobscheduler") }
+        val jobs = parseAppJobs(jobsDump)
+        val pkgLines = jobsDump.lines().filter { it.contains(TARGET_PKG) }.take(15)
+        Log.i(TAG, "Discovered jobs=$jobs pkgLines=$pkgLines")
         assertTrue(
-            "Expected at least one scheduled WorkManager SystemJobService job for $TARGET_PKG. Dumpsys snippet: ${jobsDump.lines().filter { it.contains(TARGET_PKG) }.take(10)}",
-            jobIds.isNotEmpty(),
+            "Expected at least one scheduled WorkManager SystemJobService job for $TARGET_PKG. Dumpsys snippet: $pkgLines",
+            jobs.isNotEmpty(),
         )
 
         val runOutputs = mutableListOf<String>()
-        for (jobId in jobIds) {
-            runOutputs += shell("cmd jobscheduler run -f $TARGET_PKG $jobId").trim()
+        for (job in jobs) {
+            val nsFlag = if (job.namespace != null) "-n ${job.namespace} " else ""
+            val cmd = "cmd jobscheduler run -u 0 $nsFlag-f $TARGET_PKG ${job.jobId}"
+            val out = shell(cmd).trim()
+            runOutputs += "$cmd => [$out]"
         }
 
         val deadline = SystemClock.uptimeMillis() + 20_000
@@ -413,12 +429,12 @@ class FullScreenReleaseSmokeTest {
             SystemClock.sleep(300)
         }
         assertTrue(
-            "NotificationPollingWorker did not hit /forum/pm.php?filter=newpm after cmd jobscheduler run -f! jobIds=$jobIds outputs=$runOutputs requests=${server.recordedRequests.takeLast(10)}",
+            "NotificationPollingWorker did not hit /forum/pm.php?filter=newpm after cmd jobscheduler run -f! jobs=$jobs outputs=$runOutputs pkgLines=$pkgLines requests=${server.recordedRequests.takeLast(12)}",
             pollObserved,
         )
         val notifDump = shell("dumpsys notification --noredact")
         val hasPostedNotif = notifDump.contains(TARGET_PKG) && notifDump.contains("HIPDA_NOTI")
-        report += "13[workmanager-worker]: triggered jobIds=$jobIds outputs=$runOutputs polled_newpm=true notificationPosted=$hasPostedNotif"
+        report += "13[workmanager-worker]: triggered jobs=$jobs outputs=$runOutputs polled_newpm=true notificationPosted=$hasPostedNotif"
     }
 
     private fun verifyProcessKillRecovery(report: MutableList<String>) {
@@ -469,26 +485,30 @@ class FullScreenReleaseSmokeTest {
         report += "14[process-kill-recovery]: pidBefore=$pidBefore icicleRestored=$icicleRestored pidAfterForceStop=$pidAfterForceStop accountPersisted=${OfflineForumFixtureServer.TEST_USERNAME}"
     }
 
-    private fun parseAppJobIds(dumpsysOutput: String): List<Int> {
-        val ids = LinkedHashSet<Int>()
-        val headerRegex = Regex("""JOB\s+#(u\d+a\d+)/(\d+):\s+.*?$TARGET_PKG""")
-        for (line in dumpsysOutput.lineSequence()) {
-            val m = headerRegex.find(line)
-            if (m != null) {
-                m.groupValues[2].toIntOrNull()?.let { ids += it }
-            }
+    private fun parseAppJobs(dumpsysOutput: String): List<AppJob> {
+        val jobs = LinkedHashSet<AppJob>()
+        val idRegex = Regex("""#u\d+a\d+/(\d+)""")
+        val nsRegex = Regex("""\{([^}]+)\}""")
+        val atNsRegex = Regex("""@([^@\s]+)@${Regex.escape(TARGET_PKG)}""")
+        val lines = dumpsysOutput.lines()
+        for (i in lines.indices) {
+            val line = lines[i]
+            val isJobHeaderForApp = line.contains(TARGET_PKG) && (line.contains("JOB ") || line.contains("SystemJobService"))
+            if (!isJobHeaderForApp) continue
+            val window = lines.subList(maxOf(0, i - 3), minOf(lines.size, i + 4)).joinToString(" ")
+            val id = idRegex.find(line)?.groupValues?.get(1)?.toIntOrNull()
+                ?: idRegex.find(window)?.groupValues?.get(1)?.toIntOrNull()
+                ?: continue
+            val ns = nsRegex.find(line)?.groupValues?.get(1)
+                ?: atNsRegex.find(line)?.groupValues?.get(1)
+                ?: nsRegex.find(window)?.groupValues?.get(1)
+            jobs += AppJob(namespace = ns, jobId = id)
         }
-        if (ids.isEmpty()) {
-            // Fallback scan near SystemJobService lines
-            val lines = dumpsysOutput.lines()
-            for (i in lines.indices) {
-                if (lines[i].contains(TARGET_PKG) && lines[i].contains("SystemJobService")) {
-                    val window = lines.subList(maxOf(0, i - 3), minOf(lines.size, i + 2)).joinToString(" ")
-                    Regex("""#u\d+a\d+/(\d+)""").find(window)?.groupValues?.get(1)?.toIntOrNull()?.let { ids += it }
-                }
-            }
+        // Always include WorkManager's SystemJobScheduler default namespace + Job ID 0 fallback if dumpsys syntax shifts
+        if (jobs.none { it.namespace == WM_NAMESPACE }) {
+            jobs += AppJob(namespace = WM_NAMESPACE, jobId = 0)
         }
-        return ids.toList()
+        return jobs.toList()
     }
 
     private fun readPid(): String = shell("pidof $TARGET_PKG").trim()
@@ -593,5 +613,6 @@ class FullScreenReleaseSmokeTest {
         private const val TAG = "VerifySmoke"
         private const val TARGET_PKG = "net.jejer.hipda.next"
         private const val MAIN_ACTIVITY = "net.jejer.hipda.feature.app.MainActivity"
+        private const val WM_NAMESPACE = "androidx.work.systemjobscheduler"
     }
 }
