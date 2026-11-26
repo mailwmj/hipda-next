@@ -35,6 +35,8 @@ import net.jejer.hipda.feature.threaddetail.chrome.ReadingPositionSnapshot
 import net.jejer.hipda.feature.threaddetail.chrome.toReadingFilterTriple
 import net.jejer.hipda.feature.threaddetail.chrome.toSnapshot
 import net.jejer.hipda.feature.threaddetail.chrome.toThreadDetailFilterUi
+import net.jejer.hipda.feature.threaddetail.interact.FloorWarningLoadState
+import net.jejer.hipda.feature.threaddetail.interact.fetchFloorWarning
 import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.parser.threaddetail.ThreadPoll
@@ -209,6 +211,8 @@ class ThreadDetailViewModel(
     }
 
     private var boundTid: String? = null
+    private var boundTargetPid: String? = null
+    private var boundOpenLastPage: Boolean = false
     private var bindJob: Job? = null
     private var loadJob: Job? = null
     private var prependJob: Job? = null
@@ -279,12 +283,42 @@ class ThreadDetailViewModel(
         super.onCleared()
     }
 
-    fun bindArgs(args: ThreadNavArgs) {
-        if (boundTid == args.tid) return
+    fun bindArgs(
+        args: ThreadNavArgs,
+        currentAnchorProvider: (() -> ReadingPositionAnchor?)? = null,
+    ) {
+        val incomingPid = args.targetPid?.trim()?.takeIf { it.isNotEmpty() }
+        if (boundTid == args.tid) {
+            when {
+                incomingPid != null && incomingPid != boundTargetPid -> {
+                    boundTargetPid = incomingPid
+                    boundOpenLastPage = args.openLastPage
+                    bindJob?.cancel(); bindJob = null
+                    jumpToFloor(
+                        targetPid = incomingPid,
+                        targetTid = args.tid,
+                        fromAnchor = currentAnchorProvider?.invoke(),
+                    )
+                }
+                incomingPid == null && args.openLastPage && !boundOpenLastPage -> {
+                    boundTargetPid = null
+                    boundOpenLastPage = true
+                    bindJob?.cancel(); bindJob = null
+                    jumpToLastPage(fromAnchor = currentAnchorProvider?.invoke())
+                }
+                else -> {
+                    if (incomingPid == null) boundTargetPid = null
+                    if (!args.openLastPage) boundOpenLastPage = false
+                }
+            }
+            return
+        }
         val isRebind = boundTid != null
         // 切换帖子前仅在旧会话已完成首轮恢复时补写未落盘进度（B4-E4 ①）
         readingPositionController.flushIfHydrated()
         boundTid = args.tid
+        boundTargetPid = incomingPid
+        boundOpenLastPage = args.openLastPage
         preFilterAnchor = null
         latestObservedAnchor = null
         pendingHydrationSnapshot = null
@@ -312,9 +346,10 @@ class ThreadDetailViewModel(
                 forumServer = prev.forumServer,
             )
         }
-        val initialPid = args.targetPid?.takeIf { it.isNotBlank() }
-        if (initialPid != null) {
-            loadByPostIdInternal(initialPid, highlight = true)
+        if (incomingPid != null) {
+            loadByPostIdInternal(incomingPid, highlight = true)
+        } else if (args.openLastPage) {
+            loadLastPageInternal()
         } else {
             bindJob = viewModelScope.launch {
                 val saved = threadDetailRepository.getReadingPosition(args.tid)
@@ -625,6 +660,29 @@ class ThreadDetailViewModel(
         loadByPostIdInternal(cleanPid, highlight = true)
     }
 
+    /** 同帖跳至末页末楼（先压入 [PositionStack]，经 `PrependAnchorController` 定位并高亮，覆盖 `R-M7-G1 S2`）。 */
+    fun jumpToLastPage(fromAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
+        if (cur.filter is ThreadDetailFilterUi.All && cur.lastLoadedPage >= cur.lastPage && cur.rawFloors.isNotEmpty()) {
+            jumpToFloor(targetPid = cur.rawFloors.last().postId, targetTid = cur.tid, fromAnchor = fromAnchor)
+            return
+        }
+        pushCurrentAnchorForJump(fromAnchor)
+        loadLastPageInternal(highlightLast = true)
+    }
+
+    /** 拉取被警告楼层对应的 `misc.php?action=viewwarning` 记录（经项目统一 [SiteAccessGateway]）。 */
+    suspend fun loadFloorWarning(uid: String): FloorWarningLoadState {
+        val cur = metaState.value
+        return fetchFloorWarning(
+            siteAccessGateway = siteAccessGateway,
+            forumServer = cur.forumServer,
+            tid = cur.tid,
+            uid = uid,
+        )
+    }
+
     fun toggleFavorite() = toggleFavoriteKind(FavoriteKind.FAVORITE)
 
     fun toggleAttention() = toggleFavoriteKind(FavoriteKind.ATTENTION)
@@ -885,14 +943,22 @@ class ThreadDetailViewModel(
         },
     )
 
-    private fun loadLastPageInternal(smoothScroll: Boolean = false) = launchSinglePageLoad(
+    private fun loadLastPageInternal(smoothScroll: Boolean = false, highlightLast: Boolean = false) = launchSinglePageLoad(
         keepExistingFloorsOnError = true,
         fetch = { cur -> threadDetailRepository.loadLastPage(cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking) },
         onSuccess = { cur, res ->
             val floors = res.page.floors
+            val lastPid = floors.lastOrNull()?.postId
+            val token = ++scrollTokenSeq
+            val immediateHighlight = if (highlightLast && lastPid != null) HighlightedFloor(lastPid, token) else null
             commitSinglePageSuccess(
                 curTid = cur.tid, res = res, resolvedFilter = ThreadDetailFilterUi.All,
-                pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(++scrollTokenSeq, floors.lastOrNull()?.postId, 0, smooth = smoothScroll) else null,
+                pendingScroll = if (floors.isNotEmpty()) {
+                    PendingScrollTarget(token, lastPid, 0, highlightPostId = immediateHighlight?.postId, smooth = smoothScroll)
+                } else {
+                    null
+                },
+                highlightedFloor = immediateHighlight,
             )
         },
     )

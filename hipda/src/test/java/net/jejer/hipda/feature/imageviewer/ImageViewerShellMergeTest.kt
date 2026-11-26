@@ -259,7 +259,7 @@ class ImageViewerShellMergeTest {
 
         composeRule.onAllNodes(thumbMatcher, useUnmergedTree = true).onLast().performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("1 / 1").assertIsDisplayed()
+        composeRule.onNodeWithText("2 / 2").assertIsDisplayed()
 
         upperGate.complete(ColorImage(0xFF884422.toInt(), 400, 450))
         composeRule.waitForIdle()
@@ -274,7 +274,7 @@ class ImageViewerShellMergeTest {
         composeRule.onNodeWithContentDescription("关闭").performClick()
         var lastRect: Rect? = null
         for (f in 0..150) {
-            val nodes = composeRule.onAllNodes(viewerImageMatcher("1 / 1"), useUnmergedTree = true).fetchSemanticsNodes()
+            val nodes = composeRule.onAllNodes(viewerImageMatcher("2 / 2"), useUnmergedTree = true).fetchSemanticsNodes()
             if (nodes.isEmpty()) break
             lastRect = nodes.first().boundsInWindow
             composeRule.mainClock.advanceTimeByFrame()
@@ -327,8 +327,8 @@ class ImageViewerShellMergeTest {
             !hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "看图"))
         composeRule.onAllNodes(thumbMatcher, useUnmergedTree = true).onLast().performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("1 / 1").assertIsDisplayed()
-        val restBounds = composeRule.onNode(viewerImageMatcher("1 / 1"), useUnmergedTree = true).fetchSemanticsNode().boundsInWindow
+        composeRule.onNodeWithText("2 / 2").assertIsDisplayed()
+        val restBounds = composeRule.onNode(viewerImageMatcher("2 / 2"), useUnmergedTree = true).fetchSemanticsNode().boundsInWindow
 
         // 看图期间上方极高图（400×1400）撑高列表，把原第 2 张缩略图彻底推离当前视口
         upperGate.complete(ColorImage(0xFF884422.toInt(), 400, 1400))
@@ -339,7 +339,7 @@ class ImageViewerShellMergeTest {
         composeRule.onNodeWithContentDescription("关闭").performClick()
         val frameBounds = mutableListOf<Rect>()
         for (f in 0..150) {
-            val nodes = composeRule.onAllNodes(viewerImageMatcher("1 / 1"), useUnmergedTree = true).fetchSemanticsNodes()
+            val nodes = composeRule.onAllNodes(viewerImageMatcher("2 / 2"), useUnmergedTree = true).fetchSemanticsNodes()
             if (nodes.isEmpty()) break
             frameBounds += nodes.first().boundsInWindow
             composeRule.mainClock.advanceTimeByFrame()

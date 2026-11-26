@@ -23,8 +23,17 @@
     <string name="thread_detail_menu_reply">回复</string>
     <string name="thread_detail_menu_user_only">只看此人</string>
     <string name="thread_detail_menu_copy">复制</string>
+    <string name="thread_detail_menu_select_text">文字选择</string>
+    <string name="thread_detail_menu_share">分享</string>
     <string name="thread_detail_menu_edit">编辑</string>
     <string name="thread_detail_menu_delete">删除</string>
+    <string name="thread_detail_action_close">关闭</string>
+    <string name="thread_detail_select_text_empty">暂无可选文字</string>
+    <string name="thread_detail_share_topic_prefix">主题</string>
+    <string name="thread_detail_share_reply_prefix">回复</string>
+    <string name="thread_detail_warning_badge_description">%1$d楼，查看警告记录</string>
+    <string name="thread_detail_warning_dialog_title">警告记录</string>
+    <string name="thread_detail_warning_empty">暂无警告记录</string>
     <string name="thread_detail_snackbar_copied">内容已复制</string>
     <string name="thread_detail_login_to_operate">登录后即可操作</string>
 
