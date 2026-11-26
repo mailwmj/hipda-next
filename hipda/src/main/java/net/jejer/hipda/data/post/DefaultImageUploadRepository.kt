@@ -389,7 +389,7 @@ class DefaultImageUploadRepository internal constructor(
                 responseText.contains("id='umenu'", ignoreCase = true)
             ) {
                 val meta = DiscuzCommonParser.parsePageMeta(responseText)
-                if (!meta.session.isLoggedIn) return true
+                return !meta.session.isLoggedIn
             }
             return UNAUTH_UPLOAD_MARKERS.any { marker -> responseText.contains(marker) }
         }

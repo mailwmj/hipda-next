@@ -1355,6 +1355,93 @@ class ThreadDetailRepositoryTest {
             repo.loadPage(tid = "71003", page = 2, filter = ThreadDetailFilter.AuthorOnly(authorId = null)) is ThreadDetailLoadResult.Success,
         )
         assertEquals("AuthorOnlyOP", browseHistoryDao.observeRecent(10).first().single { it.tid == "71003" }.author)
+
+        // 4. D5-fixcheck micro-note: AuthorOnly(null) page 2 with blank-author floor locks fallbackOpAuthor branch directly
+        nowMs.set(1_700_100_008_000L)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71004",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "只看楼主二页空作者帖",
+                    page = 1,
+                    lastPage = 2,
+                    floors = listOf(
+                        SyntheticFloor(pid = "74001", floor = 1, uid = "8004", author = "FallbackOpBlankFloor", text = "一楼"),
+                    ),
+                ),
+            ),
+        )
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71004",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "只看楼主二页空作者帖",
+                    page = 2,
+                    lastPage = 2,
+                    floors = listOf(
+                        SyntheticFloor(pid = "74060", floor = 60, uid = "8004", author = "   ", text = "二页缺失作者名的楼层"),
+                    ),
+                ),
+            ),
+        )
+        val blankAuthorP2Res = repo.loadPage(
+            tid = "71004",
+            page = 2,
+            filter = ThreadDetailFilter.AuthorOnly(authorId = null),
+        )
+        assertTrue("Expected Success for blank-author AuthorOnly page 2, got $blankAuthorP2Res", blankAuthorP2Res is ThreadDetailLoadResult.Success)
+        assertEquals(
+            "AuthorOnly page 2 with blank floor author must still record page-1 fallbackOpAuthor",
+            "FallbackOpBlankFloor",
+            browseHistoryDao.observeRecent(10).first().single { it.tid == "71004" }.author,
+        )
+
+        // 5. D5-fixcheck micro-note: AuthorOnly(null) page 2 with empty floors list also locks fallbackOpAuthor branch
+        nowMs.set(1_700_100_009_000L)
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71005",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "只看楼主二页空列表帖",
+                    page = 1,
+                    lastPage = 2,
+                    floors = listOf(
+                        SyntheticFloor(pid = "75001", floor = 1, uid = "8005", author = "FallbackOpEmptyList", text = "一楼"),
+                    ),
+                ),
+            ),
+        )
+        server.enqueue(
+            gbkHtmlResponse(
+                syntheticThreadPageHtml(
+                    tidInDom = "71005",
+                    fid = 2,
+                    forumName = "Discovery",
+                    title = "只看楼主二页空列表帖",
+                    page = 2,
+                    lastPage = 2,
+                    floors = emptyList(),
+                ),
+            ),
+        )
+        val emptyFloorsP2Res = repo.loadPage(
+            tid = "71005",
+            page = 2,
+            filter = ThreadDetailFilter.AuthorOnly(authorId = null),
+        )
+        assertTrue("Expected Success for empty-floor AuthorOnly page 2, got $emptyFloorsP2Res", emptyFloorsP2Res is ThreadDetailLoadResult.Success)
+        assertTrue((emptyFloorsP2Res as ThreadDetailLoadResult.Success).page.floors.isEmpty())
+        assertEquals(
+            "AuthorOnly page 2 with empty floor list must still record page-1 fallbackOpAuthor",
+            "FallbackOpEmptyList",
+            browseHistoryDao.observeRecent(10).first().single { it.tid == "71005" }.author,
+        )
     }
 
     @Test

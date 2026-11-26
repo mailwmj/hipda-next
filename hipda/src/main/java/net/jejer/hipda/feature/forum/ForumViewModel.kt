@@ -103,7 +103,7 @@ class ForumViewModel @Inject constructor(
                         val visibleItems = if (staleUidCache) emptyList() else load.items
                         val unsettled = (staleUidCache || (load.fetchedPage == 0 && load.stopReason == null)) && err == null
                         val loading = load.isLoading || (unsettled && visibleItems.isEmpty())
-                        ForumUiState(src, s.followedForums, load.query.sortByPostTime ?: s.isSortByPostTime(src.fid), visibleItems, loading && visibleItems.isEmpty(), load.isLoading && visibleItems.isNotEmpty(), load.isLoadingMore, load.hasMore, aux.newThreadsBySource[src] ?: 0, err?.let(UiErrorMapper::map), cf, ch)
+                        ForumUiState(src, s.followedForums, load.query.sortByPostTime ?: s.isSortByPostTime(src.fid), visibleItems, loading && visibleItems.isEmpty(), load.isLoading && visibleItems.isNotEmpty(), load.isLoadingMore, !staleUidCache && load.hasMore, aux.newThreadsBySource[src] ?: 0, err?.let(UiErrorMapper::map), cf, ch)
                     }
                 }
             }

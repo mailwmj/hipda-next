@@ -6,7 +6,6 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
-import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -128,7 +127,7 @@ class NotificationPollingWorker @AssistedInject constructor(
             uid
         } catch (e: CancellationException) {
             throw e
-        } catch (_: IOException) {
+        } catch (_: Exception) {
             return false
         }
 
