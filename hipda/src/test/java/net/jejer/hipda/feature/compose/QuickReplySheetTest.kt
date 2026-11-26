@@ -692,4 +692,87 @@ class QuickReplySheetTest {
             }
         }
     }
+
+    /**
+     * V-E5 阻断探针 `probe3b_singleBatchHandleDrag_dismissesQuickReplySheet` 移植 + 单批上拉展开验证：
+     * 1. 同帧单批把手下拉 `down -> moveBy(120dp, 40ms) -> up` 必须立即收起并落盘草稿、弹「已保存草稿」；
+     * 2. 同帧多段连续 `moveBy` 累加不得互相覆盖，越阈值后同样收起；
+     * 3. 绑定 E6 插槽后同帧单批把手上拉 `down -> moveBy(-90dp, 40ms) -> up` 必须触发展开全屏并无损携带 `FullEditorHandoff` 且不弹「已保存草稿」。
+     */
+    @Test
+    fun singleBatchHandleDrag_dismissesAndSavesDraft_andUpwardExpandsWhenBound() {
+        val tid = "2606009"
+        val postRepo = FakePostRepository()
+        val authRepo = FakeQuickReplyAuthRepository()
+        val qrVm = QuickReplyViewModel(postRepo, authRepo, clockMs = { 10_000L })
+        val detailVm = ThreadDetailViewModel(FakeComposeThreadDetailRepository(totalPages = 1), createIdleComposeGateway(), authRepo)
+        val snackbars = RecordingPaneSnackbarController()
+        var bindExpand by mutableStateOf(false)
+        val handoffs = mutableListOf<FullEditorHandoff>()
+
+        composeRule.setContent {
+            CompositionLocalProvider(LocalPaneSnackbarController provides snackbars) {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        ThreadDetailPane(
+                            args = ThreadNavArgs(tid = tid, title = "单批手势阻断探针", fid = 2, author = "linus_hi"),
+                            chromeSpec = DetailChromeSpec(showBack = true),
+                            onBack = {},
+                            onOpenLogin = {},
+                            viewModel = detailVm,
+                            quickReplyViewModel = qrVm,
+                            onExpandToFullEditor = if (bindExpand) ({ handoffs += it }) else null,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 移植自 V-E5 probe3b：单批 down -> moveBy(120dp, 40ms) -> up 必须收起并保存草稿
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("回复 linus_hi").performTextInput("单批快速下拉草稿")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(composeRule.density) { 120.dp.toPx() }), delayMillis = 40L)
+            up()
+        }
+        composeRule.waitForIdle()
+        assertEquals("单批把手下拉 120dp 必须收起面板", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+        assertTrue("单批下拉关闭应弹 DetailPane 已保存草稿 Snackbar", snackbars.events.any { it.message == "已保存草稿" && it.target == PaneSnackbarTarget.DetailPane })
+        assertEquals("单批快速下拉草稿", postRepo.draftFor(DraftKey.reply(tid))?.content)
+
+        // 2. 同帧多段连续 moveBy 必须累加位移而非互相覆盖（3 × 32dp = 96dp >= 72dp）
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            val stepPx = with(composeRule.density) { 32.dp.toPx() }
+            down(center)
+            moveBy(Offset(0f, stepPx), delayMillis = 8L)
+            moveBy(Offset(0f, stepPx), delayMillis = 8L)
+            moveBy(Offset(0f, stepPx), delayMillis = 8L)
+            up()
+        }
+        composeRule.waitForIdle()
+        assertEquals("同帧多段累加 96dp 必须收起面板", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+
+        // 3. 绑定 E6 插槽后，单批把手上拉越阈值 (-90dp) 必须触发展开全屏并携带完整文本且不重弹草稿提示
+        bindExpand = true
+        snackbars.events.clear()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(composeRule.density) { -90.dp.toPx() }), delayMillis = 40L)
+            up()
+        }
+        composeRule.waitForIdle()
+        assertEquals("绑定态单批上拉越阈值必须触发展开全屏", 1, handoffs.size)
+        assertEquals("单批快速下拉草稿", handoffs.single().text)
+        assertFalse("把手上拉展开全屏不得开启图片选择器", handoffs.single().openImagePickerImmediately)
+        assertTrue("展开全屏不得重弹已保存草稿", snackbars.events.none { it.message == "已保存草稿" })
+    }
 }

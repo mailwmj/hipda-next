@@ -6,12 +6,14 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.jejer.hipda.R
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRepository
@@ -337,8 +339,10 @@ class QuickReplyViewModel internal constructor(
 
     private fun enqueueDraftMutation(action: suspend () -> Unit) {
         val prev = draftMutationJob
-        draftMutationJob = viewModelScope.launch(NonCancellable) {
-            runCatching { prev?.join(); action() }.onFailure { if (it is CancellationException) throw it }
+        draftMutationJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            withContext(NonCancellable) {
+                runCatching { prev?.join(); action() }.onFailure { if (it is CancellationException) throw it }
+            }
         }
     }
 

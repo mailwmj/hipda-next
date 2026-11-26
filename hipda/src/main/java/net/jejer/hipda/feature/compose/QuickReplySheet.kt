@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.text.BreakIterator
 import kotlin.math.min
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
@@ -162,6 +163,8 @@ fun QuickReplySheet(
     var phase by remember { mutableStateOf(SheetMotionPhase.Entering) }
     var measuredSheetHeightPx by remember { mutableFloatStateOf(fallbackHeightPx) }
     val offsetYPx = remember { Animatable(if (reducedMotion) 0f else fallbackHeightPx) }
+    var isDragging by remember { mutableStateOf(false) }
+    var dragOffsetYPx by remember { mutableFloatStateOf(0f) }
     var isEmojiPanelOpen by remember { mutableStateOf(false) }
     var lastObservedImeDp by remember { mutableStateOf(0.dp) }
 
@@ -203,12 +206,15 @@ fun QuickReplySheet(
                 keyboardController?.hide()
                 focusManager.clearFocus(force = false)
                 viewModel.onDismissSession(emitSavedSnackbar = true)
+                val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
                 val targetY = measuredSheetHeightPx.coerceAtLeast(fallbackHeightPx)
                 if (latestReducedMotion) {
-                    scope.launch { offsetYPx.snapTo(targetY) }
+                    isDragging = false; dragOffsetYPx = 0f
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetYPx.snapTo(targetY) }
                     latestOnDismissFinished()
                 } else {
-                    scope.launch {
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        offsetYPx.snapTo(startY); isDragging = false; dragOffsetYPx = 0f
                         offsetYPx.animateTo(targetY, HiMotion.exit(HiMotion.spatialDefault()), initialVelocity.coerceAtLeast(0f))
                         latestOnDismissFinished()
                     }
@@ -227,10 +233,12 @@ fun QuickReplySheet(
                 val text = textFieldState.text.toString()
                 val sel = textFieldState.selection
                 val handoff = viewModel.onHandoffToFullEditor(text, sel.start, sel.end, openImagePicker)
+                val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
                 if (latestReducedMotion) {
-                    handler(handoff); latestOnDismissFinished()
+                    isDragging = false; dragOffsetYPx = 0f; handler(handoff); latestOnDismissFinished()
                 } else {
-                    scope.launch {
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        offsetYPx.snapTo(startY); isDragging = false; dragOffsetYPx = 0f
                         offsetYPx.animateTo(-maxUpwardDragPx * 0.5f, HiMotion.spatialDefault(), initialVelocity.coerceAtMost(0f))
                         handler(handoff); latestOnDismissFinished()
                     }
@@ -244,8 +252,10 @@ fun QuickReplySheet(
             if (phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
                 val minOffset = if (allowUpwardExpand && latestCanExpand) -maxUpwardDragPx else 0f
                 val maxOffset = measuredSheetHeightPx.coerceAtLeast(fallbackHeightPx)
-                val next = (offsetYPx.value + deltaY).coerceIn(minOffset, maxOffset)
-                scope.launch { offsetYPx.snapTo(next) }
+                val base = if (isDragging) dragOffsetYPx else offsetYPx.value
+                dragOffsetYPx = (base + deltaY).coerceIn(minOffset, maxOffset)
+                isDragging = true
+                if (offsetYPx.isRunning) scope.launch { offsetYPx.stop() }
             }
         }
     }
@@ -253,12 +263,13 @@ fun QuickReplySheet(
     val onDragSettled: (Float, Boolean) -> Unit = remember(scope, dismissThresholdPx, expandThresholdPx, dismissVelocityPx, expandVelocityPx) {
         { velocityY, allowUpwardExpand ->
             if (phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
-                val cur = offsetYPx.value
+                val cur = if (isDragging) dragOffsetYPx else offsetYPx.value
                 when {
                     cur >= dismissThresholdPx || (cur > 0f && velocityY >= dismissVelocityPx) -> requestDismiss(velocityY)
                     allowUpwardExpand && latestCanExpand && (cur <= -expandThresholdPx || (cur < 0f && velocityY <= expandVelocityPx)) ->
                         requestExpandToFullEditor(false, velocityY)
-                    else -> scope.launch {
+                    else -> scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        offsetYPx.snapTo(cur); isDragging = false; dragOffsetYPx = 0f
                         if (latestReducedMotion) offsetYPx.snapTo(0f) else offsetYPx.animateTo(0f, HiMotion.spatialSnap(), velocityY)
                     }
                 }
@@ -271,7 +282,7 @@ fun QuickReplySheet(
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source != NestedScrollSource.UserInput || !textFieldState.selection.collapsed) return Offset.Zero
-                val curOffset = offsetYPx.value
+                val curOffset = if (isDragging) dragOffsetYPx else offsetYPx.value
                 if (curOffset > 0f && available.y < 0f) {
                     val consumedY = available.y.coerceAtLeast(-curOffset)
                     onDragDelta(consumedY, false)
@@ -288,7 +299,8 @@ fun QuickReplySheet(
                 return Offset.Zero
             }
             override suspend fun onPreFling(available: Velocity): Velocity {
-                if (offsetYPx.value > 0f) {
+                val curOffset = if (isDragging) dragOffsetYPx else offsetYPx.value
+                if (curOffset > 0f) {
                     onDragSettled(available.y, false)
                     return Velocity(0f, available.y)
                 }
@@ -342,7 +354,8 @@ fun QuickReplySheet(
             latestOnOccupiedChanged(totalOccupiedBottomDp, metrics.shouldLiftUnderlyingList)
         }
 
-        val dismissProgress = (offsetYPx.value / measuredSheetHeightPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
+        val effectiveOffsetYPx = if (isDragging) dragOffsetYPx else offsetYPx.value
+        val dismissProgress = (effectiveOffsetYPx / measuredSheetHeightPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
         Box(
             Modifier.fillMaxSize()
                 .background(cs.scrim.copy(alpha = HiGlassTokens.SheetScrimAlpha * (1f - dismissProgress)))
@@ -355,7 +368,7 @@ fun QuickReplySheet(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = outerBottomPadding)
-                .graphicsLayer { translationY = offsetYPx.value }
+                .graphicsLayer { translationY = effectiveOffsetYPx }
                 .semantics { paneTitle = contextLabel; isTraversalGroup = true },
         ) {
             HiGlassSurface(
