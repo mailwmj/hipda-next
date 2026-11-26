@@ -20,6 +20,18 @@
     <string name="messages_cooldown_cd">%1$d 秒后可发送</string>
     <string name="messages_error_cooldown">发送太快，请等 %1$d 秒后再试</string>
 
+    <!-- 新建短消息对话框（逐字取自 strings.xml:34,50-51 与 docs/design/copy.md:24,29-30,41,69,85） -->
+    <string name="messages_action_new_sms">发送短消息</string>
+    <string name="messages_new_sms_recipient">收件人</string>
+    <string name="messages_new_sms_content">内容</string>
+    <string name="messages_new_sms_recipient_empty">请输入收件人</string>
+    <string name="messages_new_sms_content_empty">请输入内容</string>
+    <string name="messages_login_to_operate">登录后即可操作</string>
+
+    <!-- 气泡长按复制（逐字取自 docs/design/copy.md:35,140） -->
+    <string name="messages_action_copy">复制</string>
+    <string name="messages_snackbar_copied">内容已复制</string>
+
     <!-- 无障碍状态描述 -->
     <string name="messages_state_unread">未读</string>
     <string name="messages_state_read">已读</string>
