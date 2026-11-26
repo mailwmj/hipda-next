@@ -42,6 +42,11 @@ class ThreadDetailParserTest {
         assertEquals("& TBW", floor1.signature)
         assertEquals(1, floor1.images.size)
         assertEquals(
+            listOf("Text", "Image", "Text"),
+            floor1.blocks.map { it::class.simpleName },
+            "Floor 1 must preserve Text -> Image -> Text interleaved block order",
+        )
+        assertEquals(
             "https://img02.4d4y.com/forum/attachments/day_191007/19100712232dcaeb32ca60666a.png",
             floor1.images[0].fullUrl,
         )
@@ -74,10 +79,7 @@ class ThreadDetailParserTest {
             .filterIsInstance<InlineSpan.Emoji>()
             .map { it.normalizedKey }
             .toSet()
-        assertTrue("default_lol" in smileyKeys)
-        assertTrue("coolmonkey_01" in smileyKeys)
-        assertTrue("grapeman_08" in smileyKeys)
-        assertTrue("grapeman_18" in smileyKeys)
+        assertEquals(setOf("default_lol", "coolmonkey_01", "grapeman_08", "grapeman_18"), smileyKeys)
 
         // 锁定楼层、引用块、跳楼标记均正确识别
         assertTrue(page.floors.any { floor -> floor.blocks.any { it is ContentBlock.Notice && it.message.contains("作者被禁止或删除") } })
@@ -140,7 +142,7 @@ class ThreadDetailParserTest {
             .filterIsInstance<InlineSpan.Emoji>()
             .map { it.normalizedKey }
             .toSet()
-        assertTrue("coolmonkey_16" in smileyKeys)
+        assertEquals(setOf("coolmonkey_16"), smileyKeys)
         assertEquals(4, page.floors.count { f -> f.blocks.any { it is ContentBlock.Notice } })
     }
 

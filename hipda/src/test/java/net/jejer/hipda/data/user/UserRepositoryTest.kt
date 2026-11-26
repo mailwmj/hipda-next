@@ -44,7 +44,7 @@ import net.jejer.hipda.data.settings.LineSpacing
 import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okio.Buffer
@@ -140,7 +140,7 @@ class UserRepositoryTest {
 
     @Test
     fun getUserProfile_realSampleParsesAllFieldsAndFormhash() = runBlocking {
-        val sampleHtml = LegacyTestSupport.loadSample("user_info/user_profile.html")
+        val sampleHtml = SampleTestLoader.loadSample("user_info/user_profile.html")
         server.enqueue(userTestGbkHtmlResponse(sampleHtml))
 
         val repo = createRepository()
@@ -204,7 +204,7 @@ class UserRepositoryTest {
 
     @Test
     fun getUserThreads_realSampleParsesFirstPageAndDerivesAvatarBaseUrlFromForumServer() = runBlocking {
-        val sampleHtml = LegacyTestSupport.loadSample("search/search_result.html")
+        val sampleHtml = SampleTestLoader.loadSample("search/search_result.html")
         val baseServer = server.url("").toString().trimEnd('/')
         settingsRepository.setForumServer("$baseServer/forum")
         server.enqueue(userTestGbkHtmlResponse(sampleHtml))
@@ -239,7 +239,7 @@ class UserRepositoryTest {
 
     @Test
     fun getUserThreads_buildsExpectedPathsForSearchIdAndPagination() = runBlocking {
-        val sampleHtml = LegacyTestSupport.loadSample("search/search_result.html")
+        val sampleHtml = SampleTestLoader.loadSample("search/search_result.html")
         server.enqueue(userTestGbkHtmlResponse(sampleHtml))
         server.enqueue(userTestGbkHtmlResponse(sampleHtml))
         server.enqueue(userTestGbkHtmlResponse(sampleHtml))
@@ -352,7 +352,7 @@ class UserRepositoryTest {
                 return if (n == 1) {
                     userTestGbkHtmlResponse(userTestLoggedOutHtml("登录已过期"))
                 } else {
-                    userTestGbkHtmlResponse(LegacyTestSupport.loadSample("user_info/user_profile.html"))
+                    userTestGbkHtmlResponse(SampleTestLoader.loadSample("user_info/user_profile.html"))
                 }
             }
         }

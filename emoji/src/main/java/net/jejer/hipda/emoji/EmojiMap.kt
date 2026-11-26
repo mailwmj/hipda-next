@@ -1,16 +1,9 @@
 /**
- * Stateless forum emoji mapping decoupled from the legacy `com.vanniktech.emoji` View/handler classes.
+ * Stateless forum emoji mapping for all 61 HiPDA forum smilies (21 Default, 16 CoolMonkey,
+ * 24 GrapeMan) with light/dark drawable resolution and picker group ordering.
  *
- * Generation / provenance:
- * The static mapping table below was extracted verbatim from the legacy Java emoji definitions:
- * - `emoji/src/main/java/com/vanniktech/emoji/EmojiHandler.java` (light/dark resolution rules)
- * - `emoji/src/main/java/com/vanniktech/emoji/EmojiView.java` (group order: Default -> Monkey -> Dumb)
- * - `emoji/src/main/java/com/vanniktech/emoji/emoji/Default.java` (21 emojis, shared light/dark)
- * - `emoji/src/main/java/com/vanniktech/emoji/emoji/Monkey.java` & `MonkeyDark.java` (16 emojis)
- * - `emoji/src/main/java/com/vanniktech/emoji/emoji/Dumb.java` & `DumbDark.java` (24 emojis)
- *
- * Parity against legacy `EmojiHandler` (all 61 emoji codes and image sources, light & dark modes,
- * and panel groups) is enforced by `hipda/src/test/java/net/jejer/hipda/emoji/EmojiMapTest.kt`.
+ * All 61 `(code, imageSrc, lightRes, darkRes)` tuples and 3 category groups are locked by
+ * `hipda/src/test/java/net/jejer/hipda/emoji/EmojiMapTest.kt`.
  */
 package net.jejer.hipda.emoji
 

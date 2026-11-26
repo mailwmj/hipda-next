@@ -26,6 +26,7 @@ import javax.xml.parsers.DocumentBuilderFactory
 import net.jejer.hipda.R
 import net.jejer.hipda.data.message.UnreadSnapshot
 import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.feature.common.AppIntentConstants
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.routing.AndroidExternalLinkOpener
@@ -36,7 +37,6 @@ import net.jejer.hipda.service.AndroidNotificationPoster
 import net.jejer.hipda.ui.designsystem.PreviewRootContent
 import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
-import net.jejer.hipda.utils.Constants
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -128,12 +128,27 @@ class MainActivityEntryAndManifestTest {
             mainActivityInfo.metaData?.getInt("android.app.shortcuts"),
         )
 
-        @Suppress("DEPRECATION")
-        val legacyMainInfo = pm.getActivityInfo(
-            ComponentName(context.packageName, "net.jejer.hipda.ui.MainFrameActivity"),
-            0,
+        val removedLegacyActivities = listOf(
+            "net.jejer.hipda.ui.MainFrameActivity",
+            "net.jejer.hipda.ui.IntentActivity",
+            "net.jejer.hipda.ui.ImageViewerActivity",
+            "net.jejer.hipda.ui.PostActivity",
+            "net.jejer.hipda.ui.ThreadDetailActivity",
+            "net.jejer.hipda.ui.UserInfoActivity",
+            "net.jejer.hipda.ui.SettingActivity",
+            "net.jejer.hipda.ui.SmsActivity",
+            "net.jejer.hipda.ui.SimpleListActivity",
         )
-        assertFalse("旧 MainFrameActivity 不应再对外导出", legacyMainInfo.exported)
+        for (legacyClassName in removedLegacyActivities) {
+            val lookupError = runCatching {
+                @Suppress("DEPRECATION")
+                pm.getActivityInfo(ComponentName(context.packageName, legacyClassName), 0)
+            }.exceptionOrNull()
+            assertTrue(
+                "旧 Activity $legacyClassName 必须已从 AndroidManifest.xml 删除，实际结果：$lookupError",
+                lookupError is PackageManager.NameNotFoundException,
+            )
+        }
 
         // 2. .ng.IntentActivity 别名必须保留、指向 MainActivity，并准确解析 5 条 4d4y.com pathPrefix
         val fiveDeepLinkUrls = listOf(
@@ -318,7 +333,7 @@ class MainActivityEntryAndManifestTest {
         )
         val singleSmsIntent = Intent(shadowOf(shadowOf(nm).getNotification(AndroidNotificationPoster.NOTIFICATION_ID).contentIntent).savedIntent)
         assertEquals(MainActivity::class.java.name, singleSmsIntent.component?.className)
-        assertNull("单人短消息 PendingIntent 不应写入原始用户名", singleSmsIntent.getStringExtra(Constants.EXTRA_USERNAME))
+        assertNull("单人短消息 PendingIntent 不应写入原始用户名", singleSmsIntent.getStringExtra(AppIntentConstants.EXTRA_USERNAME))
 
         // 2. 多条短消息通知 PendingIntent
         poster.postUnread(UnreadSnapshot(smsUnreadCount = 3, notifyUnreadCount = 0))
@@ -331,11 +346,11 @@ class MainActivityEntryAndManifestTest {
         assertEquals(MainActivity::class.java.name, notifyOnlyIntent.component?.className)
 
         // 4. 即使外部伪造携带 EXTRA_USERNAME，经 MainActivity.sanitizeIncomingIntent 仍会被剥离
-        val spoofedSingleSms = Intent(singleSmsIntent).putExtra(Constants.EXTRA_USERNAME, "UNTRUSTED_PII_NAME")
+        val spoofedSingleSms = Intent(singleSmsIntent).putExtra(AppIntentConstants.EXTRA_USERNAME, "UNTRUSTED_PII_NAME")
         val sanitizedSpoofed = MainActivity.sanitizeIncomingIntent(spoofedSingleSms)
         assertNotNull(sanitizedSpoofed)
-        assertNull(sanitizedSpoofed!!.getStringExtra(Constants.EXTRA_USERNAME))
-        assertEquals("20000", sanitizedSpoofed.getStringExtra(Constants.EXTRA_UID))
+        assertNull(sanitizedSpoofed!!.getStringExtra(AppIntentConstants.EXTRA_USERNAME))
+        assertEquals("20000", sanitizedSpoofed.getStringExtra(AppIntentConstants.EXTRA_UID))
 
         // 5. 全链路 Activity 生命周期验证三类通知落地与旋转不重放
         val harness = MultiPaneTestHarness()

@@ -52,7 +52,7 @@ import net.jejer.hipda.data.network.access.SolveResult
 import net.jejer.hipda.data.settings.AppSettings
 import net.jejer.hipda.di.MessageModule
 import net.jejer.hipda.di.NotifyReadStateDataStore
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import net.jejer.hipda.parser.common.PromptCounts
 import net.jejer.hipda.parser.message.NotifyKind
 import okhttp3.OkHttp
@@ -202,7 +202,7 @@ class NotifyRepositoryTest {
     @Test
     fun getNotifications_realEmptySample_returnsEmptyFeedWithoutError() = runBlocking {
         val stack = createStack()
-        val sampleHtml = LegacyTestSupport.loadSample("notify/notify_list.html")
+        val sampleHtml = SampleTestLoader.loadSample("notify/notify_list.html")
         server.enqueue(gbkHtmlResponse(sampleHtml))
 
         val result = stack.notifyRepo.getNotifications()
