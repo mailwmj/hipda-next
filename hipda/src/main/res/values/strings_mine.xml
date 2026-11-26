@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 「我的」与子页文案（逐字取自 docs/design/copy.md，禁词 0 命中） -->
+    <string name="mine_title">我的</string>
+    <string name="mine_menu_favorites">收藏与关注</string>
+    <string name="mine_menu_my_posts">我的帖子</string>
+    <string name="mine_menu_history">浏览历史</string>
+    <string name="mine_menu_settings">设置</string>
+    <string name="mine_account_login_prompt">登录后即可操作</string>
+
+    <string name="mine_tab_favorites">收藏</string>
+    <string name="mine_tab_attention">关注</string>
+    <string name="mine_tab_threads">主题</string>
+    <string name="mine_tab_replies">回复</string>
+    <string name="mine_title_my_replies">我的回复</string>
+
+    <string name="mine_empty_favorites">还没有收藏</string>
+    <string name="mine_empty_attention">还没有关注</string>
+    <string name="mine_empty_history">暂无浏览历史</string>
+    <string name="mine_empty_my_threads">还没有发过帖子</string>
+    <string name="mine_empty_my_replies">还没有回复过帖子</string>
+
+    <string name="mine_action_unfavorite">取消收藏</string>
+    <string name="mine_action_unattention">取消关注</string>
+    <string name="mine_action_delete">删除</string>
+    <string name="mine_action_clear_history">清空</string>
+
+    <string name="mine_snackbar_unfavorited">已取消收藏</string>
+    <string name="mine_snackbar_unattentioned">已取消关注</string>
+    <string name="mine_snackbar_deleted">已删除</string>
+</resources>
