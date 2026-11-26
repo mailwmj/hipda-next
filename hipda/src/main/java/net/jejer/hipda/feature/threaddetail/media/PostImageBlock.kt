@@ -49,6 +49,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
+import net.jejer.hipda.feature.common.LocalImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.currentHiImageLoader
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
@@ -165,10 +166,12 @@ fun PostImageBlock(
 
     val context = LocalContext.current
     val imageLoader = currentHiImageLoader()
+    val boundsRegistry = LocalImageViewerBoundsRegistry.current
     val scrollAuthority by rememberUpdatedState(LocalAboveViewportHeightCompensationAuthority.current)
     val reducedMotion = HiTheme.isReducedMotion
     val displayUrl = resolvedUrls.displayUrl
     val viewerUrl = resolvedUrls.viewerUrl
+    val verifiedViewerUrl = remember(viewerUrl) { sanitizeImageUrl(viewerUrl) }
 
     val initialMode = remember(context, displayUrl) { ImageLoadingPolicy.resolveForContext(context) }
     val initialRatio = remember(displayUrl, viewerUrl) {
@@ -269,6 +272,10 @@ fun PostImageBlock(
         label = "postImageFadeIn",
     )
     val cs = MaterialTheme.colorScheme
+    DisposableEffect(boundsRegistry, verifiedViewerUrl) {
+        onDispose { verifiedViewerUrl?.let { boundsRegistry?.remove(it, layoutTracker.coords) } }
+    }
+
     val containerModifier = modifier
         .fillMaxWidth()
         .aspectRatio(aspectRatioAnim.value)
@@ -279,6 +286,7 @@ fun PostImageBlock(
             if (w > 0 && containerWidthPx != w) containerWidthPx = w
             val topLeft = coords.positionInWindow()
             layoutTracker.boundsInWindow = Rect(topLeft, Size(w.toFloat(), coords.size.height.toFloat()))
+            verifiedViewerUrl?.let { boundsRegistry?.update(it, coords) }
         }
 
     Surface(
@@ -300,10 +308,10 @@ fun PostImageBlock(
                             indication = LocalIndication.current,
                             role = Role.Image,
                             onClick = {
-                                val verifiedViewerUrl = sanitizeImageUrl(viewerUrl) ?: return@clickable
+                                val url = verifiedViewerUrl ?: return@clickable
                                 onOpenImageViewer(
                                     ImageViewerLaunchArgs(
-                                        urls = listOf(verifiedViewerUrl),
+                                        urls = listOf(url),
                                         sourceBoundsInWindow = layoutTracker.boundsInWindow,
                                     ),
                                 )
