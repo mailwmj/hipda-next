@@ -313,8 +313,10 @@ jobs:
           mkdir -p smoke-artifacts
 
           # Keep emulator offline externally so neither debug nor release ever hits live 4d4y.com.
+          adb shell cmd connectivity airplane-mode enable || true
           adb shell svc wifi disable || true
           adb shell svc data disable || true
+          sleep 2
           adb logcat -G 16M || true
 
           check_no_crash_or_anr() {

@@ -76,6 +76,7 @@ class ReleaseSmokeAndStartupProbeTest {
         verifyInstalledReleaseResources(releaseContext, reportLines)
 
         // 2. Disable external network so cold start never hits the live site before forumServer is switched
+        shell("cmd connectivity airplane-mode enable")
         shell("svc wifi disable")
         shell("svc data disable")
 
@@ -178,15 +179,19 @@ class ReleaseSmokeAndStartupProbeTest {
         shell("am force-stop $TARGET_PKG")
         val launchOut = shell("am start -W -n $TARGET_PKG/$MAIN_ACTIVITY")
         assertTrue("am start -W failed: $launchOut", launchOut.contains("Status: ok") || launchOut.contains("TotalTime"))
-        val mineTab = waitObj(By.text("我的"), 20_000)
+        waitObj(By.text("我的"), 20_000)
         snap("01-cold-start.png")
         report += "Smoke[cold-start]: ok"
 
         // Navigate Mine -> Settings -> Network & Cache -> Forum Server -> 127.0.0.1
-        mineTab.click()
+        clickSafely(By.text("我的"))
         clickSafely(By.text("设置"))
         clickSafely(By.text("网络与缓存"))
         clickSafely(By.text("论坛服务器"))
+        if (device.wait(Until.findObject(By.clazz("android.widget.EditText")), 3_000) == null) {
+            dismissChallengeIfPresent()
+            clickSafely(By.text("论坛服务器"))
+        }
 
         val serverInput = waitObj(By.clazz("android.widget.EditText"))
         serverInput.click()
@@ -421,9 +426,25 @@ class ReleaseSmokeAndStartupProbeTest {
     }
 
     private fun waitObj(selector: BySelector, timeoutMs: Long = 10_000): UiObject2 {
-        val obj = device.wait(Until.findObject(selector), timeoutMs)
-        assertNotNull("Timed out waiting for UI element: $selector", obj)
-        return obj!!
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            dismissChallengeIfPresent()
+            val obj = device.wait(Until.findObject(selector), 1_000)
+            if (obj != null) return obj
+        }
+        val finalObj = device.wait(Until.findObject(selector), 500)
+        assertNotNull("Timed out waiting for UI element: $selector", finalObj)
+        return finalObj!!
+    }
+
+    private fun dismissChallengeIfPresent() {
+        val challengeTitle = device.findObject(By.text("安全验证")) ?: return
+        if (challengeTitle.visibleBounds.width() > 0) {
+            Log.i(TAG, "Dismissing ChallengeActivity overlay before forumServer switch")
+            device.findObject(By.text("取消"))?.click() ?: device.pressBack()
+            device.wait(Until.gone(By.text("安全验证")), 5_000)
+            device.waitForIdle(500)
+        }
     }
 
     private fun clickSafely(selector: BySelector, timeoutMs: Long = 10_000) {
