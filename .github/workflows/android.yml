@@ -407,6 +407,25 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Prepare Baseline Profile generation script
+        run: |
+          cat <<'EOF' > /tmp/run-baseline-profile.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+          set +e
+          ./gradlew :hipda:generateBaselineProfile --stacktrace
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            echo "=== Connected AndroidTest XML Results ==="
+            find baselineprofile/build/outputs/androidTest-results -name "*.xml" -print -exec cat {} + || true
+            echo "=== Recent logcat (BaselineProfile / Benchmark / AndroidRuntime) ==="
+            adb logcat -d -s BaselineProfile:V Benchmark:V AndroidRuntime:E TestRunner:V | tail -n 200 || true
+            exit "$RC"
+          fi
+          EOF
+          chmod +x /tmp/run-baseline-profile.sh
+
       - name: Generate Baseline Profile on API 36 emulator
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
@@ -416,19 +435,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          script: |
-            set -euo pipefail
-            set +e
-            ./gradlew :hipda:generateBaselineProfile --stacktrace
-            RC=$?
-            set -e
-            if [ "$RC" -ne 0 ]; then
-              echo "=== Connected AndroidTest XML Results ==="
-              find baselineprofile/build/outputs/androidTest-results -name "*.xml" -print -exec cat {} + || true
-              echo "=== Recent logcat (BaselineProfile / Benchmark / AndroidRuntime) ==="
-              adb logcat -d -s BaselineProfile:V Benchmark:V AndroidRuntime:E TestRunner:V | tail -n 200 || true
-              exit "$RC"
-            fi
+          script: /tmp/run-baseline-profile.sh
 
       - name: Verify generated Baseline Profile files
         run: |

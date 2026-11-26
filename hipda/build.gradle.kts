@@ -76,9 +76,6 @@ roborazzi {
 baselineProfile {
     automaticGenerationDuringBuild = false
     mergeIntoMain = true
-    filter {
-        exclude("net.jejer.hipda.baselineprofile.**")
-    }
 }
 
 java {

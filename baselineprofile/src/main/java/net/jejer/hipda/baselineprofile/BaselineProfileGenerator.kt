@@ -17,13 +17,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Generates the Baseline Profile (and Startup Profile) covering the four required journeys:
+ * Generates the Startup Profile and Baseline Profile covering the four required journeys:
  * 1. Cold start (`NextAppRoot` + `HiAdaptiveShell` + `ForumPane`)
  * 2. Forum thread list load and vertical scrolling
  * 3. Opening thread detail (`ThreadDetailPane`)
  * 4. Thread detail floor rendering (inline emojis, quotes) and vertical scrolling
  *
- * Uses [OfflineForumFixtureServer] on `127.0.0.1` so generation never touches `4d4y.com`.
+ * Uses [OfflineForumFixtureServer] on `127.0.0.1` so generation never touches `4d4y.com`, and
+ * filters out `nonMinifiedRelease`-only harness classes from emitted ART profile rules.
  */
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -48,18 +49,42 @@ class BaselineProfileGenerator {
     }
 
     @Test
-    fun generateBaselineProfile() {
-        val hostIntent = Intent(Intent.ACTION_MAIN).apply {
-            component = ComponentName(TARGET_PACKAGE, HOST_ACTIVITY)
-            putExtra(EXTRA_FORUM_SERVER, fixtureServer.baseUrl)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        }
+    fun generateStartupProfile() {
+        val hostIntent = buildHostIntent()
 
         rule.collect(
             packageName = TARGET_PACKAGE,
             includeInStartupProfile = true,
+            maxIterations = 3,
+            stableIterations = 2,
+            filterPredicate = ::excludeHarnessRule,
+        ) {
+            Log.i(TAG, "Startup iteration: launching $HOST_ACTIVITY with ${fixtureServer.baseUrl}")
+            pressHome()
+            startActivityAndWait(hostIntent)
+
+            val threadListReady = device.wait(
+                Until.hasObject(By.textContains(OfflineForumFixtureServer.THREAD_TITLE_PREFIX)),
+                WAIT_TIMEOUT_MS,
+            )
+            check(threadListReady) {
+                "Timed out waiting for cold-start forum list '${OfflineForumFixtureServer.THREAD_TITLE_PREFIX}'"
+            }
+            device.waitForIdle()
+            Log.i(TAG, "Startup iteration complete")
+        }
+    }
+
+    @Test
+    fun generateBaselineProfile() {
+        val hostIntent = buildHostIntent()
+
+        rule.collect(
+            packageName = TARGET_PACKAGE,
+            includeInStartupProfile = false,
             maxIterations = 5,
             stableIterations = 2,
+            filterPredicate = ::excludeHarnessRule,
         ) {
             // 1. Cold start into NextAppRoot (ForumPane default feed)
             Log.i(TAG, "Iteration start: launching $HOST_ACTIVITY with ${fixtureServer.baseUrl}")
@@ -101,6 +126,15 @@ class BaselineProfileGenerator {
         }
     }
 
+    private fun buildHostIntent(): Intent = Intent(Intent.ACTION_MAIN).apply {
+        component = ComponentName(TARGET_PACKAGE, HOST_ACTIVITY)
+        putExtra(EXTRA_FORUM_SERVER, fixtureServer.baseUrl)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+    }
+
+    private fun excludeHarnessRule(ruleLine: String): Boolean =
+        !ruleLine.contains(HARNESS_PACKAGE_DESCRIPTOR)
+
     private fun MacrobenchmarkScope.findThreadRowInSafeViewport(): UiObject2? {
         val minY = (device.displayHeight * 0.28f).toInt()
         val maxY = (device.displayHeight * 0.76f).toInt()
@@ -132,6 +166,7 @@ class BaselineProfileGenerator {
         private const val TARGET_PACKAGE = "net.jejer.hipda.next"
         private const val HOST_ACTIVITY = "net.jejer.hipda.baselineprofile.BaselineProfileHostActivity"
         private const val EXTRA_FORUM_SERVER = "net.jejer.hipda.baselineprofile.EXTRA_FORUM_SERVER"
+        private const val HARNESS_PACKAGE_DESCRIPTOR = "Lnet/jejer/hipda/baselineprofile/"
         private const val WAIT_TIMEOUT_MS = 25_000L
     }
 }
