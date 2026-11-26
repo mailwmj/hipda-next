@@ -87,19 +87,12 @@ class AccountManagementViewModel(private val authRepository: AuthRepository) : V
     fun clearCredentialsAndLogout(uid: String, snackbar: PaneSnackbarController, loggedOutMessage: String, onDone: () -> Unit) =
         runAccountAction({ copy(isClearingCredentials = it) }, snackbar, loggedOutMessage, onDone) { authRepository.removeAccount(uid) }
 
-    private fun runAccountAction(
-        markBusy: AccountManagementUiState.(Boolean) -> AccountManagementUiState,
-        snackbar: PaneSnackbarController,
-        doneMessage: String,
-        onDone: () -> Unit,
-        block: suspend () -> Unit,
-    ) {
+    private fun runAccountAction(markBusy: AccountManagementUiState.(Boolean) -> AccountManagementUiState, snackbar: PaneSnackbarController, doneMessage: String, onDone: () -> Unit, block: suspend () -> Unit) {
         if (_uiState.value.isBusy) return
         _uiState.update { it.markBusy(true).copy(errorRes = null) }
         viewModelScope.launch {
-            val ok = try { block(); true } catch (e: CancellationException) { throw e } catch (_: Exception) {
-                _uiState.update { it.copy(errorRes = R.string.common_error_load_failed) }; false
-            } finally { _uiState.update { it.markBusy(false) } }
+            val ok = try { block(); true } catch (e: CancellationException) { throw e } catch (_: Exception) { _uiState.update { it.copy(errorRes = R.string.common_error_load_failed) }; false }
+                .also { _uiState.update { it.markBusy(false) } }
             if (ok) { onDone(); snackbar.show(doneMessage, PaneSnackbarTarget.ContentArea) }
         }
     }
@@ -112,24 +105,14 @@ class AccountManagementViewModel(private val authRepository: AuthRepository) : V
 
 /** 正式账号管理浮层（接管 `LoginOverlayMode.AccountMenu`，收口 `R-E15 S2`；零毛玻璃）。 */
 @Composable
-fun AccountManagementOverlay(
-    viewModel: AccountManagementViewModel,
-    onAddAccount: () -> Unit,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
+fun AccountManagementOverlay(viewModel: AccountManagementViewModel, onAddAccount: () -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = LocalPaneSnackbarController.current
     val switchedFmt = stringResource(R.string.settings_account_switched)
     val loggedOutMsg = stringResource(R.string.settings_account_logged_out)
     AccountManagementContent(
-        uiState = uiState,
-        onSwitchAccount = { viewModel.switchAccount(it, snackbar, switchedFmt, onDismiss) },
-        onAddAccount = onAddAccount,
-        onLogout = { viewModel.logout(snackbar, loggedOutMsg, onDismiss) },
-        onClearCredentials = { viewModel.clearCredentialsAndLogout(it, snackbar, loggedOutMsg, onDismiss) },
-        onDismiss = onDismiss,
-        modifier = modifier,
+        uiState, { viewModel.switchAccount(it, snackbar, switchedFmt, onDismiss) }, onAddAccount,
+        { viewModel.logout(snackbar, loggedOutMsg, onDismiss) }, { viewModel.clearCredentialsAndLogout(it, snackbar, loggedOutMsg, onDismiss) }, onDismiss, modifier,
     )
 }
 
@@ -143,35 +126,76 @@ fun AccountManagementContent(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val cs = MaterialTheme.colorScheme
     val windowSize = LocalWindowInfo.current.containerDpSize
     val isModalCard = windowSize.width >= ACCOUNT_MODAL_WIDTH_BREAKPOINT && windowSize.height >= ACCOUNT_MODAL_HEIGHT_BREAKPOINT
     val title = stringResource(R.string.settings_account_title)
     var confirmClear by remember { mutableStateOf<SavedAccount?>(null) }
     BackHandler(enabled = !uiState.isBusy, onBack = onDismiss)
 
-    val panelContent: @Composable (Modifier) -> Unit = { mod ->
+    val panel: @Composable (Modifier) -> Unit = { mod ->
+        val navInt = remember { MutableInteractionSource() }
+        val btnMod = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(navInt)
         Column(mod) {
-            AccountTopBar(title, isModalCard, enabled = !uiState.isBusy, onDismiss = onDismiss)
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(Modifier.fillMaxWidth().padding(horizontal = if (isModalCard) 20.dp else 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (!isModalCard) IconButton(onDismiss, btnMod, enabled = !uiState.isBusy, interactionSource = navInt) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back)) }
+                Text(title, style = MaterialTheme.typography.titleLarge, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = if (isModalCard) 0.dp else 8.dp).semantics { heading() })
+                if (isModalCard) IconButton(onDismiss, btnMod, enabled = !uiState.isBusy, interactionSource = navInt) { Icon(Icons.Rounded.Close, stringResource(R.string.settings_action_close)) }
+            }
+            HorizontalDivider(color = cs.outlineVariant)
             Box(if (isModalCard) Modifier.fillMaxWidth() else Modifier.weight(1f).fillMaxWidth(), Alignment.TopCenter) {
-                AccountManagementBody(uiState, onSwitchAccount, onAddAccount, onLogout, { confirmClear = it }, if (isModalCard) Modifier else Modifier.widthIn(max = ACCOUNT_MAX_WIDTH))
+                Column((if (isModalCard) Modifier else Modifier.widthIn(max = ACCOUNT_MAX_WIDTH)).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    uiState.errorRes?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium, color = cs.error, modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) }
+                    uiState.savedAccounts.forEach { account ->
+                        val isCurrent = account.uid == uiState.currentAccount?.uid
+                        Surface(shape = HiShapeTokens.Medium, color = if (isCurrent) cs.secondaryContainer.copy(alpha = 0.55f) else cs.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 60.dp)
+                                    .clickable(remember { MutableInteractionSource() }, hiListItemPressIndication(), enabled = !isCurrent && !uiState.isBusy) { onSwitchAccount(account.uid) }
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Box(Modifier.size(40.dp).clip(HiShapeTokens.Full).background(if (isCurrent) cs.primaryContainer else cs.surfaceContainerHigh), Alignment.Center) {
+                                    Text(account.username.trim().firstOrNull()?.uppercase() ?: "?", style = MaterialTheme.typography.titleMedium, color = if (isCurrent) cs.onPrimaryContainer else cs.onSurface)
+                                }
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(account.username, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (isCurrent) Text(stringResource(R.string.settings_account_current), style = MaterialTheme.typography.bodySmall, color = cs.primary)
+                                }
+                                if (uiState.switchingUid == account.uid) HiLoadingSpinner(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            }
+                        }
+                    }
+                    val addInt = remember { MutableInteractionSource() }
+                    FilledTonalButton(onAddAccount, Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).hiPressScale(addInt), enabled = !uiState.isBusy, shape = HiShapeTokens.Small, interactionSource = addInt) {
+                        Icon(Icons.Rounded.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(stringResource(R.string.settings_account_add))
+                    }
+                    uiState.currentAccount?.let { active ->
+                        val logoutInt = remember { MutableInteractionSource() }
+                        OutlinedButton(onLogout, Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).hiPressScale(logoutInt), enabled = !uiState.isBusy, shape = HiShapeTokens.Small, interactionSource = logoutInt) {
+                            if (uiState.isLoggingOut) HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.settings_account_logout))
+                        }
+                        Spacer(Modifier.height(8.dp)); HorizontalDivider(color = cs.outlineVariant)
+                        val clearInt = remember { MutableInteractionSource() }
+                        TextButton({ confirmClear = active }, Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).hiPressScale(clearInt), enabled = !uiState.isBusy, shape = HiShapeTokens.Small, colors = ButtonDefaults.textButtonColors(contentColor = cs.error), interactionSource = clearInt) {
+                            if (uiState.isClearingCredentials) HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp, color = cs.error) else Text(stringResource(R.string.settings_account_clear))
+                        }
+                    }
+                }
             }
         }
     }
 
     if (isModalCard) {
         Box(modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = ACCOUNT_SCRIM_ALPHA))
-                .clickable(remember { MutableInteractionSource() }, null, enabled = !uiState.isBusy, onClick = onDismiss))
-            Surface(
-                modifier = Modifier.align(Alignment.Center).systemBarsPadding().padding(24.dp).widthIn(max = ACCOUNT_MAX_WIDTH).fillMaxWidth()
-                    .semantics { paneTitle = title; isTraversalGroup = true },
-                shape = HiShapeTokens.Large, color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 6.dp,
-            ) { panelContent(Modifier.fillMaxWidth()) }
+            Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = ACCOUNT_SCRIM_ALPHA)).clickable(remember { MutableInteractionSource() }, null, enabled = !uiState.isBusy, onClick = onDismiss))
+            Surface(Modifier.align(Alignment.Center).systemBarsPadding().padding(24.dp).widthIn(max = ACCOUNT_MAX_WIDTH).fillMaxWidth().semantics { paneTitle = title; isTraversalGroup = true }, shape = HiShapeTokens.Large, color = cs.surfaceContainerHigh, shadowElevation = 6.dp) {
+                panel(Modifier.fillMaxWidth())
+            }
         }
     } else {
-        Surface(modifier.fillMaxSize().semantics { paneTitle = title; isTraversalGroup = true }, color = MaterialTheme.colorScheme.surface) {
-            panelContent(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding())
+        Surface(modifier.fillMaxSize().semantics { paneTitle = title; isTraversalGroup = true }, color = cs.surface) {
+            panel(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding())
         }
     }
 
@@ -180,72 +204,7 @@ fun AccountManagementContent(
             onDismissRequest = { if (!uiState.isBusy) confirmClear = null }, shape = HiShapeTokens.Large,
             title = { Text(stringResource(R.string.settings_account_clear_confirm_title, target.username)) },
             dismissButton = { TextButton({ confirmClear = null }, Modifier.defaultMinSize(48.dp, 48.dp), enabled = !uiState.isBusy) { Text(stringResource(R.string.settings_action_cancel)) } },
-            confirmButton = {
-                TextButton({ confirmClear = null; onClearCredentials(target.uid) }, Modifier.defaultMinSize(48.dp, 48.dp), enabled = !uiState.isBusy, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
-                    Text(stringResource(R.string.settings_account_clear_confirm_action))
-                }
-            },
+            confirmButton = { TextButton({ confirmClear = null; onClearCredentials(target.uid) }, Modifier.defaultMinSize(48.dp, 48.dp), enabled = !uiState.isBusy, colors = ButtonDefaults.textButtonColors(contentColor = cs.error)) { Text(stringResource(R.string.settings_account_clear_confirm_action)) } },
         )
-    }
-}
-
-@Composable
-private fun AccountTopBar(title: String, isModalCard: Boolean, enabled: Boolean, onDismiss: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    val btnMod = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(interaction)
-    Row(Modifier.fillMaxWidth().padding(horizontal = if (isModalCard) 20.dp else 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (!isModalCard) IconButton(onDismiss, btnMod, enabled = enabled, interactionSource = interaction) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back)) }
-        Text(title, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = if (isModalCard) 0.dp else 8.dp).semantics { heading() })
-        if (isModalCard) IconButton(onDismiss, btnMod, enabled = enabled, interactionSource = interaction) { Icon(Icons.Rounded.Close, stringResource(R.string.settings_action_close)) }
-    }
-}
-
-@Composable
-private fun AccountManagementBody(
-    uiState: AccountManagementUiState,
-    onSwitchAccount: (String) -> Unit,
-    onAddAccount: () -> Unit,
-    onLogout: () -> Unit,
-    onRequestClear: (SavedAccount) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val cs = MaterialTheme.colorScheme
-    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        uiState.errorRes?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium, color = cs.error, modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) }
-        uiState.savedAccounts.forEach { account ->
-            val isCurrent = account.uid == uiState.currentAccount?.uid
-            Surface(shape = HiShapeTokens.Medium, color = if (isCurrent) cs.secondaryContainer.copy(alpha = 0.55f) else cs.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 60.dp)
-                        .clickable(remember { MutableInteractionSource() }, hiListItemPressIndication(), enabled = !isCurrent && !uiState.isBusy) { onSwitchAccount(account.uid) }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Box(Modifier.size(40.dp).clip(HiShapeTokens.Full).background(if (isCurrent) cs.primaryContainer else cs.surfaceContainerHigh), Alignment.Center) {
-                        Text(account.username.trim().firstOrNull()?.uppercase() ?: "?", style = MaterialTheme.typography.titleMedium, color = if (isCurrent) cs.onPrimaryContainer else cs.onSurface)
-                    }
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(account.username, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (isCurrent) Text(stringResource(R.string.settings_account_current), style = MaterialTheme.typography.bodySmall, color = cs.primary)
-                    }
-                    if (uiState.switchingUid == account.uid) HiLoadingSpinner(Modifier.size(20.dp), strokeWidth = 2.dp)
-                }
-            }
-        }
-        val addInt = remember { MutableInteractionSource() }
-        FilledTonalButton(onAddAccount, Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).hiPressScale(addInt), enabled = !uiState.isBusy, shape = HiShapeTokens.Small, interactionSource = addInt) {
-            Icon(Icons.Rounded.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(stringResource(R.string.settings_account_add))
-        }
-        uiState.currentAccount?.let { active ->
-            val logoutInt = remember { MutableInteractionSource() }
-            OutlinedButton(onLogout, Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).hiPressScale(logoutInt), enabled = !uiState.isBusy, shape = HiShapeTokens.Small, interactionSource = logoutInt) {
-                if (uiState.isLoggingOut) HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.settings_account_logout))
-            }
-            Spacer(Modifier.height(8.dp)); HorizontalDivider(color = cs.outlineVariant)
-            val clearInt = remember { MutableInteractionSource() }
-            TextButton({ onRequestClear(active) }, Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).hiPressScale(clearInt), enabled = !uiState.isBusy, shape = HiShapeTokens.Small, colors = ButtonDefaults.textButtonColors(contentColor = cs.error), interactionSource = clearInt) {
-                if (uiState.isClearingCredentials) HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp, color = cs.error) else Text(stringResource(R.string.settings_account_clear))
-            }
-        }
     }
 }

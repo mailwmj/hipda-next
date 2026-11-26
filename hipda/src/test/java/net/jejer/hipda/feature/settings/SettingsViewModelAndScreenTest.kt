@@ -2,12 +2,15 @@ package net.jejer.hipda.feature.settings
 
 import android.app.Application
 import android.content.ClipboardManager
+import android.content.Intent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
+import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -23,11 +26,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
-import net.jejer.hipda.data.settings.AppSettings
-import net.jejer.hipda.data.settings.LineSpacing
-import net.jejer.hipda.data.settings.PaneSplit
-import net.jejer.hipda.data.settings.SettingsRepository
-import net.jejer.hipda.data.settings.ThemeMode
+import net.jejer.hipda.data.settings.*
 import net.jejer.hipda.di.SettingsProfileUiModule
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.service.NotificationScheduler
@@ -40,6 +39,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -52,8 +52,7 @@ class SettingsViewModelAndScreenTest {
     @Test
     fun appearanceSettings_persistAndThemeSwitchPreservesCompositionScrollAndFocus() = withAnimatorDurationScale(0f) {
         val repo = InMemorySettingsRepository()
-        val scheduler = RecordingNotificationScheduler()
-        val vm = SettingsViewModel(repo, scheduler, FakeCacheManager(), FakeErrorLogStore())
+        val vm = SettingsViewModel(repo, RecordingNotificationScheduler(), FakeCacheManager(), SettingsErrorLogStore { "" })
         var disposeCount = 0
         var rememberedToken: Any? = null
         val focusRequester = FocusRequester()
@@ -61,15 +60,14 @@ class SettingsViewModelAndScreenTest {
         setContent {
             val uiState by vm.uiState.collectAsStateWithLifecycle()
             val cfg = HiThemeSettingsAdapter.toThemeConfig(uiState.settings)
-            val actions = remember(vm) { vm.toActions { true } }
             HiTheme(cfg.themeMode, cfg.pureBlack, cfg.seed, cfg.fontSizeStep, cfg.lineHeightPreset) {
                 val token = remember { Any() }
                 rememberedToken = token
                 DisposableEffect(Unit) { onDispose { disposeCount++ } }
                 SettingsDetailPane(
                     group = SettingsGroup.Appearance,
-                    uiState = uiState,
-                    actions = actions,
+                    viewModel = vm,
+                    onOpenSystemNotificationSettings = { true },
                     showBack = true,
                     onBack = {},
                     onOpenThread = {},
@@ -83,7 +81,6 @@ class SettingsViewModelAndScreenTest {
         assertGlassSurfaceCountAtMost(0)
         val initialToken = requireNotNull(rememberedToken)
 
-        // 切深色、开纯黑、选预设色、改第 5 档字号、改宽松行距
         onNodeWithText("深色").performClick()
         waitForIdle()
         assertEquals(ThemeMode.DARK, repo.state.value.themeMode)
@@ -110,7 +107,6 @@ class SettingsViewModelAndScreenTest {
         waitForIdle()
         assertEquals(LineSpacing.LOOSE, repo.state.value.lineSpacing)
 
-        // 保持滚动位置切换浅色，不重置不重建
         onNodeWithText("浅色").performScrollTo().performClick()
         waitForIdle()
         assertEquals(ThemeMode.LIGHT, repo.state.value.themeMode)
@@ -119,13 +115,29 @@ class SettingsViewModelAndScreenTest {
     }
 
     @Test
-    fun forumNotificationNetworkAndAboutGroups_interactValidateAndSyncProperly() = withAnimatorDurationScale(0f) {
+    fun forumNotificationNetworkAndAboutGroups_interactValidateAndSanitizeViewCopyShare() = withAnimatorDurationScale(0f) {
         val repo = InMemorySettingsRepository()
         val scheduler = RecordingNotificationScheduler()
         val imageClearGate = CompletableDeferred<Long>()
         val cacheManager = FakeCacheManager(initialImageBytes = 4L * 1024L * 1024L, pendingImageClear = imageClearGate, webClearBytes = 2L * 1024L * 1024L)
-        val logStore = FakeErrorLogStore("Cookie: cdb_auth=SECRET_CK\npassword=SECRET_PW\nCrashTraceLine")
-        val vm = SettingsViewModel(repo, scheduler, cacheManager, logStore)
+        // 传入未经预脱敏的合成假敏感日志，确保查看/复制/分享三条路径均走 SettingsViewModel 统一脱敏入口
+        val rawUnsanitizedLogs = """
+            CrashTraceLine
+            Cookie: cdb_auth=SYNTH_SHARE_CK; __cf_bm=SYNTH_SHARE_CFBM
+            password="SYNTH_SHARE_QPW" m_formhash=SYNTH_SHARE_MFH
+            url: space.php?uid=765432&srchuid=876543&authorid=654321
+            avatar: uc_server/data/avatar/000/76/54/32_avatar_middle.jpg
+            json: {"uid":"765432","formhash":"SYNTH_SHARE_JFH","password":"a\"SYNTH_SHARE_JPW"}
+            encoded: space.php%3Fuid%3D246813%26cdb_auth%3DSYNTH_SHARE_ECA
+            SavedAccount(uid=765432, username=synth_user_share, passwordMd5=***, securityAnswer=***)
+            UID: 852963
+        """.trimIndent()
+        val secrets = listOf(
+            "SYNTH_SHARE_CK", "SYNTH_SHARE_CFBM", "SYNTH_SHARE_QPW", "SYNTH_SHARE_MFH",
+            "765432", "876543", "654321", "000/76/54/32", "SYNTH_SHARE_JFH", "SYNTH_SHARE_JPW",
+            "246813", "SYNTH_SHARE_ECA", "synth_user_share", "852963",
+        )
+        val vm = SettingsViewModel(repo, scheduler, cacheManager, SettingsErrorLogStore { rawUnsanitizedLogs })
 
         var currentGroup by mutableStateOf(SettingsGroup.ForumAndPost)
         var openedNotificationSettings = 0
@@ -134,15 +146,13 @@ class SettingsViewModelAndScreenTest {
         setContent {
             val snackbarHostState = remember { SnackbarHostState() }
             val controller = remember(snackbarHostState) { SingleHostPaneSnackbarController(snackbarHostState) }
-            val uiState by vm.uiState.collectAsStateWithLifecycle()
-            val actions = remember(vm) { vm.toActions { openedNotificationSettings++; true } }
             HiTheme {
                 CompositionLocalProvider(LocalPaneSnackbarController provides controller) {
                     Box(Modifier.fillMaxSize()) {
                         SettingsDetailPane(
                             group = currentGroup,
-                            uiState = uiState,
-                            actions = actions,
+                            viewModel = vm,
+                            onOpenSystemNotificationSettings = { openedNotificationSettings++; true },
                             showBack = false,
                             onBack = null,
                             onOpenThread = { openedThreads += it },
@@ -157,7 +167,7 @@ class SettingsViewModelAndScreenTest {
         waitForIdle()
         assertGlassSurfaceCountAtMost(0)
 
-        // 1. 论坛与发帖：显示置顶帖、小尾巴开关与链接白名单校验、管理版块增删改序
+        // 1. 论坛与发帖
         onNodeWithText("显示置顶帖").performClick()
         waitForIdle()
         assertFalse(repo.state.value.showStickyThreads)
@@ -172,7 +182,7 @@ class SettingsViewModelAndScreenTest {
         onNodeWithText("确定").performClick()
         waitForIdle()
         onNodeWithText("请输入以 http:// 或 https:// 开头的有效网址").assertIsDisplayed()
-        assertEquals("非法尾巴链接不得写入仓库", "", repo.state.value.tailUrl)
+        assertEquals("", repo.state.value.tailUrl)
 
         onNode(hasSetTextAction()).performTextReplacement("https://example.com/tail")
         onNodeWithText("确定").performClick()
@@ -194,7 +204,7 @@ class SettingsViewModelAndScreenTest {
         onNodeWithContentDescription("返回").performClick()
         waitForIdle()
 
-        // 2. 通知与免打扰：同步 NotificationScheduler.syncSchedule、跳系统设置、免打扰开关
+        // 2. 通知与免打扰
         currentGroup = SettingsGroup.Notification
         waitForIdle()
         onNodeWithText("接收提醒通知").performClick()
@@ -212,12 +222,12 @@ class SettingsViewModelAndScreenTest {
         onNodeWithText("开始时间").assertIsDisplayed()
         onNodeWithText("结束时间").assertIsDisplayed()
 
-        // 3. 网络与缓存：论坛服务器校验、图片缓存上限、清除图片缓存与网页缓存
+        // 3. 网络与缓存（含 S1 校验拦截 ?query/#fragment/userinfo）
         currentGroup = SettingsGroup.NetworkAndCache
         waitForIdle()
         onNodeWithText("论坛服务器").performClick()
         waitForIdle()
-        onNode(hasSetTextAction()).performTextReplacement("file:///etc/passwd")
+        onNode(hasSetTextAction()).performTextReplacement("https://user:pass@bbs.example.com?q=1#h")
         onNodeWithText("确定").performClick()
         waitForIdle()
         onNodeWithText("请输入以 http:// 或 https:// 开头的有效网址").assertIsDisplayed()
@@ -245,7 +255,6 @@ class SettingsViewModelAndScreenTest {
         waitForIdle()
         onNodeWithText("已清除 4 MB").assertIsDisplayed()
 
-        // 推进虚拟时钟让上一条短时 Snackbar 自然消退后再测清除网页缓存
         mainClock.advanceTimeBy(4_500L)
         waitForIdle()
         onNodeWithText("清除网页缓存").performClick()
@@ -256,28 +265,108 @@ class SettingsViewModelAndScreenTest {
         mainClock.autoAdvance = true
         waitForIdle()
 
-        // 4. 关于：版本、客户端发布帖回调、错误日志查看与复制严格脱敏
+        // 4. 关于：版本、发布帖回调、错误日志查看 / 复制 / 分享三条路径全脱敏断言
         currentGroup = SettingsGroup.About
         waitForIdle()
         onNodeWithText("客户端发布帖").performClick()
         waitForIdle()
         assertEquals(CLIENT_RELEASE_TID, openedThreads.single().tid)
 
+        // 4a. 查看
         onNodeWithText("查看").performClick()
         waitForIdle()
         onNodeWithText("CrashTraceLine", substring = true).assertIsDisplayed()
-        onNodeWithText("SECRET_CK", substring = true).assertDoesNotExist()
-        onNodeWithText("SECRET_PW", substring = true).assertDoesNotExist()
+        secrets.forEach { secret -> onNodeWithText(secret, substring = true).assertDoesNotExist() }
         onNodeWithText("关闭").performClick()
         waitForIdle()
 
+        // 4b. 复制
+        val app = ApplicationProvider.getApplicationContext<Application>()
         onNodeWithText("复制").performClick()
         waitForIdle()
-        val clip = ApplicationProvider.getApplicationContext<Application>()
-            .getSystemService(ClipboardManager::class.java)?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-        assertTrue(clip.contains("CrashTraceLine"))
-        assertFalse(clip.contains("SECRET_CK"))
-        assertFalse(clip.contains("SECRET_PW"))
+        val clip = app.getSystemService(ClipboardManager::class.java)?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+        assertTrue("复制日志应保留诊断堆栈", clip.contains("CrashTraceLine"))
+        secrets.forEach { secret -> assertFalse("复制日志不得包含 [$secret]:\n$clip", clip.contains(secret)) }
+
+        // 4c. 分享（捕获 Intent.ACTION_CHOOSER -> EXTRA_INTENT 的 ACTION_SEND EXTRA_TEXT）
+        shadowOf(app).clearNextStartedActivities()
+        onNodeWithText("分享").performClick()
+        waitForIdle()
+        val chooserIntent = shadowOf(app).nextStartedActivity
+        assertNotNull("点击分享应发出 Chooser Intent", chooserIntent)
+        assertEquals(Intent.ACTION_CHOOSER, chooserIntent.action)
+        @Suppress("DEPRECATION")
+        val sendIntent = chooserIntent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+        assertNotNull("Chooser 内应包裹 ACTION_SEND Intent", sendIntent)
+        assertEquals(Intent.ACTION_SEND, sendIntent!!.action)
+        val sharedText = sendIntent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+        assertTrue("分享日志应保留诊断堆栈", sharedText.contains("CrashTraceLine"))
+        secrets.forEach { secret -> assertFalse("分享日志不得包含 [$secret]:\n$sharedText", sharedText.contains(secret)) }
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun settingsDetail_rotationPreservesScrollPositionAndUnsavedTextDialogDraft() = withAnimatorDurationScale(0f) {
+        val repo = InMemorySettingsRepository()
+        val vm = SettingsViewModel(repo, RecordingNotificationScheduler(), FakeCacheManager(), SettingsErrorLogStore { "" })
+        var group by mutableStateOf(SettingsGroup.Appearance)
+        var mounted by mutableStateOf(true)
+        var registry by mutableStateOf(SaveableStateRegistry(null) { true })
+
+        setContent {
+            HiTheme {
+                CompositionLocalProvider(LocalSaveableStateRegistry provides registry) {
+                    if (mounted) {
+                        SettingsDetailPane(
+                            group = group,
+                            viewModel = vm,
+                            onOpenSystemNotificationSettings = { true },
+                            showBack = false,
+                            onBack = null,
+                            onOpenThread = {},
+                            blacklistContent = { _, _ -> },
+                            contentPadding = PaddingValues(0.dp),
+                        )
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        // 1. 矮宽屏下将外观与阅读滚动到底部使“宽松”可见，模拟旋转保存与恢复
+        onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("宽松"))
+        waitForIdle()
+        onNodeWithText("宽松").assertIsDisplayed()
+        val topBefore = onNodeWithText("宽松").fetchSemanticsNode().boundsInRoot.top
+
+        val savedScroll = registry.performSave()
+        mounted = false
+        waitForIdle()
+        registry = SaveableStateRegistry(savedScroll) { true }
+        mounted = true
+        waitForIdle()
+
+        val topAfter = onNodeWithText("宽松").fetchSemanticsNode().boundsInRoot.top
+        assertEquals("旋转恢复后设置详情页滚动位置应保持不变", topBefore, topAfter, 4f)
+
+        // 2. 切至网络与缓存 -> 打开“论坛服务器”对话框输入未提交草稿 -> 模拟旋转保存与恢复
+        group = SettingsGroup.NetworkAndCache
+        waitForIdle()
+        onNodeWithText("论坛服务器").performClick()
+        waitForIdle()
+        val draftUrl = "https://draft-rotated.example.com"
+        onNode(hasSetTextAction()).performTextReplacement(draftUrl)
+        waitForIdle()
+
+        val savedDialog = registry.performSave()
+        mounted = false
+        waitForIdle()
+        registry = SaveableStateRegistry(savedDialog) { true }
+        mounted = true
+        waitForIdle()
+
+        onNodeWithText(draftUrl).assertIsDisplayed()
+        assertEquals("未点确定前草稿不应提前写入仓库", AppSettings.DEFAULT_FORUM_SERVER, repo.state.value.forumServer)
     }
 
     @Test
@@ -309,8 +398,7 @@ class SettingsViewModelAndScreenTest {
     fun settingsProfileUiModule_bindsSettingsProfilePaneRendererImplAsSingleton() {
         assertNotNull(SettingsProfileUiModule::class.java.getAnnotation(Module::class.java))
         assertTrue(SettingsProfilePaneRendererImpl::class.java.isAnnotationPresent(Singleton::class.java))
-        val hasInjectCtor = SettingsProfilePaneRendererImpl::class.java.declaredConstructors.any { it.isAnnotationPresent(Inject::class.java) }
-        assertTrue(hasInjectCtor)
+        assertTrue(SettingsProfilePaneRendererImpl::class.java.declaredConstructors.any { it.isAnnotationPresent(Inject::class.java) })
         val bindMethod = SettingsProfileUiModule::class.java.getDeclaredMethod("bindSettingsProfilePaneRenderer", SettingsProfilePaneRendererImpl::class.java)
         assertTrue(bindMethod.isAnnotationPresent(Binds::class.java))
         assertTrue(bindMethod.isAnnotationPresent(Singleton::class.java))
@@ -363,9 +451,5 @@ class SettingsViewModelAndScreenTest {
             return freed
         }
         override suspend fun clearWebCache(): Long = webClearBytes
-    }
-
-    private class FakeErrorLogStore(private val raw: String = "") : SettingsErrorLogStore {
-        override suspend fun readSanitizedLogs(): String = ErrorLogSanitizer.sanitize(raw)
     }
 }

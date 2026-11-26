@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -30,7 +31,7 @@ class LoginOverlayRendererImpl @Inject constructor(
 
     @Composable
     override fun Content(mode: LoginOverlayMode, onDismiss: () -> Unit, onLoginSuccess: () -> Unit) {
-        var activeMode by remember(mode) { mutableStateOf(mode) }
+        var activeMode by rememberSaveable(mode) { mutableStateOf(mode) }
         val loginFactory = remember(authRepository, siteAccessGateway) {
             viewModelFactory { initializer { LoginViewModel(authRepository, siteAccessGateway) } }
         }

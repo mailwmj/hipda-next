@@ -5,7 +5,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
+import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
@@ -32,20 +35,19 @@ import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeSolver
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.access.SolveResult
-import net.jejer.hipda.data.settings.AppSettings
-import net.jejer.hipda.data.settings.LineSpacing
-import net.jejer.hipda.data.settings.PaneSplit
-import net.jejer.hipda.data.settings.SettingsRepository
-import net.jejer.hipda.data.settings.ThemeMode
+import net.jejer.hipda.data.settings.*
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.feature.login.LoginOverlayRendererImpl
 import net.jejer.hipda.testing.withAnimatorDurationScale
+import net.jejer.hipda.ui.challenge.TestWebViewCookieAccess
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.feedback.HiSnackbarHost
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
+import okhttp3.Cookie
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okio.Buffer
@@ -121,7 +123,6 @@ class AccountManagementTest {
         }
         waitForIdle()
 
-        // 1. 清除登录信息须弹出二次确认框；点“取消”不删凭据
         onNodeWithText("清除登录信息").performClick()
         waitForIdle()
         onNodeWithText("清除 alice 的保存密码并退出？").assertIsDisplayed()
@@ -130,7 +131,6 @@ class AccountManagementTest {
         assertTrue(repo.removeCalls.isEmpty())
         assertEquals(alice, repo.currentAccount.value)
 
-        // 2. 再次点“清除登录信息” -> 点“清除”删除保存密码并退出
         onNodeWithText("清除登录信息").performClick()
         waitForIdle()
         onNodeWithText("清除").performClick()
@@ -142,32 +142,31 @@ class AccountManagementTest {
     }
 
     @Test
-    fun loginOverlayRendererImpl_switchesFromAccountMenuToLoginAndNoTempOverlayRemains() = withAnimatorDurationScale(0f) {
+    fun loginOverlayRendererImpl_switchesFromAccountMenuToLoginAndPreservesModeAcrossRotationWithoutLeakingPassword() = withAnimatorDurationScale(0f) {
         val repo = FakeMultiAuthRepository(active = alice, saved = listOf(alice, bob))
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val gateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cleared }, { 10_000L }, scope)
         val renderer = LoginOverlayRendererImpl(repo, gateway)
         var overlayMode by mutableStateOf<LoginOverlayMode?>(LoginOverlayMode.AccountMenu)
+        var mounted by mutableStateOf(true)
+        var registry by mutableStateOf(SaveableStateRegistry(null) { true })
+        val passwordSentinel = "SynthRotSecret_987!"
 
         try {
-            // 验证临时 AccountMenuOverlay 已彻底删除（文件内不再生成顶层 Kt 辅助类，且渲染器类自身不含临时菜单方法）
             val ktClass = runCatching { Class.forName("net.jejer.hipda.feature.login.LoginOverlayRendererImplKt") }.getOrNull()
-            assertTrue(
-                "临时 AccountMenuOverlay 必须已删除",
-                ktClass == null || ktClass.declaredMethods.none { it.name.contains("AccountMenuOverlay") },
-            )
-            assertTrue(
-                LoginOverlayRendererImpl::class.java.declaredMethods.none { it.name.contains("AccountMenuOverlay") },
-            )
+            assertTrue("临时 AccountMenuOverlay 必须已删除", ktClass == null || ktClass.declaredMethods.none { it.name.contains("AccountMenuOverlay") })
+            assertTrue(LoginOverlayRendererImpl::class.java.declaredMethods.none { it.name.contains("AccountMenuOverlay") })
 
             setContent {
                 val snackbarHostState = remember { SnackbarHostState() }
                 val controller = remember(snackbarHostState) { SingleHostPaneSnackbarController(snackbarHostState) }
                 HiTheme {
-                    CompositionLocalProvider(LocalPaneSnackbarController provides controller) {
+                    CompositionLocalProvider(LocalPaneSnackbarController provides controller, LocalSaveableStateRegistry provides registry) {
                         Box(Modifier.fillMaxSize()) {
-                            overlayMode?.let { mode ->
-                                renderer.Content(mode, onDismiss = { overlayMode = null }, onLoginSuccess = { overlayMode = null })
+                            if (mounted) {
+                                overlayMode?.let { mode ->
+                                    renderer.Content(mode, onDismiss = { overlayMode = null }, onLoginSuccess = { overlayMode = null })
+                                }
                             }
                             HiSnackbarHost(snackbarHostState, bottomClearance = 16.dp)
                         }
@@ -178,6 +177,22 @@ class AccountManagementTest {
             onNodeWithText("添加账号").assertIsDisplayed().performClick()
             waitForIdle()
             onNodeWithText("登录 HiPDA").assertIsDisplayed()
+
+            // 输入用户名与密码后模拟旋转重建：应保持在“添加账号”登录页，且保存状态中绝不含密码
+            onNode(hasSetTextAction() and hasText("用户名")).performTextInput("synth_new_user")
+            onNode(hasSetTextAction() and hasText("密码")).performTextInput(passwordSentinel)
+            waitForIdle()
+
+            val saved = registry.performSave()
+            assertFalse("SaveableStateRegistry 不得序列化密码", saved.toString().contains(passwordSentinel))
+            mounted = false
+            waitForIdle()
+            registry = SaveableStateRegistry(saved) { true }
+            mounted = true
+            waitForIdle()
+
+            onNodeWithText("登录 HiPDA").assertIsDisplayed()
+            onNodeWithText("synth_new_user").assertIsDisplayed()
 
             // 返回回账号管理页后点退出登录（无确认框）
             onNodeWithContentDescription("返回").performClick()
@@ -193,47 +208,107 @@ class AccountManagementTest {
     }
 
     @Test
-    fun defaultAuthRepository_switchLogoutAndRemoveAccountAgainstMockWebServer() = runBlocking {
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun wideScreen_rendersCenteredModalCardMax480dp() = withAnimatorDurationScale(0f) {
+        val repo = FakeMultiAuthRepository(active = alice, saved = listOf(alice, bob))
+        val vm = AccountManagementViewModel(repo)
+
+        setContent {
+            HiTheme {
+                AccountManagementOverlay(vm, onAddAccount = {}, onDismiss = {})
+            }
+        }
+        waitForIdle()
+        assertGlassSurfaceCountAtMost(0)
+        val modalNode = onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "账号")).fetchSemanticsNode()
+        val maxWidthPx = with(density) { 480.dp.toPx() } + 1f
+        assertTrue("宽屏账号管理模态卡片宽度不得超过 480dp，实际=${modalNode.size.width}px", modalNode.size.width <= maxWidthPx)
+    }
+
+    @Test
+    fun defaultAuthRepository_switchClearActiveAccountAndLogoutAgainstMockWebServer() = runBlocking {
         val server = MockWebServer()
         server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val nowMs = AtomicLong(1_700_000_000_000L)
+        // S2：与 HttpClient 共用同一个 SiteCookieStore，并注入真实语义 TestWebViewCookieAccess
+        val sharedCookieStore = InMemorySiteCookieStore(clock = { nowMs.get() })
+        val webViewCookieAccess = TestWebViewCookieAccess()
         val client = HttpClientModule.provideOkHttpClient(
-            siteCookieStore = InMemorySiteCookieStore(clock = { nowMs.get() }),
+            siteCookieStore = sharedCookieStore,
             userAgentProvider = UserAgentProvider { "TestUA" },
             transportInterceptor = TransportInterceptor(delegateFactory = { null }, isMainThread = { false }),
         )
         try {
             val baseUrl = server.url("").toString().trimEnd('/')
+            val forumUrl = "$baseUrl/forum/".toHttpUrl()
             val creds = InMemoryCredentialsStore(listOf(alice, bob), activeUid = alice.uid)
-            val cookieStore = InMemorySiteCookieStore(clock = { nowMs.get() })
             val settingsRepo = StaticSettingsRepo(AppSettings(forumServer = baseUrl))
             val gateway = SiteAccessGateway(client, ChallengeDetector(), ChallengeSolver { SolveResult.Cleared }, { nowMs.get() }, scope, 5.seconds)
-            val authRepo = DefaultAuthRepository(creds, cookieStore, settingsRepo, gateway, gateway, { nowMs.get() }, scope)
+            val authRepo = DefaultAuthRepository(
+                credentialsStore = creds,
+                siteCookieStore = sharedCookieStore,
+                settingsRepository = settingsRepo,
+                siteAccessGateway = gateway,
+                recoveryGateway = gateway,
+                clock = { nowMs.get() },
+                scope = scope,
+                webViewCookieAccess = webViewCookieAccess,
+                cookieDispatcher = Dispatchers.Unconfined,
+            )
 
             val gbk = Charset.forName("GBK")
-            fun gbkResp(html: String) = MockResponse.Builder()
+            fun gbkResp(html: String, setCookies: List<String> = emptyList()) = MockResponse.Builder()
                 .code(200)
                 .addHeader("Content-Type", "text/html; charset=gbk")
+                .apply { setCookies.forEach { addHeader("Set-Cookie", it) } }
                 .body(Buffer().writeString(html, gbk))
                 .build()
 
             server.enqueue(gbkResp("""<html><body><form name="login"><input name="formhash" value="fh999" /></form></body></html>"""))
-            server.enqueue(gbkResp("""<html><body><div id="umenu"><cite><a href="space.php?uid=1002">bob</a></cite></div><div class="alert_right">欢迎您回来，bob</div></body></html>"""))
+            server.enqueue(
+                gbkResp(
+                    """<html><body><div id="umenu"><cite><a href="space.php?uid=1002">bob</a></cite></div><div class="alert_right">欢迎您回来，bob</div></body></html>""",
+                    setCookies = listOf("cdb_auth=SYNTH_BOB_AUTH; Path=/", "cdb_sid=SYNTH_BOB_SID; Path=/"),
+                ),
+            )
 
+            // 1. 切号到 bob，并在双端写入 cf_clearance + WebView 认证 Cookie
             val switchRes = authRepo.switchAccount(bob.uid)
             assertTrue("切换账号应成功，实际: $switchRes", switchRes is LoginResult.Success)
             assertEquals("1002", authRepo.currentAccount.value?.uid)
 
-            // 退出登录：保留已保存账号并抑制静默重登
+            val cfCookie = Cookie.parse(forumUrl, "cf_clearance=SYNTH_CF_KEEP; Path=/; Max-Age=3600")!!
+            sharedCookieStore.saveFromResponse(forumUrl, listOf(cfCookie))
+            webViewCookieAccess.seedCookie(forumUrl, "cdb_auth=SYNTH_BOB_AUTH; Path=/; Max-Age=3600")
+            webViewCookieAccess.seedCookie(forumUrl, "cdb_sid=SYNTH_BOB_SID; Path=/; Max-Age=3600")
+            webViewCookieAccess.seedCookie(forumUrl, "cf_clearance=SYNTH_CF_KEEP; Path=/; Max-Age=3600")
+
+            // 2. S2：在 bob 为当前活跃账号时直接执行“清除登录信息”（removeAccount 走 removingActive == true 分支）
+            authRepo.removeAccount(bob.uid)
+            assertNull("清除当前活跃账号后应回到未登录", authRepo.currentAccount.value)
+            assertEquals(AuthState.SignedOut, authRepo.authState.value)
+            assertEquals("仅删除目标账号 bob，另一保存账号 alice 必须完好保留", listOf(alice.uid), authRepo.savedAccounts.value.map { it.uid })
+
+            val remainingSiteNames = sharedCookieStore.loadForRequest(forumUrl).map { it.name }.toSet()
+            assertFalse("SiteCookieStore 必须清空 cdb_auth", "cdb_auth" in remainingSiteNames)
+            assertFalse("SiteCookieStore 必须清空 cdb_sid", "cdb_sid" in remainingSiteNames)
+            assertTrue("SiteCookieStore 必须保留 cf_clearance", "cf_clearance" in remainingSiteNames)
+
+            val remainingWebView = webViewCookieAccess.getCookie(forumUrl.toString()).orEmpty()
+            assertFalse("WebViewCookieAccess 必须清空 cdb_auth", remainingWebView.contains("cdb_auth"))
+            assertFalse("WebViewCookieAccess 必须清空 cdb_sid", remainingWebView.contains("cdb_sid"))
+            assertTrue("WebViewCookieAccess 必须保留 cf_clearance", remainingWebView.contains("cf_clearance=SYNTH_CF_KEEP"))
+            assertTrue("清理 WebView Cookie 后必须 flush", webViewCookieAccess.flushCount >= 1)
+
+            // 3. 切回 alice 再测“退出登录”：保留已保存凭据并抑制静默重登
+            server.enqueue(gbkResp("""<html><body><form name="login"><input name="formhash" value="fh888" /></form></body></html>"""))
+            server.enqueue(gbkResp("""<html><body><div id="umenu"><cite><a href="space.php?uid=1001">alice</a></cite></div><div class="alert_right">欢迎您回来，alice</div></body></html>"""))
+            assertTrue(authRepo.switchAccount(alice.uid) is LoginResult.Success)
             authRepo.logout()
             assertNull(authRepo.currentAccount.value)
-            assertEquals(2, authRepo.savedAccounts.value.size)
+            assertEquals("退出登录必须保留已保存账号 alice", listOf(alice.uid), authRepo.savedAccounts.value.map { it.uid })
             assertEquals(SilentReloginResult.Suppressed, authRepo.trySilentRelogin(authRepo.sessionEpoch))
-
-            // 清除保存凭据
-            authRepo.removeAccount(bob.uid)
-            assertEquals(listOf(alice.uid), authRepo.savedAccounts.value.map { it.uid })
         } finally {
             scope.cancel()
             client.dispatcher.cancelAll()

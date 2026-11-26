@@ -32,6 +32,7 @@ class ProfileUrlSanitizerTest {
             "https://example.com ",
             "https://",
             "http:///nohost",
+            "https://user:pass@example.com/u",
             "https://example.com/\nfoo",
         )
         dangerous.forEach { bad ->
@@ -81,5 +82,27 @@ class ProfileUrlSanitizerTest {
 
         val images = ProfileUrlSanitizer.extractSafeSignatureImageUrls(raw)
         assertEquals(listOf("https://img.example.com/sig.png"), images)
+    }
+
+    @Test
+    fun parseProfileDetails_filtersOutTitleOnlyEmptySections() {
+        val raw = """
+            基本资料
+
+            用户组: 正式会员
+            积分: 120
+
+            仅有标题的空分组
+
+            论坛统计
+
+            帖子: 42
+
+            末尾空标题
+        """.trimIndent()
+
+        val parsed = parseProfileDetails(raw)
+        assertEquals(listOf("基本资料", "论坛统计"), parsed.sections.map { it.title })
+        assertTrue(parsed.sections.all { it.lines.isNotEmpty() })
     }
 }

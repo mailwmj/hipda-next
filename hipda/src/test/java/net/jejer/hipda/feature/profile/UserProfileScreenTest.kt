@@ -154,6 +154,21 @@ class UserProfileScreenTest {
         assertEquals(listOf("HiUser"), blRepo.removeCalls)
         onNodeWithText("加入黑名单").assertIsDisplayed()
 
+        // 连续两次拉黑/移出操作：第二次发起时立即关掉前一条 Snackbar，点撤销仅撤回第二次
+        blRepo.clearPendingAdd()
+        onNodeWithText("加入黑名单").performClick()
+        waitForIdle()
+        onNodeWithText("已将 HiUser 加入黑名单").assertIsDisplayed()
+
+        onNodeWithText("移出黑名单").performClick()
+        waitForIdle()
+        onNodeWithText("已将 HiUser 加入黑名单").assertDoesNotExist()
+        onNodeWithText("已将 HiUser 移出黑名单").assertIsDisplayed()
+
+        onNodeWithText("撤销").performClick()
+        waitForIdle()
+        onNodeWithText("移出黑名单").assertIsDisplayed()
+
         // 切至 TA 的帖子并点击打开帖子
         onNodeWithText("TA 的帖子").performClick()
         waitForIdle()
@@ -196,7 +211,7 @@ class UserProfileScreenTest {
     }
 
     private class FakeProfileBlacklistRepo(
-        private val pendingAdd: CompletableDeferred<BlacklistMutationResult>? = null,
+        private var pendingAdd: CompletableDeferred<BlacklistMutationResult>? = null,
     ) : BlacklistRepository {
         private val _blocked = MutableStateFlow<Set<String>>(emptySet())
         override val blockedUsernames: StateFlow<Set<String>> = _blocked.asStateFlow()
@@ -209,10 +224,11 @@ class UserProfileScreenTest {
             BlacklistSyncResult.Success(BlacklistSnapshot("1", _blocked.value, 1L), _blocked.value.isEmpty())
 
         fun applyAdd(username: String) { _blocked.update { it + username } }
+        fun clearPendingAdd() { pendingAdd = null }
 
         override suspend fun addToBlacklist(username: String, formhash: String?, priority: AccessPriority): BlacklistMutationResult {
             addCalls += username
-            if (pendingAdd != null) return pendingAdd.await()
+            pendingAdd?.let { return it.await() }
             _blocked.update { it + username }
             return BlacklistMutationResult.Success(username, _blocked.value)
         }

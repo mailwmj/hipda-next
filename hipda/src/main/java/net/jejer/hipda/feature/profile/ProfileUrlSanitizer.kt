@@ -5,23 +5,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextDecoration
 import net.jejer.hipda.feature.settings.SettingsUrlValidator
+import net.jejer.hipda.feature.threaddetail.body.sanitizePostUrl
 
-/** 用户资料页链接、签名与头像/图片 URL 严格 scheme 白名单（链接仅 `http`/`https`/经校验 `mailto:`；图片仅 `http`/`https`）。 */
+/** 用户资料页链接、签名与头像/图片 URL 严格 scheme 白名单（复用 `sanitizePostUrl` 与 `SettingsUrlValidator`）。 */
 object ProfileUrlSanitizer {
-    private val MAILTO_ADDRESS_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$")
     private val BBCODE_URL_REGEX = Regex("""(?i)\[url=([^\]]+)](.*?)\[/url]""")
     private val SCHEME_TOKEN_REGEX = Regex("""([A-Za-z][A-Za-z0-9+.-]*:[^\s\u3000<>\]\)"']+)""")
     private val IMG_TAG_REGEX = Regex("""(?i)\[img]([^\[\]]+)\[/img]""")
     private val TRAILING_PUNCT = setOf('.', ',', ';', '!', '?', ')', ']', '，', '。', '；', '！', '？', '）', '】')
 
     fun sanitizeProfileLinkUrl(rawUrl: String?): String? {
-        if (rawUrl.isNullOrEmpty() || rawUrl.first().isWhitespace() || rawUrl.last().isWhitespace()) return null
-        if (rawUrl.any { it.isISOControl() || it.isWhitespace() }) return null
-        if (rawUrl.startsWith("mailto:", ignoreCase = true)) {
-            val addr = rawUrl.substring(7)
-            return if (isValidMailtoAddress(addr)) "mailto:$addr" else null
-        }
-        return sanitizeProfileImageUrl(rawUrl)
+        if (rawUrl.isNullOrEmpty() || rawUrl.any { it.isWhitespace() || it.isISOControl() }) return null
+        return if (rawUrl.startsWith("mailto:", ignoreCase = true)) sanitizePostUrl(rawUrl) else sanitizeProfileImageUrl(rawUrl)
     }
 
     fun sanitizeProfileImageUrl(rawUrl: String?): String? {
@@ -72,13 +67,6 @@ object ProfileUrlSanitizer {
         )
         withLink(annotation) { append(label) }
     }
-
-    private fun isValidMailtoAddress(address: String): Boolean {
-        val at = address.indexOf('@')
-        if (at <= 0 || at != address.lastIndexOf('@') || address.contains("..")) return false
-        val local = address.substring(0, at)
-        return !local.startsWith('.') && !local.endsWith('.') && MAILTO_ADDRESS_REGEX.matches(address)
-    }
 }
 
 @Immutable
@@ -102,7 +90,7 @@ fun parseProfileDetails(detail: String): ParsedProfileDetails {
         }
     }
     if (pendingTitle != null) sections += ProfileDetailSection(pendingTitle, emptyList())
-    val nonEmpty = sections.filter { it.lines.isNotEmpty() || !it.title.isNullOrBlank() }
+    val nonEmpty = sections.filter { it.lines.isNotEmpty() }
     val allLines = nonEmpty.flatMap { it.lines }
     val stats = listOf("用户组", "积分", "帖子", "注册日期").mapNotNull { p -> allLines.firstOrNull { it.startsWith(p) } }.take(3).ifEmpty { allLines.take(2) }
     return ParsedProfileDetails(stats, nonEmpty)

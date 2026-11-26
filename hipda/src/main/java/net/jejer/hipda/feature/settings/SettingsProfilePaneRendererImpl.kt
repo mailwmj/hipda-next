@@ -4,9 +4,7 @@ import android.content.Context
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -58,24 +56,19 @@ class SettingsProfilePaneRendererImpl @Inject constructor(
         val settingsFactory = remember(appContext, settingsRepository, notificationScheduler, imageLoader) {
             viewModelFactory { initializer { SettingsViewModel(settingsRepository, notificationScheduler, AndroidSettingsCacheManager(appContext, imageLoader), AndroidSettingsErrorLogStore(appContext)) } }
         }
-        val settingsVm: SettingsViewModel = viewModel(factory = settingsFactory)
-        val uiState by settingsVm.uiState.collectAsStateWithLifecycle()
-        val opener = remember(appContext) { AndroidSystemNotificationSettingsOpener(appContext) }
-        val actions = remember(settingsVm, opener) { settingsVm.toActions(opener) }
         val blacklistFactory = remember(authRepository, blacklistRepository) {
             viewModelFactory { initializer { BlacklistViewModel(authRepository, blacklistRepository) } }
         }
+        val opener = remember(appContext) { AndroidSystemNotificationSettingsOpener(appContext) }
 
         SettingsDetailPane(
             group = group,
-            uiState = uiState,
-            actions = actions,
+            viewModel = viewModel(factory = settingsFactory),
+            onOpenSystemNotificationSettings = opener::open,
             showBack = showBack,
             onBack = onBack,
             onOpenThread = onOpenThread,
-            blacklistContent = { onBlacklistBack, padding ->
-                BlacklistScreen(viewModel(factory = blacklistFactory), onBlacklistBack, onOpenLogin, padding)
-            },
+            blacklistContent = { onBlacklistBack, padding -> BlacklistScreen(viewModel(factory = blacklistFactory), onBlacklistBack, onOpenLogin, padding) },
             contentPadding = contentPadding,
         )
     }

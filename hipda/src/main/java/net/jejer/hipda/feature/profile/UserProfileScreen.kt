@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.data.network.access.AccessPriority
@@ -56,29 +57,27 @@ fun UserProfileScreen(
     val undoLabel = stringResource(R.string.settings_action_undo)
     val loginLabel = stringResource(R.string.common_action_login)
     val loginPrompt = stringResource(R.string.settings_action_login_prompt)
+    var activeSnackbarJob by remember { mutableStateOf<Job?>(null) }
+    fun showDetailSnackbar(msg: String, action: String? = null, onAction: (() -> Unit)? = null) {
+        activeSnackbarJob?.cancel()
+        activeSnackbarJob = scope.launch { snackbar.show(msg, PaneSnackbarTarget.DetailPane, action, onAction) }
+    }
 
     UserProfileScreenContent(
-        uiState = uiState, showBack = showBack, onBack = onBack, onSelectTab = viewModel::selectTab,
-        onRetryProfile = viewModel::loadProfile, onRetryThreads = viewModel::loadThreadsFirstPage, onLoadMoreThreads = viewModel::loadNextThreadsPage,
+        uiState, showBack, onBack, viewModel::selectTab, viewModel::loadProfile, viewModel::loadThreadsFirstPage, viewModel::loadNextThreadsPage,
         onOpenSms = { onOpenSmsConversation(SmsConversationArgs(uiState.uid, uiState.displayUsername.ifBlank { uiState.uid })) },
         onToggleBlacklist = {
+            activeSnackbarJob?.cancel(); activeSnackbarJob = null
             viewModel.toggleBlacklist(
-                onSuccess = { added, target ->
-                    scope.launch {
-                        snackbar.show(String.format(if (added) addedFmt else removedFmt, target), PaneSnackbarTarget.DetailPane, undoLabel) {
-                            viewModel.undoBlacklistMutation(added, target) { err -> scope.launch { snackbar.show(context.getString(err.messageRes), PaneSnackbarTarget.DetailPane) } }
-                        }
+                onSuccess = { token ->
+                    showDetailSnackbar(String.format(if (token.wasAdded) addedFmt else removedFmt, token.username), undoLabel) {
+                        viewModel.undoBlacklistMutation(token) { showDetailSnackbar(context.getString(it.messageRes)) }
                     }
                 },
-                onError = { err ->
-                    scope.launch {
-                        if (err.action == UiErrorAction.Login) snackbar.show(loginPrompt, PaneSnackbarTarget.DetailPane, loginLabel, onOpenLogin)
-                        else snackbar.show(context.getString(err.messageRes), PaneSnackbarTarget.DetailPane)
-                    }
-                },
+                onError = { err -> if (err.action == UiErrorAction.Login) showDetailSnackbar(loginPrompt, loginLabel, onOpenLogin) else showDetailSnackbar(context.getString(err.messageRes)) },
             )
         },
-        onOpenThread = onOpenThread, onOpenLogin = onOpenLogin, onOpenExternalLink = onOpenExternalLink, contentPadding = contentPadding, modifier = modifier,
+        onOpenThread, onOpenLogin, contentPadding, onOpenExternalLink, modifier,
     )
 }
 
@@ -118,10 +117,7 @@ fun UserProfileScreenContent(
             Tab(uiState.selectedTab == UserProfileTab.Info, { onSelectTab(UserProfileTab.Info) }, Modifier.defaultMinSize(minHeight = 48.dp), text = { Text(stringResource(R.string.profile_tab_info)) })
             Tab(uiState.selectedTab == UserProfileTab.Threads, { onSelectTab(UserProfileTab.Threads) }, Modifier.defaultMinSize(minHeight = 48.dp), text = { Text(stringResource(R.string.profile_tab_threads)) })
         }
-        AnimatedContent(
-            targetState = uiState.selectedTab, transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) },
-            label = "UserProfileTabContent", modifier = Modifier.weight(1f).fillMaxWidth(),
-        ) { tab ->
+        AnimatedContent(uiState.selectedTab, Modifier.weight(1f).fillMaxWidth(), transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) }, label = "UserProfileTabContent") { tab ->
             when (tab) {
                 UserProfileTab.Info -> ProfileInfoTab(uiState, infoListState, contentPadding, onRetryProfile, onOpenLogin, safeLinkOpener)
                 UserProfileTab.Threads -> ProfileThreadsTab(uiState, threadsListState, contentPadding, onRetryThreads, onLoadMoreThreads, onOpenThread, onOpenLogin)
@@ -143,9 +139,7 @@ private fun ProfileFixedHeader(uiState: UserProfileUiState, onOpenSms: () -> Uni
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(64.dp).clip(HiShapeTokens.Full).background(cs.primaryContainer), Alignment.Center) {
                 Text(displayName.trim().firstOrNull()?.uppercase() ?: "?", style = MaterialTheme.typography.headlineSmall, color = cs.onPrimaryContainer)
-                if (safeAvatar != null) {
-                    AsyncImage(remember(context, safeAvatar, sizePx) { ImageRequest.Builder(context).data(safeAvatar).size(sizePx).build() }, null, imageLoader, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                }
+                if (safeAvatar != null) AsyncImage(remember(context, safeAvatar, sizePx) { ImageRequest.Builder(context).data(safeAvatar).size(sizePx).build() }, null, imageLoader, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -146,6 +146,57 @@ class BlacklistScreenAndMockWebServerTest {
     }
 
     @Test
+    fun blacklist_consecutiveRemovals_dismissesFirstSnackbarAndUndoRestoresOnlySecondAtAnchorPosition() = withAnimatorDurationScale(0f) {
+        val auth = FakeAuthRepo(SavedAccount("1001", "alice", "0123456789abcdef0123456789abcdef", lastLoginAt = 1L))
+        val bl = FakeBlacklistRepo(linkedSetOf("alpha_u", "beta_u", "gamma_u", "delta_u"))
+        val vm = BlacklistViewModel(auth, bl)
+
+        setContent {
+            val snackbarHostState = remember { SnackbarHostState() }
+            val controller = remember(snackbarHostState) { SingleHostPaneSnackbarController(snackbarHostState) }
+            HiTheme {
+                CompositionLocalProvider(LocalPaneSnackbarController provides controller) {
+                    Box(Modifier.fillMaxSize()) {
+                        BlacklistScreen(vm, onBack = {}, onOpenLogin = {}, contentPadding = PaddingValues(0.dp))
+                        HiSnackbarHost(snackbarHostState, bottomClearance = 16.dp)
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        // 1. 移出第一个用户 alpha_u -> 弹出 alpha_u 的可撤销 Snackbar
+        onAllNodesWithText("移出黑名单")[0].performClick()
+        waitForIdle()
+        onNodeWithText("已将 alpha_u 移出黑名单").assertIsDisplayed()
+        onNodeWithText("alpha_u").assertDoesNotExist()
+
+        // 2. 不等待也不撤销，直接移出当前第 2 个可见用户 gamma_u（位于 beta_u 与 delta_u 之间）
+        //    必须立即关掉 alpha_u 的 Snackbar（alpha_u 就此确认不可再撤），立即显示 gamma_u 的 Snackbar
+        onAllNodesWithText("移出黑名单")[1].performClick()
+        waitForIdle()
+        onNodeWithText("已将 alpha_u 移出黑名单").assertDoesNotExist()
+        onNodeWithText("已将 gamma_u 移出黑名单").assertIsDisplayed()
+        onNodeWithText("gamma_u").assertDoesNotExist()
+
+        // 3. 点击撤销 -> 仅恢复第二个（gamma_u），不恢复 alpha_u，且精确放回前邻居 beta_u 之后、delta_u 之前
+        onNodeWithText("撤销").performClick()
+        waitForIdle()
+        assertEquals(listOf("gamma_u"), bl.addCalls)
+        onNodeWithText("alpha_u").assertDoesNotExist()
+        onNodeWithText("beta_u").assertIsDisplayed()
+        onNodeWithText("gamma_u").assertIsDisplayed()
+        onNodeWithText("delta_u").assertIsDisplayed()
+        assertEquals(listOf("beta_u", "gamma_u", "delta_u"), vm.uiState.value.orderedUsernames.filter { it in vm.uiState.value.activeBlockedSet })
+
+        val betaTop = onNodeWithText("beta_u").fetchSemanticsNode().boundsInRoot.top
+        val gammaTop = onNodeWithText("gamma_u").fetchSemanticsNode().boundsInRoot.top
+        val deltaTop = onNodeWithText("delta_u").fetchSemanticsNode().boundsInRoot.top
+        assertTrue("gamma_u 应回到 beta_u 之后（beta=$betaTop, gamma=$gammaTop）", gammaTop > betaTop)
+        assertTrue("gamma_u 应回到 delta_u 之前（gamma=$gammaTop, delta=$deltaTop）", deltaTop > gammaTop)
+    }
+
+    @Test
     fun blacklist_syncRemoveAndUndoAgainstMockWebServer() = runBlocking {
         val server = MockWebServer()
         server.start()

@@ -29,6 +29,8 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import net.jejer.hipda.BuildConfig
 import net.jejer.hipda.R
@@ -44,42 +46,6 @@ import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 
 private enum class SettingsSubPage { ManageForums, Blacklist }
 private enum class SettingsDialogKind { TailText, TailUrl, ForumServer, CacheLimit, QuietBegin, QuietEnd, ErrorLogs }
-
-/** 设置页交互动作聚合契约，保持组件树扁平可读。 */
-@Immutable
-data class SettingsActions(
-    val onThemeModeChange: (ThemeMode) -> Unit = {},
-    val onPureBlackChange: (Boolean) -> Unit = {},
-    val onThemeSeedChange: (String) -> Unit = {},
-    val onFontStepChange: (Int) -> Unit = {},
-    val onLineSpacingChange: (LineSpacing) -> Unit = {},
-    val onAddForum: (Int) -> Unit = {},
-    val onRemoveForum: (Int) -> Unit = {},
-    val onMoveForum: (Int, Int) -> Unit = { _, _ -> },
-    val onShowStickyChange: (Boolean) -> Unit = {},
-    val onTailEnabledChange: (Boolean) -> Unit = {},
-    val onTailTextChange: (String) -> Unit = {},
-    val onTailUrlChange: (String) -> Boolean = { true },
-    val onNotificationsEnabledChange: (Boolean) -> Unit = {},
-    val onOpenSystemNotificationSettings: () -> Boolean = { false },
-    val onSilentModeEnabledChange: (Boolean) -> Unit = {},
-    val onSilentBeginChange: (Int) -> Unit = {},
-    val onSilentEndChange: (Int) -> Unit = {},
-    val onForumServerChange: (String) -> Boolean = { true },
-    val onImageCacheLimitChange: (Int) -> Unit = {},
-    val onClearImageCache: ((String) -> Unit) -> Unit = {},
-    val onClearWebCache: ((String) -> Unit) -> Unit = {},
-    val onLoadErrorLogs: (((String) -> Unit)?) -> Unit = {},
-)
-
-fun SettingsViewModel.toActions(notificationOpener: SystemNotificationSettingsOpener): SettingsActions = SettingsActions(
-    ::setThemeMode, ::setPureBlack, ::setThemeSeed, ::setFontStep, ::setLineSpacing,
-    ::addFollowedForum, ::removeFollowedForum, ::moveFollowedForum,
-    ::setShowStickyThreads, ::setTailEnabled, ::setTailText, ::setTailUrl,
-    ::setNotificationsEnabled, notificationOpener::open,
-    ::setSilentModeEnabled, ::setSilentBeginMinutes, ::setSilentEndMinutes,
-    ::setForumServer, ::setImageCacheLimitMb, ::clearImageCache, ::clearWebCache, ::loadErrorLogs,
-)
 
 /** 纯色设置顶栏（零毛玻璃，`surface -> surfaceContainer` 随滚渐变）。 */
 @Composable
@@ -101,14 +67,7 @@ internal fun SettingsSolidTopBar(
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back), tint = cs.onSurface)
                 }
             }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                color = cs.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(horizontal = if (showBack) 4.dp else 0.dp).semantics { heading() },
-            )
+            Text(title, style = MaterialTheme.typography.titleLarge, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = if (showBack) 4.dp else 0.dp).semantics { heading() })
         }
         HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
     }
@@ -166,12 +125,12 @@ fun SettingsGroupsPane(
     }
 }
 
-/** 5 组设置详情页（含管理版块、黑名单下钻子页；纯色顶栏零毛玻璃；主题切换平滑不重建不丢滚动/焦点）。 */
+/** 5 组设置详情页（含管理版块、黑名单下钻子页；纯色顶栏零毛玻璃；主题切换与旋转均保留滚动位置与未提交文本）。 */
 @Composable
 fun SettingsDetailPane(
     group: SettingsGroup,
-    uiState: SettingsUiState,
-    actions: SettingsActions,
+    viewModel: SettingsViewModel,
+    onOpenSystemNotificationSettings: () -> Boolean,
     showBack: Boolean,
     onBack: (() -> Unit)?,
     onOpenThread: (ThreadNavArgs) -> Unit,
@@ -181,10 +140,11 @@ fun SettingsDetailPane(
     appVersionName: String = BuildConfig.VERSION_NAME,
     modifier: Modifier = Modifier,
 ) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var subPage by rememberSaveable(group) { mutableStateOf<SettingsSubPage?>(null) }
     BackHandler(enabled = subPage != null) { subPage = null }
     when (subPage) {
-        SettingsSubPage.ManageForums -> { ManageForumsScreen(uiState.settings.followedForums, actions.onAddForum, actions.onRemoveForum, actions.onMoveForum, { subPage = null }, contentPadding, modifier); return }
+        SettingsSubPage.ManageForums -> { ManageForumsScreen(uiState.settings.followedForums, viewModel::addFollowedForum, viewModel::removeFollowedForum, viewModel::moveFollowedForum, { subPage = null }, contentPadding, modifier); return }
         SettingsSubPage.Blacklist -> { blacklistContent({ subPage = null }, contentPadding); return }
         null -> Unit
     }
@@ -195,7 +155,7 @@ fun SettingsDetailPane(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var activeDialog by rememberSaveable(group) { mutableStateOf<SettingsDialogKind?>(null) }
-    val groupListStates = remember { SettingsGroup.entries.associateWith { LazyListState() } }
+    val groupListStates = SettingsGroup.entries.associateWith { g -> key(g) { rememberLazyListState() } }
     val activeListState = groupListStates.getValue(group)
     val scrolled by remember(activeListState) { derivedStateOf { activeListState.firstVisibleItemIndex > 0 || activeListState.firstVisibleItemScrollOffset > 0 } }
 
@@ -205,78 +165,73 @@ fun SettingsDetailPane(
     val releaseTitle = stringResource(R.string.settings_release_thread_title)
     val logsTitle = stringResource(R.string.settings_error_logs_title)
     fun showContentSnackbar(msg: String) { scope.launch { snackbar.show(msg, PaneSnackbarTarget.ContentArea) } }
-    fun withSanitizedLogs(onNonEmpty: (String) -> Unit) = actions.onLoadErrorLogs { logs ->
-        val safe = ErrorLogSanitizer.sanitize(logs)
-        if (safe.isBlank()) showContentSnackbar(logsEmptyMsg) else onNonEmpty(safe)
-    }
+    fun withLogs(onNonEmpty: (String) -> Unit) = viewModel.loadErrorLogs { safe -> if (safe.isBlank()) showContentSnackbar(logsEmptyMsg) else onNonEmpty(safe) }
 
-    Box(modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().background(bgColor)) {
-            SettingsSolidTopBar(settingsGroupTitle(group), scrolled, showBack, onBack)
-            AnimatedContent(
-                targetState = group,
-                transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) },
-                label = "SettingsGroupDetail",
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-            ) { targetGroup ->
-                LazyColumn(
-                    state = groupListStates.getValue(targetGroup),
-                    contentPadding = PaddingValues(top = 8.dp, bottom = contentPadding.calculateBottomPadding() + 24.dp),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    when (targetGroup) {
-                        SettingsGroup.Appearance -> appearanceItems(uiState.settings, isDynamicColorSupported, actions)
-                        SettingsGroup.ForumAndPost -> forumAndPostItems(
-                            uiState.settings, actions,
-                            onOpenManageForums = { subPage = SettingsSubPage.ManageForums },
-                            onOpenBlacklist = { subPage = SettingsSubPage.Blacklist },
-                            onEditTailText = { activeDialog = SettingsDialogKind.TailText },
-                            onEditTailUrl = { activeDialog = SettingsDialogKind.TailUrl },
-                        )
-                        SettingsGroup.Notification -> notificationItems(uiState.settings, actions, { activeDialog = SettingsDialogKind.QuietBegin }, { activeDialog = SettingsDialogKind.QuietEnd })
-                        SettingsGroup.NetworkAndCache -> networkAndCacheItems(
-                            uiState, { activeDialog = SettingsDialogKind.ForumServer }, { activeDialog = SettingsDialogKind.CacheLimit },
-                            onClearImageCache = { actions.onClearImageCache { showContentSnackbar(String.format(clearedFmt, it)) } },
-                            onClearWebCache = { actions.onClearWebCache { showContentSnackbar(String.format(clearedFmt, it)) } },
-                        )
-                        SettingsGroup.About -> aboutItems(
-                            appVersionName = appVersionName,
-                            onOpenReleaseThread = { onOpenThread(ThreadNavArgs(tid = CLIENT_RELEASE_TID, title = releaseTitle)) },
-                            onViewLogs = { activeDialog = SettingsDialogKind.ErrorLogs; actions.onLoadErrorLogs(null) },
-                            onCopyLogs = { withSanitizedLogs { safe -> runCatching { context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(logsTitle, safe)) }; showContentSnackbar(copiedMsg) } },
-                            onShareLogs = { withSanitizedLogs { safe -> runCatching { val s = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, logsTitle); putExtra(Intent.EXTRA_TEXT, safe) }; context.startActivity(Intent.createChooser(s, logsTitle).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } },
-                        )
-                    }
+    Column(modifier.fillMaxSize().background(bgColor)) {
+        SettingsSolidTopBar(settingsGroupTitle(group), scrolled, showBack, onBack)
+        AnimatedContent(
+            targetState = group,
+            transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) },
+            label = "SettingsGroupDetail",
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) { targetGroup ->
+            LazyColumn(
+                state = groupListStates.getValue(targetGroup),
+                contentPadding = PaddingValues(top = 8.dp, bottom = contentPadding.calculateBottomPadding() + 24.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                when (targetGroup) {
+                    SettingsGroup.Appearance -> appearanceItems(uiState.settings, isDynamicColorSupported, viewModel)
+                    SettingsGroup.ForumAndPost -> forumAndPostItems(
+                        uiState.settings, viewModel,
+                        onOpenManageForums = { subPage = SettingsSubPage.ManageForums },
+                        onOpenBlacklist = { subPage = SettingsSubPage.Blacklist },
+                        onEditTailText = { activeDialog = SettingsDialogKind.TailText },
+                        onEditTailUrl = { activeDialog = SettingsDialogKind.TailUrl },
+                    )
+                    SettingsGroup.Notification -> notificationItems(uiState.settings, viewModel, onOpenSystemNotificationSettings, { activeDialog = SettingsDialogKind.QuietBegin }, { activeDialog = SettingsDialogKind.QuietEnd })
+                    SettingsGroup.NetworkAndCache -> networkAndCacheItems(
+                        uiState, { activeDialog = SettingsDialogKind.ForumServer }, { activeDialog = SettingsDialogKind.CacheLimit },
+                        onClearImageCache = { viewModel.clearImageCache { showContentSnackbar(String.format(clearedFmt, it)) } },
+                        onClearWebCache = { viewModel.clearWebCache { showContentSnackbar(String.format(clearedFmt, it)) } },
+                    )
+                    SettingsGroup.About -> aboutItems(
+                        appVersionName = appVersionName,
+                        onOpenReleaseThread = { onOpenThread(ThreadNavArgs(tid = CLIENT_RELEASE_TID, title = releaseTitle)) },
+                        onViewLogs = { activeDialog = SettingsDialogKind.ErrorLogs; viewModel.loadErrorLogs(null) },
+                        onCopyLogs = { withLogs { safe -> runCatching { context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(logsTitle, safe)) }; showContentSnackbar(copiedMsg) } },
+                        onShareLogs = { withLogs { safe -> runCatching { val s = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, logsTitle); putExtra(Intent.EXTRA_TEXT, safe) }; context.startActivity(Intent.createChooser(s, logsTitle).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } },
+                    )
                 }
             }
         }
-        SettingsActiveDialogHost(activeDialog, uiState, actions) { activeDialog = null }
     }
+    SettingsActiveDialogHost(activeDialog, uiState, viewModel) { activeDialog = null }
 }
 
-private fun LazyListScope.appearanceItems(settings: AppSettings, isDynamicColorSupported: Boolean, actions: SettingsActions) {
+private fun LazyListScope.appearanceItems(settings: AppSettings, isDynamicColorSupported: Boolean, vm: SettingsViewModel) {
     item("theme_mode") {
         SegmentedSettingBlock(
             stringResource(R.string.settings_theme_title),
             listOf(ThemeMode.SYSTEM to stringResource(R.string.settings_theme_system), ThemeMode.LIGHT to stringResource(R.string.settings_theme_light), ThemeMode.DARK to stringResource(R.string.settings_theme_dark)),
-            settings.themeMode, actions.onThemeModeChange,
+            settings.themeMode, vm::setThemeMode,
         )
     }
-    item("pure_black") { SwitchSettingRow(stringResource(R.string.settings_pure_black_title), stringResource(R.string.settings_pure_black_summary), settings.pureBlack, actions.onPureBlackChange) }
-    item("theme_color") { ThemeSeedSelectorBlock(settings.themeSeed, isDynamicColorSupported, actions.onThemeSeedChange) }
-    item("font_size") { FontSizeSettingBlock(settings.fontStep, settings.lineSpacing, actions.onFontStepChange) }
+    item("pure_black") { SwitchSettingRow(stringResource(R.string.settings_pure_black_title), stringResource(R.string.settings_pure_black_summary), settings.pureBlack, vm::setPureBlack) }
+    item("theme_color") { ThemeSeedSelectorBlock(settings.themeSeed, isDynamicColorSupported, vm::setThemeSeed) }
+    item("font_size") { FontSizeSettingBlock(settings.fontStep, settings.lineSpacing, vm::setFontStep) }
     item("line_spacing") {
         SegmentedSettingBlock(
             stringResource(R.string.settings_line_spacing_title),
             listOf(LineSpacing.COMPACT to stringResource(R.string.settings_line_spacing_compact), LineSpacing.STANDARD to stringResource(R.string.settings_line_spacing_standard), LineSpacing.LOOSE to stringResource(R.string.settings_line_spacing_loose)),
-            settings.lineSpacing, actions.onLineSpacingChange,
+            settings.lineSpacing, vm::setLineSpacing,
         )
     }
 }
 
 private fun LazyListScope.forumAndPostItems(
     settings: AppSettings,
-    actions: SettingsActions,
+    vm: SettingsViewModel,
     onOpenManageForums: () -> Unit,
     onOpenBlacklist: () -> Unit,
     onEditTailText: () -> Unit,
@@ -286,10 +241,10 @@ private fun LazyListScope.forumAndPostItems(
         val summary = remember(settings.followedForums) { ForumMetadataRegistry.resolveAll(settings.followedForums).joinToString("、") { it.fullName } }
         ClickableSettingRow(stringResource(R.string.settings_manage_forums_title), summary.ifBlank { null }, showChevron = true, onClick = onOpenManageForums)
     }
-    item("show_sticky") { SwitchSettingRow(stringResource(R.string.settings_show_sticky_title), null, settings.showStickyThreads, actions.onShowStickyChange) }
+    item("show_sticky") { SwitchSettingRow(stringResource(R.string.settings_show_sticky_title), null, settings.showStickyThreads, vm::setShowStickyThreads) }
     item("tail") {
         Column(Modifier.fillMaxWidth()) {
-            SwitchSettingRow(stringResource(R.string.settings_tail_title), null, settings.tailEnabled, actions.onTailEnabledChange)
+            SwitchSettingRow(stringResource(R.string.settings_tail_title), null, settings.tailEnabled, vm::setTailEnabled)
             HiExpandableSection(settings.tailEnabled) {
                 Column(Modifier.fillMaxWidth().padding(start = 16.dp)) {
                     ClickableSettingRow(stringResource(R.string.settings_tail_text_title), settings.tailText.ifBlank { null }, onClick = onEditTailText)
@@ -301,12 +256,12 @@ private fun LazyListScope.forumAndPostItems(
     item("blacklist") { ClickableSettingRow(stringResource(R.string.settings_blacklist_title), null, showChevron = true, onClick = onOpenBlacklist) }
 }
 
-private fun LazyListScope.notificationItems(settings: AppSettings, actions: SettingsActions, onPickBegin: () -> Unit, onPickEnd: () -> Unit) {
-    item("notifications_enabled") { SwitchSettingRow(stringResource(R.string.settings_notifications_title), null, settings.notificationsEnabled, actions.onNotificationsEnabledChange) }
-    item("notification_sound") { ClickableSettingRow(stringResource(R.string.settings_notification_sound_title), stringResource(R.string.settings_notification_sound_summary), showChevron = true) { actions.onOpenSystemNotificationSettings() } }
+private fun LazyListScope.notificationItems(settings: AppSettings, vm: SettingsViewModel, onOpenSystemNotificationSettings: () -> Boolean, onPickBegin: () -> Unit, onPickEnd: () -> Unit) {
+    item("notifications_enabled") { SwitchSettingRow(stringResource(R.string.settings_notifications_title), null, settings.notificationsEnabled, vm::setNotificationsEnabled) }
+    item("notification_sound") { ClickableSettingRow(stringResource(R.string.settings_notification_sound_title), stringResource(R.string.settings_notification_sound_summary), showChevron = true) { onOpenSystemNotificationSettings() } }
     item("quiet_hours") {
         Column(Modifier.fillMaxWidth()) {
-            SwitchSettingRow(stringResource(R.string.settings_quiet_hours_title), null, settings.silentModeEnabled, actions.onSilentModeEnabledChange)
+            SwitchSettingRow(stringResource(R.string.settings_quiet_hours_title), null, settings.silentModeEnabled, vm::setSilentModeEnabled)
             HiExpandableSection(settings.silentModeEnabled) {
                 Column(Modifier.fillMaxWidth().padding(start = 16.dp)) {
                     ClickableSettingRow(stringResource(R.string.settings_quiet_hours_begin), formatMinutesOfDay(settings.silentBeginMinutes), onClick = onPickBegin)
@@ -534,94 +489,78 @@ private fun ForumRow(forum: ForumMetadata, modifier: Modifier = Modifier, action
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsActiveDialogHost(dialog: SettingsDialogKind?, uiState: SettingsUiState, actions: SettingsActions, onDismiss: () -> Unit) {
+private fun SettingsActiveDialogHost(dialog: SettingsDialogKind?, uiState: SettingsUiState, vm: SettingsViewModel, onDismiss: () -> Unit) {
     val urlErr = stringResource(R.string.settings_url_invalid)
     when (dialog) {
-        SettingsDialogKind.TailText -> TextInputDialog(stringResource(R.string.settings_tail_text_title), uiState.settings.tailText, { null }, onDismiss) { actions.onTailTextChange(it); onDismiss() }
-        SettingsDialogKind.TailUrl -> TextInputDialog(stringResource(R.string.settings_tail_url_title), uiState.settings.tailUrl, { if (SettingsUrlValidator.validateTailUrl(it) == null) urlErr else null }, onDismiss) { if (actions.onTailUrlChange(it)) onDismiss() }
-        SettingsDialogKind.ForumServer -> TextInputDialog(stringResource(R.string.settings_forum_server_title), uiState.settings.forumServer, { if (SettingsUrlValidator.validateForumServer(it) == null) urlErr else null }, onDismiss) { if (actions.onForumServerChange(it)) onDismiss() }
-        SettingsDialogKind.CacheLimit -> SettingsModalDialog(
-            title = stringResource(R.string.settings_image_cache_limit_title), onDismiss = onDismiss,
-            confirmButton = { TextButton(onDismiss, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_close)) } },
-        ) {
-            Column(Modifier.fillMaxWidth()) {
-                IMAGE_CACHE_LIMIT_OPTIONS_MB.forEach { mb ->
-                    Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable(role = Role.RadioButton) { actions.onImageCacheLimitChange(mb); onDismiss() }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        RadioButton(mb == uiState.settings.imageCacheLimitMb, onClick = null); Text(formatCacheLimitMb(mb), style = MaterialTheme.typography.bodyLarge)
+        SettingsDialogKind.TailText -> TextInputDialog(stringResource(R.string.settings_tail_text_title), uiState.settings.tailText, { null }, onDismiss) { vm.setTailText(it); onDismiss() }
+        SettingsDialogKind.TailUrl -> TextInputDialog(stringResource(R.string.settings_tail_url_title), uiState.settings.tailUrl, { if (SettingsUrlValidator.validateTailUrl(it) == null) urlErr else null }, onDismiss) { if (vm.setTailUrl(it)) onDismiss() }
+        SettingsDialogKind.ForumServer -> TextInputDialog(stringResource(R.string.settings_forum_server_title), uiState.settings.forumServer, { if (SettingsUrlValidator.validateForumServer(it) == null) urlErr else null }, onDismiss) { if (vm.setForumServer(it)) onDismiss() }
+        SettingsDialogKind.CacheLimit -> AlertDialog(
+            onDismissRequest = onDismiss, shape = HiShapeTokens.Large,
+            title = { Text(stringResource(R.string.settings_image_cache_limit_title)) },
+            text = {
+                Column(Modifier.fillMaxWidth()) {
+                    IMAGE_CACHE_LIMIT_OPTIONS_MB.forEach { mb ->
+                        Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable(role = Role.RadioButton) { vm.setImageCacheLimitMb(mb); onDismiss() }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            RadioButton(mb == uiState.settings.imageCacheLimitMb, onClick = null); Text(formatCacheLimitMb(mb), style = MaterialTheme.typography.bodyLarge)
+                        }
                     }
                 }
-            }
-        }
+            },
+            confirmButton = { TextButton(onDismiss, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_close)) } },
+        )
         SettingsDialogKind.QuietBegin, SettingsDialogKind.QuietEnd -> {
             val isBegin = dialog == SettingsDialogKind.QuietBegin
             val mins = Math.floorMod(if (isBegin) uiState.settings.silentBeginMinutes else uiState.settings.silentEndMinutes, 24 * 60)
             val state = rememberTimePickerState(mins / 60, mins % 60, is24Hour = true)
-            SettingsModalDialog(
-                title = stringResource(if (isBegin) R.string.settings_quiet_hours_begin else R.string.settings_quiet_hours_end), onDismiss = onDismiss,
+            AlertDialog(
+                onDismissRequest = onDismiss, shape = HiShapeTokens.Large,
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+                modifier = Modifier.padding(horizontal = 24.dp).widthIn(min = 280.dp, max = 480.dp),
+                title = { Text(stringResource(if (isBegin) R.string.settings_quiet_hours_begin else R.string.settings_quiet_hours_end)) },
+                text = { TimeInput(state) },
                 dismissButton = { TextButton(onDismiss, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_cancel)) } },
-                confirmButton = { TextButton({ val m = state.hour * 60 + state.minute; if (isBegin) actions.onSilentBeginChange(m) else actions.onSilentEndChange(m); onDismiss() }, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_confirm)) } },
-            ) { TimeInput(state) }
+                confirmButton = { TextButton({ val m = state.hour * 60 + state.minute; if (isBegin) vm.setSilentBeginMinutes(m) else vm.setSilentEndMinutes(m); onDismiss() }, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_confirm)) } },
+            )
         }
-        SettingsDialogKind.ErrorLogs -> SettingsModalDialog(
-            title = stringResource(R.string.settings_error_logs_title), onDismiss = onDismiss,
-            confirmButton = { TextButton(onDismiss, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_close)) } },
-        ) {
-            Box(Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp)) {
-                val logs = uiState.errorLogsText.orEmpty()
-                when {
-                    uiState.isLoadingLogs -> HiLoadingSpinner(Modifier.align(Alignment.Center).size(24.dp))
-                    logs.isBlank() -> Text(stringResource(R.string.settings_error_logs_empty), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.Center))
-                    else -> Text(ErrorLogSanitizer.sanitize(logs), style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()))
+        SettingsDialogKind.ErrorLogs -> AlertDialog(
+            onDismissRequest = onDismiss, shape = HiShapeTokens.Large,
+            title = { Text(stringResource(R.string.settings_error_logs_title)) },
+            text = {
+                Box(Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp)) {
+                    val logs = uiState.errorLogsText.orEmpty()
+                    when {
+                        uiState.isLoadingLogs -> HiLoadingSpinner(Modifier.align(Alignment.Center).size(24.dp))
+                        logs.isBlank() -> Text(stringResource(R.string.settings_error_logs_empty), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.Center))
+                        else -> Text(logs, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()))
+                    }
                 }
-            }
-        }
+            },
+            confirmButton = { TextButton(onDismiss, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_close)) } },
+        )
         null -> Unit
     }
 }
 
 @Composable
-private fun SettingsModalDialog(
-    title: String,
-    onDismiss: () -> Unit,
-    dismissButton: (@Composable () -> Unit)? = null,
-    confirmButton: @Composable () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    val cs = MaterialTheme.colorScheme
-    BackHandler(onBack = onDismiss)
-    Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = 0.40f)).clickable(remember { MutableInteractionSource() }, null, onClick = onDismiss))
-        Surface(
-            modifier = Modifier.align(Alignment.Center).padding(24.dp).widthIn(min = 280.dp, max = 480.dp).fillMaxWidth().semantics { paneTitle = title; isTraversalGroup = true },
-            shape = HiShapeTokens.Large, color = cs.surfaceContainerHigh, shadowElevation = 6.dp,
-        ) {
-            Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(title, style = MaterialTheme.typography.headlineSmall, color = cs.onSurface, modifier = Modifier.semantics { heading() })
-                content()
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                    dismissButton?.invoke()
-                    confirmButton()
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun TextInputDialog(title: String, initialValue: String, validator: (String) -> String?, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var text by remember(title, initialValue) { mutableStateOf(initialValue) }
-    var err by remember(title) { mutableStateOf<String?>(null) }
-    SettingsModalDialog(
-        title = title, onDismiss = onDismiss,
+    var text by rememberSaveable(title, initialValue) { mutableStateOf(initialValue) }
+    var err by rememberSaveable(title) { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss, shape = HiShapeTokens.Large,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.padding(horizontal = 24.dp).widthIn(min = 280.dp, max = 480.dp),
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = text, onValueChange = { text = it; err = null }, singleLine = true, isError = err != null,
+                supportingText = err?.let { msg -> { Text(msg, color = MaterialTheme.colorScheme.error) } },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
         dismissButton = { TextButton(onDismiss, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_cancel)) } },
         confirmButton = { TextButton({ val e = validator(text); if (e != null) err = e else onConfirm(text) }, Modifier.defaultMinSize(48.dp, 48.dp)) { Text(stringResource(R.string.settings_action_confirm)) } },
-    ) {
-        OutlinedTextField(
-            value = text, onValueChange = { text = it; err = null }, singleLine = true, isError = err != null,
-            supportingText = err?.let { msg -> { Text(msg, color = MaterialTheme.colorScheme.error) } },
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+    )
 }
 
 @Composable
