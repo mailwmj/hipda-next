@@ -71,58 +71,58 @@ object SanitizeSelectors {
     const val NOTIFY_SENSITIVE_ITEMS = "ul.feed li div.f_buddy, ul.feed li div.f_manage"
     const val BLACKLIST_LINKS = "div.blacklist ul.commonlist a[href*=space.php]"
 
-    internal val FORMHASH_FIELD_NAMES = setOf("formhash", "m_formhash")
-    internal val OTHER_TOKEN_FIELD_NAMES = setOf("hash", "sid", "auth", "seccode", "seccodeverify", "seccodehash")
+    val FORMHASH_FIELD_NAMES = setOf("formhash", "m_formhash")
+    val OTHER_TOKEN_FIELD_NAMES = setOf("hash", "sid", "auth", "seccode", "seccodeverify", "seccodehash")
     private val COOKIE_NAME_REGEX = Regex("""(?i)^(?:cdb_[a-z0-9_]+|cf_clearance|__cf_bm|cf_chl_[a-z0-9_]*)$""")
 
-    internal val DISCUZ_UID_REGEX =
+    val DISCUZ_UID_REGEX =
         Regex("""(?i)((?<![.\w$])(['"]?)discuz_uid\2\s*(?:=|:)\s*(?:(?:parseInt|Number)\s*\(\s*)?)(['"]?)([^'",;\s<>)}]+)\3""")
-    internal val COOKIE_ASSIGN_REGEX =
+    val COOKIE_ASSIGN_REGEX =
         Regex("""(?i)((?<![\w-])(?:cdb_[a-z0-9_]+|cf_clearance|__cf_bm|cf_chl_[a-z0-9_]*)\s*=\s*)(['"]?)([^&;#'"\s<>),]+)\2""")
-    internal val COOKIE_OBJECT_PROP_REGEX =
+    val COOKIE_OBJECT_PROP_REGEX =
         Regex("""(?i)((?<![.\w-])(['"]?)(?:cdb_[a-z0-9_]+|cf_clearance|__cf_bm|cf_chl_[a-z0-9_]*)\2\s*:\s*)(['"])([^'"]+)\3""")
 
-    internal val URL_TOKEN_REGEX =
+    val URL_TOKEN_REGEX =
         Regex("""(?i)(^|[?&;'"])(formhash|m_formhash|hash|sid|auth|seccode(?:verify|hash)?)=([^&#'"\s<>);,]+)""")
-    internal val JS_FORMHASH_ASSIGN_REGEX =
+    val JS_FORMHASH_ASSIGN_REGEX =
         Regex("""(?i)(\b(m_formhash|formhash|seccode(?:verify|hash)?)\s*=\s*)(['"])([^'"]+)\3""")
-    internal val JS_OTHER_TOKEN_ASSIGN_REGEX =
+    val JS_OTHER_TOKEN_ASSIGN_REGEX =
         Regex("""(?i)((?<![.\w$])(hash|sid|auth)\s*=\s*)(['"])([^'"]+)\3""")
-    internal val JS_OBJECT_PROP_REGEX =
+    val JS_OBJECT_PROP_REGEX =
         Regex("""(?i)((?<![.\w$])(['"]?)(formhash|m_formhash|hash|sid|auth|seccode(?:verify|hash)?)\2\s*:\s*)(['"])([^'"]+)\4""")
 
-    internal val EMBEDDED_INPUT_TAG_REGEX = Regex("""(?i)<input\b[^>]*>""")
-    internal val INPUT_NAME_OR_ID_ATTR_REGEX = Regex("""(?i)\b(?:name|id)\s*=\s*(['"]?)([^'">\s]+)\1""")
-    internal val INPUT_VALUE_ATTR_REGEX = Regex("""(?i)(\bvalue\s*=\s*)(['"]?)([^'">\s]+)\2""")
+    val EMBEDDED_INPUT_TAG_REGEX = Regex("""(?i)<input\b[^>]*>""")
+    val INPUT_NAME_OR_ID_ATTR_REGEX = Regex("""(?i)\b(?:name|id)\s*=\s*(['"]?)([^'">\s]+)\1""")
+    val INPUT_VALUE_ATTR_REGEX = Regex("""(?i)(\bvalue\s*=\s*)(['"]?)([^'">\s]+)\2""")
 
     // 出处：HiParserThreadDetail.java:360 (attachment.php?aid=...)，Discuz 7.x aidencode 4/5 段 Base64
-    internal val ATTACHMENT_AID_URL_REGEX =
+    val ATTACHMENT_AID_URL_REGEX =
         Regex("""(?i)(attachment\.php\?(?:[^&#'"\s<>)]*&(?:amp;)?)*aid=)([^&#'"\s<>);,]+)""")
     internal val ATTACHMENT_AID_PAYLOAD_REGEX = Regex("""^(\d+)\|([0-9a-fA-F]{8})\|(\d+)\|(\d+)(\|\d+)?$""")
 
-    internal val UID_INPUT_NAMES = setOf("uid", "touid", "srchuid", "authorid", "userid", "buddyid", "newbuddyid")
+    val UID_INPUT_NAMES = setOf("uid", "touid", "srchuid", "authorid", "userid", "buddyid", "newbuddyid")
 
-    internal val UID_QUERY_PARAM_REGEX =
+    val UID_QUERY_PARAM_REGEX =
         Regex("""(?i)(^|[?&;])((?:[a-z_]*uid|author_?id|user_?id|(?:new_?)?buddy_?id)=)(\d+)(?![0-9A-Za-z_])""")
-    internal val SCRIPT_UID_ASSIGN_REGEX =
+    val SCRIPT_UID_ASSIGN_REGEX =
         Regex("""(?i)((?<![.\w$])(?:[a-z_]*uid|author_?id|user_?id|(?:new_?)?buddy_?id)\s*=\s*)(['"]?)(\d+)\2(?![0-9A-Za-z_])""")
-    internal val SCRIPT_UID_PROP_REGEX =
+    val SCRIPT_UID_PROP_REGEX =
         Regex("""(?i)((?<![.\w$])(['"]?)(?:[a-z_]*uid|author_?id|user_?id|(?:new_?)?buddy_?id)\2\s*:\s*)(['"]?)(\d+)\3(?![0-9A-Za-z_])""")
-    internal val SCRIPT_UID_CALL_REGEX =
+    val SCRIPT_UID_CALL_REGEX =
         Regex("""(?i)(\b(?:deletepm|showuser|sendpm)\s*\(\s*)(['"]?)(\d+)\2(?![0-9A-Za-z_])""")
-    internal val TEXT_UID_LABEL_REGEX = Regex("""(?i)(\bUID\s*[:：=]?\s*)(\d+)(?!\d)""")
+    val TEXT_UID_LABEL_REGEX = Regex("""(?i)(\bUID\s*[:：=]?\s*)(\d+)(?!\d)""")
     internal val URL_USERNAME_PARAM_REGEX =
         Regex("""(?i)(^|[?&;])((?:username|srchuname|msgto|user|author)=)([^&#'"\s<>);,\]]+)""")
     internal val USERNAME_QUERY_PARAM_REGEX = Regex("""(?i)(^|[?&;])(username=)([^&#'"\s<>);,\]]+)""")
 
     // 出处：HiUtils.java:208-221 (getAvatarUrlByUid，9 位补零分四段路径)
-    internal val AVATAR_PATH_REGEX = Regex("""(\d{3}/\d{2}/\d{2}/\d{2})(?=_avatar_)""")
+    val AVATAR_PATH_REGEX = Regex("""(\d{3}/\d{2}/\d{2}/\d{2})(?=_avatar_)""")
 
-    internal val EMAIL_REGEX =
+    val EMAIL_REGEX =
         Regex("""(?i)(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![A-Za-z0-9.-])""")
-    internal val IPV4_REGEX =
+    val IPV4_REGEX =
         Regex("""(?<![A-Za-z0-9._-])((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))(?::(\d{1,5}))?(?![0-9.])""")
-    internal val IPV6_REGEX =
+    val IPV6_REGEX =
         Regex("""(?i)(?<![0-9a-f:])((?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})(?![0-9a-f:])""")
 
     internal val SMS_TITLE_PEER_REGEX = Regex("""与\s*(.+?)\s*的(?:短消息|交谈记录)""")
@@ -136,7 +136,7 @@ object SanitizeSelectors {
     internal val NOTIFY_REPLY_PHRASE_REGEX = Regex("""回复了您(?:关注的主题|的帖子)""")
     private val DISCUZ_XML_ROOT_REGEX = Regex("""(?is)^\s*(?:<\?xml[^>]*\?>\s*)?<root\b""")
 
-    internal fun isSensitiveFieldName(name: String): Boolean {
+    fun isSensitiveFieldName(name: String): Boolean {
         val lower = name.lowercase()
         return lower in FORMHASH_FIELD_NAMES || lower in OTHER_TOKEN_FIELD_NAMES || COOKIE_NAME_REGEX.matches(lower)
     }
@@ -173,13 +173,13 @@ object SanitizeSelectors {
     internal fun isSafeSmsImgSrc(src: String): Boolean =
         src == PLACEHOLDER_SMS_IMAGE_URL || SAFE_FORUM_ICON_SRC_REGEX.matches(src)
 
-    internal fun isSafeEmail(email: String): Boolean {
+    fun isSafeEmail(email: String): Boolean {
         val lower = email.lowercase()
         return lower == PLACEHOLDER_EMAIL || lower.endsWith("@example.invalid")
     }
 
-    internal fun isSafeIpv4(ip: String): Boolean = ip == PLACEHOLDER_IPV4 || ip == "0.0.0.0"
-    internal fun isSafeIpv6(ip: String): Boolean = ip == PLACEHOLDER_IPV6 || ip == "::"
+    fun isSafeIpv4(ip: String): Boolean = ip == PLACEHOLDER_IPV4 || ip == "0.0.0.0"
+    fun isSafeIpv6(ip: String): Boolean = ip == PLACEHOLDER_IPV6 || ip == "::"
 
     internal fun decodeAttachmentAid(rawAid: String): MatchResult? {
         val urlDecoded = runCatching {
@@ -196,7 +196,7 @@ object SanitizeSelectors {
         return ATTACHMENT_AID_PAYLOAD_REGEX.matchEntire(payload)
     }
 
-    internal fun sanitizeAttachmentAid(rawAid: String): String {
+    fun sanitizeAttachmentAid(rawAid: String): String {
         val match = decodeAttachmentAid(rawAid) ?: return rawAid
         val sanitizedPayload = "${match.groupValues[1]}|00000000|0|$PLACEHOLDER_UID${match.groupValues[5]}"
         val reencoded = Base64.getEncoder().encodeToString(sanitizedPayload.toByteArray(StandardCharsets.UTF_8))
