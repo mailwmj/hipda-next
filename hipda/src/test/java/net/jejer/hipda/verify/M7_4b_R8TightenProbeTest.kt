@@ -113,19 +113,31 @@ class M7_4b_R8TightenProbeTest {
         )
 
         val definedDescriptors = HashSet<String>()
-        var totalMethods = 0
+        val uniqueMethodKeys = HashSet<String>()
         var dexCount = 0
+        val hasStartupProfile = File(repoRoot, "hipda/src/main/generated/baselineProfiles/startup-prof.txt").isFile
         ZipFile(releaseApk).use { zip ->
             val dexEntries = zip.entries().asSequence()
                 .filter { it.name.matches(Regex("""classes\d*\.dex""")) }
                 .toList()
             dexCount = dexEntries.size
-            assertEquals("收紧 R8 后应合并为单 DEX，实际：$dexCount", 1, dexCount)
+            if (hasStartupProfile) {
+                assertTrue(
+                    "合并 M7-4a startup-prof 后应为 1..2 个启动分包 DEX（非 65k 溢出），实际：$dexCount",
+                    dexCount in 1..2,
+                )
+            } else {
+                assertEquals("收紧 R8 后应合并为单 DEX，实际：$dexCount", 1, dexCount)
+            }
 
             for (entry in dexEntries) {
                 val bytes = zip.getInputStream(entry).use { it.readBytes() }
                 val dex = parseDexHeaderAndClasses(bytes)
-                totalMethods += dex.methodIdsSize
+                assertTrue(
+                    "${entry.name} 方法数应远低于 65k 单包上限（非溢出分包），实际：${dex.methodIdsSize}",
+                    dex.methodIdsSize < 35_000,
+                )
+                uniqueMethodKeys.addAll(dex.uniqueMethodKeys)
                 definedDescriptors.addAll(dex.definedClassDescriptors)
             }
 
@@ -139,13 +151,14 @@ class M7_4b_R8TightenProbeTest {
                 ?.map { it.nameWithoutExtension }
                 .orEmpty()
             assertEquals("应有 101 个表情源 PNG", 101, emojiFiles.size)
-            // Note: without resource shrinking, all PNGs keep their names in res/drawable-nodpi/ or res/; verify count of PNGs >= 101.
+            // Note: with keep.xml + resource shrinking, all kept emoji PNGs survive under res/.
             val apkPngCount = zip.entries().asSequence().count { it.name.startsWith("res/") && it.name.endsWith(".png") }
             assertTrue("Release APK 中 PNG 资源数应覆盖全部 101 个表情，实际：$apkPngCount", apkPngCount >= 101)
         }
 
+        val totalMethods = uniqueMethodKeys.size
         assertTrue(
-            "收紧 R8 后 DEX 方法数应大幅低于收紧前 70,418（阈值 < 45,000），实际：$totalMethods",
+            "收紧 R8 后去重 DEX 方法数应大幅低于收紧前 70,418（阈值 < 45,000），实际：$totalMethods",
             totalMethods < 45_000,
         )
 
@@ -240,6 +253,7 @@ class M7_4b_R8TightenProbeTest {
 
     private data class DexInfo(
         val methodIdsSize: Int,
+        val uniqueMethodKeys: Set<String>,
         val definedClassDescriptors: Set<String>,
     )
 
@@ -249,7 +263,10 @@ class M7_4b_R8TightenProbeTest {
         val stringIdsOff = buf.getInt(0x3C)
         val typeIdsSize = buf.getInt(0x40)
         val typeIdsOff = buf.getInt(0x44)
+        val protoIdsSize = buf.getInt(0x48)
+        val protoIdsOff = buf.getInt(0x4C)
         val methodIdsSize = buf.getInt(0x58)
+        val methodIdsOff = buf.getInt(0x5C)
         val classDefsSize = buf.getInt(0x60)
         val classDefsOff = buf.getInt(0x64)
 
@@ -261,12 +278,38 @@ class M7_4b_R8TightenProbeTest {
             val strIdx = buf.getInt(typeIdsOff + idx * 4)
             strings[strIdx]
         }
+        val protos = Array(protoIdsSize) { idx ->
+            val base = protoIdsOff + idx * 12
+            val retIdx = buf.getInt(base + 4)
+            val paramsOff = buf.getInt(base + 8)
+            if (paramsOff == 0) {
+                "():${types[retIdx]}"
+            } else {
+                val n = buf.getInt(paramsOff)
+                buildString {
+                    append('(')
+                    for (j in 0 until n) {
+                        val pTypeIdx = buf.getShort(paramsOff + 4 + j * 2).toInt() and 0xFFFF
+                        append(types[pTypeIdx])
+                    }
+                    append("):").append(types[retIdx])
+                }
+            }
+        }
+        val uniqueMethodKeys = HashSet<String>(methodIdsSize)
+        for (i in 0 until methodIdsSize) {
+            val base = methodIdsOff + i * 8
+            val clsIdx = buf.getShort(base).toInt() and 0xFFFF
+            val protoIdx = buf.getShort(base + 2).toInt() and 0xFFFF
+            val nameIdx = buf.getInt(base + 4)
+            uniqueMethodKeys.add("${types[clsIdx]}->${strings[nameIdx]}${protos[protoIdx]}")
+        }
         val classDescriptors = HashSet<String>(classDefsSize)
         for (i in 0 until classDefsSize) {
             val typeIdx = buf.getInt(classDefsOff + i * 32)
             classDescriptors.add(types[typeIdx])
         }
-        return DexInfo(methodIdsSize, classDescriptors)
+        return DexInfo(methodIdsSize, uniqueMethodKeys, classDescriptors)
     }
 
     private fun readMutf8String(bytes: ByteArray, offset: Int): String {
