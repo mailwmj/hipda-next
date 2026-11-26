@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.emptyPreferences
@@ -74,10 +75,10 @@ import net.jejer.hipda.data.settings.LineSpacing
 import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
+import net.jejer.hipda.feature.app.MainActivity
 import net.jejer.hipda.parser.LegacyTestSupport
 import net.jejer.hipda.parser.common.PromptCounts
 import net.jejer.hipda.parser.message.SmsConversationItem
-import net.jejer.hipda.ui.IntentActivity
 import net.jejer.hipda.utils.Constants
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
@@ -419,12 +420,17 @@ class NotificationPollingWorkerTest {
         val pendingIntent = posted.contentIntent
         assertNotNull(pendingIntent)
         val launchedIntent = shadowOf(pendingIntent).savedIntent
-        assertEquals(IntentActivity::class.java.name, launchedIntent.component?.className)
+        assertEquals(MainActivity::class.java.name, launchedIntent.component?.className)
         assertEquals(Constants.INTENT_NOTIFICATION, launchedIntent.action)
+        assertTrue(
+            "通知 PendingIntent 应带 FLAG_ACTIVITY_SINGLE_TOP | FLAG_ACTIVITY_CLEAR_TOP 防止重复实例",
+            (launchedIntent.flags and Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0 &&
+                (launchedIntent.flags and Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0,
+        )
         assertEquals(1, launchedIntent.getIntExtra(Constants.EXTRA_SMS_COUNT, -1))
         assertEquals(0, launchedIntent.getIntExtra(Constants.EXTRA_THREAD_COUNT, -1))
         assertEquals("20000", launchedIntent.getStringExtra(Constants.EXTRA_UID))
-        assertEquals("HiPeer", launchedIntent.getStringExtra(Constants.EXTRA_USERNAME))
+        assertNull("单人短消息通知 PendingIntent 不应携带原始用户名（只消费 uid 隐私约定）", launchedIntent.getStringExtra(Constants.EXTRA_USERNAME))
     }
 
     @Test

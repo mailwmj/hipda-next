@@ -4,7 +4,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -12,8 +11,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import net.jejer.hipda.R
 import net.jejer.hipda.data.message.UnreadSnapshot
-import net.jejer.hipda.ui.IntentActivity
-import net.jejer.hipda.utils.Constants
+import net.jejer.hipda.feature.app.MainActivity
 
 /**
  * Rendered title and body copy for a system notification derived from an [UnreadSnapshot].
@@ -48,19 +46,12 @@ class AndroidNotificationPoster @Inject constructor(
         val singleSms = snapshot.latestUnreadSms
             ?.takeIf { snapshot.smsUnreadCount == 1 && snapshot.notifyUnreadCount == 0 }
 
-        val intent = Intent(context, IntentActivity::class.java).apply {
-            action = Constants.INTENT_NOTIFICATION
-            putExtra(Constants.EXTRA_SMS_COUNT, snapshot.smsUnreadCount)
-            putExtra(Constants.EXTRA_THREAD_COUNT, snapshot.notifyUnreadCount)
-            if (singleSms != null) {
-                if (singleSms.author.isNotBlank()) {
-                    putExtra(Constants.EXTRA_USERNAME, singleSms.author)
-                }
-                if (singleSms.uid.isNotBlank()) {
-                    putExtra(Constants.EXTRA_UID, singleSms.uid)
-                }
-            }
-        }
+        val intent = MainActivity.createNotificationIntent(
+            context = context,
+            smsCount = snapshot.smsUnreadCount,
+            threadCount = snapshot.notifyUnreadCount,
+            uid = singleSms?.uid,
+        )
         val pendingIntent = PendingIntent.getActivity(
             context,
             0,

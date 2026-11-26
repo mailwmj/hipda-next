@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="preview_launcher_label">HiPDA 预览</string>
-    <string name="preview_entry_next_app">进入新版</string>
-    <string name="preview_next_app_title">HiPDA Next</string>
     <string name="preview_subtitle">设计系统主题样张</string>
     <string name="preview_section_controls">主题控制</string>
     <string name="preview_mode_system">跟随系统</string>
