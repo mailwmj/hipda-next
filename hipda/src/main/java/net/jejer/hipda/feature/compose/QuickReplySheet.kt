@@ -36,21 +36,29 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.text.BreakIterator
 import kotlin.math.min
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
+import net.jejer.hipda.feature.common.LocalPaneSnackbarController
+import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.feature.common.UiErrorAction
 import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
@@ -74,7 +82,6 @@ private val QuickReplySheetShape = RoundedCornerShape(topStart = 20.dp, topEnd =
 private val QuickReplyDragDismissThreshold: Dp = 72.dp
 private val QuickReplyDragExpandThreshold: Dp = 56.dp
 private val QuickReplyMaxUpwardDrag: Dp = 84.dp
-private val QuickReplyTightSheetThreshold: Dp = 164.dp
 private val DefaultSheetFallbackHeight: Dp = 220.dp
 private const val DISMISS_VELOCITY_DP_PER_SEC = 720f
 private const val EXPAND_VELOCITY_DP_PER_SEC = -720f
@@ -105,7 +112,17 @@ fun calculateEmojiPanelHeight(lastKeyboardHeightDp: Dp, windowHeightDp: Dp): Dp 
 }
 
 private enum class SheetMotionPhase { Entering, Open, Dismissing, Expanding }
-private enum class SendButtonVisualState { Ready, Submitting, Cooldown }
+private enum class QuickReplySlot { Guest, Handle, Context, Draft, Input, Error, BottomBar, CompactRow, LiveRegion }
+
+/** 代理对与 Emoji 簇安全回删定位：优先按字形簇回退，兜底按 Unicode 码点回退，绝不残留孤立高代理项（R-E5 S1）。 */
+internal fun previousGraphemeOffset(text: CharSequence, cursor: Int): Int {
+    val safeCursor = cursor.coerceIn(0, text.length)
+    if (safeCursor <= 0) return 0
+    val iterator = BreakIterator.getCharacterInstance()
+    iterator.setText(text.toString())
+    val prev = iterator.preceding(safeCursor)
+    return if (prev != BreakIterator.DONE) prev else Character.offsetByCodePoints(text, safeCursor, -1)
+}
 
 /** 毛玻璃跟手弹出快速回复面板（§5、§6.3、§7.2、§7.3）：复用 `detailGlassState`、`HiGlassStyle.Sheet`，仅占所在详情栏宽度。 */
 @Composable
@@ -146,6 +163,8 @@ fun QuickReplySheet(
     var phase by remember { mutableStateOf(SheetMotionPhase.Entering) }
     var measuredSheetHeightPx by remember { mutableFloatStateOf(fallbackHeightPx) }
     val offsetYPx = remember { Animatable(if (reducedMotion) 0f else fallbackHeightPx) }
+    var isDragging by remember { mutableStateOf(false) }
+    var dragOffsetYPx by remember { mutableFloatStateOf(0f) }
     var isEmojiPanelOpen by remember { mutableStateOf(false) }
     var lastObservedImeDp by remember { mutableStateOf(0.dp) }
 
@@ -187,12 +206,15 @@ fun QuickReplySheet(
                 keyboardController?.hide()
                 focusManager.clearFocus(force = false)
                 viewModel.onDismissSession(emitSavedSnackbar = true)
+                val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
                 val targetY = measuredSheetHeightPx.coerceAtLeast(fallbackHeightPx)
                 if (latestReducedMotion) {
-                    scope.launch { offsetYPx.snapTo(targetY) }
+                    isDragging = false; dragOffsetYPx = 0f
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetYPx.snapTo(targetY) }
                     latestOnDismissFinished()
                 } else {
-                    scope.launch {
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        offsetYPx.snapTo(startY); isDragging = false; dragOffsetYPx = 0f
                         offsetYPx.animateTo(targetY, HiMotion.exit(HiMotion.spatialDefault()), initialVelocity.coerceAtLeast(0f))
                         latestOnDismissFinished()
                     }
@@ -211,10 +233,12 @@ fun QuickReplySheet(
                 val text = textFieldState.text.toString()
                 val sel = textFieldState.selection
                 val handoff = viewModel.onHandoffToFullEditor(text, sel.start, sel.end, openImagePicker)
+                val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
                 if (latestReducedMotion) {
-                    handler(handoff); latestOnDismissFinished()
+                    isDragging = false; dragOffsetYPx = 0f; handler(handoff); latestOnDismissFinished()
                 } else {
-                    scope.launch {
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        offsetYPx.snapTo(startY); isDragging = false; dragOffsetYPx = 0f
                         offsetYPx.animateTo(-maxUpwardDragPx * 0.5f, HiMotion.spatialDefault(), initialVelocity.coerceAtMost(0f))
                         handler(handoff); latestOnDismissFinished()
                     }
@@ -228,8 +252,10 @@ fun QuickReplySheet(
             if (phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
                 val minOffset = if (allowUpwardExpand && latestCanExpand) -maxUpwardDragPx else 0f
                 val maxOffset = measuredSheetHeightPx.coerceAtLeast(fallbackHeightPx)
-                val next = (offsetYPx.value + deltaY).coerceIn(minOffset, maxOffset)
-                scope.launch { offsetYPx.snapTo(next) }
+                val base = if (isDragging) dragOffsetYPx else offsetYPx.value
+                dragOffsetYPx = (base + deltaY).coerceIn(minOffset, maxOffset)
+                isDragging = true
+                if (offsetYPx.isRunning) scope.launch { offsetYPx.stop() }
             }
         }
     }
@@ -237,12 +263,13 @@ fun QuickReplySheet(
     val onDragSettled: (Float, Boolean) -> Unit = remember(scope, dismissThresholdPx, expandThresholdPx, dismissVelocityPx, expandVelocityPx) {
         { velocityY, allowUpwardExpand ->
             if (phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
-                val cur = offsetYPx.value
+                val cur = if (isDragging) dragOffsetYPx else offsetYPx.value
                 when {
                     cur >= dismissThresholdPx || (cur > 0f && velocityY >= dismissVelocityPx) -> requestDismiss(velocityY)
                     allowUpwardExpand && latestCanExpand && (cur <= -expandThresholdPx || (cur < 0f && velocityY <= expandVelocityPx)) ->
                         requestExpandToFullEditor(false, velocityY)
-                    else -> scope.launch {
+                    else -> scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        offsetYPx.snapTo(cur); isDragging = false; dragOffsetYPx = 0f
                         if (latestReducedMotion) offsetYPx.snapTo(0f) else offsetYPx.animateTo(0f, HiMotion.spatialSnap(), velocityY)
                     }
                 }
@@ -255,7 +282,7 @@ fun QuickReplySheet(
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source != NestedScrollSource.UserInput || !textFieldState.selection.collapsed) return Offset.Zero
-                val curOffset = offsetYPx.value
+                val curOffset = if (isDragging) dragOffsetYPx else offsetYPx.value
                 if (curOffset > 0f && available.y < 0f) {
                     val consumedY = available.y.coerceAtLeast(-curOffset)
                     onDragDelta(consumedY, false)
@@ -272,7 +299,8 @@ fun QuickReplySheet(
                 return Offset.Zero
             }
             override suspend fun onPreFling(available: Velocity): Velocity {
-                if (offsetYPx.value > 0f) {
+                val curOffset = if (isDragging) dragOffsetYPx else offsetYPx.value
+                if (curOffset > 0f) {
                     onDragSettled(available.y, false)
                     return Velocity(0f, available.y)
                 }
@@ -286,7 +314,29 @@ fun QuickReplySheet(
     val contextLabel = resolveReplyContextLabel(uiState.target)
     val collapseCd = stringResource(R.string.compose_quick_reply_collapse_cd)
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val snackbarController = LocalPaneSnackbarController.current
+    var isErrorShedToSnackbar by remember { mutableStateOf(false) }
+    LaunchedEffect(uiState.inlineError, isErrorShedToSnackbar) {
+        val err = uiState.inlineError
+        if (err != null && isErrorShedToSnackbar) {
+            val resolved = resolveInlineErrorContent(context, err) ?: return@LaunchedEffect
+            snackbarController.show(
+                message = resolved.first, target = PaneSnackbarTarget.DetailPane, actionLabel = resolved.second,
+                onAction = when (err.uiError?.action) {
+                    UiErrorAction.Login -> onOpenLogin
+                    UiErrorAction.Retry, UiErrorAction.Reverify -> viewModel::submit
+                    null -> null
+                },
+            )
+        }
+    }
     DisposableEffect(Unit) { onDispose { latestOnOccupiedChanged(0.dp, false) } }
+
+    val onToggleEmoji: () -> Unit = {
+        if (isEmojiPanelOpen) { isEmojiPanelOpen = false; runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show() }
+        else { keyboardController?.hide(); isEmojiPanelOpen = true }
+    }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val paneHeightDp = maxHeight
@@ -294,29 +344,23 @@ fun QuickReplySheet(
         val imeBottomDp = with(density) { WindowInsets.ime.getBottom(density).toDp() }
         val navBarBottomDp = maxOf(with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }, bottomInset)
         LaunchedEffect(imeBottomDp) {
-            if (imeBottomDp > 0.dp) {
-                lastObservedImeDp = imeBottomDp
-                if (isEmojiPanelOpen) isEmojiPanelOpen = false
-            }
+            if (imeBottomDp > 0.dp) { lastObservedImeDp = imeBottomDp; if (isEmojiPanelOpen) isEmojiPanelOpen = false }
         }
         val emojiPanelHeightDp = if (isEmojiPanelOpen && hasEmojiPanel) calculateEmojiPanelHeight(lastObservedImeDp, paneHeightDp) else 0.dp
         val effectiveImeOrEmojiDp = if (isEmojiPanelOpen && hasEmojiPanel) emojiPanelHeightDp else imeBottomDp
         val metrics = calculateQuickReplyLayoutMetrics(paneHeightDp, statusBarTopDp, effectiveImeOrEmojiDp, navBarBottomDp)
-        val isTightSheet = !metrics.isCompactShortScreen && metrics.maxSheetHeightDp < QuickReplyTightSheetThreshold
         val totalOccupiedBottomDp = if (phase == SheetMotionPhase.Dismissing) 0.dp else with(density) { measuredSheetHeightPx.toDp() } + effectiveImeOrEmojiDp
         LaunchedEffect(totalOccupiedBottomDp, metrics.shouldLiftUnderlyingList) {
             latestOnOccupiedChanged(totalOccupiedBottomDp, metrics.shouldLiftUnderlyingList)
         }
 
-        val dismissProgress = (offsetYPx.value / measuredSheetHeightPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
+        val effectiveOffsetYPx = if (isDragging) dragOffsetYPx else offsetYPx.value
+        val dismissProgress = (effectiveOffsetYPx / measuredSheetHeightPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
         Box(
             Modifier.fillMaxSize()
                 .background(cs.scrim.copy(alpha = HiGlassTokens.SheetScrimAlpha * (1f - dismissProgress)))
                 .clickable(remember { MutableInteractionSource() }, indication = null) { requestDismiss(0f) },
         )
-        if (metrics.isCompactShortScreen) {
-            Box(Modifier.size(1.dp).semantics { liveRegion = LiveRegionMode.Polite; stateDescription = contextLabel })
-        }
 
         val outerBottomPadding = if (isEmojiPanelOpen && hasEmojiPanel) 0.dp else imeBottomDp
         val innerBottomPadding = if (imeBottomDp > 0.dp || (isEmojiPanelOpen && hasEmojiPanel)) 8.dp else (navBarBottomDp + 8.dp)
@@ -324,7 +368,7 @@ fun QuickReplySheet(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = outerBottomPadding)
-                .graphicsLayer { translationY = offsetYPx.value }
+                .graphicsLayer { translationY = effectiveOffsetYPx }
                 .semantics { paneTitle = contextLabel; isTraversalGroup = true },
         ) {
             HiGlassSurface(
@@ -333,81 +377,48 @@ fun QuickReplySheet(
                 modifier = Modifier.fillMaxWidth().heightIn(max = metrics.maxSheetHeightDp)
                     .onSizeChanged { if (it.height > 0) measuredSheetHeightPx = it.height.toFloat() },
             ) {
-                Column(Modifier.fillMaxWidth()) {
-                    if (!metrics.isCompactShortScreen) {
-                        QuickReplyHeaderZone(
-                            contextLabel, collapseCd, isTightSheet, canExpandToFullEditor, headerDragState,
-                            onDragStopped = { onDragSettled(it, true) },
-                            onCollapseClick = { requestDismiss(0f) },
-                            onExpandClick = { requestExpandToFullEditor(false, 0f) },
+                QuickReplyAdaptiveSheetLayout(
+                    isLoggedIn = uiState.isLoggedIn, isCompactShortScreen = metrics.isCompactShortScreen,
+                    canExpandToFullEditor = canExpandToFullEditor, hasDraftBanner = uiState.showDraftRestoredBanner,
+                    hasInlineError = uiState.inlineError != null, inlineErrorHasAction = uiState.inlineError?.uiError?.action != null,
+                    bottomBarBottomPadding = innerBottomPadding,
+                    onErrorShedChanged = { shed -> if (isErrorShedToSnackbar != shed) isErrorShedToSnackbar = shed },
+                    dragHandle = { QuickReplyDragHandle(collapseCd, headerDragState, { onDragSettled(it, true) }) { requestDismiss(0f) } },
+                    contextRow = { showExpand -> QuickReplyContextRow(contextLabel, showExpand, headerDragState, { onDragSettled(it, true) }) { requestExpandToFullEditor(false, 0f) } },
+                    draftBanner = { QuickReplyDraftRestoredBanner(viewModel::clearRestoredDraft) },
+                    inputBox = { QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 44.dp, 10.dp, inputNestedScroll, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) },
+                    inlineErrorStrip = { compact -> uiState.inlineError?.let { QuickReplyInlineErrorStrip(it, compact, viewModel::submit, onOpenLogin) } },
+                    bottomActionBar = { includeExpand ->
+                        QuickReplyBottomActionBar(
+                            includeExpand && canExpandToFullEditor, canExpandToFullEditor, hasEmojiPanel, isEmojiPanelOpen,
+                            uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, innerBottomPadding,
+                            { requestExpandToFullEditor(false, 0f) }, { requestExpandToFullEditor(true, 0f) }, onToggleEmoji, viewModel::submit,
                         )
-                    }
-                    when {
-                        !uiState.isLoggedIn -> QuickReplyGuestPrompt(metrics.isCompactShortScreen, innerBottomPadding, onOpenLogin)
-                        metrics.isCompactShortScreen || isTightSheet -> {
-                            uiState.inlineError?.takeIf { metrics.maxSheetHeightDp >= 96.dp }?.let {
-                                QuickReplyInlineErrorStrip(it, compact = true, onRetry = viewModel::submit, onOpenLogin = onOpenLogin)
-                            }
-                            val vPad = if (metrics.maxSheetHeightDp < 64.dp) 0.dp else 6.dp
-                            Row(
-                                Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, top = vPad, bottom = vPad),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 40.dp, inputNestedScroll, Modifier.weight(1f))
-                                if (canExpandToFullEditor && metrics.isCompactShortScreen) {
-                                    QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen)) {
-                                        requestExpandToFullEditor(false, 0f)
-                                    }
-                                }
-                                QuickReplySendButton(uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, viewModel::submit)
-                            }
+                    },
+                    compactRow = { vPad ->
+                        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = vPad, bottom = vPad), verticalAlignment = Alignment.CenterVertically) {
+                            QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 40.dp, 6.dp, inputNestedScroll, Modifier.weight(1f))
+                            if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.InsertImage, stringResource(R.string.compose_action_insert_image)) { requestExpandToFullEditor(true, 0f) }
+                            if (hasEmojiPanel) QuickReplyEmojiToggleButton(isEmojiPanelOpen, onToggleEmoji)
+                            if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen)) { requestExpandToFullEditor(false, 0f) }
+                            Spacer(Modifier.width(4.dp))
+                            QuickReplySendButton(uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, viewModel::submit)
                         }
-                        else -> {
-                            if (uiState.showDraftRestoredBanner) QuickReplyDraftRestoredBanner(viewModel::clearRestoredDraft)
-                            QuickReplyInputBox(
-                                textFieldState, inputScrollState, contextLabel, inputFocusRequester, 64.dp, inputNestedScroll,
-                                Modifier.fillMaxWidth().weight(1f, fill = false).padding(horizontal = 16.dp, vertical = 4.dp),
-                            )
-                            uiState.inlineError?.let { QuickReplyInlineErrorStrip(it, compact = false, onRetry = viewModel::submit, onOpenLogin = onOpenLogin) }
-                            QuickReplyBottomActionBar(
-                                canExpandToFullEditor, hasEmojiPanel, isEmojiPanelOpen, uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, innerBottomPadding,
-                                onInsertImageClick = { requestExpandToFullEditor(true, 0f) },
-                                onToggleEmojiClick = {
-                                    if (isEmojiPanelOpen) {
-                                        isEmojiPanelOpen = false; runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show()
-                                    } else {
-                                        keyboardController?.hide(); isEmojiPanelOpen = true
-                                    }
-                                },
-                                onSendClick = viewModel::submit,
-                            )
-                        }
-                    }
-                }
+                    },
+                    guestPrompt = { compact -> QuickReplyGuestPrompt(compact, innerBottomPadding, onOpenLogin) },
+                    liveRegionFallback = { Box(Modifier.size(1.dp).semantics { liveRegion = LiveRegionMode.Polite; stateDescription = contextLabel }) },
+                )
             }
             if (isEmojiPanelOpen && effectiveEmojiSlot != null) {
                 val emojiHost = remember(emojiPanelHeightDp, paneHeightDp, textFieldState, keyboardController) {
                     QuickReplyEmojiPanelHost(
                         keyboardHeightDp = emojiPanelHeightDp, windowHeightDp = paneHeightDp,
-                        onInsertEmoji = { code ->
-                            textFieldState.edit {
-                                val s = selection.min
-                                if (s != selection.max) delete(s, selection.max)
-                                insert(s, code)
-                                selection = TextRange(s + code.length)
-                            }
-                        },
+                        onInsertEmoji = { code -> textFieldState.edit { val s = selection.min; if (s != selection.max) delete(s, selection.max); insert(s, code); selection = TextRange(s + code.length) } },
                         onBackspace = {
                             textFieldState.edit {
                                 val s = selection.min
-                                if (s != selection.max) {
-                                    delete(s, selection.max)
-                                    selection = TextRange(s)
-                                } else if (s > 0) {
-                                    delete(s - 1, s)
-                                    selection = TextRange(s - 1)
-                                }
+                                if (s != selection.max) { delete(s, selection.max); selection = TextRange(s) }
+                                else if (s > 0) { val prev = previousGraphemeOffset(asCharSequence(), s); delete(prev, s); selection = TextRange(prev) }
                             }
                         },
                         onClose = { isEmojiPanelOpen = false; keyboardController?.show() },
@@ -417,6 +428,120 @@ fun QuickReplySheet(
             }
         }
     }
+}
+
+/** 基于真实测量剩余高度的优先级自适应布局（`SubcomposeLayout`），先预算后单次 subcompose 杜绝残留语义与裁切（R-E5 B1）。 */
+@Composable
+private fun QuickReplyAdaptiveSheetLayout(
+    isLoggedIn: Boolean, isCompactShortScreen: Boolean, canExpandToFullEditor: Boolean,
+    hasDraftBanner: Boolean, hasInlineError: Boolean, inlineErrorHasAction: Boolean, bottomBarBottomPadding: Dp,
+    onErrorShedChanged: (Boolean) -> Unit,
+    dragHandle: @Composable () -> Unit, contextRow: @Composable (Boolean) -> Unit, draftBanner: @Composable () -> Unit,
+    inputBox: @Composable () -> Unit, inlineErrorStrip: @Composable (Boolean) -> Unit,
+    bottomActionBar: @Composable (Boolean) -> Unit, compactRow: @Composable (Dp) -> Unit,
+    guestPrompt: @Composable (Boolean) -> Unit, liveRegionFallback: @Composable () -> Unit,
+) {
+    val textMeasurer = rememberTextMeasurer()
+    val postBodyStyle = HiTheme.typography.postBody
+    val labelLargeStyle = MaterialTheme.typography.labelLarge
+    val bodySmallStyle = MaterialTheme.typography.bodySmall
+    val density = LocalDensity.current
+    val oneLineBodyPx = remember(postBodyStyle, density) { textMeasurer.measure("测", style = postBodyStyle).size.height }
+    val ctxLinePx = remember(labelLargeStyle, density) { textMeasurer.measure("测", style = labelLargeStyle).size.height }
+    val smallLinePx = remember(bodySmallStyle, density) { textMeasurer.measure("测", style = bodySmallStyle).size.height }
+
+    SubcomposeLayout(Modifier.fillMaxWidth()) { constraints ->
+        val maxW = constraints.maxWidth
+        val maxH = if (constraints.hasBoundedHeight) constraints.maxHeight else QuickReplyMaxHeight.roundToPx()
+        val loose = Constraints(minWidth = maxW, maxWidth = maxW, minHeight = 0, maxHeight = Constraints.Infinity)
+        val textStyles = Triple(oneLineBodyPx, ctxLinePx, smallLinePx)
+        val touch48Px = 48.dp.roundToPx()
+        val handleEstPx = QuickReplyHandleHeight.roundToPx()
+        val slimCtxEstPx = maxOf(28.dp.roundToPx(), textStyles.second)
+        val fullCtxEstPx = maxOf(touch48Px, textStyles.second)
+        val draftEstPx = maxOf(touch48Px, textStyles.third) + 8.dp.roundToPx()
+        val errorEstPx = if (inlineErrorHasAction) maxOf(touch48Px, textStyles.third) else (textStyles.third + 8.dp.roundToPx())
+        val bottomBarEstPx = touch48Px + 4.dp.roundToPx() + bottomBarBottomPadding.roundToPx()
+        val minStandardInputPx = textStyles.first + 30.dp.roundToPx()
+        val preferredStandardInputPx = maxOf(minStandardInputPx, 72.dp.roundToPx())
+        val compactMinContentPx = maxOf(touch48Px, textStyles.first + 14.dp.roundToPx())
+        val topPadPx = 6.dp.roundToPx()
+
+        fun measureSlot(slot: QuickReplySlot, c: Constraints = loose, content: @Composable () -> Unit) = subcompose(slot, content).map { it.measure(c) }
+        fun List<androidx.compose.ui.layout.Placeable>.totalHeight(): Int = sumOf { it.height }
+        fun placeVertically(totalH: Int, live: List<androidx.compose.ui.layout.Placeable>, vararg rows: Pair<Int, List<androidx.compose.ui.layout.Placeable>>) =
+            layout(maxW, totalH.coerceAtMost(maxH)) {
+                live.forEach { it.placeRelative(0, 0) }
+                var y = 0
+                rows.forEach { (gap, list) -> y += gap; list.forEach { it.placeRelative(0, y); y += it.height } }
+            }
+        fun measureDraftAndHandle(remIn: Int): Triple<List<androidx.compose.ui.layout.Placeable>, List<androidx.compose.ui.layout.Placeable>, Int> {
+            var r = remIn
+            val draft = if (hasDraftBanner && !isCompactShortScreen && r >= draftEstPx) measureSlot(QuickReplySlot.Draft, content = draftBanner) else emptyList()
+            r = (r - draft.totalHeight()).coerceAtLeast(0)
+            val handle = if (!isCompactShortScreen && r >= handleEstPx) measureSlot(QuickReplySlot.Handle, content = dragHandle) else emptyList()
+            return Triple(draft, handle, (r - handle.totalHeight()).coerceAtLeast(0))
+        }
+
+        if (!isLoggedIn) {
+            val guest = measureSlot(QuickReplySlot.Guest, Constraints(maxW, maxW, 0, maxH)) { guestPrompt(isCompactShortScreen) }
+            var rem = (maxH - guest.totalHeight()).coerceAtLeast(0)
+            val ctx = if (rem >= slimCtxEstPx) measureSlot(QuickReplySlot.Context) { contextRow(false) } else emptyList()
+            rem = (rem - ctx.totalHeight()).coerceAtLeast(0)
+            val handle = if (!isCompactShortScreen && rem >= handleEstPx) measureSlot(QuickReplySlot.Handle, content = dragHandle) else emptyList()
+            val live = if (ctx.isEmpty()) measureSlot(QuickReplySlot.LiveRegion, Constraints.fixed(1, 1), liveRegionFallback) else emptyList()
+            onErrorShedChanged(false)
+            return@SubcomposeLayout placeVertically(handle.totalHeight() + ctx.totalHeight() + guest.totalHeight(), live, 0 to handle, 0 to ctx, 0 to guest)
+        }
+
+        val twoRowFitsBase = maxH >= bottomBarEstPx + minStandardInputPx + topPadPx
+        val twoRowFitsError = !hasInlineError || maxH >= bottomBarEstPx + minStandardInputPx + errorEstPx + topPadPx
+        val compactFitsError = !hasInlineError || maxH >= compactMinContentPx + errorEstPx
+        if (!twoRowFitsBase || (hasInlineError && !twoRowFitsError && compactFitsError)) {
+            val compactVPad = ((maxH - compactMinContentPx - if (hasInlineError && compactFitsError) errorEstPx else 0).coerceAtLeast(0) / 2).coerceAtMost(6.dp.roundToPx())
+            var rem = (maxH - compactMinContentPx - compactVPad * 2).coerceAtLeast(0)
+            val placedError = if (hasInlineError && rem >= errorEstPx) measureSlot(QuickReplySlot.Error) { inlineErrorStrip(true) } else emptyList()
+            rem = (rem - placedError.totalHeight()).coerceAtLeast(0)
+            val placedCtx = if (rem >= slimCtxEstPx) measureSlot(QuickReplySlot.Context) { contextRow(false) } else emptyList()
+            val (placedDraft, placedHandle, _) = measureDraftAndHandle((rem - placedCtx.totalHeight()).coerceAtLeast(0))
+            val usedH = placedHandle.totalHeight() + placedCtx.totalHeight() + placedDraft.totalHeight() + placedError.totalHeight()
+            val placedCompact = measureSlot(QuickReplySlot.CompactRow, Constraints(maxW, maxW, 0, (maxH - usedH).coerceAtLeast(compactMinContentPx.coerceAtMost(maxH)))) { compactRow(compactVPad.toDp()) }
+            val live = if (placedCtx.isEmpty()) measureSlot(QuickReplySlot.LiveRegion, Constraints.fixed(1, 1), liveRegionFallback) else emptyList()
+            onErrorShedChanged(hasInlineError && placedError.isEmpty())
+            return@SubcomposeLayout placeVertically(usedH + placedCompact.totalHeight(), live, 0 to placedHandle, 0 to placedCtx, 0 to placedDraft, 0 to placedError, 0 to placedCompact)
+        }
+
+        var rem = (maxH - bottomBarEstPx - minStandardInputPx).coerceAtLeast(0)
+        val placedError = if (hasInlineError && rem >= errorEstPx) measureSlot(QuickReplySlot.Error) { inlineErrorStrip(false) } else emptyList()
+        rem = (rem - placedError.totalHeight()).coerceAtLeast(0)
+        val showFullCtx = canExpandToFullEditor && rem >= fullCtxEstPx
+        val placedCtx = if (showFullCtx) measureSlot(QuickReplySlot.Context) { contextRow(true) }
+        else if (rem >= slimCtxEstPx) measureSlot(QuickReplySlot.Context) { contextRow(false) } else emptyList()
+        val (placedDraft, placedHandle, remAfterChrome) = measureDraftAndHandle((rem - placedCtx.totalHeight()).coerceAtLeast(0))
+        val placedBottomBar = measureSlot(QuickReplySlot.BottomBar) { bottomActionBar(canExpandToFullEditor && !showFullCtx) }
+        val topSpacerH = if (placedHandle.isEmpty() && placedCtx.isEmpty() && placedDraft.isEmpty()) minOf(topPadPx, remAfterChrome) else 0
+        val usedNonInputH = placedHandle.totalHeight() + placedCtx.totalHeight() + placedDraft.totalHeight() + topSpacerH + placedError.totalHeight() + placedBottomBar.totalHeight()
+        val inputMaxH = (maxH - usedNonInputH).coerceAtLeast(minStandardInputPx.coerceAtMost(maxH))
+        val placedInput = measureSlot(QuickReplySlot.Input, Constraints(maxW, maxW, minOf(preferredStandardInputPx, inputMaxH), inputMaxH), inputBox)
+        val live = if (placedCtx.isEmpty()) measureSlot(QuickReplySlot.LiveRegion, Constraints.fixed(1, 1), liveRegionFallback) else emptyList()
+        onErrorShedChanged(hasInlineError && placedError.isEmpty())
+        placeVertically(usedNonInputH + placedInput.totalHeight(), live, 0 to placedHandle, 0 to placedCtx, 0 to placedDraft, topSpacerH to placedInput, 0 to placedError, 0 to placedBottomBar)
+    }
+}
+
+private fun resolveInlineErrorContent(context: android.content.Context, error: QuickReplyInlineError): Pair<String, String?>? {
+    val msg = when {
+        error.cooldownMessageSeconds != null -> context.getString(R.string.compose_error_cooldown, error.cooldownMessageSeconds)
+        error.uiError != null -> context.getString(error.uiError.messageRes)
+        else -> return null
+    }
+    val actionLabel = when (error.uiError?.action) {
+        UiErrorAction.Retry -> context.getString(R.string.common_action_retry)
+        UiErrorAction.Login -> context.getString(R.string.common_action_login)
+        UiErrorAction.Reverify -> context.getString(R.string.challenge_action_retry)
+        null -> null
+    }
+    return msg to actionLabel
 }
 
 @Composable
@@ -429,54 +554,28 @@ private fun resolveReplyContextLabel(target: QuickReplyTarget): String = when {
 }
 
 @Composable
-private fun QuickReplyHeaderZone(
-    contextLabel: String, collapseCd: String, tightMode: Boolean, showExpandButton: Boolean,
-    dragState: DraggableState, onDragStopped: (Float) -> Unit, onCollapseClick: () -> Unit, onExpandClick: () -> Unit,
-) {
+private fun QuickReplyDragHandle(collapseCd: String, dragState: DraggableState, onDragStopped: (Float) -> Unit, onCollapseClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val handleModifier = Modifier
-        .clickable(remember { MutableInteractionSource() }, indication = null, role = Role.Button, onClick = onCollapseClick)
-        .semantics { contentDescription = collapseCd; customActions = listOf(CustomAccessibilityAction(collapseCd) { onCollapseClick(); true }) }
-    Column(Modifier.fillMaxWidth().draggable(dragState, Orientation.Vertical, onDragStopped = { onDragStopped(it) })) {
-        if (tightMode) {
-            HiCappedFontScale {
-                Box(Modifier.fillMaxWidth().height(if (showExpandButton) 48.dp else QuickReplyHandleHeight).padding(start = 16.dp, end = if (showExpandButton) 4.dp else 16.dp)) {
-                    Box(Modifier.align(Alignment.TopCenter).width(48.dp).height(QuickReplyHandleHeight).then(handleModifier), Alignment.TopCenter) {
-                        Box(Modifier.padding(top = 6.dp).size(36.dp, 4.dp).clip(HiShapeTokens.Full).background(cs.onSurfaceVariant.copy(alpha = 0.42f)))
-                    }
-                    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            contextLabel,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = cs.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f).padding(top = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
-                        )
-                        if (showExpandButton) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen), onExpandClick)
-                    }
-                }
-            }
-        } else {
-            Box(Modifier.fillMaxWidth().height(QuickReplyHandleHeight).then(handleModifier), Alignment.Center) {
-                Box(Modifier.size(36.dp, 4.dp).clip(HiShapeTokens.Full).background(cs.onSurfaceVariant.copy(alpha = 0.42f)))
-            }
-            HiCappedFontScale {
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = if (showExpandButton) 48.dp else 28.dp).padding(start = 16.dp, end = if (showExpandButton) 4.dp else 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        contextLabel,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = cs.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
-                    )
-                    if (showExpandButton) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen), onExpandClick)
-                }
-            }
+    Box(
+        Modifier.fillMaxWidth().height(QuickReplyHandleHeight)
+            .draggable(dragState, Orientation.Vertical, onDragStopped = { onDragStopped(it) })
+            .clickable(remember { MutableInteractionSource() }, indication = null, role = Role.Button, onClick = onCollapseClick)
+            .semantics { contentDescription = collapseCd; customActions = listOf(CustomAccessibilityAction(collapseCd) { onCollapseClick(); true }) },
+        Alignment.Center,
+    ) { Box(Modifier.size(36.dp, 4.dp).clip(HiShapeTokens.Full).background(cs.onSurfaceVariant.copy(alpha = 0.42f))) }
+}
+
+@Composable
+private fun QuickReplyContextRow(contextLabel: String, showExpandButton: Boolean, dragState: DraggableState, onDragStopped: (Float) -> Unit, onExpandClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    HiCappedFontScale {
+        Row(
+            Modifier.fillMaxWidth().draggable(dragState, Orientation.Vertical, onDragStopped = { onDragStopped(it) })
+                .heightIn(min = if (showExpandButton) 48.dp else 28.dp).padding(start = 16.dp, end = if (showExpandButton) 4.dp else 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(contextLabel, style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite })
+            if (showExpandButton) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen), onExpandClick)
         }
     }
 }
@@ -501,7 +600,8 @@ private fun QuickReplyDraftRestoredBanner(onClear: () -> Unit) {
 @Composable
 private fun QuickReplyInputBox(
     textFieldState: TextFieldState, scrollState: androidx.compose.foundation.ScrollState, placeholder: String,
-    focusRequester: FocusRequester, minHeight: Dp, nestedScrollConnection: NestedScrollConnection, modifier: Modifier = Modifier,
+    focusRequester: FocusRequester, minHeight: Dp, verticalInnerPadding: Dp,
+    nestedScrollConnection: NestedScrollConnection, modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
     val textStyle = HiTheme.typography.postBody.copy(color = cs.onSurface)
@@ -510,7 +610,7 @@ private fun QuickReplyInputBox(
             .background(cs.surfaceContainerHigh.copy(alpha = 0.62f))
             .border(0.75.dp, cs.outlineVariant.copy(alpha = 0.7f), HiShapeTokens.Medium)
             .nestedScroll(nestedScrollConnection).verticalScroll(scrollState)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = verticalInnerPadding),
     ) {
         BasicTextField(
             state = textFieldState, textStyle = textStyle, cursorBrush = SolidColor(cs.primary),
@@ -529,25 +629,13 @@ private fun QuickReplyInputBox(
 @Composable
 private fun QuickReplyInlineErrorStrip(error: QuickReplyInlineError, compact: Boolean, onRetry: () -> Unit, onOpenLogin: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val message = when {
-        error.cooldownMessageSeconds != null -> stringResource(R.string.compose_error_cooldown, error.cooldownMessageSeconds)
-        error.uiError != null -> stringResource(error.uiError.messageRes)
-        else -> return
-    }
+    val (message, actionLabel) = resolveInlineErrorContent(LocalContext.current, error) ?: return
     val action = error.uiError?.action
-    val actionLabel = when (action) {
-        UiErrorAction.Retry -> stringResource(R.string.common_action_retry)
-        UiErrorAction.Login -> stringResource(R.string.common_action_login)
-        UiErrorAction.Reverify -> stringResource(R.string.challenge_action_retry)
-        null -> null
-    }
     HiCappedFontScale {
         Row(Modifier.fillMaxWidth().padding(horizontal = if (compact) 12.dp else 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(message, style = MaterialTheme.typography.bodySmall, color = cs.error, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (actionLabel != null && action != null) {
-                TextButton(onClick = { if (action == UiErrorAction.Login) onOpenLogin() else onRetry() }, shape = HiShapeTokens.Small, modifier = Modifier.defaultMinSize(48.dp, 48.dp)) {
-                    Text(actionLabel)
-                }
+                TextButton(onClick = { if (action == UiErrorAction.Login) onOpenLogin() else onRetry() }, shape = HiShapeTokens.Small, modifier = Modifier.defaultMinSize(48.dp, 48.dp)) { Text(actionLabel) }
             }
         }
     }
@@ -572,20 +660,15 @@ private fun QuickReplyGuestPrompt(compact: Boolean, bottomPadding: Dp, onOpenLog
 
 @Composable
 private fun QuickReplyBottomActionBar(
-    showInsertImage: Boolean, showEmojiToggle: Boolean, isEmojiPanelOpen: Boolean, isSubmitting: Boolean,
+    showExpand: Boolean, showInsertImage: Boolean, showEmojiToggle: Boolean, isEmojiPanelOpen: Boolean, isSubmitting: Boolean,
     cooldownSeconds: Int, canSend: Boolean, bottomPadding: Dp,
-    onInsertImageClick: () -> Unit, onToggleEmojiClick: () -> Unit, onSendClick: () -> Unit,
+    onExpandClick: () -> Unit, onInsertImageClick: () -> Unit, onToggleEmojiClick: () -> Unit, onSendClick: () -> Unit,
 ) {
     HiCappedFontScale {
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = bottomPadding), verticalAlignment = Alignment.CenterVertically) {
             if (showInsertImage) QuickReplyToolIconButton(ComposeVectorIcons.InsertImage, stringResource(R.string.compose_action_insert_image), onInsertImageClick)
-            if (showEmojiToggle) {
-                val emojiCd = stringResource(if (isEmojiPanelOpen) R.string.compose_action_keyboard else R.string.compose_action_emoji)
-                val interaction = remember { MutableInteractionSource() }
-                Box(Modifier.size(48.dp).hiPressScale(interaction).clip(HiShapeTokens.Full).clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onToggleEmojiClick), Alignment.Center) {
-                    HiIconSwitch(if (isEmojiPanelOpen) ComposeVectorIcons.Keyboard else Icons.Rounded.Face, emojiCd, tint = MaterialTheme.colorScheme.onSurface, iconSize = 22.dp)
-                }
-            }
+            if (showEmojiToggle) QuickReplyEmojiToggleButton(isEmojiPanelOpen, onToggleEmojiClick)
+            if (showExpand) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen), onExpandClick)
             Spacer(Modifier.weight(1f))
             QuickReplySendButton(isSubmitting, cooldownSeconds, canSend, onSendClick)
         }
@@ -593,30 +676,34 @@ private fun QuickReplyBottomActionBar(
 }
 
 @Composable
+private fun QuickReplyEmojiToggleButton(isEmojiPanelOpen: Boolean, onClick: () -> Unit) {
+    val emojiCd = stringResource(if (isEmojiPanelOpen) R.string.compose_action_keyboard else R.string.compose_action_emoji)
+    val interaction = remember { MutableInteractionSource() }
+    Box(Modifier.size(48.dp).hiPressScale(interaction).clip(HiShapeTokens.Full).clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onClick), Alignment.Center) {
+        HiIconSwitch(if (isEmojiPanelOpen) ComposeVectorIcons.Keyboard else Icons.Rounded.Face, emojiCd, tint = MaterialTheme.colorScheme.onSurface, iconSize = 22.dp)
+    }
+}
+
+@Composable
 private fun QuickReplySendButton(isSubmitting: Boolean, cooldownSeconds: Int, enabled: Boolean, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
-    val state = when {
-        isSubmitting -> SendButtonVisualState.Submitting
-        cooldownSeconds > 0 -> SendButtonVisualState.Cooldown
-        else -> SendButtonVisualState.Ready
-    }
     val sendLabel = stringResource(R.string.compose_action_send)
-    val semanticDesc = when (state) {
-        SendButtonVisualState.Submitting -> stringResource(R.string.compose_status_sending)
-        SendButtonVisualState.Cooldown -> stringResource(R.string.compose_cooldown_send_cd, cooldownSeconds)
-        SendButtonVisualState.Ready -> sendLabel
+    val semanticDesc = when {
+        isSubmitting -> stringResource(R.string.compose_status_sending)
+        cooldownSeconds > 0 -> stringResource(R.string.compose_cooldown_send_cd, cooldownSeconds)
+        else -> sendLabel
     }
     Button(
         onClick = onClick, enabled = enabled, interactionSource = interaction, shape = HiShapeTokens.Full,
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
         modifier = Modifier.defaultMinSize(72.dp, 48.dp).hiPressScale(interaction).semantics { contentDescription = semanticDesc },
     ) {
-        if (state == SendButtonVisualState.Submitting) {
+        if (isSubmitting) {
             HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp, color = cs.onSurface.copy(alpha = 0.72f), trackColor = cs.onSurface.copy(alpha = 0.2f))
         } else {
             AnimatedContent(
-                targetState = state == SendButtonVisualState.Cooldown, contentAlignment = Alignment.Center, label = "QuickReplySendCooldown",
+                targetState = cooldownSeconds > 0, contentAlignment = Alignment.Center, label = "QuickReplySendCooldown",
                 transitionSpec = { ((hiScaleIn(HiMotion.spatialFast()) + hiFadeIn(HiMotion.effectsFast())) togetherWith (hiScaleOut(HiMotion.exit(HiMotion.spatialFast())) + hiFadeOut(HiMotion.exit(HiMotion.effectsFast())))).using(null) },
             ) { cooling ->
                 if (cooling) HiRollingNumber(cooldownSeconds.coerceAtLeast(1), style = MaterialTheme.typography.labelLarge, color = cs.onSurface.copy(alpha = 0.78f))

@@ -2,8 +2,12 @@ package net.jejer.hipda.feature.compose
 
 import android.app.Application
 import android.content.Context
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,7 +16,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -20,6 +27,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import net.jejer.hipda.R
@@ -285,7 +293,18 @@ class QuickReplyViewModelTest {
         assertTrue("交接完整编辑器不得重复触发保存草稿提示", events.none { it is QuickReplyEvent.DraftSaved })
         assertTrue("交接完整编辑器不得重复调用 saveDraft", repo.saveDraftCalls.isEmpty())
 
-        // ReplyPost 请求映射
+        // ReplyPost 交接必须保留 replyPid 与 threadAuthor，且构建 ReplyPost 提交请求（R-E5 S2）
+        vm.open(QuickReplyTarget(tid = "2605005", fid = 2, mode = QuickReplyMode.ReplyPost, targetPid = "809", targetAuthor = "bob", targetFloor = 9, threadAuthor = "op_user"))
+        advanceUntilIdle()
+        val handoffReplyPost = vm.onHandoffToFullEditor("回复该楼", 0, 4, openImagePickerImmediately = true)
+        assertEquals(
+            FullEditorHandoff(
+                tid = "2605005", fid = 2, text = "回复该楼",
+                selectionStart = 0, selectionEnd = 4, quotePid = null, quoteAuthor = "bob", quoteFloor = 9,
+                openImagePickerImmediately = true, replyPid = "809", threadAuthor = "op_user",
+            ),
+            handoffReplyPost,
+        )
         val replyPostReq = QuickReplyViewModel.buildSubmitRequest(
             QuickReplyTarget(tid = "2605005", fid = 2, mode = QuickReplyMode.ReplyPost, targetPid = "809"),
             "回复该楼",
@@ -295,13 +314,15 @@ class QuickReplyViewModelTest {
         collectJob.cancel()
     }
 
-    /** 真实 `DefaultPostRepository` + Room `DraftDao` + `MockWebServer` 离线端到端提交与草稿/冷却闭环。 */
+    /** 真实 `DefaultPostRepository` + Room `DraftDao` + `MockWebServer` 离线端到端提交与草稿/冷却闭环（无 `Thread.sleep`，R-E5 S3）。 */
     @Test
-    fun realDefaultPostRepository_withMockWebServer_submitsReplyDeletesDraftAndStarts30sCooldown() = runTest(testDispatcher) {
+    fun realDefaultPostRepository_withMockWebServer_submitsReplyDeletesDraftAndStarts30sCooldown() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Unconfined)
         OkHttp.initialize(ApplicationProvider.getApplicationContext())
         val server = MockWebServer()
         server.start()
         val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vmStore = ViewModelStore()
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext<Context>(), HiDatabase::class.java)
             .allowMainThreadQueries()
             .setQueryExecutor(Runnable::run)
@@ -313,7 +334,8 @@ class QuickReplyViewModelTest {
             transportInterceptor = TransportInterceptor(delegateFactory = { null }, isMainThread = { false }),
         )
         try {
-            val clock: () -> Long = { 50_000L + testScheduler.currentTime }
+            val virtualClockMs = AtomicLong(50_000L)
+            val clock: () -> Long = { virtualClockMs.get() }
             val baseUrl = server.url("").toString().trimEnd('/')
             val authRepo = FakeQuickReplyAuthRepository()
             val settingsRepo = object : SettingsRepository {
@@ -347,17 +369,20 @@ class QuickReplyViewModelTest {
             // 先预置一条真实 Room 草稿
             val key = DraftKey.reply("2605010")
             realPostRepo.saveDraft(key, content = "Room 旧草稿")
-            val vm = QuickReplyViewModel(realPostRepo, authRepo, clockMs = clock)
+            val vm = ViewModelProvider(
+                vmStore,
+                object : ViewModelProvider.Factory {
+                    @Suppress("UNCHECKED_CAST")
+                    override fun <T : ViewModel> create(modelClass: Class<T>): T = QuickReplyViewModel(realPostRepo, authRepo, clockMs = clock) as T
+                },
+            )[QuickReplyViewModel::class.java]
 
             // 1. R-D6 S2 真实 Room 验证：恢复后清空退出彻底删除 Room 记录
             vm.open(QuickReplyTarget(tid = "2605010", fid = 2))
-            advanceUntilIdle()
             assertEquals("Room 旧草稿", vm.uiState.value.text)
             vm.onTextChanged("")
             vm.onDismissSession()
-            advanceUntilIdle()
             vm.open(QuickReplyTarget(tid = "2605010", fid = 2))
-            advanceUntilIdle()
             assertEquals("真实 Room 旧草稿删空退出后不得复活", "", vm.uiState.value.text)
 
             // 2. 提交回复走真实 PrePost GET + GBK POST -> 成功删除草稿并进入 30 秒冷却
@@ -384,25 +409,21 @@ class QuickReplyViewModelTest {
             server.enqueue(MockResponse.Builder().code(302).addHeader("Location", "viewthread.php?tid=2605010&page=1#pid9001").build())
             server.enqueue(MockResponse.Builder().code(200).addHeader("Content-Type", "text/html; charset=gbk").body(Buffer().write(redirectedHtml.toByteArray(gbk))).build())
 
-            val events = mutableListOf<QuickReplyEvent>()
-            val job = launch { vm.events.collect { events += it } }
+            val submittedDeferred = CompletableDeferred<QuickReplyEvent.Submitted>()
+            val collectJob = launch {
+                vm.events.filterIsInstance<QuickReplyEvent.Submitted>().first().let(submittedDeferred::complete)
+            }
             vm.onTextChanged("真实 MockWebServer 回复")
             vm.submit()
-            val deadline = System.currentTimeMillis() + 5_000L
-            while (events.none { it is QuickReplyEvent.Submitted } && System.currentTimeMillis() < deadline) {
-                advanceTimeBy(50L)
-                Thread.sleep(20L)
-            }
-            val submitted = events.filterIsInstance<QuickReplyEvent.Submitted>().firstOrNull()
-            assertNotNull("应收到真实提交成功事件", submitted)
-            assertEquals("2605010", submitted!!.tid)
-            assertTrue("提交成功后仓库应进入 30 秒冷却", realPostRepo.getRemainingCooldownSeconds() in 28..30)
-            assertTrue("提交成功后 UI 应进入 30 秒冷却", vm.uiState.value.cooldownSeconds in 28..30)
-            advanceTimeBy(31_000L)
-            advanceUntilIdle()
-            assertEquals("冷却 30 秒结束后应自动归零", 0, vm.uiState.value.cooldownSeconds)
-            job.cancel()
+            val submitted = withTimeout(5_000L) { submittedDeferred.await() }
+            assertEquals("2605010", submitted.tid)
+            assertEquals("提交成功后仓库应进入 30 秒冷却", 30, realPostRepo.getRemainingCooldownSeconds())
+            assertEquals("提交成功后 UI 应进入 30 秒冷却", 30, vm.uiState.value.cooldownSeconds)
+            virtualClockMs.addAndGet(31_000L)
+            assertEquals("虚拟时钟推进 31 秒后仓库冷却归零", 0, realPostRepo.getRemainingCooldownSeconds())
+            collectJob.cancel()
         } finally {
+            vmStore.clear()
             repoScope.cancel()
             db.close()
             okHttp.dispatcher.cancelAll()
