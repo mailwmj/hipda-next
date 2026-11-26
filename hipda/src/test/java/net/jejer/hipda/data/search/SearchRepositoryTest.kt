@@ -51,7 +51,7 @@ import net.jejer.hipda.data.settings.LineSpacing
 import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okio.Buffer
@@ -161,7 +161,7 @@ class SearchRepositoryTest {
 
     @Test
     fun search_realSampleEncodesChineseQueryAndAuthorInGbkDerivesAvatarAndRecordsHistory() = runBlocking {
-        val sampleHtml = LegacyTestSupport.loadSample("search/search_result.html")
+        val sampleHtml = SampleTestLoader.loadSample("search/search_result.html")
         val baseServer = server.url("").toString().trimEnd('/')
         settingsRepository.setForumServer("$baseServer/forum")
         server.enqueue(searchTestGbkHtmlResponse(sampleHtml))
@@ -345,7 +345,7 @@ class SearchRepositoryTest {
 
     @Test
     fun getNewPosts_buildsInitialAndSearchIdPaginationPathsAndParsesRealSample() = runBlocking {
-        val sampleHtml = LegacyTestSupport.loadSample("search/search_result.html")
+        val sampleHtml = SampleTestLoader.loadSample("search/search_result.html")
         server.enqueue(searchTestGbkHtmlResponse(sampleHtml))
         server.enqueue(searchTestGbkHtmlResponse(sampleHtml))
         server.enqueue(searchTestGbkHtmlResponse(sampleHtml))
@@ -380,8 +380,8 @@ class SearchRepositoryTest {
 
     @Test
     fun getMyThreadsAndMyReplies_parseRealSamplesEmptyStateAndMalformedPages() = runBlocking {
-        val threadsSample = LegacyTestSupport.loadSample("simple_list/my_threads.html")
-        val postsSample = LegacyTestSupport.loadSample("simple_list/my_posts.html")
+        val threadsSample = SampleTestLoader.loadSample("simple_list/my_threads.html")
+        val postsSample = SampleTestLoader.loadSample("simple_list/my_posts.html")
         server.enqueue(searchTestGbkHtmlResponse(threadsSample))
         server.enqueue(searchTestGbkHtmlResponse(postsSample))
         server.enqueue(
@@ -462,7 +462,7 @@ class SearchRepositoryTest {
             SilentReloginResult.Recovered(authRepository.sessionEpoch)
         }
         server.enqueue(searchTestGbkHtmlResponse(searchTestLoggedOutHtml("登录已过期")))
-        server.enqueue(searchTestGbkHtmlResponse(LegacyTestSupport.loadSample("simple_list/my_threads.html")))
+        server.enqueue(searchTestGbkHtmlResponse(SampleTestLoader.loadSample("simple_list/my_threads.html")))
         val recovered = repo.getMyThreads(page = 1)
         assertTrue("Expected Success after relogin, got $recovered", recovered is MyThreadsResult.Success)
         assertEquals(1, reloginCalls.get())
@@ -568,14 +568,14 @@ class SearchRepositoryTest {
         val (repo, _) = createRepository(historyStore = SearchHistoryStore(faultDataStore))
 
         // 1. IOException during history write degrades cleanly and still returns SearchResult.Success
-        server.enqueue(searchTestGbkHtmlResponse(LegacyTestSupport.loadSample("search/search_result.html")))
+        server.enqueue(searchTestGbkHtmlResponse(SampleTestLoader.loadSample("search/search_result.html")))
         val ok = repo.search(query = "磁盘满搜索")
         assertTrue("Expected Success even when history write throws IOException, got $ok", ok is SearchResult.Success)
         assertEquals(75, (ok as SearchResult.Success).items.size)
 
         // 2. CancellationException during history write propagates cleanly
         writeFailure.set(CancellationException("history cancelled"))
-        server.enqueue(searchTestGbkHtmlResponse(LegacyTestSupport.loadSample("search/search_result.html")))
+        server.enqueue(searchTestGbkHtmlResponse(SampleTestLoader.loadSample("search/search_result.html")))
         var cancelled = false
         try {
             repo.search(query = "取消传播搜索")
@@ -588,7 +588,7 @@ class SearchRepositoryTest {
     @Test
     fun s4_1_searchEncodesSupplementaryEmojiViaToGbkSafeDecimalEntities() = runBlocking {
         val (repo, _) = createRepository()
-        server.enqueue(searchTestGbkHtmlResponse(LegacyTestSupport.loadSample("search/search_result.html")))
+        server.enqueue(searchTestGbkHtmlResponse(SampleTestLoader.loadSample("search/search_result.html")))
 
         val res = repo.search(query = "苹果 🍎", author = "作者😀", recordHistory = false)
         assertTrue("Expected Success, got $res", res is SearchResult.Success)

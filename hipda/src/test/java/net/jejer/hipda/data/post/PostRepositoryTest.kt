@@ -58,7 +58,7 @@ import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.di.PostModule
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
 import net.jejer.hipda.parser.common.PromptCounts
@@ -206,7 +206,7 @@ class PostRepositoryTest {
     @Test
     fun fetchPrePost_realNewThreadSampleParsesFormFieldsUploadLimitAndOrderedTypes() = runBlocking {
         val stack = createStack()
-        val sampleHtml = LegacyTestSupport.loadSample("post_form/newthread_fid2.html")
+        val sampleHtml = SampleTestLoader.loadSample("post_form/newthread_fid2.html")
         server.enqueue(gbkHtmlResponse(sampleHtml))
 
         val result = stack.postRepo.fetchPrePost(PrePostRequest.NewThread(fid = 2))
@@ -385,7 +385,7 @@ class PostRepositoryTest {
         settingsRepository.setTailText("发自 HiPDA")
         settingsRepository.setTailUrl("www.4d4y.com/forum/viewthread.php?tid=1")
 
-        val realThreadHtml = LegacyTestSupport.loadSample("thread_detail/thread_p1.html")
+        val realThreadHtml = SampleTestLoader.loadSample("thread_detail/thread_p1.html")
         server.enqueue(
             MockResponse.Builder()
                 .code(302)

@@ -46,7 +46,7 @@ import net.jejer.hipda.feature.threaddetail.media.OfflineTestImageLoader
 import net.jejer.hipda.feature.threaddetail.media.captureTestNetworkState
 import net.jejer.hipda.feature.threaddetail.media.configureTestNetworkState
 import net.jejer.hipda.feature.threaddetail.media.restoreTestNetworkState
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.parser.threaddetail.InlineSpan
 import net.jejer.hipda.parser.threaddetail.TextFormat
@@ -81,12 +81,12 @@ class PostBodyRendererTest {
     @Test
     fun realSamplesP1AndP2_emojiKeysHitEmojiMapInLightAndDarkAndDecodeSupplementaryEmoji() {
         val p1 = ThreadDetailParser.parse(
-            html = LegacyTestSupport.loadSample("thread_detail/thread_p1.html"),
+            html = SampleTestLoader.loadSample("thread_detail/thread_p1.html"),
             tid = "2602293",
             forumBaseUrl = "https://www.4d4y.com/forum/",
         )
         val p2 = ThreadDetailParser.parse(
-            html = LegacyTestSupport.loadSample("thread_detail/thread_p2.html"),
+            html = SampleTestLoader.loadSample("thread_detail/thread_p2.html"),
             tid = "2602293",
             forumBaseUrl = "https://www.4d4y.com/forum/",
         )
@@ -230,7 +230,7 @@ class PostBodyRendererTest {
         val openedImages = mutableListOf<ImageViewerLaunchArgs>()
         val openedLinks = mutableListOf<String>()
         val authorOnlySample = ThreadDetailParser.parse(
-            html = LegacyTestSupport.loadSample("thread_detail/thread_author_only.html"),
+            html = SampleTestLoader.loadSample("thread_detail/thread_author_only.html"),
             tid = "2602293",
             forumBaseUrl = "https://www.4d4y.com/forum/",
         )

@@ -66,7 +66,7 @@ import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.di.FavoriteCacheDataStore
 import net.jejer.hipda.di.SearchAndFavoriteModule
 import net.jejer.hipda.di.SearchHistoryDataStore
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okio.Buffer
@@ -181,7 +181,7 @@ class FavoriteRepositoryTest {
 
     @Test
     fun getList_realSampleParsesFavoritesMergesCacheAndSupportsAttentionPagination() = runBlocking {
-        val sampleHtml = LegacyTestSupport.loadSample("simple_list/my_favorites.html")
+        val sampleHtml = SampleTestLoader.loadSample("simple_list/my_favorites.html")
         val attentionPage2Html = favoriteListHtml(
             uid = accountA.uid,
             username = accountA.username,

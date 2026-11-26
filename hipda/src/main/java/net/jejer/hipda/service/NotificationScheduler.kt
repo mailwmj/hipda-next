@@ -58,6 +58,7 @@ class WorkManagerNotificationScheduler internal constructor(
     )
 
     override fun syncSchedule(notificationsEnabled: Boolean) {
+        cancelLegacyWork()
         if (notificationsEnabled) {
             schedule()
         } else {
@@ -71,6 +72,7 @@ class WorkManagerNotificationScheduler internal constructor(
     }
 
     override fun schedule() {
+        cancelLegacyWork()
         val request = buildPeriodicWorkRequest()
         workManagerProvider().enqueueUniquePeriodicWork(
             WORK_NAME,
@@ -80,10 +82,20 @@ class WorkManagerNotificationScheduler internal constructor(
     }
 
     override fun cancel() {
+        cancelLegacyWork()
         workManagerProvider().cancelUniqueWork(WORK_NAME)
     }
 
+    /**
+     * 收口 R-D9 S3：删除旧 `NotiWorker` 后，在初始化与同步路径取消旧版遗留的 `"noti_work"` 唯一周期任务，
+     * 防止旧版升级用户的 WorkManager 反复尝试反射实例化已删除的 `NotiWorker`。
+     */
+    private fun cancelLegacyWork() {
+        workManagerProvider().cancelUniqueWork(LEGACY_WORK_NAME)
+    }
+
     companion object {
+        const val LEGACY_WORK_NAME: String = "noti_work"
         const val WORK_NAME: String = "hipda_next_notification_polling"
         const val WORK_TAG: String = "hipda_next_notification_polling_tag"
         const val POLL_INTERVAL_MINUTES: Long = 15L
