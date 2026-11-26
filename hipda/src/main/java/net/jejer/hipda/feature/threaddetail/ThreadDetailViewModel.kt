@@ -276,7 +276,14 @@ class ThreadDetailViewModel(
         if (cur.tid.isBlank() || cleanPid.isBlank()) return
         if (cur.rawFloors.any { it.postId == cleanPid }) {
             val token = ++scrollTokenSeq
-            metaState.update { it.copy(pendingScroll = PendingScrollTarget(token, cleanPid, 0, highlightPostId = cleanPid)) }
+            val nextEpoch = ++sessionGeneration
+            metaState.update {
+                it.copy(
+                    resetEpoch = nextEpoch,
+                    pendingScroll = PendingScrollTarget(token, cleanPid, 0, highlightPostId = cleanPid),
+                    highlightedFloor = HighlightedFloor(cleanPid, token),
+                )
+            }
             return
         }
         val cleanTid = targetTid?.trim()?.takeIf { it.isNotEmpty() }
@@ -290,8 +297,7 @@ class ThreadDetailViewModel(
             if (pending?.id != tokenId) {
                 cur
             } else {
-                val nextHighlight = pending.highlightPostId?.let { HighlightedFloor(it, tokenId) } ?: cur.highlightedFloor
-                cur.copy(pendingScroll = null, highlightedFloor = nextHighlight)
+                cur.copy(pendingScroll = null)
             }
         }
     }
@@ -334,11 +340,15 @@ class ThreadDetailViewModel(
                     if (generation != sessionGeneration) return@launch
                     metaState.update { state ->
                         val refreshed = res.refreshedPage
-                        val updatedFloors = mergeRefreshedPage1Floors(state.rawFloors, refreshed.floors, res.poll)
+                        val updatedFloors = mergeRefreshedPage1Floors(state.rawFloors, refreshed.floors, res.poll, state.filter)
                         state.copy(
                             fid = refreshed.fid.takeIf { it > 0 } ?: state.fid,
                             title = refreshed.title.ifBlank { state.title },
-                            lastPage = maxOf(state.lastPage, refreshed.lastPage).coerceAtLeast(1),
+                            lastPage = if (state.filter is ThreadDetailFilterUi.All) {
+                                maxOf(state.lastPage, refreshed.lastPage).coerceAtLeast(1)
+                            } else {
+                                state.lastPage
+                            },
                             rawFloors = updatedFloors,
                             isPollSubmitting = false,
                             pollError = null,
@@ -373,13 +383,20 @@ class ThreadDetailViewModel(
         currentFloors: List<PostFloor>,
         refreshedPage1Floors: List<PostFloor>,
         refreshedPoll: ThreadPoll?,
+        filter: ThreadDetailFilterUi,
     ): List<PostFloor> {
-        if (refreshedPage1Floors.isEmpty()) {
-            if (refreshedPoll == null) return currentFloors
-            return currentFloors.map { if (it.floor == 1) it.copy(poll = refreshedPoll) else it }
+        val resolvedPoll = refreshedPoll ?: refreshedPage1Floors.firstOrNull { it.floor == 1 }?.poll
+        // S1：只看楼主/只看此人激活态下投票刷新仅原地更新 1 楼的 poll，绝不混入全帖非目标作者楼层
+        if (filter !is ThreadDetailFilterUi.All) {
+            if (resolvedPoll == null) return currentFloors
+            return currentFloors.map { if (it.floor == 1) it.copy(poll = resolvedPoll) else it }
         }
-        val normalizedPage1 = if (refreshedPoll != null) {
-            refreshedPage1Floors.map { if (it.floor == 1) it.copy(poll = refreshedPoll) else it }
+        if (refreshedPage1Floors.isEmpty()) {
+            if (resolvedPoll == null) return currentFloors
+            return currentFloors.map { if (it.floor == 1) it.copy(poll = resolvedPoll) else it }
+        }
+        val normalizedPage1 = if (resolvedPoll != null) {
+            refreshedPage1Floors.map { if (it.floor == 1) it.copy(poll = resolvedPoll) else it }
         } else {
             refreshedPage1Floors
         }
@@ -505,7 +522,7 @@ class ThreadDetailViewModel(
                 isLoading = true, isPrepending = false, isAppending = false, isAuthRequired = false,
                 error = if (it.rawFloors.isEmpty()) null else it.error,
                 prependError = null, appendError = null, challengeFailure = null,
-                pendingScroll = null, resetEpoch = generation,
+                pendingScroll = null, highlightedFloor = null, resetEpoch = generation,
             )
         }
         loadJob = viewModelScope.launch {
@@ -521,6 +538,7 @@ class ThreadDetailViewModel(
                     val resolvedPid = res.targetPostId?.takeIf { pid -> floors.any { it.postId == pid } }
                         ?: targetPid.takeIf { pid -> floors.any { it.postId == pid } }
                     val token = ++scrollTokenSeq
+                    val immediateHighlight = if (highlight && resolvedPid != null) HighlightedFloor(resolvedPid, token) else null
                     preFilterAnchor = null
                     metaState.update {
                         it.copy(
@@ -533,7 +551,8 @@ class ThreadDetailViewModel(
                             filter = ThreadDetailFilterUi.All, rawFloors = floors,
                             isLoading = false, isPrepending = false, isAppending = false, isAuthRequired = false,
                             error = null, prependError = null, appendError = null, challengeFailure = null,
-                            pendingScroll = PendingScrollTarget(token, resolvedPid, 0, highlightPostId = if (highlight) resolvedPid else null),
+                            pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(token, resolvedPid, 0, highlightPostId = immediateHighlight?.postId) else null,
+                            highlightedFloor = immediateHighlight,
                             currentUserUid = resolvePageUserUid(res),
                         )
                     }
@@ -576,7 +595,7 @@ class ThreadDetailViewModel(
             it.copy(
                 requestedPage = targetPage, filter = filter, isLoading = true, isPrepending = false, isAppending = false,
                 isAuthRequired = false, error = null, prependError = null, appendError = null,
-                challengeFailure = null, pendingScroll = null, resetEpoch = generation,
+                challengeFailure = null, pendingScroll = null, highlightedFloor = null, resetEpoch = generation,
             )
         }
         loadJob = viewModelScope.launch {
@@ -589,6 +608,7 @@ class ThreadDetailViewModel(
                     val opName = firstFloor?.author?.takeIf { it.isNotBlank() }
                     val resolvedFilter = if (filter is ThreadDetailFilterUi.AuthorOnly) ThreadDetailFilterUi.AuthorOnly(opUid ?: filter.authorId) else filter
                     val scrollTarget = when {
+                        floors.isEmpty() -> null
                         restoreAnchor != null -> PendingScrollTarget(++scrollTokenSeq, restoreAnchor.postId, restoreAnchor.scrollOffset)
                         scrollToTop -> PendingScrollTarget(++scrollTokenSeq, null, 0)
                         else -> null

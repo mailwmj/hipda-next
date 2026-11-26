@@ -268,6 +268,77 @@ class QuoteAndHighlightTest {
     }
 
     @Test
+    fun s2_highlightedFloor_scrolledOutOfViewportDuringHold_reclaimsTokenAndDoesNotReplayWhenScrolledBack() {
+        val targetPid = "pid_p2_gap_18"
+        val repo = JumpTestRepository(targetPid = targetPid)
+        val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        lateinit var listState: LazyListState
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                listState = rememberLazyListState()
+                ThreadDetailPane(
+                    args = ThreadNavArgs(tid = "88003", title = "S2 滑出视口回收高亮令牌", fid = 2),
+                    chromeSpec = DetailChromeSpec(showBack = true),
+                    onBack = {},
+                    onOpenLogin = {},
+                    listState = listState,
+                    viewModel = vm,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.mainClock.autoAdvance = false
+        try {
+            composeRule.onNodeWithText("目标作者 发表于 2026-11-26 09:00").performClick()
+            repeat(6) {
+                ShadowLooper.idleMainLooper()
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+                ShadowLooper.idleMainLooper()
+            }
+
+            assertTrue(listState.layoutInfo.visibleItemsInfo.any { it.key == "floor:$targetPid" })
+            assertEquals(targetPid, vm.uiState.value.highlightedFloor?.postId)
+
+            // 在 1000ms 停留期内将目标楼层滑出视口（回到顶部 index = 0）
+            composeRule.mainClock.advanceTimeBy(200L)
+            listState.requestScrollToItem(index = 0, scrollOffset = 0)
+            repeat(6) {
+                ShadowLooper.idleMainLooper()
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+                ShadowLooper.idleMainLooper()
+            }
+
+            assertFalse("前提：目标楼层应已滑出视口", listState.layoutInfo.visibleItemsInfo.any { it.key == "floor:$targetPid" })
+            assertNull("S2：高亮目标楼在停留期内滑出视口必须立即回收高亮令牌", vm.uiState.value.highlightedFloor)
+
+            // 再次滚回目标楼层（考虑向上滑回顶部可能已触发第 1 页预取，按稳定 postId 查下标），绝不得重播高亮
+            val targetFloorIndex = vm.uiState.value.floors.indexOfFirst { it.postId == targetPid }
+            assertTrue("目标楼层应仍在已加载区间内", targetFloorIndex >= 0)
+            val headerOffset = if (vm.uiState.value.showPrependHeader) 1 else 0
+            listState.requestScrollToItem(index = targetFloorIndex + headerOffset, scrollOffset = 0)
+            repeat(4) {
+                ShadowLooper.idleMainLooper()
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+                ShadowLooper.idleMainLooper()
+            }
+            assertTrue(listState.layoutInfo.visibleItemsInfo.any { it.key == "floor:$targetPid" })
+            assertNull("滚回原楼后高亮令牌必须仍为空", vm.uiState.value.highlightedFloor)
+            val replayedHighlights = composeRule.onAllNodes(
+                SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "已定位到此楼层"),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes()
+            assertEquals("滚回原楼后不得重播高亮语义", 0, replayedHighlights.size)
+        } finally {
+            composeRule.mainClock.autoAdvance = true
+        }
+    }
+
+    @Test
     fun longQuote_collapsesByDefaultAndExpandsWithoutMovingFloorsAbove() {
         val longQuoteText = (1..10).joinToString("\n") { "第 $it 行长引用内容，用于验证默认超 4 行折叠并在点开展开后保持上方楼层位置不动。" }
         val repo = LongQuoteTestRepository(longQuoteText)

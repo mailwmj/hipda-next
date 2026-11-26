@@ -1,8 +1,10 @@
 package net.jejer.hipda.feature.threaddetail
 
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.HorizontalDivider
@@ -24,6 +26,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlin.math.abs
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.data.network.access.ChallengeState
@@ -49,6 +52,7 @@ private const val FLOOR_KEY_PREFIX = "floor:"
 private const val KEY_PREPEND_HEADER = "thread_prepend_header"
 private const val KEY_APPEND_FOOTER = "thread_append_footer"
 private const val PREFETCH_FLOOR_THRESHOLD = 5
+private const val LANDING_ANCHOR_WINDOW_MS = 5_000L
 
 private fun firstVisibleFloor(listState: LazyListState): LazyListItemInfo? {
     val visible = listState.layoutInfo.visibleItemsInfo
@@ -57,16 +61,18 @@ private fun firstVisibleFloor(listState: LazyListState): LazyListItemInfo? {
 }
 
 /**
- * 详情列表同帧单一滚动权威控制器（闭合 `R-BATCH5 B4-E2a ①`、`V-E2b`、`R-E2b S3` 与 `R-E2d S2-R2`）：
- * - 全文件唯一持有 `LazyListState` 滚动写入权限（向上插页锚定、首楼越顶图片高度补偿、`PendingScrollTarget` 本页/跨页跳楼与定位、头部失败行露出）；
+ * 详情列表同帧单一滚动权威控制器（闭合 `R-BATCH5 B4-E2a ①`、`V-E2b`、`R-E2b S3`、`R-E2d S2-R2` 与 `V-E2c F1/F2/F3`）：
+ * - 全文件唯一持有 `LazyListState` 滚动写入权限（向上插页锚定、首楼越顶图片高度补偿、`PendingScrollTarget` 首帧同步跳楼/回原楼、
+ *   跳楼落定窗口目标锚定补偿、头部失败行露出）；
  * - 以不可变 `LazyListLayoutInfo` 引用作为未重测帧纪元，同一帧内统一仲裁向上插页与越顶图片高度变化，绝不跨帧重复叠加；
- * - 跨会话（`!sameSession`）同步清空帧纪元状态与 `pendingFloorKey`（`R-E2d S2-R2`）；
- * - 跳楼严格按稳定键 `floor:$targetPid` 查表落位（绝不用楼层号减 1）。
+ * - 跨会话（`!sameSession`）同步清空帧纪元状态、`pendingFloorKey` 与跳楼落定锚点；
+ * - 跳楼与退出过滤回原楼严格按稳定键 `floor:$targetPid` 在 `LazyColumn` 首帧测量前同步落位（不依赖滞后一帧的 `LaunchedEffect`）。
  */
 private class PrependAnchorController(initialGeneration: Long, initialHeader: Boolean, initialEpoch: Long) {
     private var handledGeneration: Long = initialGeneration
     private var lastShowHeader: Boolean = initialHeader
     private var lastResetEpoch: Long = initialEpoch
+    private var handledPendingScrollId: Long = -1L
     private var pendingFloorKey: String? = null
     private var pendingTargetOffsetPx: Int = 0
     private var activeLayoutInfo: LazyListLayoutInfo? = null
@@ -75,6 +81,15 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
     private var activeTargetScrollOffset: Int = 0
     private var activeImageDeltaFloorKey: String? = null
     private var activeImageDeltaPx: Int = 0
+
+    // F3：跳楼落定窗口锚点——在用户手动滚动/外部滚位改变/5s 超时/新导航之前，把目标楼层当作锚点，
+    // 当上方视口内图片变高推挤目标楼层时，由本单一权威同步补偿偏移，使目标楼层保持在原位。
+    private var landingAnchorKey: String? = null
+    private var landingTargetOffsetPx: Int? = null
+    private var landingDeadlineUptimeMs: Long = 0L
+    private var lastSettledFirstIndex: Int = -1
+    private var lastSettledFirstOffset: Int = -1
+    private var isApplyingLandingDelta: Boolean = false
 
     private fun clearPending() {
         pendingFloorKey = null
@@ -87,6 +102,22 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         activeTargetScrollOffset = 0
         activeImageDeltaFloorKey = null
         activeImageDeltaPx = 0
+    }
+
+    private fun armLandingAnchor(floorKey: String) {
+        landingAnchorKey = floorKey
+        landingTargetOffsetPx = null
+        landingDeadlineUptimeMs = SystemClock.uptimeMillis() + LANDING_ANCHOR_WINDOW_MS
+        lastSettledFirstIndex = -1
+        lastSettledFirstOffset = -1
+    }
+
+    fun clearLandingAnchor() {
+        landingAnchorKey = null
+        landingTargetOffsetPx = null
+        landingDeadlineUptimeMs = 0L
+        lastSettledFirstIndex = -1
+        lastSettledFirstOffset = -1
     }
 
     /** 每次 `measureAndLayout` 产生新的 `LazyListLayoutInfo` 实例后自动失效上一帧增量，彻底杜绝跨帧重复补偿。 */
@@ -123,10 +154,18 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         }
         val nextOffset = (baseOffset + deltaPx).coerceAtLeast(0)
         if (activeAnchorKey != null) activeTargetScrollOffset = nextOffset
+        if (landingAnchorKey != null) {
+            lastSettledFirstIndex = baseIndex
+            lastSettledFirstOffset = nextOffset
+        }
         listState.requestScrollToItem(index = baseIndex, scrollOffset = nextOffset)
     }
 
-    fun syncBeforeMeasure(uiState: ThreadDetailUiState, listState: LazyListState) {
+    fun syncBeforeMeasure(
+        uiState: ThreadDetailUiState,
+        listState: LazyListState,
+        onConsumePendingScroll: (Long) -> Unit,
+    ) {
         val layoutInfo = listState.layoutInfo
         ensureLayoutEpoch(layoutInfo)
         val genChanged = uiState.prependGeneration != handledGeneration
@@ -138,7 +177,30 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         if (!sameSession) {
             clearFrameAuthorityState()
             clearPending()
+            clearLandingAnchor()
         }
+
+        // F1/F2：在 LazyColumn 首次测量之前同步落地 PendingScrollTarget（跨页/本页跳楼、退出只看回原楼、翻页/切 tid），
+        // 彻底消除首帧先闪第 0 项/原过滤首项/offset=0 再跳动的 1 帧闪烁。
+        val pending = uiState.pendingScroll
+        if (pending != null && !uiState.isLoading && uiState.floors.isNotEmpty() && pending.id != handledPendingScrollId) {
+            handledPendingScrollId = pending.id
+            clearPending()
+            clearFrameAuthorityState()
+            val idx = pending.postId?.let { pid -> uiState.floors.indexOfFirst { it.postId == pid }.takeIf { it >= 0 } } ?: 0
+            val matched = pending.postId == null || uiState.floors.getOrNull(idx)?.postId == pending.postId
+            val targetIndex = (if (uiState.showPrependHeader) 1 else 0) + idx
+            val targetOffset = if (matched) pending.scrollOffset.coerceAtLeast(0) else 0
+            if (pending.highlightPostId != null && matched) {
+                armLandingAnchor("$FLOOR_KEY_PREFIX${pending.highlightPostId}")
+            } else {
+                clearLandingAnchor()
+            }
+            listState.requestScrollToItem(index = targetIndex, scrollOffset = targetOffset)
+            onConsumePendingScroll(pending.id)
+            return
+        }
+
         if (!genChanged && !headerChanged) return
         if (uiState.floors.isEmpty()) { clearPending(); return }
         val visibleItems = layoutInfo.visibleItemsInfo
@@ -166,6 +228,10 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
             val primaryKey = visibleItems.firstOrNull { it.offset + it.size > 0 }?.key
             val hasPendingScrollDelta = sameFrameImageDelta != 0 || (sameItemScrollOffset && targetScrollOffset != -anchorOffset)
             if (hasPendingScrollDelta || !(primaryKey == anchorKey && listState.isScrollInProgress)) {
+                if (landingAnchorKey != null) {
+                    lastSettledFirstIndex = newListIndex
+                    lastSettledFirstOffset = targetScrollOffset
+                }
                 listState.requestScrollToItem(index = newListIndex, scrollOffset = targetScrollOffset)
             }
         } else {
@@ -174,11 +240,20 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
             activeAnchorKey = anchorKey
             activeTargetIndex = newListIndex
             activeTargetScrollOffset = 0
+            if (landingAnchorKey != null) {
+                lastSettledFirstIndex = newListIndex
+                lastSettledFirstOffset = 0
+            }
             listState.requestScrollToItem(index = newListIndex, scrollOffset = 0)
         }
     }
 
-    fun applyPendingPositiveOffset(listState: LazyListState) {
+    fun onFloorLayoutPositioned(uiState: ThreadDetailUiState, listState: LazyListState) {
+        applyPendingPositiveOffset(listState)
+        stabilizeLandingAnchor(uiState, listState)
+    }
+
+    private fun applyPendingPositiveOffset(listState: LazyListState) {
         val floorKey = pendingFloorKey ?: return
         val targetOffset = pendingTargetOffsetPx
         if (targetOffset <= 0) { clearPending(); return }
@@ -188,25 +263,91 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         if (delta > 0 && listState.canScrollBackward) listState.dispatchRawDelta(-delta.toFloat())
     }
 
-    /** 统一经由单一滚动权威按稳定键 `floor:$postId` 定位跳楼与过滤回位目标，同步刷新布局纪元。 */
-    suspend fun scrollToPendingTarget(
-        uiState: ThreadDetailUiState,
-        pending: PendingScrollTarget,
-        listState: LazyListState,
-    ) {
-        val idx = pending.postId?.let { pid -> uiState.floors.indexOfFirst { it.postId == pid }.takeIf { it >= 0 } } ?: 0
-        val matched = pending.postId == null || uiState.floors.getOrNull(idx)?.postId == pending.postId
-        val targetIndex = (if (uiState.showPrependHeader) 1 else 0) + idx
-        val targetOffset = if (matched) pending.scrollOffset.coerceAtLeast(0) else 0
-        clearPending()
-        clearFrameAuthorityState()
-        listState.scrollToItem(targetIndex, targetOffset)
+    private fun stabilizeLandingAnchor(uiState: ThreadDetailUiState, listState: LazyListState) {
+        val anchorKey = landingAnchorKey ?: return
+        if (isApplyingLandingDelta) return
+        val pending = uiState.pendingScroll
+        if (uiState.isLoading || (pending != null && pending.id != handledPendingScrollId) || uiState.floors.isEmpty()) return
+        if (SystemClock.uptimeMillis() > landingDeadlineUptimeMs) {
+            clearLandingAnchor()
+            return
+        }
+        val targetPostId = anchorKey.removePrefix(FLOOR_KEY_PREFIX)
+        val targetFloorIdx = uiState.floors.indexOfFirst { it.postId == targetPostId }
+        if (targetFloorIdx < 0) {
+            clearLandingAnchor()
+            return
+        }
+        val targetListIdx = (if (uiState.showPrependHeader) 1 else 0) + targetFloorIdx
+        val visible = listState.layoutInfo.visibleItemsInfo
+        if (visible.isEmpty()) return
+
+        val currentItem = visible.firstOrNull { it.key == anchorKey }
+        val baselineOffset = landingTargetOffsetPx
+        if (baselineOffset == null) {
+            if (currentItem != null) {
+                landingTargetOffsetPx = currentItem.offset
+                lastSettledFirstIndex = listState.firstVisibleItemIndex
+                lastSettledFirstOffset = listState.firstVisibleItemScrollOffset
+            }
+            return
+        }
+
+        if (currentItem != null && currentItem.offset == baselineOffset) {
+            lastSettledFirstIndex = listState.firstVisibleItemIndex
+            lastSettledFirstOffset = listState.firstVisibleItemScrollOffset
+            return
+        }
+
+        // 若 (firstVisibleItemIndex, firstVisibleItemScrollOffset) 已在非本控制器驱动下独立改变，说明发生了外部/用户滚动，立即退出落定窗口。
+        if (lastSettledFirstIndex >= 0 &&
+            (listState.firstVisibleItemIndex != lastSettledFirstIndex || listState.firstVisibleItemScrollOffset != lastSettledFirstOffset)
+        ) {
+            clearLandingAnchor()
+            return
+        }
+
+        isApplyingLandingDelta = true
+        try {
+            repeat(6) {
+                val curVisible = listState.layoutInfo.visibleItemsInfo
+                if (curVisible.isEmpty()) return
+                val item = curVisible.firstOrNull { it.key == anchorKey }
+                if (item != null) {
+                    val drift = item.offset - baselineOffset
+                    if (drift == 0) return
+                    val canMove = if (drift > 0) listState.canScrollForward else listState.canScrollBackward
+                    if (!canMove) return
+                    val consumed = listState.dispatchRawDelta(drift.toFloat())
+                    if (abs(consumed) < 0.5f) return
+                } else {
+                    val last = curVisible.last()
+                    val first = curVisible.first()
+                    if (last.index < targetListIdx && listState.canScrollForward) {
+                        val step = (last.offset + last.size - baselineOffset).coerceAtLeast(120)
+                        val consumed = listState.dispatchRawDelta(step.toFloat())
+                        if (abs(consumed) < 0.5f) return
+                    } else if (first.index > targetListIdx && listState.canScrollBackward) {
+                        val step = (baselineOffset - first.offset).coerceAtLeast(120)
+                        val consumed = listState.dispatchRawDelta(-step.toFloat())
+                        if (abs(consumed) < 0.5f) return
+                    } else {
+                        return
+                    }
+                }
+            }
+        } finally {
+            isApplyingLandingDelta = false
+            lastSettledFirstIndex = listState.firstVisibleItemIndex
+            lastSettledFirstOffset = listState.firstVisibleItemScrollOffset
+        }
     }
 
     /** 统一经由单一滚动权威露出顶部失败重试行。 */
     suspend fun revealPrependErrorHeader(listState: LazyListState) {
         clearPending()
         clearFrameAuthorityState()
+        clearLandingAnchor()
         listState.scrollToItem(0, 0)
     }
 }
@@ -279,10 +420,17 @@ fun ThreadDetailPane(
     }
     val onOpenFloorMenu = remember(activeMenuFloorState) { { floor: PostFloor -> activeMenuFloorState.value = floor } }
     val floorPositionedModifier = remember(anchorController, listState) {
-        Modifier.onGloballyPositioned { anchorController.applyPendingPositiveOffset(listState) }
+        Modifier.onGloballyPositioned { anchorController.onFloorLayoutPositioned(latestUiState, listState) }
     }
-    val pagingNestedScroll = remember(viewModel) {
+    val pagingNestedScroll = remember(viewModel, anchorController) {
         object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    anchorController.clearLandingAnchor()
+                }
+                return Offset.Zero
+            }
+
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                 val s = latestUiState
                 if (!s.isLoading && s.pendingScroll == null && s.floors.isNotEmpty()) {
@@ -294,11 +442,33 @@ fun ThreadDetailPane(
         }
     }
 
-    val pendingScroll = uiState.pendingScroll
-    LaunchedEffect(pendingScroll?.id, uiState.floors) {
-        if (pendingScroll == null || uiState.isLoading) return@LaunchedEffect
-        anchorController.scrollToPendingTarget(uiState, pendingScroll, listState)
-        viewModel.consumePendingScroll(pendingScroll.id)
+    LaunchedEffect(listState, anchorController) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) anchorController.clearLandingAnchor()
+        }
+    }
+
+    LaunchedEffect(listState, viewModel) {
+        var seenHighlightToken = -1L
+        snapshotFlow {
+            val s = latestUiState
+            val hl = s.highlightedFloor
+            if (hl == null || s.isLoading || s.pendingScroll != null) {
+                Triple(-1L, false, false)
+            } else {
+                val visible = listState.layoutInfo.visibleItemsInfo.any { it.key == "$FLOOR_KEY_PREFIX${hl.postId}" }
+                Triple(hl.tokenId, visible, true)
+            }
+        }.collect { (token, visible, active) ->
+            if (!active) {
+                seenHighlightToken = -1L
+            } else if (visible) {
+                seenHighlightToken = token
+            } else if (seenHighlightToken == token) {
+                seenHighlightToken = -1L
+                viewModel.onHighlightFinished(token)
+            }
+        }
     }
 
     LaunchedEffect(uiState.prependError) {
@@ -399,7 +569,7 @@ fun ThreadDetailPane(
                             HiEmptyState(stringResource(R.string.common_empty_floors), action = action)
                         }
                         DetailBodySlot.CONTENT -> {
-                            SideEffect { anchorController.syncBeforeMeasure(uiState, listState) }
+                            SideEffect { anchorController.syncBeforeMeasure(uiState, listState, viewModel::consumePendingScroll) }
                             CompositionLocalProvider(LocalAboveViewportHeightCompensationAuthority provides scrollCompensationAuthority) {
                                 LazyColumn(
                                     state = listState,

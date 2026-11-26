@@ -329,6 +329,106 @@ class ThreadPollCardTest {
     }
 
     @Test
+    fun s1_pollVoteUnderAuthorOnlyAndUserOnlyFilters_updatesOnlyFloor1PollInPlace() {
+        val initialPoll = ThreadPoll(
+            titleHtml = "<strong>单选投票</strong> , 共有 5 人参与投票",
+            timerHtml = null,
+            formhash = "filterhash",
+            maxChoices = 1,
+            options = listOf(PollOption("901", "方案一"), PollOption("902", "方案二")),
+            footer = "投票后结果可见",
+        )
+        val refreshedPoll = ThreadPoll(
+            titleHtml = "<strong>单选投票</strong> , 共有 6 人参与投票",
+            timerHtml = null,
+            formhash = null,
+            maxChoices = 1,
+            options = listOf(PollOption(null, "方案一", "100.00% (6)"), PollOption(null, "方案二", "0.00% (0)")),
+            footer = "您已经投过票，谢谢您的参与",
+        )
+        val opFloor1 = PostFloor("pf_1", 1, 1, "1001", "HiUser", null, "2026-11-26 12:00", false, null, null, initialPoll, listOf(ContentBlock.Text(listOf(InlineSpan.Plain("楼主 1 楼正文")))))
+        val otherFloor2 = PostFloor("pf_2", 2, 1, "2002", "路人甲", null, "2026-11-26 12:02", false, null, null, null, listOf(ContentBlock.Text(listOf(InlineSpan.Plain("非目标作者 2 楼正文")))))
+        val opFloor3 = PostFloor("pf_3", 3, 1, "1001", "HiUser", null, "2026-11-26 12:05", false, null, null, null, listOf(ContentBlock.Text(listOf(InlineSpan.Plain("楼主 3 楼正文")))))
+        val unfilteredRefreshedPage = ThreadDetailPage(
+            tid = "50009", fid = 2, title = "过滤态投票隔离", page = 1, lastPage = 5,
+            floors = listOf(opFloor1.copy(poll = refreshedPoll), otherFloor2, opFloor3),
+            postsPerPageEstimate = 3,
+            meta = DiscuzPageMeta(DiscuzSessionInfo(true, "1001", "HiUser"), null, null, PromptCounts()),
+            hasPostList = true,
+        )
+        val repo = object : ThreadDetailRepository {
+            override suspend fun loadPage(
+                tid: String, page: Int, filter: ThreadDetailFilter, recordHistory: Boolean, forumName: String?, priority: AccessPriority,
+            ): ThreadDetailLoadResult {
+                val floors = when (filter) {
+                    ThreadDetailFilter.All -> listOf(opFloor1, otherFloor2, opFloor3)
+                    is ThreadDetailFilter.AuthorOnly, is ThreadDetailFilter.UserOnly -> listOf(opFloor1, opFloor3)
+                }
+                val lastPage = if (filter is ThreadDetailFilter.All) 5 else 1
+                return ThreadDetailLoadResult.Success(
+                    page = unfilteredRefreshedPage.copy(floors = floors, lastPage = lastPage),
+                    filter = filter,
+                    threadAuthorId = "1001",
+                )
+            }
+            override suspend fun loadLastPage(tid: String, recordHistory: Boolean, forumName: String?, priority: AccessPriority) = loadPage(tid, 1)
+            override suspend fun loadByPostId(pid: String, tid: String?, recordHistory: Boolean, forumName: String?, priority: AccessPriority) = loadPage(tid ?: "50009", 1)
+            override suspend fun getReadingPosition(tid: String): ReadingPositionEntity? = null
+            override suspend fun saveReadingPosition(tid: String, page: Int, pid: String, offsetPx: Int, filterMode: ReadingFilterMode, filterUid: String?, filterUserName: String?) = Unit
+            override fun observeFloors(floorsFlow: Flow<List<PostFloor>>): Flow<List<ThreadDetailFloorItem>> =
+                floorsFlow.map { list -> list.map { ThreadDetailFloorItem(it, isAuthorBlocked = false) } }
+            override fun observeVisibleFloors(floorsFlow: Flow<List<PostFloor>>): Flow<List<ThreadDetailFloorItem>> = observeFloors(floorsFlow)
+            override fun mapFloorsWithBlacklist(floors: List<PostFloor>, blockedUsernames: Set<String>?): List<ThreadDetailFloorItem> =
+                floors.map { ThreadDetailFloorItem(it, isAuthorBlocked = false) }
+            override fun filterBlockedFloors(floors: List<PostFloor>, blockedUsernames: Set<String>?): List<PostFloor> = floors
+            override suspend fun submitPollVote(
+                fid: Int, tid: String, formhash: String, optionIds: List<String>, maxChoices: Int?, priority: AccessPriority,
+            ): PollVoteResult = PollVoteResult.Success(refreshedPage = unfilteredRefreshedPage, poll = refreshedPoll)
+        }
+
+        val account = SavedAccount(uid = "1001", username = "HiUser", passwordMd5 = "0".repeat(32), lastLoginAt = 100L)
+        val vm = ThreadDetailViewModel(repo, createIdleGateway(), StaticAuthRepository(account, AuthState.SignedIn(account)))
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ThreadDetailPane(
+                    args = ThreadNavArgs(tid = "50009", title = "过滤态投票隔离", fid = 2),
+                    chromeSpec = DetailChromeSpec(showBack = true),
+                    onBack = {},
+                    onOpenLogin = {},
+                    viewModel = vm,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 只看楼主态投票刷新：只原地更新 1 楼 poll，绝不混入路人甲 2 楼或篡改过滤态 lastPage
+        composeRule.runOnIdle { vm.toggleAuthorOnly() }
+        composeRule.waitForIdle()
+        assertEquals(listOf("pf_1", "pf_3"), vm.uiState.value.floors.map { it.postId })
+        composeRule.onNodeWithText("方案一").performClick()
+        composeRule.onNodeWithText("投票").performClick()
+        composeRule.waitForIdle()
+        assertEquals("S1 只看楼主态投票刷新不得混入非楼主楼层", listOf("pf_1", "pf_3"), vm.uiState.value.floors.map { it.postId })
+        assertEquals("S1 过滤态 lastPage 应保持原过滤页数", 1, vm.uiState.value.lastPage)
+        assertEquals("您已经投过票，谢谢您的参与", vm.uiState.value.floors.first().floor.poll?.footer)
+        assertEquals(0, composeRule.onAllNodesWithText("非目标作者 2 楼正文").fetchSemanticsNodes().size)
+
+        // 2. 切至只看此人态投票刷新：同样只原地更新 1 楼 poll
+        composeRule.runOnIdle { vm.clearFilter() }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { vm.filterByUser("1001", "HiUser") }
+        composeRule.waitForIdle()
+        assertEquals(listOf("pf_1", "pf_3"), vm.uiState.value.floors.map { it.postId })
+        composeRule.onNodeWithText("方案一").performClick()
+        composeRule.onNodeWithText("投票").performClick()
+        composeRule.waitForIdle()
+        assertEquals("S1 只看此人态投票刷新不得混入非目标作者楼层", listOf("pf_1", "pf_3"), vm.uiState.value.floors.map { it.postId })
+        assertEquals(1, vm.uiState.value.lastPage)
+        assertEquals("您已经投过票，谢谢您的参与", vm.uiState.value.floors.first().floor.poll?.footer)
+    }
+
+    @Test
     fun endToEndMockWebServer_submitsGbkPollVoteOfflineAndRefreshesPollResults() {
         val context = ApplicationProvider.getApplicationContext<Application>()
         OkHttp.initialize(context)
