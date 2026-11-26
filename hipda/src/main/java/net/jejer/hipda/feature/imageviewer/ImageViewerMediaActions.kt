@@ -1,10 +1,12 @@
 package net.jejer.hipda.feature.imageviewer
 
 import android.app.Activity
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -25,12 +27,35 @@ interface ImageViewerMediaActions {
     suspend fun shareImage(url: String, cachedFile: File? = null): Boolean
 }
 
+/** 仅在 Android 9（API 28）及以下写入公共相册需动态申请 `WRITE_EXTERNAL_STORAGE`（maxSdkVersion=28）。 */
+internal fun requiresLegacyStoragePermission(sdkInt: Int = Build.VERSION.SDK_INT): Boolean =
+    sdkInt <= Build.VERSION_CODES.P
+
+/** 构造带 `ClipData` 与 `FLAG_GRANT_READ_URI_PERMISSION` 授权的系统分享 Chooser Intent（R-E14 S2）。 */
+internal fun buildShareChooserIntent(context: Context, uri: Uri, mimeType: String): Intent {
+    val clip = ClipData.newRawUri("", uri)
+    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+        type = mimeType
+        putExtra(Intent.EXTRA_STREAM, uri)
+        clipData = clip
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return Intent.createChooser(sendIntent, context.getString(R.string.image_viewer_action_share)).apply {
+        clipData = clip
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+}
+
 @Singleton
 class AndroidImageViewerMediaActions(
     private val context: Context,
     private val originalDownloader: OriginalImageDownloader,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+    private val uriProvider: (Context, File) -> Uri = { ctx, file ->
+        FileProvider.getUriForFile(ctx, "${ctx.packageName}.provider", file)
+    },
 ) : ImageViewerMediaActions {
 
     @Inject
@@ -42,11 +67,8 @@ class AndroidImageViewerMediaActions(
         return withContext(ioDispatcher) {
             val resolved = resolveLocalSource(safeUrl, cachedFile) ?: return@withContext false
             val fileName = "HiPDA_${System.currentTimeMillis()}.${extensionForMime(resolved.mimeType)}"
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveToMediaStoreQ(resolved.file, fileName, resolved.mimeType)
-            } else {
-                saveToLegacyPicturesDir(resolved.file, fileName, resolved.mimeType)
-            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) saveToMediaStoreQ(resolved.file, fileName, resolved.mimeType)
+            else saveToLegacyPicturesDir(resolved.file, fileName, resolved.mimeType)
         }
     }
 
@@ -54,29 +76,18 @@ class AndroidImageViewerMediaActions(
         val safeUrl = sanitizeViewerImageUrl(url) ?: return false
         val prepared = withContext(ioDispatcher) {
             val resolved = resolveLocalSource(safeUrl, cachedFile) ?: return@withContext null
-            val shareDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
-                ?: context.externalCacheDir ?: return@withContext null
+            // 优先使用 externalCacheDir（受 provider_paths external_storage_root 覆盖）并清理过期分享缓存
+            val shareDir = context.externalCacheDir ?: context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: return@withContext null
             if (!shareDir.exists()) shareDir.mkdirs()
-            val dest = File(shareDir, "share_${System.currentTimeMillis()}.${extensionForMime(resolved.mimeType)}")
+            shareDir.listFiles { _, name -> name.startsWith(SHARE_FILE_PREFIX) }?.forEach { it.delete() }
+            val dest = File(shareDir, "${SHARE_FILE_PREFIX}${System.currentTimeMillis()}.${extensionForMime(resolved.mimeType)}")
             runCatching {
                 resolved.file.copyTo(dest, overwrite = true)
-                FileProvider.getUriForFile(context, "${context.packageName}.provider", dest) to resolved.mimeType
+                uriProvider(context, dest) to resolved.mimeType
             }.getOrNull()
         } ?: return false
-
         return withContext(mainDispatcher) {
-            runCatching {
-                val (uri, mimeType) = prepared
-                val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                    type = mimeType
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                val chooser = Intent.createChooser(sendIntent, context.getString(R.string.image_viewer_action_share))
-                if (context !is Activity) chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(chooser)
-                true
-            }.getOrDefault(false)
+            runCatching { context.startActivity(buildShareChooserIntent(context, prepared.first, prepared.second)); true }.getOrDefault(false)
         }
     }
 
@@ -111,12 +122,14 @@ class AndroidImageViewerMediaActions(
 
     @Suppress("DEPRECATION")
     private fun saveToLegacyPicturesDir(source: File, fileName: String, mimeType: String): Boolean = runCatching {
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HiPDA").apply {
-            if (!exists()) mkdirs()
-        }
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HiPDA").apply { if (!exists()) mkdirs() }
         val target = File(dir, fileName)
         source.copyTo(target, overwrite = true)
         MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf(mimeType), null)
         true
     }.getOrDefault(false)
+
+    companion object {
+        private const val SHARE_FILE_PREFIX = "share_"
+    }
 }

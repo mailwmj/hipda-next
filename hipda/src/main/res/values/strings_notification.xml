@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 系统通知渠道名与标题/正文文案（逐字取自 docs/design/copy.md §系统通知，0 豁免） -->
+    <string name="notification_channel_name">论坛通知</string>
+    <string name="notification_summary_title">HiPDA 论坛通知</string>
+    <string name="notification_single_sms_title">%1$s 的短消息</string>
+    <string name="notification_single_sms_title_fallback">新短消息</string>
+    <string name="notification_single_sms_body_fallback">您有 1 条新的短消息</string>
+    <string name="notification_summary_sms_part">%1$d 条新的短消息</string>
+    <string name="notification_summary_notify_part">%1$d 条新的提醒</string>
+    <string name="notification_summary_body_single">您有 %1$s</string>
+    <string name="notification_summary_body_both">您有 %1$s，%2$s</string>
+</resources>

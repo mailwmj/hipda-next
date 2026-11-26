@@ -1,9 +1,9 @@
 package net.jejer.hipda.feature.imageviewer
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -59,7 +59,6 @@ internal fun ImageViewerTopBar(
     val closeDesc = stringResource(R.string.image_viewer_action_close)
     val pageText = stringResource(R.string.image_viewer_page_indicator, currentPage + 1, totalPages.coerceAtLeast(1))
     val closeInteraction = remember { MutableInteractionSource() }
-
     Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).statusBarsPadding()) {
         Row(
             modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 56.dp).padding(horizontal = 8.dp, vertical = 4.dp),
@@ -70,12 +69,10 @@ internal fun ImageViewerTopBar(
                     .size(48.dp)
                     .clip(HiShapeTokens.Full)
                     .hiPressScale(closeInteraction)
-                    .clickable(closeInteraction, indication = null, role = Role.Button, onClick = onClose)
+                    .clickable(closeInteraction, indication = LocalIndication.current, role = Role.Button, onClick = onClose)
                     .semantics { contentDescription = closeDesc },
                 contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Rounded.Close, contentDescription = null, tint = ImageViewerPalette.ForegroundPrimary, modifier = Modifier.size(24.dp))
-            }
+            ) { Icon(Icons.Rounded.Close, null, tint = ImageViewerPalette.ForegroundPrimary, modifier = Modifier.size(24.dp)) }
             Spacer(Modifier.width(4.dp))
             Text(
                 text = title.orEmpty(),
@@ -87,13 +84,7 @@ internal fun ImageViewerTopBar(
             )
             Spacer(Modifier.width(12.dp))
             Surface(shape = HiShapeTokens.Full, color = ImageViewerPalette.PillBackground, border = BorderStroke(0.5.dp, ImageViewerPalette.BorderHairline)) {
-                Text(
-                    text = pageText,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = ImageViewerPalette.ForegroundPrimary,
-                    maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                )
+                Text(pageText, style = MaterialTheme.typography.labelLarge, color = ImageViewerPalette.ForegroundPrimary, maxLines = 1, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
             }
             Spacer(Modifier.width(8.dp))
         }
@@ -115,11 +106,7 @@ internal fun ImageViewerBottomBar(
     val cancelDesc = stringResource(R.string.image_viewer_loading_cancel)
     val isDownloading = downloadState is OriginalDownloadState.Downloading
     val isCompleted = downloadState is OriginalDownloadState.Completed
-
-    Column(
-        modifier = modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).navigationBarsPadding(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
+    Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
         HorizontalDivider(thickness = 0.5.dp, color = ImageViewerPalette.BorderHairline)
         Row(
             modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -138,13 +125,7 @@ internal fun ImageViewerBottomBar(
                         Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
                             val p = downloadState.progress
                             if (p != null) {
-                                CircularProgressIndicator(
-                                    progress = { p.coerceIn(0f, 1f) },
-                                    modifier = Modifier.size(22.dp),
-                                    color = ImageViewerPalette.AccentProgress,
-                                    trackColor = ImageViewerPalette.ProgressTrack,
-                                    strokeWidth = 2.5.dp,
-                                )
+                                CircularProgressIndicator({ p.coerceIn(0f, 1f) }, Modifier.size(22.dp), ImageViewerPalette.AccentProgress, 2.5.dp, ImageViewerPalette.ProgressTrack)
                             } else {
                                 HiLoadingSpinner(Modifier.size(22.dp), 2.5.dp, ImageViewerPalette.AccentProgress, ImageViewerPalette.ProgressTrack)
                             }
@@ -160,11 +141,11 @@ internal fun ImageViewerBottomBar(
                     else -> Text(stringResource(R.string.image_viewer_action_view_original), style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
                 }
             }
-            ViewerPillButton(enabled = actionsEnabled && !isSaving, onClick = onSaveClick) {
+            ViewerPillButton(actionsEnabled && !isSaving, onSaveClick) {
                 Icon(ImageViewerIcons.Download, null, tint = fg, modifier = Modifier.size(18.dp))
                 Text(stringResource(R.string.image_viewer_action_save), style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
             }
-            ViewerPillButton(enabled = actionsEnabled, onClick = onShareClick) {
+            ViewerPillButton(actionsEnabled, onShareClick) {
                 Icon(Icons.Rounded.Share, null, tint = fg, modifier = Modifier.size(18.dp))
                 Text(stringResource(R.string.image_viewer_action_share), style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
             }
@@ -191,14 +172,9 @@ private fun ViewerPillButton(
             .clip(HiShapeTokens.Full)
             .hiPressScale(interaction)
             .then(if (semanticDescription != null) Modifier.semantics(mergeDescendants = true) { contentDescription = semanticDescription } else Modifier)
-            .clickable(interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick),
+            .clickable(interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = onClick),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            content = content,
-        )
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), Arrangement.spacedBy(6.dp), Alignment.CenterVertically, content)
     }
 }
 
@@ -206,90 +182,49 @@ private fun ViewerPillButton(
 @Composable
 internal fun ImageViewerGifBadge(isPlaying: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
     val interaction = remember { MutableInteractionSource() }
-    val badgeBg by animateColorAsState(
-        targetValue = if (isPlaying) ImageViewerPalette.PillActiveBackground else ImageViewerPalette.PillBackground,
-        animationSpec = HiMotion.effectsFast(),
-        label = "gifBadgeBg",
-    )
+    val badgeBg by animateColorAsState(if (isPlaying) ImageViewerPalette.PillActiveBackground else ImageViewerPalette.PillBackground, HiMotion.effectsFast(), label = "gifBadgeBg")
     val iconAlpha by animateFloatAsState(if (isPlaying) 1f else 0.85f, HiMotion.effectsFast(), label = "gifBadgeAlpha")
-
     Box(
         modifier = modifier
             .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .hiPressScale(interaction)
-            .toggleable(isPlaying, interaction, indication = null, role = Role.Button, onValueChange = { onToggle() }),
+            .toggleable(isPlaying, interaction, indication = LocalIndication.current, role = Role.Button, onValueChange = { onToggle() }),
         contentAlignment = Alignment.CenterStart,
     ) {
         Surface(shape = HiShapeTokens.Small, color = badgeBg, border = BorderStroke(0.5.dp, ImageViewerPalette.BorderHairline)) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(
-                    imageVector = if (isPlaying) ImageViewerIcons.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = null,
-                    tint = ImageViewerPalette.ForegroundPrimary,
-                    modifier = Modifier.size(16.dp).graphicsLayer { alpha = iconAlpha },
-                )
-                Text(
-                    text = stringResource(R.string.image_viewer_gif_badge),
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = ImageViewerPalette.ForegroundPrimary,
-                )
+            Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), Arrangement.spacedBy(4.dp), Alignment.CenterVertically) {
+                Icon(if (isPlaying) ImageViewerIcons.Pause else Icons.Rounded.PlayArrow, null, Modifier.size(16.dp).graphicsLayer { alpha = iconAlpha }, ImageViewerPalette.ForegroundPrimary)
+                Text(stringResource(R.string.image_viewer_gif_badge), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ImageViewerPalette.ForegroundPrimary)
             }
         }
     }
 }
 
-/** 长按弹出的保存/分享菜单（纯色暗底、触控项均 ≥ 48dp、零毛玻璃）。 */
+/** 长按弹出的保存/分享菜单（标准 Material 3 [DropdownMenu]，触控项 ≥ 48dp，零毛玻璃，R-E14 S4）。 */
 @Composable
-internal fun ImageViewerLongPressMenu(
-    onSave: () -> Unit,
-    onShare: () -> Unit,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    BackHandler(onBack = onDismiss)
-    val scrimInteraction = remember { MutableInteractionSource() }
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.45f))
-            .clickable(scrimInteraction, indication = null, onClick = onDismiss),
-        contentAlignment = Alignment.Center,
+internal fun ImageViewerLongPressMenu(expanded: Boolean, onSave: () -> Unit, onShare: () -> Unit, onDismiss: () -> Unit) {
+    val colors = MenuDefaults.itemColors(textColor = ImageViewerPalette.ForegroundPrimary, leadingIconColor = ImageViewerPalette.ForegroundPrimary)
+    val items = listOf(
+        Triple(R.string.image_viewer_action_save, ImageViewerIcons.Download) { onDismiss(); onSave() },
+        Triple(R.string.image_viewer_action_share, Icons.Rounded.Share) { onDismiss(); onShare() },
+        Triple(R.string.image_viewer_action_cancel, Icons.Rounded.Close, onDismiss),
+    )
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        containerColor = ImageViewerPalette.MenuSurface,
+        shape = HiShapeTokens.Large,
+        border = BorderStroke(0.5.dp, ImageViewerPalette.BorderHairline),
     ) {
-        Surface(
-            modifier = Modifier.padding(horizontal = 32.dp).widthIn(min = 220.dp, max = 320.dp),
-            shape = HiShapeTokens.Large,
-            color = ImageViewerPalette.MenuSurface,
-            border = BorderStroke(0.5.dp, ImageViewerPalette.BorderHairline),
-        ) {
-            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                LongPressMenuItem(stringResource(R.string.image_viewer_action_save), ImageViewerIcons.Download) { onDismiss(); onSave() }
-                HorizontalDivider(thickness = 0.5.dp, color = ImageViewerPalette.BorderHairline)
-                LongPressMenuItem(stringResource(R.string.image_viewer_action_share), Icons.Rounded.Share) { onDismiss(); onShare() }
-                HorizontalDivider(thickness = 0.5.dp, color = ImageViewerPalette.BorderHairline)
-                LongPressMenuItem(stringResource(R.string.image_viewer_action_cancel), Icons.Rounded.Close, onDismiss)
-            }
+        items.forEach { (labelRes, icon, action) ->
+            DropdownMenuItem(
+                text = { Text(stringResource(labelRes)) },
+                leadingIcon = { Icon(icon, null, Modifier.size(20.dp)) },
+                colors = colors,
+                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                onClick = action,
+            )
         }
-    }
-}
-
-@Composable
-private fun LongPressMenuItem(label: String, icon: ImageVector, onClick: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 52.dp)
-            .clickable(interaction, indication = null, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Icon(icon, contentDescription = null, tint = ImageViewerPalette.ForegroundPrimary, modifier = Modifier.size(20.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge, color = ImageViewerPalette.ForegroundPrimary)
     }
 }
 

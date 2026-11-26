@@ -42,9 +42,11 @@ import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.settings.AppSettings
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.HiThemeSettingsAdapter
+import net.jejer.hipda.feature.common.ImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
 import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LocalHiImageLoader
+import net.jejer.hipda.feature.common.LocalImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.LoginOverlayRenderer
@@ -55,6 +57,7 @@ import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
 import net.jejer.hipda.ui.designsystem.state.HiEmptyState
 import net.jejer.hipda.ui.designsystem.state.HiStateAction
 import net.jejer.hipda.ui.shell.HiAdaptiveShell
@@ -133,11 +136,20 @@ fun NextAppRoot(
     var latestMiddleWidthDp by remember { mutableStateOf(latestPaneLayout.middlePaneWidthDp.dp) }
     var latestBottomPaddingDp by remember { mutableStateOf(0.dp) }
     var activeImageViewerArgs by remember { mutableStateOf<ImageViewerLaunchArgs?>(null) }
+    val imageViewerBoundsRegistry = remember { ImageViewerBoundsRegistry() }
     val navBarsBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val imageViewerArgs = activeImageViewerArgs
+    val isImageViewerOpen = imageViewerArgs != null && imageViewerRenderer != null
 
     HiTheme(themeConfig.themeMode, themeConfig.pureBlack, themeConfig.seed, themeConfig.fontSizeStep, themeConfig.lineHeightPreset) {
-        CompositionLocalProvider(LocalHiImageLoader provides imageLoader, LocalPaneSnackbarController provides snackbarController) {
+        CompositionLocalProvider(
+            LocalHiImageLoader provides imageLoader,
+            LocalPaneSnackbarController provides snackbarController,
+            LocalImageViewerBoundsRegistry provides imageViewerBoundsRegistry,
+        ) {
             Box(modifier = modifier.fillMaxSize()) {
+                // 全屏看图覆盖期间暂停底层液态玻璃与 GPU 离屏采样，守住同屏 0 玻璃预算（V-E14 probeM4）
+                CompositionLocalProvider(LocalHiGlassSuspended provides isImageViewerOpen) {
                 HiAdaptiveShell(
                     selected = appState.selectedDestination,
                     onSelect = hostViewModel::selectDestination,
@@ -269,13 +281,19 @@ fun NextAppRoot(
                         },
                     )
                 }
+                }
 
-                val imageViewerArgs = activeImageViewerArgs
-                val isImageViewerOpen = imageViewerArgs != null && imageViewerRenderer != null
-                // 兜底拦截：在 E14 看图浮层自持 BackHandler 之前注册，防止退场动画期间连按返回穿透误关底层帖子（R-E-slots S3）
+                // 兜底拦截：在看图浮层自持 BackHandler 之前注册；真实 E14 浮层在退场动画结束前全程保持启用吞掉重复返回（V-E14 probeM3b / R-E-slots S3）
                 BackHandler(enabled = isImageViewerOpen) { activeImageViewerArgs = null }
                 if (imageViewerArgs != null && imageViewerRenderer != null) {
-                    imageViewerRenderer.Overlay(args = imageViewerArgs, onDismiss = { activeImageViewerArgs = null })
+                    val liveBoundsResolver = remember(imageViewerArgs) {
+                        imageViewerBoundsRegistry.createResolver(imageViewerArgs)
+                    }
+                    imageViewerRenderer.Overlay(
+                        args = imageViewerArgs,
+                        onDismiss = { activeImageViewerArgs = null },
+                        resolveBoundsForIndex = liveBoundsResolver,
+                    )
                 }
 
                 val overlayMode = appState.loginOverlayMode

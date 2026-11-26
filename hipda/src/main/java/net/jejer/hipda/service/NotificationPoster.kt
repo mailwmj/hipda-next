@@ -44,7 +44,7 @@ class AndroidNotificationPoster @Inject constructor(
         val notificationManager = context.getSystemService(NotificationManager::class.java) ?: return
         ensureChannel(notificationManager)
 
-        val content = formatNotificationContent(snapshot)
+        val content = formatNotificationContent(context, snapshot)
         val singleSms = snapshot.latestUnreadSms
             ?.takeIf { snapshot.smsUnreadCount == 1 && snapshot.notifyUnreadCount == 0 }
 
@@ -69,6 +69,18 @@ class AndroidNotificationPoster @Inject constructor(
         )
 
         val accentColor = ContextCompat.getColor(context, R.color.icon_blue)
+        val publicText = if (singleSms != null) {
+            context.getString(R.string.notification_single_sms_body_fallback)
+        } else {
+            content.text
+        }
+        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle(context.getString(R.string.notification_summary_title))
+            .setContentText(publicText)
+            .setSmallIcon(R.drawable.ic_stat_hi)
+            .setColor(accentColor)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(content.title)
             .setContentText(content.text)
@@ -78,6 +90,8 @@ class AndroidNotificationPoster @Inject constructor(
             .setSmallIcon(R.drawable.ic_stat_hi)
             .setColor(accentColor)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
             .build()
 
         try {
@@ -97,7 +111,7 @@ class AndroidNotificationPoster @Inject constructor(
         val accentColor = ContextCompat.getColor(context, R.color.icon_blue)
         val channel = NotificationChannel(
             CHANNEL_ID,
-            CHANNEL_NAME,
+            context.getString(R.string.notification_channel_name),
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             enableLights(true)
@@ -110,30 +124,59 @@ class AndroidNotificationPoster @Inject constructor(
 
     companion object {
         const val CHANNEL_ID: String = "HIPDA_NOTI"
-        const val CHANNEL_NAME: String = "论坛通知"
         const val NOTIFICATION_ID: Int = 0
-        const val DEFAULT_SUMMARY_TITLE: String = "HiPDA 论坛通知"
+        internal const val MAX_SUMMARY_PREVIEW_CHARS: Int = 80
+        private val WHITESPACE_REGEX = Regex("\\s+")
 
-        fun formatNotificationContent(snapshot: UnreadSnapshot): NotificationDisplayContent {
+        fun formatNotificationContent(
+            context: Context,
+            snapshot: UnreadSnapshot,
+        ): NotificationDisplayContent {
             val smsCount = snapshot.smsUnreadCount.coerceAtLeast(0)
             val notifyCount = snapshot.notifyUnreadCount.coerceAtLeast(0)
             val singleSms = snapshot.latestUnreadSms
             if (smsCount == 1 && notifyCount == 0 && singleSms != null) {
                 val author = singleSms.author.trim()
-                val title = if (author.isNotEmpty()) "$author 的短消息" else "新短消息"
-                val text = singleSms.summary.trim().ifEmpty { "您有 1 条新的短消息" }
+                val title = if (author.isNotEmpty()) {
+                    context.getString(R.string.notification_single_sms_title, author)
+                } else {
+                    context.getString(R.string.notification_single_sms_title_fallback)
+                }
+                val text = truncateSummaryPreview(singleSms.summary).ifEmpty {
+                    context.getString(R.string.notification_single_sms_body_fallback)
+                }
                 return NotificationDisplayContent(title = title, text = text)
             }
 
-            val parts = buildList(2) {
-                if (smsCount > 0) add("$smsCount 条新的短消息")
-                if (notifyCount > 0) add("$notifyCount 条新的提醒")
+            val smsPart = if (smsCount > 0) {
+                context.getString(R.string.notification_summary_sms_part, smsCount)
+            } else {
+                null
             }
-            val text = if (parts.isEmpty()) "" else "您有 ${parts.joinToString("，")}"
+            val notifyPart = if (notifyCount > 0) {
+                context.getString(R.string.notification_summary_notify_part, notifyCount)
+            } else {
+                null
+            }
+            val text = when {
+                smsPart != null && notifyPart != null ->
+                    context.getString(R.string.notification_summary_body_both, smsPart, notifyPart)
+                smsPart != null ->
+                    context.getString(R.string.notification_summary_body_single, smsPart)
+                notifyPart != null ->
+                    context.getString(R.string.notification_summary_body_single, notifyPart)
+                else -> ""
+            }
             return NotificationDisplayContent(
-                title = DEFAULT_SUMMARY_TITLE,
+                title = context.getString(R.string.notification_summary_title),
                 text = text,
             )
+        }
+
+        private fun truncateSummaryPreview(raw: String): String {
+            val collapsed = raw.trim().replace(WHITESPACE_REGEX, " ")
+            if (collapsed.length <= MAX_SUMMARY_PREVIEW_CHARS) return collapsed
+            return collapsed.take(MAX_SUMMARY_PREVIEW_CHARS - 1).trimEnd() + "…"
         }
     }
 }
