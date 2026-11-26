@@ -184,21 +184,22 @@ class ReleaseSmokeAndStartupProbeTest {
 
         // Navigate Mine -> Settings -> Network & Cache -> Forum Server -> 127.0.0.1
         mineTab.click()
-        waitObj(By.text("设置")).click()
-        waitObj(By.text("网络与缓存")).click()
-        waitObj(By.text("论坛服务器")).click()
+        clickSafely(By.text("设置"))
+        clickSafely(By.text("网络与缓存"))
+        clickSafely(By.text("论坛服务器"))
 
         val serverInput = waitObj(By.clazz("android.widget.EditText"))
         serverInput.click()
         serverInput.text = server.baseUrl
-        waitObj(By.text("确定")).click()
+        dismissKeyboardIfVisible()
+        clickSafely(By.text("确定"))
         waitObj(By.text(server.baseUrl))
         snap("02-settings-network.png")
         report += "Smoke[settings-network]: configured ${server.baseUrl}"
 
         // Navigate back to Settings groups -> About -> open all 3 assets docs
         device.pressBack()
-        waitObj(By.text("关于")).click()
+        clickSafely(By.text("关于"))
         waitObj(By.text("版本"))
         snap("03-settings-about.png")
 
@@ -210,7 +211,7 @@ class ReleaseSmokeAndStartupProbeTest {
         // Back to Mine -> Login against loopback server
         device.pressBack()
         device.pressBack()
-        waitObj(By.text("登录")).click()
+        clickSafely(By.text("登录"))
         waitObj(By.text("登录 HiPDA"))
 
         val loginFields = device.findObjects(By.clazz("android.widget.EditText"))
@@ -219,16 +220,21 @@ class ReleaseSmokeAndStartupProbeTest {
         loginFields[0].text = ProbeOfflineForumServer.TEST_USERNAME
         loginFields[1].text = "probe-pass-123"
         dismissKeyboardIfVisible()
-        waitObj(By.text("登录")).click()
-        waitObj(By.text(ProbeOfflineForumServer.TEST_USERNAME), 15_000)
+        clickSafely(By.text("登录"))
+        assertTrue(
+            "LoginScreen did not dismiss after submit",
+            device.wait(Until.gone(By.text("登录 HiPDA")), 15_000),
+        )
+        waitObj(By.text("账号"), 10_000)
+        waitObj(By.text(ProbeOfflineForumServer.TEST_USERNAME), 10_000)
         snap("07-mine-logged-in.png")
         report += "Smoke[login]: logged in as ${ProbeOfflineForumServer.TEST_USERNAME}"
 
         // Forum list tab -> retry if cached initial offline error -> verify threads & scroll
-        waitObj(By.text("论坛")).click()
-        val retryBtn = device.wait(Until.findObject(By.text("重试")), 2_500)
+        clickSafely(By.text("论坛"))
+        val retryBtn = device.wait(Until.findObject(By.text("重试")), 2_000)
         if (retryBtn != null) {
-            retryBtn.click()
+            runCatching { retryBtn.click() }
         }
         waitObj(By.textContains(ProbeOfflineForumServer.THREAD_TITLE_PREFIX), 20_000)
         swipeVertically()
@@ -236,19 +242,20 @@ class ReleaseSmokeAndStartupProbeTest {
         report += "Smoke[forum-list]: loaded & scrolled offline threads"
 
         // Thread detail -> verify inline emojis + post image -> scroll
-        waitObj(By.textContains(ProbeOfflineForumServer.FIRST_THREAD_TITLE)).click()
+        clickSafely(By.textContains(ProbeOfflineForumServer.FIRST_THREAD_TITLE))
         waitObj(By.textContains(ProbeOfflineForumServer.FIRST_FLOOR_MARKER), 20_000)
         // Allow Coil to decode post-photo-1.png
-        val postImage = waitForPostImage(15_000)
+        waitForPostImage(15_000)
         snap("09-thread-detail.png")
-        report += "Smoke[thread-detail]: rendered floors + inline emojis + post image"
+        swipeVertically()
+        report += "Smoke[thread-detail]: rendered & scrolled floors + inline emojis + post image"
 
         // Image viewer -> tap post image -> verify controls -> close
-        postImage.click()
+        waitForPostImage(10_000).click()
         waitObj(By.text("查看原图"), 15_000)
         waitObj(By.text("1 / 1"), 5_000)
         snap("10-image-viewer.png")
-        waitObj(By.desc("关闭")).click()
+        clickSafely(By.desc("关闭"))
         assertTrue(
             "ImageViewer did not dismiss",
             device.wait(Until.gone(By.text("查看原图")), 10_000),
@@ -256,14 +263,15 @@ class ReleaseSmokeAndStartupProbeTest {
         report += "Smoke[image-viewer]: opened & dismissed cleanly"
 
         // QuickReplySheet -> open from ThreadBottomToolbar -> verify & expand to FullEditor
-        waitObj(By.text("回复")).click()
+        clickSafely(By.text("回复"))
         waitObj(By.desc("收起回复面板"), 10_000)
         val quickEmojiToggle = device.findObject(By.desc("表情"))
         snap("11-quick-reply-sheet.png")
         report += "Smoke[quick-reply]: opened cleanly (emojiTogglePresent=${quickEmojiToggle != null})"
 
-        waitObj(By.desc("展开全屏")).click()
+        clickSafely(By.desc("展开全屏"))
         waitObj(By.text("发送"), 10_000)
+        waitObj(By.text("正文"), 10_000)
         val fullEmojiToggle = device.findObject(By.desc("表情"))
         snap("12-full-editor.png")
         report += "Smoke[full-editor]: opened cleanly (emojiTogglePresent=${fullEmojiToggle != null})"
@@ -284,7 +292,7 @@ class ReleaseSmokeAndStartupProbeTest {
     }
 
     private fun verifyAboutAssetDialog(itemTitle: String, screenshotName: String) {
-        waitObj(By.text(itemTitle)).click()
+        clickSafely(By.text(itemTitle))
         waitObj(By.text("关闭"), 10_000)
         SystemClock.sleep(500)
         assertFalse(
@@ -292,7 +300,7 @@ class ReleaseSmokeAndStartupProbeTest {
             device.hasObject(By.text("加载失败")),
         )
         snap(screenshotName)
-        waitObj(By.text("关闭")).click()
+        clickSafely(By.text("关闭"))
         assertTrue(
             "About dialog '$itemTitle' did not close",
             device.wait(Until.gone(By.text("关闭")), 5_000),
@@ -401,13 +409,35 @@ class ReleaseSmokeAndStartupProbeTest {
             .take(4)
             .map { it.trim() }
             .toList()
-        return lines.joinToString(" ; ").ifEmpty { "<unavailable>" }
+        val apkDir = shell("pm path $TARGET_PKG").trim().removePrefix("package:").substringBeforeLast('/')
+        val oatFiles = if (apkDir.isNotEmpty()) {
+            shell("ls -lh $apkDir/oat/x86_64/").trim().replace("\n", " | ")
+        } else {
+            ""
+        }
+        return (lines + listOfNotNull(oatFiles.takeIf { it.isNotEmpty() }))
+            .joinToString(" ; ")
+            .ifEmpty { "<unavailable>" }
     }
 
     private fun waitObj(selector: BySelector, timeoutMs: Long = 10_000): UiObject2 {
         val obj = device.wait(Until.findObject(selector), timeoutMs)
         assertNotNull("Timed out waiting for UI element: $selector", obj)
         return obj!!
+    }
+
+    private fun clickSafely(selector: BySelector, timeoutMs: Long = 10_000) {
+        var lastError: Throwable? = null
+        repeat(3) {
+            try {
+                waitObj(selector, timeoutMs).click()
+                return
+            } catch (e: androidx.test.uiautomator.StaleObjectException) {
+                lastError = e
+                SystemClock.sleep(200)
+            }
+        }
+        throw AssertionError("Failed to click $selector due to stale UI hierarchy", lastError)
     }
 
     private fun swipeVertically() {
