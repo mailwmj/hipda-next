@@ -2026,6 +2026,407 @@ class E5ProbeTest {
     }
 
     // =========================================================================
+    // 第 3 轮新增 (9)：入场弹簧进行中同帧单批轻扫（收起/回弹/上拉展开）、退场中再拖、展开中按返回
+    // =========================================================================
+
+    @Test
+    fun probe9a_midEnterSpring_singleBatchFlicks_dismissReboundExpand_andBackScrimValid() {
+        val db = createInMemoryDb()
+        val fakeClock = AtomicLong(1_000_000L)
+        val detailRepo = ProbeThreadDetailRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val settingsRepo = ProbeSettingsRepository()
+        val postRepo = ProbePostRepository(db.draftDao(), fakeClock)
+        val detailVm = ThreadDetailViewModel(detailRepo, createOfflineGateway(), authRepo, ProbeFavoriteRepository(), settingsRepo)
+        val qrVm = QuickReplyViewModel(postRepo, authRepo, fakeClock::get)
+
+        val capturedHandoffs = mutableListOf<FullEditorHandoff>()
+        val fakeEntryContext = FakeSlotActivityContextWrapper(
+            base = ApplicationProvider.getApplicationContext(),
+            fullEditorLauncher = FullEditorLauncher { capturedHandoffs.add(it) },
+            emojiPanelRenderer = object : QuickReplyEmojiPanelRenderer {
+                @Composable
+                override fun Content(host: QuickReplyEmojiPanelHost, modifier: Modifier) {
+                    Text("假表情面板", modifier)
+                }
+            },
+        )
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+        var onBackCount = 0
+
+        try {
+            composeRule.setContent {
+                backDispatcher = androidx.activity.compose.LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+                val snackbarHost = remember { SnackbarHostState() }
+                val controller = remember(snackbarHost) { SingleHostPaneSnackbarController(snackbarHost) }
+                val baseCtx = LocalContext.current
+                val boundCtx = remember(baseCtx) {
+                    object : ContextWrapper(baseCtx) {
+                        override fun getApplicationContext(): Context = fakeEntryContext.applicationContext
+                    }
+                }
+                CompositionLocalProvider(
+                    LocalContext provides boundCtx,
+                    LocalPaneSnackbarController provides controller,
+                ) {
+                    HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                        ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                            Box(Modifier.fillMaxSize()) {
+                                ThreadDetailPane(
+                                    args = ThreadNavArgs("1001", fid = 2, title = "入场打断探针"),
+                                    chromeSpec = DetailChromeSpec(showBack = true),
+                                    onBack = { onBackCount += 1 },
+                                    onOpenLogin = {},
+                                    viewModel = detailVm,
+                                    quickReplyViewModel = qrVm,
+                                )
+                                SnackbarHost(snackbarHost, Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            composeRule.waitForIdle()
+
+            val density = composeRule.density
+            val rootBounds = composeRule.onRoot().fetchSemanticsNode().boundsInRoot
+            fun sheetPosYOrNull() = composeRule.onAllNodes(
+                SemanticsMatcher.expectValue(HiGlassMarker, true) and
+                    hasAnyDescendant(hasContentDescription("收起回复面板")),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().firstOrNull()?.positionInRoot?.y
+
+            // 预先测得面板完全展开静止态的精确 top Y（positionInRoot.y 不受根边界底边裁切掩盖）
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            val openTopPx = requireNotNull(sheetPosYOrNull())
+            composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+
+            fun openUntilMidEnterSpring(maxOffsetFromOpenTopPx: Float) {
+                composeRule.mainClock.autoAdvance = false
+                try {
+                    composeRule.onNodeWithText("回复").performSemanticsAction(SemanticsActions.OnClick)
+                    val seen = mutableListOf<Float>()
+                    var frames = 0
+                    while (frames < 40) {
+                        Snapshot.sendApplyNotifications()
+                        composeRule.mainClock.advanceTimeByFrame()
+                        val posY = sheetPosYOrNull()
+                        val hasHandle = composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isNotEmpty()
+                        if (hasHandle && posY != null) {
+                            val delta = posY - openTopPx
+                            seen.add(delta)
+                            if (delta > 6f && delta <= maxOffsetFromOpenTopPx) break
+                        }
+                        frames++
+                    }
+                    val midY = requireNotNull(sheetPosYOrNull()) { "未捕获到快速回复入场中间帧 (seen=$seen)" }
+                    val midDelta = midY - openTopPx
+                    assertTrue("入场弹簧应在半途 (delta=$midDelta, max=$maxOffsetFromOpenTopPx, seen=$seen)", midDelta > 6f && midDelta <= maxOffsetFromOpenTopPx)
+                } catch (t: Throwable) {
+                    composeRule.mainClock.autoAdvance = true
+                    throw t
+                }
+            }
+
+            fun verifyBackAndScrimStillWork() {
+                composeRule.onNodeWithText("回复").performClick()
+                composeRule.waitForIdle()
+                composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed()
+                composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+                advanceUntilVirtualCondition(2_000L) {
+                    composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+                }
+                composeRule.waitForIdle()
+                assertEquals("QuickReply 开启时 Back 应只关面板不得穿透详情", 0, onBackCount)
+
+                composeRule.onNodeWithText("回复").performClick()
+                composeRule.waitForIdle()
+                composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed()
+                composeRule.onRoot().performTouchInput {
+                    val scrimPt = Offset(rootBounds.width * 0.5f, rootBounds.top + with(density) { 40.dp.toPx() })
+                    down(scrimPt)
+                    up()
+                }
+                advanceUntilVirtualCondition(2_000L) {
+                    composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+                }
+                composeRule.waitForIdle()
+            }
+
+            // 1. 入场弹簧进行中同帧单批快速下拉收起
+            openUntilMidEnterSpring(maxOffsetFromOpenTopPx = with(density) { 180.dp.toPx() })
+            try {
+                composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                    down(center)
+                    moveBy(Offset(0f, with(density) { 120.dp.toPx() }), delayMillis = 25L)
+                    up()
+                }
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+            assertEquals(0, capturedHandoffs.size)
+            verifyBackAndScrimStillWork()
+
+            // 2. 入场弹簧进行中同帧微拉（不越阈值、低速）-> 回弹落回 Open(translationY == 0)，之后返回与暗罩仍有效
+            openUntilMidEnterSpring(maxOffsetFromOpenTopPx = with(density) { 40.dp.toPx() })
+            try {
+                composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                    down(center)
+                    moveBy(Offset(0f, with(density) { 14.dp.toPx() }), delayMillis = 220L)
+                    up()
+                }
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            composeRule.waitForIdle()
+            val reboundedY = requireNotNull(sheetPosYOrNull()) { "微拉回弹后面板必须保持展开" }
+            assertTrue("微拉回弹后必须落回 Open ($reboundedY vs $openTopPx)", abs(reboundedY - openTopPx) <= 2f)
+            composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            verifyBackAndScrimStillWork()
+
+            // 3. 入场弹簧进行中同帧单批快速上拉展开全屏
+            openUntilMidEnterSpring(maxOffsetFromOpenTopPx = with(density) { 42.dp.toPx() })
+            try {
+                composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                    down(center)
+                    moveBy(Offset(0f, -with(density) { 100.dp.toPx() }), delayMillis = 25L)
+                    up()
+                }
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+            assertEquals("入场弹簧中快速上拉必须触发全屏交接", 1, capturedHandoffs.size)
+            assertFalse(capturedHandoffs.single().openImagePickerImmediately)
+            composeRule.onNodeWithText("已保存草稿").assertDoesNotExist()
+            verifyBackAndScrimStillWork()
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun probe9b_midDismissDrag_andMidExpandBack_reachTerminalAndKeepBackScrimValid() {
+        val db = createInMemoryDb()
+        val fakeClock = AtomicLong(1_000_000L)
+        val detailRepo = ProbeThreadDetailRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val settingsRepo = ProbeSettingsRepository()
+        val postRepo = ProbePostRepository(db.draftDao(), fakeClock)
+        val detailVm = ThreadDetailViewModel(detailRepo, createOfflineGateway(), authRepo, ProbeFavoriteRepository(), settingsRepo)
+        val qrVm = QuickReplyViewModel(postRepo, authRepo, fakeClock::get)
+
+        val capturedHandoffs = mutableListOf<FullEditorHandoff>()
+        val fakeEntryContext = FakeSlotActivityContextWrapper(
+            base = ApplicationProvider.getApplicationContext(),
+            fullEditorLauncher = FullEditorLauncher { capturedHandoffs.add(it) },
+            emojiPanelRenderer = object : QuickReplyEmojiPanelRenderer {
+                @Composable
+                override fun Content(host: QuickReplyEmojiPanelHost, modifier: Modifier) {
+                    Text("假表情面板", modifier)
+                }
+            },
+        )
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+        var onBackCount = 0
+        val recordedEvents = CopyOnWriteArrayList<QuickReplyEvent>()
+        val eventScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        eventScope.launch { qrVm.events.collect { recordedEvents.add(it) } }
+
+        try {
+            var snackbarHostRef: SnackbarHostState? = null
+            composeRule.setContent {
+                backDispatcher = androidx.activity.compose.LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+                val snackbarHost = remember { SnackbarHostState() }.also { snackbarHostRef = it }
+                val controller = remember(snackbarHost) { SingleHostPaneSnackbarController(snackbarHost) }
+                val baseCtx = LocalContext.current
+                val boundCtx = remember(baseCtx) {
+                    object : ContextWrapper(baseCtx) {
+                        override fun getApplicationContext(): Context = fakeEntryContext.applicationContext
+                    }
+                }
+                CompositionLocalProvider(
+                    LocalContext provides boundCtx,
+                    LocalPaneSnackbarController provides controller,
+                ) {
+                    HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                        ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                            Box(Modifier.fillMaxSize()) {
+                                ThreadDetailPane(
+                                    args = ThreadNavArgs("1001", fid = 2, title = "退场与展开打断探针"),
+                                    chromeSpec = DetailChromeSpec(showBack = true),
+                                    onBack = { onBackCount += 1 },
+                                    onOpenLogin = {},
+                                    viewModel = detailVm,
+                                    quickReplyViewModel = qrVm,
+                                )
+                                SnackbarHost(snackbarHost, Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            composeRule.waitForIdle()
+
+            val density = composeRule.density
+            val rootBounds = composeRule.onRoot().fetchSemanticsNode().boundsInRoot
+            fun sheetPosYOrNull() = composeRule.onAllNodes(
+                SemanticsMatcher.expectValue(HiGlassMarker, true) and
+                    hasAnyDescendant(hasContentDescription("收起回复面板")),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().firstOrNull()?.positionInRoot?.y
+
+            fun verifyBackAndScrimAfterTransition() {
+                composeRule.runOnIdle { snackbarHostRef?.currentSnackbarData?.dismiss() }
+                composeRule.waitForIdle()
+                composeRule.onNodeWithText("回复").performClick()
+                composeRule.waitForIdle()
+                composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed()
+                composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+                advanceUntilVirtualCondition(2_000L) {
+                    composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+                }
+                composeRule.waitForIdle()
+                assertEquals(0, onBackCount)
+
+                composeRule.onNodeWithText("回复").performClick()
+                composeRule.waitForIdle()
+                composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed()
+                composeRule.onRoot().performTouchInput {
+                    val scrimPt = Offset(rootBounds.width * 0.5f, rootBounds.top + with(density) { 40.dp.toPx() })
+                    down(scrimPt)
+                    up()
+                }
+                advanceUntilVirtualCondition(2_000L) {
+                    composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+                }
+                composeRule.waitForIdle()
+            }
+
+            // 1. 退场动画中再拖（Dismissing 期间向反方向上拖及再下拖 + 按返回）：必须继续落到终态收起，且 Back/暗罩仍有效
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNode(hasSetTextAction()).performTextReplacement("退场再拖草稿")
+            composeRule.waitForIdle()
+            val dismissStartTopPx = requireNotNull(sheetPosYOrNull())
+
+            composeRule.mainClock.autoAdvance = false
+            try {
+                composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+                composeRule.mainClock.advanceTimeByFrame()
+                composeRule.mainClock.advanceTimeByFrame()
+                val midDismissTopPx = requireNotNull(sheetPosYOrNull()) { "退场第 3 帧面板应仍在退场动画中" }
+                assertTrue("退场第 3 帧面板应已开始下移 ($midDismissTopPx > $dismissStartTopPx)", midDismissTopPx > dismissStartTopPx + 2f)
+
+                // 退场期间反向大距离上拖 + 再次下拖 + 按返回
+                composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                    down(center)
+                    moveBy(Offset(0f, -with(density) { 140.dp.toPx() }), delayMillis = 25L)
+                    up()
+                }
+                composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                    down(center)
+                    moveBy(Offset(0f, with(density) { 80.dp.toPx() }), delayMillis = 25L)
+                    up()
+                }
+                composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+                composeRule.mainClock.advanceTimeByFrame()
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+            assertEquals("退场再拖不得误触发全屏展开", 0, capturedHandoffs.size)
+            assertEquals(0, onBackCount)
+            waitUntilRealCondition(2_000L, { "退场后草稿未保存" }) {
+                runBlocking { db.draftDao().observe(DraftKey.reply("1001")).first() }?.content == "退场再拖草稿"
+            }
+            verifyBackAndScrimAfterTransition()
+
+            // 2. 展开动画中按返回（+ 点暗罩）：必须吞掉返回、完成全屏交接、不弹草稿且不穿透详情；重开后 Back/暗罩仍有效
+            composeRule.onNode(
+                SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick) and
+                    hasAnyDescendant(hasText("p103", substring = true)),
+            ).performSemanticsAction(SemanticsActions.OnLongClick)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("引用回复").performClick()
+            waitUntilRealCondition(2_000L, { "引用重开后未加载完成" }) {
+                composeRule.onAllNodesWithText("已恢复上次草稿").fetchSemanticsNodes().isNotEmpty()
+            }
+            composeRule.onNode(hasSetTextAction()).performTextReplacement("展开动画中按返回正文")
+            composeRule.onNode(hasSetTextAction()).performSemanticsAction(SemanticsActions.SetSelection) { it(1, 5, true) }
+            composeRule.waitForIdle()
+            while (snackbarHostRef?.currentSnackbarData != null) {
+                composeRule.runOnIdle { snackbarHostRef?.currentSnackbarData?.dismiss() }
+                composeRule.waitForIdle()
+            }
+            val draftSavedBeforeExpand = recordedEvents.count { it is QuickReplyEvent.DraftSaved }
+
+            composeRule.mainClock.autoAdvance = false
+            try {
+                composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                    down(center)
+                    moveBy(Offset(0f, -with(density) { 80.dp.toPx() }), delayMillis = 25L)
+                    up()
+                }
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+                assertTrue("展开第 1 帧面板应仍在 Expanding 动画中", composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isNotEmpty())
+
+                // 展开动画进行中连按两次 Back 与点击暗罩
+                composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+                composeRule.mainClock.advanceTimeByFrame()
+                composeRule.onRoot().performTouchInput {
+                    val scrimPt = Offset(rootBounds.width * 0.5f, rootBounds.top + with(density) { 40.dp.toPx() })
+                    down(scrimPt)
+                    up()
+                }
+                composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+                composeRule.mainClock.advanceTimeByFrame()
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+
+            assertEquals("展开动画中按返回仍应精确触发 1 次全屏交接", 1, capturedHandoffs.size)
+            val handoff = capturedHandoffs.single()
+            assertEquals("展开动画中按返回正文", handoff.text)
+            assertEquals(1, handoff.selectionStart)
+            assertEquals(5, handoff.selectionEnd)
+            assertEquals("p103", handoff.quotePid)
+            assertEquals(0, onBackCount)
+            assertEquals("展开中按返回不得再发 DraftSaved 事件", draftSavedBeforeExpand, recordedEvents.count { it is QuickReplyEvent.DraftSaved })
+            composeRule.onNodeWithText("已保存草稿").assertDoesNotExist()
+            verifyBackAndScrimAfterTransition()
+        } finally {
+            eventScope.cancel()
+            db.close()
+        }
+    }
+
+    // =========================================================================
     // 离线测试替身与辅助方法
     // =========================================================================
 
