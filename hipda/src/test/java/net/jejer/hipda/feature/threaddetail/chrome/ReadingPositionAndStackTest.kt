@@ -5,25 +5,39 @@ import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.OnBackPressedDispatcherOwner
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.HasDefaultViewModelProviderFactory
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import java.io.Closeable
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
-import org.robolectric.shadows.ShadowLooper
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.yield
+import org.robolectric.shadows.ShadowLooper
 import net.jejer.hipda.data.local.ReadingFilterMode
 import net.jejer.hipda.data.local.ReadingPositionEntity
 import net.jejer.hipda.data.network.ChallengeDetector
@@ -31,17 +45,24 @@ import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeSolver
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.access.SolveResult
+import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.threaddetail.PollVoteResult
 import net.jejer.hipda.data.threaddetail.ThreadDetailFilter
 import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
 import net.jejer.hipda.data.threaddetail.ThreadDetailLoadResult
 import net.jejer.hipda.data.threaddetail.ThreadDetailRepository
+import net.jejer.hipda.feature.app.MultiPaneReadingContainer
 import net.jejer.hipda.feature.app.MultiPaneTestHarness
+import net.jejer.hipda.feature.app.NextAppHostViewModel
+import net.jejer.hipda.feature.app.RecordingSettingsRepository
+import net.jejer.hipda.feature.app.rememberMultiPaneSlotHolder
 import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.threaddetail.ThreadDetailFilterUi
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
+import net.jejer.hipda.ui.shell.HiShellTestTags
+import net.jejer.hipda.ui.shell.calculateShellPaneLayout
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
 import net.jejer.hipda.parser.common.PromptCounts
@@ -407,12 +428,306 @@ class ReadingPositionAndStackTest {
         assertNull("PositionStack 栈空后应按 E3 顺序关闭右栏", harness.hostViewModel.state.value.selectedThread)
     }
 
+    /**
+     * V-E4 probeD2 移植回归（`w600dp` 模态导航抽屉与 `PositionStack` 返回优先级）：
+     * 进帖入栈后展开 `SidebarModalDrawer`，按系统返回必须仅关闭抽屉、保持位置栈与当前页不变；
+     * 抽屉关闭后再按返回依次回退位置栈、退出帖子（浮层/模态抽屉 > 位置栈 > 宿主返回）。
+     */
+    @Test
+    @Config(qualifiers = "w600dp-h800dp-xhdpi")
+    fun modalDrawerOverlay_w600dp_backClosesDrawerWithoutPoppingPositionStack_thenPopsStack() {
+        val harness = MultiPaneTestHarness()
+        var hostBackDispatcher: OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            hostBackDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            harness.RenderRoot()
+        }
+        composeRule.waitForIdle()
+
+        // 1. 打开帖子 1001 并经内联跳页条跳至第 3 页建立非空 PositionStack（栈底第 1 页）
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("末页").performClick()
+        composeRule.waitForIdle()
+        val detailVm = harness.createdDetailVms.single()
+        assertEquals(3, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+
+        // 2. 展开 600dp 模态导航抽屉（SidebarModalDrawer）覆盖在正文之上
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+
+        // 3. 第一次系统返回：仅关闭抽屉，绝不得消费 PositionStack
+        composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertDoesNotExist()
+        assertEquals("关闭模态抽屉不得出栈 PositionStack", 3, detailVm.uiState.value.page)
+        assertTrue("关闭模态抽屉后 PositionStack 仍应保持非空", detailVm.uiState.value.canPopPositionStack)
+        assertEquals("1001", harness.hostViewModel.state.value.selectedThread?.tid)
+
+        // 4. 第二次系统返回：抽屉已关闭，此时由 PositionStack 出栈回第 1 页
+        composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertEquals(1, detailVm.uiState.value.page)
+        assertFalse(detailVm.uiState.value.canPopPositionStack)
+        assertEquals("1001", harness.hostViewModel.state.value.selectedThread?.tid)
+
+        // 5. 第三次系统返回：PositionStack 已空，交由宿主离开帖子
+        composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertNull("PositionStack 栈空后应交由宿主退出帖子", harness.hostViewModel.state.value.selectedThread)
+    }
+
+    /**
+     * R-E4 B1 回归（路径 1：单栏滚动停手 < 400ms 立即系统返回）：
+     * 模拟真实 Room `@Upsert` 跨线程挂起期间 `MultiPaneSlotHolder.onDispose` 同帧调用 `releaseThreadStore`
+     * 清空 `ViewModelStore` 取消 `viewModelScope`，最新阅读位置仍必须完整落盘（回退 `NonCancellable` 必红）。
+     */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun flushOnImmediateBack_under400ms_survivesViewModelStoreClearWithSuspendingRepo() {
+        val saveStarted = CompletableDeferred<Unit>()
+        val saveGate = CompletableDeferred<Unit>()
+        val savedMap = mutableMapOf<String, ReadingPositionEntity>()
+        val repo = PositionTestRepository(totalPages = 3, savedPositions = savedMap).apply {
+            saveHook = { entity ->
+                if (entity.tid == "8201") {
+                    saveStarted.complete(Unit)
+                    yield()
+                    saveGate.await()
+                }
+            }
+        }
+        val hostVm = NextAppHostViewModel(RecordingSettingsRepository())
+        val gateway = createIdleGateway()
+        val createdVms = mutableListOf<ThreadDetailViewModel>()
+        val clearedVms = mutableListOf<ThreadDetailViewModel>()
+        val parentOwner = createDetailTestStoreOwner(hostVm, repo, gateway, createdVms, clearedVms)
+        var detailListState: LazyListState? = null
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        hostVm.openThread(ThreadNavArgs(tid = "8201", title = "B1 立即返回测试"))
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides parentOwner) {
+                    val appState by hostVm.state.collectAsState()
+                    val slotHolder = rememberMultiPaneSlotHolder(hostVm)
+                    val layout = calculateShellPaneLayout(411f, 891f, hasDetailContent = appState.hasDetailContent)
+                    MultiPaneReadingContainer(
+                        paneLayout = layout,
+                        appState = appState,
+                        hostViewModel = hostVm,
+                        slotHolder = slotHolder,
+                        contentPadding = PaddingValues(0.dp),
+                        persistedPaneSplit = PaneSplit.DEFAULT,
+                        onPaneSplitChange = {},
+                        forumContent = { _, _, _ -> },
+                        detailContent = { args, chromeSpec, padding, listState, onBack ->
+                            detailListState = listState
+                            ThreadDetailPane(
+                                args = args,
+                                chromeSpec = chromeSpec,
+                                onBack = onBack,
+                                onOpenLogin = {},
+                                listState = listState,
+                                contentPadding = padding,
+                            )
+                        },
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        assertEquals(1, createdVms.size)
+        val threadVm = createdVms.single()
+
+        // 滚到第 12 楼（offset=64），停手 < 400ms 不等去抖立即按系统返回关闭帖子
+        composeRule.runOnIdle { requireNotNull(detailListState).requestScrollToItem(index = 11, scrollOffset = 64) }
+        composeRule.waitForIdle()
+        assertTrue("未满 400ms 去抖时不得提前落盘", repo.saveCalls.isEmpty())
+
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        ShadowLooper.idleMainLooper()
+
+        assertTrue("onDispose 必须已触发挂起的 saveReadingPosition", saveStarted.isCompleted)
+        assertTrue("同帧 MultiPaneSlotHolder 必须已清空 ViewModelStore", clearedVms.contains(threadVm))
+        assertFalse("原 threadVm.viewModelScope 必须已被取消", threadVm.viewModelScope.isActive)
+
+        // 放行模拟 Room IO 写盘门闩：即使 viewModelScope 已取消，最终阅读位置仍必须成功落盘
+        saveGate.complete(Unit)
+        composeRule.waitForIdle()
+        ShadowLooper.idleMainLooper()
+
+        val persisted = savedMap["8201"]
+        assertTrue("停手 < 400ms 立即返回后，最新位置必须在 ViewModelStore.clear 后成功落盘", persisted != null)
+        assertEquals("p1_12", persisted!!.pid)
+        assertEquals(64, persisted.offsetPx)
+        assertEquals(1, persisted.page)
+    }
+
+    /**
+     * R-E4 B1 回归（路径 2：三栏滚动停手 < 400ms 切帖 + 路径 3：`onCleared` 兜底）：
+     * 1. 三栏下读帖 8202 滚至第 10 楼后 < 400ms 切至 8203，旧帖退场并清空 `ViewModelStore` 时挂起的保存仍完成；
+     * 2. 宿主直接调用 `ViewModelStore.clear()`（模拟 Activity 销毁先清 VM）时，`onCleared()` 兜底仍将最新位置落盘。
+     */
+    @Test
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun flushOnThreePaneThreadSwitch_under400ms_andOnClearedFallback_surviveCancellation() {
+        val switchSaveStarted = CompletableDeferred<Unit>()
+        val switchSaveGate = CompletableDeferred<Unit>()
+        val onClearedSaveStarted = CompletableDeferred<Unit>()
+        val onClearedSaveGate = CompletableDeferred<Unit>()
+        val savedMap = mutableMapOf<String, ReadingPositionEntity>()
+        val repo = PositionTestRepository(totalPages = 3, savedPositions = savedMap).apply {
+            saveHook = { entity ->
+                when (entity.tid) {
+                    "8202" -> {
+                        switchSaveStarted.complete(Unit)
+                        yield()
+                        switchSaveGate.await()
+                    }
+                    "8204" -> {
+                        onClearedSaveStarted.complete(Unit)
+                        yield()
+                        onClearedSaveGate.await()
+                    }
+                }
+            }
+        }
+        val hostVm = NextAppHostViewModel(RecordingSettingsRepository())
+        val gateway = createIdleGateway()
+        val createdVms = mutableListOf<ThreadDetailViewModel>()
+        val clearedVms = mutableListOf<ThreadDetailViewModel>()
+        val parentOwner = createDetailTestStoreOwner(hostVm, repo, gateway, createdVms, clearedVms)
+        val listStatesByTid = mutableMapOf<String, LazyListState>()
+
+        hostVm.openThread(ThreadNavArgs(tid = "8202", title = "三栏旧帖 8202"))
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides parentOwner) {
+                    val appState by hostVm.state.collectAsState()
+                    val slotHolder = rememberMultiPaneSlotHolder(hostVm)
+                    val layout = calculateShellPaneLayout(933f, 696f, hasDetailContent = appState.hasDetailContent)
+                    MultiPaneReadingContainer(
+                        paneLayout = layout,
+                        appState = appState,
+                        hostViewModel = hostVm,
+                        slotHolder = slotHolder,
+                        contentPadding = PaddingValues(0.dp),
+                        persistedPaneSplit = PaneSplit.DEFAULT,
+                        onPaneSplitChange = {},
+                        forumContent = { _, _, _ -> },
+                        detailContent = { args, chromeSpec, padding, listState, onBack ->
+                            listStatesByTid[args.tid] = listState
+                            ThreadDetailPane(
+                                args = args,
+                                chromeSpec = chromeSpec,
+                                onBack = onBack,
+                                onOpenLogin = {},
+                                listState = listState,
+                                contentPadding = padding,
+                            )
+                        },
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        val vm8202 = createdVms.single()
+
+        // 1. 三栏旧帖 8202 滚到第 10 楼（offset=48），停手 < 400ms 内在中栏切到新帖 8203
+        composeRule.runOnIdle { requireNotNull(listStatesByTid["8202"]).requestScrollToItem(index = 9, scrollOffset = 48) }
+        composeRule.waitForIdle()
+        assertTrue(repo.saveCalls.isEmpty())
+
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs(tid = "8203", title = "三栏新帖 8203")) }
+        composeRule.mainClock.advanceTimeBy(220L)
+        composeRule.waitForIdle()
+        ShadowLooper.idleMainLooper(220L, TimeUnit.MILLISECONDS)
+
+        assertTrue("三栏切帖卸载旧帖后必须触发 saveReadingPosition", switchSaveStarted.isCompleted)
+        assertTrue("旧帖 8202 的 ViewModelStore 必须已释放", clearedVms.contains(vm8202))
+        assertFalse("旧帖 8202 的 viewModelScope 必须已取消", vm8202.viewModelScope.isActive)
+
+        switchSaveGate.complete(Unit)
+        composeRule.waitForIdle()
+        ShadowLooper.idleMainLooper()
+
+        val persistedSwitch = savedMap["8202"]
+        assertTrue("三栏切帖（<400ms）后旧帖最新阅读位置必须落盘", persistedSwitch != null)
+        assertEquals("p1_10", persistedSwitch!!.pid)
+        assertEquals(48, persistedSwitch.offsetPx)
+
+        // 2. 直接清空 ViewModelStore 触发 onCleared() 兜底（模拟 Activity 销毁先取消 viewModelScope 再走 onCleared）
+        val directStore = ViewModelStore()
+        val directFactory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = ThreadDetailViewModel(repo, gateway) as T
+        }
+        val directVm = ViewModelProvider(directStore, directFactory)[ThreadDetailViewModel::class.java]
+        composeRule.runOnIdle { directVm.bindArgs(ThreadNavArgs(tid = "8204", title = "onCleared 兜底帖")) }
+        composeRule.waitForIdle()
+        ShadowLooper.idleMainLooper()
+
+        composeRule.runOnIdle { directVm.onReadingPositionChanged(page = 1, postId = "p1_15", scrollOffsetPx = 72) }
+        composeRule.waitForIdle()
+        assertNull("未满去抖窗口前尚未落盘", savedMap["8204"])
+
+        composeRule.runOnIdle { directStore.clear() }
+        composeRule.waitForIdle()
+        ShadowLooper.idleMainLooper()
+
+        assertTrue("onCleared() 兜底必须触发 saveReadingPosition", onClearedSaveStarted.isCompleted)
+        assertFalse(directVm.viewModelScope.isActive)
+
+        onClearedSaveGate.complete(Unit)
+        composeRule.waitForIdle()
+        ShadowLooper.idleMainLooper()
+
+        val persistedCleared = savedMap["8204"]
+        assertTrue("onCleared() 兜底必须在 viewModelScope 已取消后仍将最新位置落盘", persistedCleared != null)
+        assertEquals("p1_15", persistedCleared!!.pid)
+        assertEquals(72, persistedCleared.offsetPx)
+    }
+
+    private fun createDetailTestStoreOwner(
+        hostVm: NextAppHostViewModel,
+        repo: ThreadDetailRepository,
+        gateway: SiteAccessGateway,
+        createdVms: MutableList<ThreadDetailViewModel>,
+        clearedVms: MutableList<ThreadDetailViewModel>,
+    ): ViewModelStoreOwner {
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
+                modelClass.isAssignableFrom(NextAppHostViewModel::class.java) -> hostVm as T
+                modelClass.isAssignableFrom(ThreadDetailViewModel::class.java) ->
+                    ThreadDetailViewModel(repo, gateway).also { vm ->
+                        createdVms.add(vm)
+                        vm.addCloseable(Closeable { clearedVms.add(vm) })
+                    } as T
+                else -> throw IllegalArgumentException("Unexpected ViewModel: $modelClass")
+            }
+        }
+        return object : ViewModelStoreOwner, HasDefaultViewModelProviderFactory {
+            override val viewModelStore: ViewModelStore = ViewModelStore()
+            override val defaultViewModelProviderFactory: ViewModelProvider.Factory = factory
+        }
+    }
+
     private class PositionTestRepository(
         private val totalPages: Int,
         private val savedPositions: MutableMap<String, ReadingPositionEntity> = mutableMapOf(),
     ) : ThreadDetailRepository {
         val saveCalls = CopyOnWriteArrayList<ReadingPositionEntity>()
         var pageDelayHook: (suspend (Int) -> Unit)? = null
+        var saveHook: (suspend (ReadingPositionEntity) -> Unit)? = null
 
         override suspend fun loadPage(
             tid: String,
@@ -493,6 +808,7 @@ class ReadingPositionAndStackTest {
             filterUserName: String?,
         ) {
             val entity = ReadingPositionEntity(tid, page, pid, offsetPx, filterMode, filterUid, filterUserName, System.currentTimeMillis())
+            saveHook?.invoke(entity)
             savedPositions[tid] = entity
             saveCalls += entity
         }

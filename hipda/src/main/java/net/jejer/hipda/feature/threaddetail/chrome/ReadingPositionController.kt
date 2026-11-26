@@ -1,17 +1,17 @@
 package net.jejer.hipda.feature.threaddetail.chrome
 
 import androidx.compose.runtime.Immutable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.jejer.hipda.data.local.ReadingFilterMode
 import net.jejer.hipda.data.local.ReadingPositionEntity
 import net.jejer.hipda.feature.threaddetail.ThreadDetailFilterUi
 
-/**
- * 帖子阅读位置持久化快照，与 `ReadingPositionDao` / `ThreadDetailRepository.saveReadingPosition` 字段一一对应。
- */
+/** 帖子阅读位置持久化快照，与 `ReadingPositionDao` / `ThreadDetailRepository.saveReadingPosition` 字段一一对应。 */
 @Immutable
 data class ReadingPositionSnapshot(
     val tid: String,
@@ -33,10 +33,9 @@ data class ReadingPositionSnapshot(
 }
 
 /**
- * 带显式首轮恢复门闩（hydration gate）的阅读位置去抖落盘控制器（闭合 `R-BATCH5 B4-E4 ①`）：
- * - [beginSession] 立即上锁（`isHydrated = false`），在首次恢复完成并真正载出目标页调用 [markHydrated] 之前，
- *   所有 [onPositionObserved] 与 [flushIfHydrated] 均直接忽略，严禁在慢网加载中途或用户退出时把 `(1, 0)` 冲写进 Room；
- * - 恢复就绪后启用滚动去抖保存（默认 [DEFAULT_DEBOUNCE_MS]），离开或切换帖子时通过 [flushIfHydrated] 立即补写未落盘变更。
+ * 带显式首轮恢复门闩（hydration gate）的阅读位置去抖落盘控制器（闭合 `R-BATCH5 B4-E4 ①` 与 `R-E4 B1`）：
+ * - [beginSession] 立即上锁（`isHydrated = false`），首次恢复完成调用 [markHydrated] 前严禁落盘；
+ * - 实际落盘经 `NonCancellable` 串行执行，确保退帖 / 三栏切帖 / `onCleared()` 同帧取消 `viewModelScope` 时仍能完整写入 Room。
  */
 class ReadingPositionController(
     private val scope: CoroutineScope,
@@ -48,17 +47,14 @@ class ReadingPositionController(
     private var pendingSnapshot: ReadingPositionSnapshot? = null
     private var lastSavedSnapshot: ReadingPositionSnapshot? = null
     private var debounceJob: Job? = null
+    private var activeSaveJob: Job? = null
 
-    val isHydrated: Boolean
-        get() = hydrated
+    val isHydrated: Boolean get() = hydrated
 
     fun beginSession(tid: String) {
-        debounceJob?.cancel()
-        debounceJob = null
+        debounceJob?.cancel(); debounceJob = null
         activeTid = tid.trim().takeIf { it.isNotEmpty() }
-        hydrated = false
-        pendingSnapshot = null
-        lastSavedSnapshot = null
+        hydrated = false; pendingSnapshot = null; lastSavedSnapshot = null
     }
 
     fun markHydrated(tid: String, initialPersisted: ReadingPositionSnapshot? = null) {
@@ -73,24 +69,18 @@ class ReadingPositionController(
         val normalized = snapshot.normalized()
         if (normalized.tid.isEmpty() || normalized.tid != activeTid || normalized.postId.isEmpty()) return
         if (normalized == lastSavedSnapshot) {
-            pendingSnapshot = null
-            debounceJob?.cancel()
-            debounceJob = null
+            pendingSnapshot = null; debounceJob?.cancel(); debounceJob = null
             return
         }
         pendingSnapshot = normalized
         debounceJob?.cancel()
         debounceJob = scope.launch {
-            if (debounceMillis > 0L) {
-                delay(debounceMillis)
-            }
+            if (debounceMillis > 0L) delay(debounceMillis)
             if (!hydrated || normalized.tid != activeTid) return@launch
-            if (pendingSnapshot == normalized) {
-                pendingSnapshot = null
-            }
+            if (pendingSnapshot == normalized) pendingSnapshot = null
             if (lastSavedSnapshot == normalized) return@launch
             lastSavedSnapshot = normalized
-            savePosition(normalized)
+            enqueueNonCancellableSave(normalized).join()
         }
     }
 
@@ -98,22 +88,27 @@ class ReadingPositionController(
         if (!hydrated) return
         val toFlush = pendingSnapshot ?: return
         pendingSnapshot = null
-        debounceJob?.cancel()
-        debounceJob = null
+        debounceJob?.cancel(); debounceJob = null
         if (toFlush == lastSavedSnapshot) return
         lastSavedSnapshot = toFlush
-        scope.launch {
-            savePosition(toFlush)
-        }
+        enqueueNonCancellableSave(toFlush)
     }
 
     fun reset() {
-        debounceJob?.cancel()
-        debounceJob = null
-        activeTid = null
-        hydrated = false
-        pendingSnapshot = null
-        lastSavedSnapshot = null
+        debounceJob?.cancel(); debounceJob = null
+        activeTid = null; hydrated = false; pendingSnapshot = null; lastSavedSnapshot = null
+    }
+
+    private fun enqueueNonCancellableSave(snapshot: ReadingPositionSnapshot): Job {
+        val prev = activeSaveJob
+        val job = scope.launch(NonCancellable) {
+            runCatching {
+                prev?.join()
+                savePosition(snapshot)
+            }.onFailure { if (it is CancellationException) throw it }
+        }
+        activeSaveJob = job
+        return job
     }
 
     companion object {
@@ -132,20 +127,11 @@ internal fun ReadingPositionEntity.toThreadDetailFilterUi(): ThreadDetailFilterU
     ReadingFilterMode.OP -> ThreadDetailFilterUi.AuthorOnly(filterUid?.trim()?.takeIf { it.isNotEmpty() })
     ReadingFilterMode.USER -> {
         val uid = filterUid?.trim()?.takeIf { it.isNotEmpty() }
-        if (uid != null) {
-            ThreadDetailFilterUi.UserOnly(uid = uid, username = filterUserName?.trim()?.takeIf { it.isNotEmpty() } ?: uid)
-        } else {
-            ThreadDetailFilterUi.All
-        }
+        if (uid != null) ThreadDetailFilterUi.UserOnly(uid, filterUserName?.trim()?.takeIf { it.isNotEmpty() } ?: uid) else ThreadDetailFilterUi.All
     }
 }
 
 internal fun ReadingPositionEntity.toSnapshot(): ReadingPositionSnapshot = ReadingPositionSnapshot(
-    tid = tid,
-    page = page.coerceAtLeast(1),
-    postId = pid,
-    offsetPx = offsetPx.coerceAtLeast(0),
-    filterMode = filterMode,
-    filterUid = filterUid,
-    filterUserName = filterUserName,
+    tid = tid, page = page.coerceAtLeast(1), postId = pid, offsetPx = offsetPx.coerceAtLeast(0),
+    filterMode = filterMode, filterUid = filterUid, filterUserName = filterUserName,
 ).normalized()

@@ -189,20 +189,10 @@ class ThreadDetailViewModel(
     constructor(
         threadDetailRepository: ThreadDetailRepository,
         siteAccessGateway: SiteAccessGateway,
-        authRepository: AuthRepository,
+        authRepository: AuthRepository?,
+        favoriteRepository: FavoriteRepository? = null,
     ) : this(threadDetailRepository, siteAccessGateway) {
-        this.authRepository = authRepository
-        metaState.update { it.copy(currentUserUid = resolveAuthUid(authRepository.currentAccount.value, authRepository.authState.value)) }
-        observeAuthRecovery(authRepository)
-    }
-
-    constructor(
-        threadDetailRepository: ThreadDetailRepository,
-        siteAccessGateway: SiteAccessGateway,
-        authRepository: AuthRepository,
-        favoriteRepository: FavoriteRepository,
-    ) : this(threadDetailRepository, siteAccessGateway, authRepository) {
-        attachFavoriteRepository(favoriteRepository)
+        initOptionalRepositories(authRepository, favoriteRepository, null)
     }
 
     @Inject
@@ -212,8 +202,8 @@ class ThreadDetailViewModel(
         authRepository: AuthRepository,
         favoriteRepository: FavoriteRepository,
         settingsRepository: SettingsRepository,
-    ) : this(threadDetailRepository, siteAccessGateway, authRepository, favoriteRepository) {
-        attachSettingsRepository(settingsRepository)
+    ) : this(threadDetailRepository, siteAccessGateway) {
+        initOptionalRepositories(authRepository, favoriteRepository, settingsRepository)
     }
 
     private var boundTid: String? = null
@@ -230,16 +220,8 @@ class ThreadDetailViewModel(
     private val positionStack = PositionStack()
     private val readingPositionController = ReadingPositionController(
         scope = viewModelScope,
-        savePosition = { snapshot ->
-            threadDetailRepository.saveReadingPosition(
-                tid = snapshot.tid,
-                page = snapshot.page,
-                pid = snapshot.postId,
-                offsetPx = snapshot.offsetPx,
-                filterMode = snapshot.filterMode,
-                filterUid = snapshot.filterUid,
-                filterUserName = snapshot.filterUserName,
-            )
+        savePosition = { s ->
+            threadDetailRepository.saveReadingPosition(s.tid, s.page, s.postId, s.offsetPx, s.filterMode, s.filterUid, s.filterUserName)
         },
     )
     private var scrollTokenSeq: Long = 0L
@@ -275,6 +257,25 @@ class ThreadDetailViewModel(
             snackbarEvent = m.snackbarEvent, snackbarResetSeq = m.snackbarResetSeq,
         )
     }.filterNotNull().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), ThreadDetailUiState())
+
+    private fun initOptionalRepositories(
+        authRepo: AuthRepository?,
+        favRepo: FavoriteRepository?,
+        settingsRepo: SettingsRepository?,
+    ) {
+        authRepo?.let { auth ->
+            authRepository = auth
+            metaState.update { it.copy(currentUserUid = resolveAuthUid(auth.currentAccount.value, auth.authState.value)) }
+            observeAuthRecovery(auth)
+        }
+        favRepo?.let { favoriteRepository = it; attachFavoriteRepository(it) }
+        settingsRepo?.let { settingsRepository = it; attachSettingsRepository(it) }
+    }
+
+    override fun onCleared() {
+        readingPositionController.flushIfHydrated()
+        super.onCleared()
+    }
 
     fun bindArgs(args: ThreadNavArgs) {
         if (boundTid == args.tid) return
@@ -423,23 +424,8 @@ class ThreadDetailViewModel(
     fun jumpToPage(page: Int, fromAnchor: ReadingPositionAnchor? = null) {
         val cur = metaState.value
         if (cur.tid.isBlank()) return
-        val targetPage = page.coerceIn(1, cur.lastPage.coerceAtLeast(1))
         pushCurrentAnchorForJump(fromAnchor)
-        loadInternal(targetPage, cur.filter, AccessPriority.UserBlocking, scrollToTop = true)
-    }
-
-    /** 跳至首页，跳前压入 [PositionStack]。 */
-    fun jumpToFirstPage(fromAnchor: ReadingPositionAnchor? = null) {
-        val cur = metaState.value
-        if (cur.tid.isBlank() || (cur.page <= 1 && cur.firstLoadedPage <= 1)) return
-        jumpToPage(1, fromAnchor)
-    }
-
-    /** 跳至末页，跳前压入 [PositionStack]。 */
-    fun jumpToLastPage(fromAnchor: ReadingPositionAnchor? = null) {
-        val cur = metaState.value
-        if (cur.tid.isBlank() || cur.page >= cur.lastPage) return
-        jumpToPage(cur.lastPage, fromAnchor)
+        loadInternal(page.coerceIn(1, cur.lastPage.coerceAtLeast(1)), cur.filter, AccessPriority.UserBlocking, scrollToTop = true)
     }
 
     /** 查看新回复（按目标 `pid` 或末页定位），跳前压入 [PositionStack]。 */
@@ -448,11 +434,7 @@ class ThreadDetailViewModel(
         if (cur.tid.isBlank()) return
         pushCurrentAnchorForJump(fromAnchor)
         val cleanPid = targetPid?.trim()?.takeIf { it.isNotEmpty() }
-        if (cleanPid != null) {
-            loadByPostIdInternal(cleanPid, highlight = true)
-        } else {
-            loadLastPageInternal()
-        }
+        if (cleanPid != null) loadByPostIdInternal(cleanPid, highlight = true) else loadLastPageInternal()
     }
 
     /**
@@ -532,12 +514,12 @@ class ThreadDetailViewModel(
      *   避免在途预取被世代抛弃后把连续加载永久锁死；
      * - 跨页分支调用 `D5.loadByPostId` 加载目标页并按稳定键 `floor:$targetPid` 滚入视口后高亮。
      */
-    fun jumpToFloor(targetPid: String, targetTid: String? = null) {
+    fun jumpToFloor(targetPid: String, targetTid: String? = null, fromAnchor: ReadingPositionAnchor? = null) {
         val cur = metaState.value
         val cleanPid = targetPid.trim()
         if (cur.tid.isBlank() || cleanPid.isBlank()) return
         if (cur.rawFloors.any { it.postId == cleanPid }) {
-            val currentAnchor = resolveCurrentAnchor(cur)
+            val currentAnchor = fromAnchor ?: resolveCurrentAnchor(cur)
             if (currentAnchor != null && !(currentAnchor.postId == cleanPid && currentAnchor.scrollOffsetPx == 0)) {
                 pushCurrentAnchorForJump(currentAnchor)
             }
@@ -546,11 +528,8 @@ class ThreadDetailViewModel(
             val nextEpoch = ++sessionGeneration
             metaState.update {
                 it.copy(
-                    resetEpoch = nextEpoch,
-                    isPrepending = false,
-                    isAppending = false,
-                    prependError = null,
-                    appendError = null,
+                    resetEpoch = nextEpoch, isPrepending = false, isAppending = false,
+                    prependError = null, appendError = null,
                     pendingScroll = PendingScrollTarget(token, cleanPid, 0, highlightPostId = cleanPid),
                     highlightedFloor = HighlightedFloor(cleanPid, token),
                     canPopPositionStack = positionStack.isNotEmpty,
@@ -560,7 +539,7 @@ class ThreadDetailViewModel(
         }
         val cleanTid = targetTid?.trim()?.takeIf { it.isNotEmpty() }
         if (cleanTid != null && cleanTid != cur.tid) return
-        pushCurrentAnchorForJump()
+        pushCurrentAnchorForJump(fromAnchor)
         loadByPostIdInternal(cleanPid, highlight = true)
     }
 
@@ -807,71 +786,34 @@ class ThreadDetailViewModel(
         }
     }
 
-    private fun loadByPostIdInternal(targetPid: String, highlight: Boolean) {
-        val cur = metaState.value
-        if (cur.tid.isBlank()) return
-        cancelPagingJobs()
-        loadJob?.cancel()
-        val generation = ++sessionGeneration
-        metaState.update {
-            it.copy(
-                isLoading = true, isPrepending = false, isAppending = false, isAuthRequired = false,
-                error = if (it.rawFloors.isEmpty()) null else it.error,
-                prependError = null, appendError = null, challengeFailure = null,
-                pendingScroll = null, highlightedFloor = null, resetEpoch = generation,
+    private fun loadByPostIdInternal(targetPid: String, highlight: Boolean) = launchSinglePageLoad(
+        keepExistingFloorsOnError = true,
+        fetch = { cur -> threadDetailRepository.loadByPostId(targetPid, cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking) },
+        onSuccess = { cur, res ->
+            val floors = res.page.floors
+            val resolvedPid = res.targetPostId?.takeIf { pid -> floors.any { it.postId == pid } } ?: targetPid.takeIf { pid -> floors.any { it.postId == pid } }
+            val token = ++scrollTokenSeq
+            val immediateHighlight = if (highlight && resolvedPid != null) HighlightedFloor(resolvedPid, token) else null
+            preFilterAnchor = null
+            commitSinglePageSuccess(
+                curTid = cur.tid, res = res, resolvedFilter = ThreadDetailFilterUi.All,
+                pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(token, resolvedPid, 0, highlightPostId = immediateHighlight?.postId) else null,
+                highlightedFloor = immediateHighlight,
             )
-        }
-        loadJob = viewModelScope.launch {
-            when (val res = threadDetailRepository.loadByPostId(targetPid, cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking)) {
-                is ThreadDetailLoadResult.Success -> {
-                    if (generation != sessionGeneration) return@launch
-                    val floors = res.page.floors
-                    val firstFloor = floors.firstOrNull { it.floor == 1 }
-                    val opUid = res.threadAuthorId ?: firstFloor?.uid?.takeIf { it.isNotBlank() }
-                    val opName = firstFloor?.author?.takeIf { it.isNotBlank() }
-                    val resolvedPage = res.pageNumber.coerceAtLeast(1)
-                    val resolvedLastPage = res.lastPage.coerceAtLeast(resolvedPage)
-                    val resolvedPid = res.targetPostId?.takeIf { pid -> floors.any { it.postId == pid } }
-                        ?: targetPid.takeIf { pid -> floors.any { it.postId == pid } }
-                    val token = ++scrollTokenSeq
-                    val immediateHighlight = if (highlight && resolvedPid != null) HighlightedFloor(resolvedPid, token) else null
-                    preFilterAnchor = null
-                    markHydratedIfNeeded(cur.tid)
-                    metaState.update {
-                        it.copy(
-                            fid = res.fid.takeIf { f -> f > 0 } ?: it.fid,
-                            title = res.title.ifBlank { it.title },
-                            threadAuthorId = opUid ?: it.threadAuthorId,
-                            threadAuthorName = opName ?: it.threadAuthorName,
-                            page = resolvedPage, requestedPage = resolvedPage,
-                            firstLoadedPage = resolvedPage, lastLoadedPage = resolvedPage, lastPage = resolvedLastPage,
-                            filter = ThreadDetailFilterUi.All, rawFloors = floors,
-                            isLoading = false, isPrepending = false, isAppending = false, isAuthRequired = false,
-                            error = null, prependError = null, appendError = null, challengeFailure = null,
-                            pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(token, resolvedPid, 0, highlightPostId = immediateHighlight?.postId) else null,
-                            highlightedFloor = immediateHighlight,
-                            currentUserUid = resolvePageUserUid(res),
-                        )
-                    }
-                }
-                is ThreadDetailError -> {
-                    if (generation != sessionGeneration) return@launch
-                    val mapped = UiErrorMapper.map(res)
-                    metaState.update { state ->
-                        if (state.rawFloors.isEmpty()) {
-                            state.copy(
-                                isLoading = false, isAuthRequired = res is ThreadDetailError.AuthRequired,
-                                error = mapped,
-                                challengeFailure = (res as? ThreadDetailError.ChallengeRequired)?.let { c -> if (c.rejected) ChallengeFailureKind.Rejected else ChallengeFailureKind.Incomplete },
-                            )
-                        } else {
-                            state.copy(isLoading = false, notice = ThreadDetailNotice(++noticeSeq, mapped))
-                        }
-                    }
-                }
-            }
-        }
-    }
+        },
+    )
+
+    private fun loadLastPageInternal() = launchSinglePageLoad(
+        keepExistingFloorsOnError = true,
+        fetch = { cur -> threadDetailRepository.loadLastPage(cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking) },
+        onSuccess = { cur, res ->
+            val floors = res.page.floors
+            commitSinglePageSuccess(
+                curTid = cur.tid, res = res, resolvedFilter = ThreadDetailFilterUi.All,
+                pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(++scrollTokenSeq, floors.lastOrNull()?.postId, 0) else null,
+            )
+        },
+    )
 
     private fun loadInternal(
         page: Int,
@@ -881,95 +823,133 @@ class ThreadDetailViewModel(
         restoreAnchor: FilterReturnAnchor? = null,
         authRetryAttempted: Boolean = false,
     ) {
-        val cur = metaState.value
-        if (cur.tid.isBlank()) return
         val targetPage = page.coerceAtLeast(1)
         val startedAuthVersion = authVersion
+        launchSinglePageLoad(
+            requestedPage = targetPage,
+            requestedFilter = filter,
+            keepExistingFloorsOnError = false,
+            fetch = { cur -> threadDetailRepository.loadPage(cur.tid, targetPage, filter.toRepositoryFilter(), forumName = cur.forumName, priority = priority) },
+            onSuccess = { cur, res ->
+                val floors = res.page.floors
+                val opUid = resolveAuthorUid(res, floors)
+                val resolvedFilter = if (filter is ThreadDetailFilterUi.AuthorOnly) ThreadDetailFilterUi.AuthorOnly(opUid ?: filter.authorId) else filter
+                val scrollTarget = when {
+                    floors.isEmpty() -> null
+                    restoreAnchor != null -> PendingScrollTarget(++scrollTokenSeq, restoreAnchor.postId, restoreAnchor.scrollOffset)
+                    scrollToTop -> PendingScrollTarget(++scrollTokenSeq, null, 0)
+                    else -> null
+                }
+                commitSinglePageSuccess(cur.tid, res, resolvedFilter, scrollTarget)
+            },
+            onAuthRetry = {
+                if (!authRetryAttempted && authVersion != startedAuthVersion) {
+                    loadInternal(targetPage, filter, priority, scrollToTop, restoreAnchor, authRetryAttempted = true)
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
+    private fun launchSinglePageLoad(
+        requestedPage: Int? = null,
+        requestedFilter: ThreadDetailFilterUi? = null,
+        keepExistingFloorsOnError: Boolean,
+        fetch: suspend (DetailMetaState) -> ThreadDetailLoadResult,
+        onSuccess: (DetailMetaState, ThreadDetailLoadResult.Success) -> Unit,
+        onAuthRetry: (() -> Boolean)? = null,
+    ) {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
         cancelPagingJobs()
         loadJob?.cancel()
         val generation = ++sessionGeneration
         metaState.update {
             it.copy(
-                requestedPage = targetPage, filter = filter, isLoading = true, isPrepending = false, isAppending = false,
-                isAuthRequired = false, error = null, prependError = null, appendError = null,
-                challengeFailure = null, pendingScroll = null, highlightedFloor = null, resetEpoch = generation,
+                requestedPage = requestedPage ?: it.requestedPage,
+                filter = requestedFilter ?: it.filter,
+                isLoading = true, isPrepending = false, isAppending = false, isAuthRequired = false,
+                error = if (keepExistingFloorsOnError && it.rawFloors.isNotEmpty()) it.error else null,
+                prependError = null, appendError = null, challengeFailure = null,
+                pendingScroll = null, highlightedFloor = null, resetEpoch = generation,
             )
         }
         loadJob = viewModelScope.launch {
-            when (val res = threadDetailRepository.loadPage(cur.tid, targetPage, filter.toRepositoryFilter(), forumName = cur.forumName, priority = priority)) {
-                is ThreadDetailLoadResult.Success -> {
-                    if (generation != sessionGeneration) return@launch
-                    val floors = res.page.floors
-                    val firstFloor = floors.firstOrNull { it.floor == 1 }
-                    val opUid = res.threadAuthorId ?: (res.filter as? ThreadDetailFilter.AuthorOnly)?.authorId ?: firstFloor?.uid?.takeIf { it.isNotBlank() }
-                    val opName = firstFloor?.author?.takeIf { it.isNotBlank() }
-                    val resolvedFilter = if (filter is ThreadDetailFilterUi.AuthorOnly) ThreadDetailFilterUi.AuthorOnly(opUid ?: filter.authorId) else filter
-                    val scrollTarget = when {
-                        floors.isEmpty() -> null
-                        restoreAnchor != null -> PendingScrollTarget(++scrollTokenSeq, restoreAnchor.postId, restoreAnchor.scrollOffset)
-                        scrollToTop -> PendingScrollTarget(++scrollTokenSeq, null, 0)
-                        else -> null
-                    }
-                    val resolvedPage = res.pageNumber.coerceAtLeast(1)
-                    val resolvedLastPage = res.lastPage.coerceAtLeast(resolvedPage)
-                    markHydratedIfNeeded(cur.tid)
-                    metaState.update {
-                        it.copy(
-                            fid = res.fid.takeIf { f -> f > 0 } ?: it.fid,
-                            title = res.title.ifBlank { it.title }, threadAuthorId = opUid ?: it.threadAuthorId, threadAuthorName = opName ?: it.threadAuthorName,
-                            page = resolvedPage, requestedPage = resolvedPage, firstLoadedPage = resolvedPage, lastLoadedPage = resolvedPage,
-                            lastPage = resolvedLastPage, filter = resolvedFilter, rawFloors = floors,
-                            isLoading = false, isPrepending = false, isAppending = false, isAuthRequired = false,
-                            error = null, prependError = null, appendError = null, challengeFailure = null, pendingScroll = scrollTarget,
-                            currentUserUid = resolvePageUserUid(res),
-                        )
-                    }
-                }
+            when (val res = fetch(cur)) {
+                is ThreadDetailLoadResult.Success -> if (generation == sessionGeneration) onSuccess(cur, res)
                 is ThreadDetailError -> {
                     if (generation != sessionGeneration) return@launch
-                    if (res is ThreadDetailError.AuthRequired && !authRetryAttempted && authVersion != startedAuthVersion) {
-                        loadInternal(targetPage, filter, priority, scrollToTop, restoreAnchor, authRetryAttempted = true)
-                        return@launch
+                    if (res is ThreadDetailError.AuthRequired && onAuthRetry?.invoke() == true) return@launch
+                    val mapped = UiErrorMapper.map(res)
+                    val challengeFail = (res as? ThreadDetailError.ChallengeRequired)?.let { c ->
+                        if (c.rejected) ChallengeFailureKind.Rejected else ChallengeFailureKind.Incomplete
                     }
-                    metaState.update {
-                        it.copy(
-                            rawFloors = emptyList(), isLoading = false, isPrepending = false, isAppending = false,
-                            isAuthRequired = res is ThreadDetailError.AuthRequired, error = UiErrorMapper.map(res),
-                            prependError = null, appendError = null,
-                            challengeFailure = (res as? ThreadDetailError.ChallengeRequired)?.let { c -> if (c.rejected) ChallengeFailureKind.Rejected else ChallengeFailureKind.Incomplete },
-                        )
+                    metaState.update { state ->
+                        if (keepExistingFloorsOnError && state.rawFloors.isNotEmpty()) {
+                            state.copy(isLoading = false, notice = ThreadDetailNotice(++noticeSeq, mapped))
+                        } else {
+                            state.copy(
+                                rawFloors = emptyList(), isLoading = false, isPrepending = false, isAppending = false,
+                                isAuthRequired = res is ThreadDetailError.AuthRequired, error = mapped,
+                                prependError = null, appendError = null, challengeFailure = challengeFail,
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
+    private fun resolveAuthorUid(res: ThreadDetailLoadResult.Success, floors: List<PostFloor>): String? =
+        res.threadAuthorId ?: (res.filter as? ThreadDetailFilter.AuthorOnly)?.authorId ?: floors.firstOrNull { it.floor == 1 }?.uid?.takeIf { it.isNotBlank() }
+
+    private fun commitSinglePageSuccess(
+        curTid: String,
+        res: ThreadDetailLoadResult.Success,
+        resolvedFilter: ThreadDetailFilterUi,
+        pendingScroll: PendingScrollTarget?,
+        highlightedFloor: HighlightedFloor? = null,
+    ) {
+        val floors = res.page.floors
+        val opUid = resolveAuthorUid(res, floors)
+        val opName = floors.firstOrNull { it.floor == 1 }?.author?.takeIf { it.isNotBlank() }
+        val resolvedPage = res.pageNumber.coerceAtLeast(1)
+        val resolvedLastPage = res.lastPage.coerceAtLeast(resolvedPage)
+        markHydratedIfNeeded(curTid)
+        metaState.update {
+            it.copy(
+                fid = res.fid.takeIf { f -> f > 0 } ?: it.fid,
+                title = res.title.ifBlank { it.title }, threadAuthorId = opUid ?: it.threadAuthorId, threadAuthorName = opName ?: it.threadAuthorName,
+                page = resolvedPage, requestedPage = resolvedPage, firstLoadedPage = resolvedPage, lastLoadedPage = resolvedPage,
+                lastPage = resolvedLastPage, filter = resolvedFilter, rawFloors = floors,
+                isLoading = false, isPrepending = false, isAppending = false, isAuthRequired = false,
+                error = null, prependError = null, appendError = null, challengeFailure = null,
+                pendingScroll = pendingScroll, highlightedFloor = highlightedFloor, currentUserUid = resolvePageUserUid(res),
+            )
+        }
+    }
+
     private fun attachFavoriteRepository(repo: FavoriteRepository) {
-        this.favoriteRepository = repo
         viewModelScope.launch {
             combine(repo.favoriteTids, repo.attentionTids) { favs, atts -> favs to atts }
                 .collect { (favs, atts) ->
                     metaState.update { cur ->
                         val nextFav = if (favoriteJob?.isActive == true) cur.isFavorited else (cur.tid.isNotBlank() && cur.tid in favs)
                         val nextAtt = if (attentionJob?.isActive == true) cur.isAttention else (cur.tid.isNotBlank() && cur.tid in atts)
-                        if (cur.isFavorited == nextFav && cur.isAttention == nextAtt) cur
-                        else cur.copy(isFavorited = nextFav, isAttention = nextAtt)
+                        if (cur.isFavorited == nextFav && cur.isAttention == nextAtt) cur else cur.copy(isFavorited = nextFav, isAttention = nextAtt)
                     }
                 }
         }
     }
 
     private fun attachSettingsRepository(repo: SettingsRepository) {
-        this.settingsRepository = repo
         viewModelScope.launch {
             repo.settings
                 .map { it.forumServer.ifBlank { AppSettings.DEFAULT_FORUM_SERVER } }
                 .distinctUntilChanged()
-                .collect { server ->
-                    metaState.update { cur ->
-                        if (cur.forumServer == server) cur else cur.copy(forumServer = server)
-                    }
-                }
+                .collect { server -> metaState.update { cur -> if (cur.forumServer == server) cur else cur.copy(forumServer = server) } }
         }
     }
 
@@ -983,77 +963,13 @@ class ThreadDetailViewModel(
     private fun resolveCurrentAnchor(cur: DetailMetaState): ReadingPositionAnchor? {
         if (cur.tid.isBlank() || cur.rawFloors.isEmpty()) return null
         return latestObservedAnchor?.takeIf { it.filter == cur.filter }
-            ?: ReadingPositionAnchor(
-                page = cur.page,
-                postId = cur.rawFloors.firstOrNull()?.postId,
-                scrollOffsetPx = 0,
-                filter = cur.filter,
-            )
+            ?: ReadingPositionAnchor(cur.page, cur.rawFloors.firstOrNull()?.postId, 0, cur.filter)
     }
 
     private fun pushCurrentAnchorForJump(explicitAnchor: ReadingPositionAnchor? = null) {
-        val cur = metaState.value
-        val anchor = explicitAnchor ?: resolveCurrentAnchor(cur) ?: return
+        val anchor = explicitAnchor ?: resolveCurrentAnchor(metaState.value) ?: return
         positionStack.push(anchor)
         metaState.update { it.copy(canPopPositionStack = positionStack.isNotEmpty) }
-    }
-
-    private fun loadLastPageInternal() {
-        val cur = metaState.value
-        if (cur.tid.isBlank()) return
-        cancelPagingJobs()
-        loadJob?.cancel()
-        val generation = ++sessionGeneration
-        metaState.update {
-            it.copy(
-                isLoading = true, isPrepending = false, isAppending = false, isAuthRequired = false,
-                error = if (it.rawFloors.isEmpty()) null else it.error,
-                prependError = null, appendError = null, challengeFailure = null,
-                pendingScroll = null, highlightedFloor = null, resetEpoch = generation,
-            )
-        }
-        loadJob = viewModelScope.launch {
-            when (val res = threadDetailRepository.loadLastPage(cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking)) {
-                is ThreadDetailLoadResult.Success -> {
-                    if (generation != sessionGeneration) return@launch
-                    val floors = res.page.floors
-                    val firstFloor = floors.firstOrNull { it.floor == 1 }
-                    val opUid = res.threadAuthorId ?: firstFloor?.uid?.takeIf { it.isNotBlank() }
-                    val opName = firstFloor?.author?.takeIf { it.isNotBlank() }
-                    val resolvedPage = res.pageNumber.coerceAtLeast(1)
-                    val resolvedLastPage = res.lastPage.coerceAtLeast(resolvedPage)
-                    val lastFloorPid = floors.lastOrNull()?.postId
-                    val token = ++scrollTokenSeq
-                    markHydratedIfNeeded(cur.tid)
-                    metaState.update {
-                        it.copy(
-                            fid = res.fid.takeIf { f -> f > 0 } ?: it.fid,
-                            title = res.title.ifBlank { it.title },
-                            threadAuthorId = opUid ?: it.threadAuthorId,
-                            threadAuthorName = opName ?: it.threadAuthorName,
-                            page = resolvedPage, requestedPage = resolvedPage,
-                            firstLoadedPage = resolvedPage, lastLoadedPage = resolvedPage, lastPage = resolvedLastPage,
-                            filter = ThreadDetailFilterUi.All, rawFloors = floors,
-                            isLoading = false, isPrepending = false, isAppending = false, isAuthRequired = false,
-                            error = null, prependError = null, appendError = null, challengeFailure = null,
-                            pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(token, lastFloorPid, 0) else null,
-                            currentUserUid = resolvePageUserUid(res),
-                        )
-                    }
-                }
-                is ThreadDetailError -> {
-                    if (generation != sessionGeneration) return@launch
-                    val mapped = UiErrorMapper.map(res)
-                    metaState.update { state ->
-                        if (state.rawFloors.isEmpty()) {
-                            state.copy(isLoading = false, isAuthRequired = res is ThreadDetailError.AuthRequired, error = mapped)
-                        } else {
-                            state.copy(isLoading = false, notice = ThreadDetailNotice(++noticeSeq, mapped))
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private fun toggleFavoriteKind(kind: FavoriteKind) {

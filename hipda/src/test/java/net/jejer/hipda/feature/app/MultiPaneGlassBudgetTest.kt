@@ -68,7 +68,7 @@ class MultiPaneGlassBudgetTest {
 
     @Test
     @Config(qualifiers = "w749dp-h559dp-xhdpi")
-    fun threePane_realForumAndThreadDetail_andSimulatedToolbar_staysWithin3Markers_2Sources_5Passes() {
+    fun threePane_realForumAndThreadDetail_andRealToolbar_staysWithin3Markers_2Sources_5Passes() {
         val harness = MultiPaneTestHarness()
         composeRule.setContent { harness.RenderRoot() }
         composeRule.waitForIdle()
@@ -89,7 +89,7 @@ class MultiPaneGlassBudgetTest {
 
     @Test
     @Config(qualifiers = "w933dp-h696dp-xhdpi")
-    fun threePane_withSimulatedThreeCapsuleToolbar_exact3Markers_2Sources_5Passes() {
+    fun threePane_withRealThreeCapsuleToolbar_exact3Markers_2Sources_5Passes() {
         val harness = MultiPaneTestHarness()
         harness.hostViewModel.openThread(ThreadNavArgs("1001", "三栏满编玻璃测试", 2))
         val layout = calculateShellPaneLayout(933f, 696f, hasDetailContent = true)
