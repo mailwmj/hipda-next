@@ -288,6 +288,141 @@ class DeepLinkAndPostRoutingTest {
     }
 
     @Test
+    @Suppress("DEPRECATION")
+    fun androidExternalLinkOpener_rE16S1_probesHttpsBrowsableWhenSelfMatchesAndBrowserOmitsAppBrowserCategory() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val shadowPm = Shadows.shadowOf(context.packageManager)
+        val selfPkg = context.packageName
+        // 命中 .ng.IntentActivity 的 /forum/space.php 前缀但 ForumLinkResolver 无法识别的边缘链接
+        val edgeUrl = "https://www.4d4y.com/forum/space.php?username=alice"
+        val baseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(edgeUrl)).addCategory(Intent.CATEGORY_BROWSABLE)
+        val httpsProbe = Intent(Intent.ACTION_VIEW, Uri.parse("https://")).addCategory(Intent.CATEGORY_BROWSABLE)
+
+        val selfResolve = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = selfPkg
+                name = "net.jejer.hipda.ng.IntentActivity"
+                exported = true
+            }
+        }
+        val unexportedBrowser = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = "com.example.privatebrowser"
+                name = "com.example.privatebrowser.InternalWeb"
+                exported = false
+            }
+        }
+        val liteBrowser = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = "com.example.litebrowser"
+                name = "com.example.litebrowser.BrowserActivity"
+                exported = true
+            }
+        }
+
+        // 模拟真实 Android 11+：baseIntent 仅命中本应用（selfMatches=true, externalTargets=empty），
+        // 且该浏览器未声明 CATEGORY_APP_BROWSER，仅声明 ACTION_VIEW + CATEGORY_BROWSABLE + https
+        shadowPm.setResolveInfosForIntent(baseIntent, listOf(selfResolve))
+        shadowPm.setResolveInfosForIntent(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER),
+            emptyList(),
+        )
+        shadowPm.setResolveInfosForIntent(httpsProbe, listOf(selfResolve, unexportedBrowser, liteBrowser))
+
+        val launched = mutableListOf<Intent>()
+        val opener = AndroidExternalLinkOpener(context) { launched += it }
+        assertTrue(
+            "仅声明 ACTION_VIEW+BROWSABLE+https 的外部浏览器必须被成功探测并拉起（撤回 PostLinkDispatcher https:// 探测即红）",
+            opener.open(edgeUrl),
+        )
+        assertEquals(1, launched.size)
+        val targetIntent = launched.single()
+        assertEquals(
+            android.content.ComponentName("com.example.litebrowser", "com.example.litebrowser.BrowserActivity"),
+            targetIntent.component,
+        )
+        assertEquals(Uri.parse(edgeUrl), targetIntent.data)
+        assertTrue(targetIntent.hasCategory(Intent.CATEGORY_BROWSABLE))
+        assertFalse("绝不能拉起本应用自身", targetIntent.component?.packageName == selfPkg)
+    }
+
+    @Test
+    @Suppress("DEPRECATION")
+    fun androidExternalLinkOpener_rE16S1_mergesAndDeduplicatesAppBrowserAndHttpsBrowsableProbesExcludingSelf() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val shadowPm = Shadows.shadowOf(context.packageManager)
+        val selfPkg = context.packageName
+        val edgeUrl = "https://www.4d4y.com/forum/redirect.php?goto=nextnewset"
+        val baseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(edgeUrl)).addCategory(Intent.CATEGORY_BROWSABLE)
+        val appBrowserProbe = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER)
+        val httpsProbe = Intent(Intent.ACTION_VIEW, Uri.parse("https://")).addCategory(Intent.CATEGORY_BROWSABLE)
+
+        val selfResolve = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = selfPkg
+                name = "net.jejer.hipda.ng.IntentActivity"
+                exported = true
+            }
+        }
+        val chromeResolve = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = "com.android.chrome"
+                name = "com.google.android.apps.chrome.Main"
+                exported = true
+            }
+        }
+        val liteBrowserResolve = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = "com.example.litebrowser"
+                name = "com.example.litebrowser.BrowserActivity"
+                exported = true
+            }
+        }
+        val unexportedResolve = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = "com.example.hidden"
+                name = "com.example.hidden.WebActivity"
+                exported = false
+            }
+        }
+
+        shadowPm.setResolveInfosForIntent(baseIntent, listOf(selfResolve))
+
+        // 1. 同一浏览器同时命中 APP_BROWSER 与 https:// 探测 -> 去重后直拉，不弹冗余 Chooser
+        shadowPm.setResolveInfosForIntent(appBrowserProbe, listOf(chromeResolve))
+        shadowPm.setResolveInfosForIntent(httpsProbe, listOf(selfResolve, chromeResolve, unexportedResolve))
+        val launchedDedup = mutableListOf<Intent>()
+        assertTrue(AndroidExternalLinkOpener(context) { launchedDedup += it }.open(edgeUrl))
+        assertEquals(1, launchedDedup.size)
+        assertEquals(
+            android.content.ComponentName("com.android.chrome", "com.google.android.apps.chrome.Main"),
+            launchedDedup.single().component,
+        )
+
+        // 2. Chrome 命中 APP_BROWSER + LiteBrowser 仅命中 https:// -> 合并去重弹 Chooser，严格排除本应用与非 exported
+        shadowPm.setResolveInfosForIntent(httpsProbe, listOf(selfResolve, chromeResolve, liteBrowserResolve, unexportedResolve))
+        val launchedMerged = mutableListOf<Intent>()
+        assertTrue(AndroidExternalLinkOpener(context) { launchedMerged += it }.open(edgeUrl))
+        assertEquals(1, launchedMerged.size)
+        val chooser = launchedMerged.single()
+        assertEquals(Intent.ACTION_CHOOSER, chooser.action)
+        @Suppress("DEPRECATION")
+        val primary = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+        @Suppress("DEPRECATION")
+        val extras = chooser.getParcelableArrayExtra(Intent.EXTRA_INITIAL_INTENTS)?.mapNotNull { it as? Intent }.orEmpty()
+        val packages = (listOfNotNull(primary) + extras).mapNotNull { it.component?.packageName }.toSet()
+        assertEquals(setOf("com.android.chrome", "com.example.litebrowser"), packages)
+        assertFalse(selfPkg in packages)
+
+        // 3. 两个探测结果仅含本应用与非 exported -> 安全返回 false 且 0 startActivity
+        shadowPm.setResolveInfosForIntent(appBrowserProbe, listOf(selfResolve, unexportedResolve))
+        shadowPm.setResolveInfosForIntent(httpsProbe, listOf(selfResolve, unexportedResolve))
+        val launchedNone = mutableListOf<Intent>()
+        assertFalse(AndroidExternalLinkOpener(context) { launchedNone += it }.open(edgeUrl))
+        assertEquals(0, launchedNone.size)
+    }
+
+    @Test
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
     fun unsupportedExternalDeepLink_showsFeedbackSnackbarAndOpensExternalBrowserOnAction() {
         val harness = MultiPaneTestHarness()

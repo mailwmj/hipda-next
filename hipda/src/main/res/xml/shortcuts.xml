@@ -7,7 +7,7 @@
         android:shortcutShortLabel="@string/title_drawer_new_posts">
         <intent
             android:action="new_posts"
-            android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
+            android:targetClass="net.jejer.hipda.feature.app.MainActivity"
             android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
     <shortcut
@@ -17,7 +17,7 @@
         android:shortcutShortLabel="@string/title_drawer_search">
         <intent
             android:action="search"
-            android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
+            android:targetClass="net.jejer.hipda.feature.app.MainActivity"
             android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
     <shortcut
@@ -27,7 +27,7 @@
         android:shortcutShortLabel="@string/title_drawer_sms">
         <intent
             android:action="sms"
-            android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
+            android:targetClass="net.jejer.hipda.feature.app.MainActivity"
             android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
     <shortcut
@@ -37,7 +37,7 @@
         android:shortcutShortLabel="@string/title_my_favorites">
         <intent
             android:action="favorite"
-            android:targetClass="net.jejer.hipda.ui.MainFrameActivity"
+            android:targetClass="net.jejer.hipda.feature.app.MainActivity"
             android:targetPackage="net.jejer.hipda.next"/>
     </shortcut>
 </shortcuts>
