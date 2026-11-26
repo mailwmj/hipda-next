@@ -47,10 +47,15 @@ import net.jejer.hipda.feature.threaddetail.chrome.copyThreadLinkPlainText
 import net.jejer.hipda.feature.threaddetail.chrome.openExternalHttpUrl
 import net.jejer.hipda.feature.threaddetail.chrome.shareExternalHttpUrl
 import net.jejer.hipda.feature.threaddetail.interact.FloorContextMenuOverlay
+import net.jejer.hipda.feature.threaddetail.interact.FloorTextSelectionDialog
+import net.jejer.hipda.feature.threaddetail.interact.FloorWarningDialog
 import net.jejer.hipda.feature.threaddetail.interact.ThreadPollCard
 import net.jejer.hipda.feature.threaddetail.interact.copyFloorPlainTextToClipboard
+import net.jejer.hipda.feature.threaddetail.interact.shareFloorPlainText
 import net.jejer.hipda.feature.threaddetail.media.AboveViewportHeightCompensationAuthority
 import net.jejer.hipda.feature.threaddetail.media.LocalAboveViewportHeightCompensationAuthority
+import net.jejer.hipda.feature.threaddetail.media.LocalThreadImageGallery
+import net.jejer.hipda.feature.threaddetail.media.extractThreadGalleryItems
 import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
@@ -61,6 +66,7 @@ import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 import net.jejer.hipda.ui.designsystem.state.*
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 
 private enum class DetailBodySlot { CHALLENGE, SKELETON, ERROR, EMPTY, CONTENT }
 
@@ -461,9 +467,11 @@ fun ThreadDetailPane(
     onExpandToFullEditor: ((FullEditorHandoff) -> Unit)? = null,
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
 ) {
-    LaunchedEffect(args.tid) { viewModel.bindArgs(args) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val latestUiState by rememberUpdatedState(uiState)
+    LaunchedEffect(args.tid, args.targetPid, args.openLastPage) {
+        viewModel.bindArgs(args) { resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true) }
+    }
     val context = LocalContext.current
     val density = LocalDensity.current
     val reducedMotion = HiTheme.isReducedMotion
@@ -472,6 +480,10 @@ fun ThreadDetailPane(
     val detailGlassState = rememberHiGlassState()
     val activeMenuFloorState = remember(args.tid, uiState.tid) { mutableStateOf<PostFloor?>(null) }
     var activeMenuFloor by activeMenuFloorState
+    val activeSelectionFloorState = remember(args.tid, uiState.tid) { mutableStateOf<PostFloor?>(null) }
+    var activeSelectionFloor by activeSelectionFloorState
+    val activeWarningFloorState = remember(args.tid, uiState.tid) { mutableStateOf<PostFloor?>(null) }
+    var activeWarningFloor by activeWarningFloorState
     var isJumpBarExpanded by remember(args.tid) { mutableStateOf(false) }
     var activeReplyTarget by rememberSaveable(args.tid, stateSaver = QuickReplyTargetSaver) { mutableStateOf<QuickReplyTarget?>(null) }
     var boundQuickReplyVm by remember(args.tid, quickReplyViewModel) { mutableStateOf(quickReplyViewModel) }
@@ -511,6 +523,8 @@ fun ThreadDetailPane(
         }
     }
     val onOpenFloorMenu = remember(activeMenuFloorState) { { floor: PostFloor -> activeMenuFloorState.value = floor } }
+    val onOpenFloorWarning = remember(activeWarningFloorState) { { floor: PostFloor -> activeWarningFloorState.value = floor } }
+    val onTopBarScrollToTop = rememberHiScrollToTopAction(listState) { anchorController.clearLandingAnchor() }
     val floorPositionedModifier = remember(anchorController, listState) {
         Modifier.onGloballyPositioned { anchorController.onFloorLayoutPositioned(latestUiState, listState) }
     }
@@ -676,6 +690,8 @@ fun ThreadDetailPane(
     val copyLinkLabel = stringResource(R.string.thread_detail_more_copy_link)
     val linkCopiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_link_copied)
     val shareChooserTitle = stringResource(R.string.thread_detail_more_share)
+    val shareTopicPrefix = stringResource(R.string.thread_detail_share_topic_prefix)
+    val shareReplyPrefix = stringResource(R.string.thread_detail_share_reply_prefix)
     val draftSavedMsg = stringResource(R.string.compose_snackbar_draft_saved)
     val discardDraftLabel = stringResource(R.string.compose_action_discard_draft)
     val replySentMsg = stringResource(R.string.compose_snackbar_reply_sent)
@@ -788,7 +804,11 @@ fun ThreadDetailPane(
                     }
                     DetailBodySlot.CONTENT -> {
                         SideEffect { anchorController.syncBeforeMeasure(uiState, listState, viewModel::consumePendingScroll) }
-                        CompositionLocalProvider(LocalAboveViewportHeightCompensationAuthority provides scrollCompensationAuthority) {
+                        val threadImageGallery = remember(uiState.floors) { extractThreadGalleryItems(uiState.floors) }
+                        CompositionLocalProvider(
+                            LocalAboveViewportHeightCompensationAuthority provides scrollCompensationAuthority,
+                            LocalThreadImageGallery provides threadImageGallery,
+                        ) {
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier.fillMaxSize().nestedScroll(pagingNestedScroll).hiGlassSource(detailGlassState).background(cs.background),
@@ -831,6 +851,7 @@ fun ThreadDetailPane(
                                             viewModel.jumpToFloor(targetPid, targetTid, resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true))
                                         },
                                         onLongPress = onOpenFloorMenu,
+                                        onWarningClick = onOpenFloorWarning,
                                         highlightToken = highlightToken,
                                         onHighlightFinished = viewModel::onHighlightFinished,
                                         pollSlot = floorPollSlot,
@@ -866,6 +887,7 @@ fun ThreadDetailPane(
                         val anchor = resolveViewportAnchor(uiState, listState, fallbackToFirst = true)
                         viewModel.toggleAuthorOnly(anchor?.postId, anchor?.scrollOffsetPx ?: listState.firstVisibleItemScrollOffset)
                     },
+                    onScrollToTop = if (bodySlot == DetailBodySlot.CONTENT) onTopBarScrollToTop else null,
                 )
                 FilterCapsuleBar(uiState.filter, viewModel::clearFilter)
             }
@@ -949,6 +971,21 @@ fun ThreadDetailPane(
                         }
                     }
                 },
+                onSelectText = { floor -> activeSelectionFloor = floor },
+                onShare = { floor ->
+                    val floorHeader = context.getString(R.string.thread_detail_floor_title, floor.floor, floor.author)
+                    shareFloorPlainText(
+                        context = context,
+                        forumServer = latestUiState.forumServer,
+                        tid = latestUiState.tid.ifBlank { args.tid },
+                        threadTitle = latestUiState.title.ifBlank { args.title },
+                        floor = floor,
+                        topicPrefix = shareTopicPrefix,
+                        replyPrefix = shareReplyPrefix,
+                        floorHeader = floorHeader,
+                        chooserTitle = shareChooserTitle,
+                    )
+                },
                 onOpenLogin = onOpenLogin,
                 onDismiss = { activeMenuFloor = null },
             )
@@ -977,6 +1014,17 @@ fun ThreadDetailPane(
                     },
                 )
             }
+
+            // 严格兄弟节点 6/7：单楼文字选择与警告记录弹窗（仅打开时挂载，纯色零玻璃，BackHandler 置顶于 LIFO 栈顶）
+            FloorTextSelectionDialog(
+                floor = activeSelectionFloor,
+                onDismiss = { activeSelectionFloor = null },
+            )
+            FloorWarningDialog(
+                floor = activeWarningFloor,
+                onLoadWarning = viewModel::loadFloorWarning,
+                onDismiss = { activeWarningFloor = null },
+            )
         }
     }
 }
