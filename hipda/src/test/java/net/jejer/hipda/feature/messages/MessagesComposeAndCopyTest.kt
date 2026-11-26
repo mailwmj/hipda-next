@@ -462,6 +462,93 @@ class MessagesComposeAndCopyTest {
             }
         }
 
+    /** 负责人裁定 #3（闭合 R-M7-G4 S2）：短消息气泡仅有图片、没有文字时隐藏长按「复制」菜单；图文混排与纯表情气泡仍支持复制。 */
+    @Test
+    fun smsConversation_imageOnlyBubbleHidesCopyMenu_whileMixedAndEmojiBubblesKeepCopy() =
+        withAnimatorDurationScale(0f) {
+            val clock = AtomicLong(1_700_000_000_000L)
+            val haptics = mutableListOf<HapticFeedbackType>()
+            val smsRepo = FakeSmsRepository(
+                clock = { clock.get() },
+                initialMessages = listOf(
+                    SmsMessageItem(
+                        uid = "20001",
+                        author = "Alice",
+                        avatarUrl = null,
+                        time = "11:01",
+                        contentHtml = "<img src=\"https://img.example.invalid/only.jpg\" />",
+                        isNew = false,
+                        isMine = false,
+                    ),
+                    SmsMessageItem(
+                        uid = "20001",
+                        author = "Alice",
+                        avatarUrl = null,
+                        time = "11:02",
+                        contentHtml = "<img src=\"https://img.example.invalid/mixed.jpg\" /> 带文字说明",
+                        isNew = false,
+                        isMine = false,
+                    ),
+                    SmsMessageItem(
+                        uid = "20001",
+                        author = "Alice",
+                        avatarUrl = null,
+                        time = "11:03",
+                        contentHtml = "<img src=\"images/smilies/coolmonkey/01.gif\" />",
+                        isNew = false,
+                        isMine = false,
+                    ),
+                ),
+            )
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val vm = SmsConversationViewModel(smsRepo, FakeAuthRepository(signedIn = true), idleGateway(scope)) { clock.get() }
+            try {
+                setContent {
+                    CompositionLocalProvider(
+                        LocalHapticFeedback provides object : HapticFeedback {
+                            override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                                haptics += hapticFeedbackType
+                            }
+                        },
+                    ) {
+                        HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                            SmsConversationScreen(
+                                args = SmsConversationArgs("20001", "Alice"),
+                                showBack = true,
+                                onBack = {},
+                                onOpenUserProfile = { _, _ -> },
+                                onOpenLogin = {},
+                                contentPadding = PaddingValues(0.dp),
+                                viewModel = vm,
+                            )
+                        }
+                    }
+                }
+                waitForIdle()
+
+                // 仅 2 条带文字/表情的气泡暴露长按「复制」语义；纯图气泡（11:01）不得暴露长按复制动作
+                val copyableNodes = onAllNodes(
+                    SemanticsMatcher("hasCopyLongClick") { node ->
+                        node.config.contains(SemanticsActions.OnLongClick) &&
+                            node.config[SemanticsActions.OnLongClick].label == "复制"
+                    },
+                ).fetchSemanticsNodes()
+                assertEquals("3 条消息中仅有图文混排与表情气泡应暴露长按复制（纯图气泡隐藏复制）", 2, copyableNodes.size)
+
+                // 长按纯图气泡对应时间附近区域不弹「复制」，且长按图文混排气泡仍可正常弹「复制」
+                onNodeWithText("11:01").assertIsDisplayed()
+                onNodeWithText("复制").assertDoesNotExist()
+                assertTrue(haptics.isEmpty())
+
+                onNodeWithText("带文字说明", substring = true).performTouchInput { longClick() }
+                waitForIdle()
+                assertEquals(listOf(HapticFeedbackType.LongPress), haptics)
+                onNodeWithText("复制").assertIsDisplayed()
+            } finally {
+                scope.cancel()
+            }
+        }
+
     private fun idleGateway(scope: CoroutineScope): SiteAccessGateway =
         SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled }, clock = System::currentTimeMillis, gatewayScope = scope)
 }

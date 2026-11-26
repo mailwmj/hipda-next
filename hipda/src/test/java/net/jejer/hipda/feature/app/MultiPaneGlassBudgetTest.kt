@@ -35,6 +35,7 @@ import net.jejer.hipda.feature.compose.FakeImageUploadRepository
 import net.jejer.hipda.feature.compose.FakePostRepository
 import net.jejer.hipda.feature.compose.FullEditorViewModel
 import net.jejer.hipda.feature.compose.QuickReplyViewModel
+import net.jejer.hipda.feature.compose.emoji.EmojiPanelRendererImpl
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.ui.designsystem.HiTheme
@@ -568,5 +569,71 @@ class MultiPaneGlassBudgetTest {
         assertEquals("关闭编辑器后独立 LayerBackdrop 应恢复为 2", 2, restoredAudit.layerBackdropCount)
         assertEquals(0, restoredAudit.nestedLayerBackdropCount)
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+    }
+
+    /**
+     * E7 验收项 4（三栏右栏 QuickReplySheet 展开表情面板玻璃预算与右栏边界守卫）：
+     * 表情面板纯色表面（0 `HiGlassMarker`）严格限定于右栏（左缘 ≥ 338dp、右缘 ≤ 749dp），不跨分隔线，
+     * 同屏守住 `HiGlassMarker == 3 (≤ 3)`、`LayerBackdrop == 2 (≤ 2)`、0 嵌套、`drawBackdrop ≤ 5`。
+     */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun threePane_quickReplyWithEmojiPanelExpanded_staysInRightPane_andWithinGlassBudget() {
+        val harness = MultiPaneTestHarness()
+        val fakePostRepo = FakePostRepository()
+        val emojiRenderer = EmojiPanelRendererImpl()
+        val combinedFactory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = when {
+                modelClass.isAssignableFrom(QuickReplyViewModel::class.java) -> QuickReplyViewModel(fakePostRepo, harness.authRepo) as T
+                else -> harness.vmFactory.create(modelClass)
+            }
+        }
+        val combinedOwner = object : androidx.lifecycle.ViewModelStoreOwner, androidx.lifecycle.HasDefaultViewModelProviderFactory {
+            override val viewModelStore = harness.parentOwner.viewModelStore
+            override val defaultViewModelProviderFactory = combinedFactory
+        }
+
+        composeRule.setContent {
+            ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides combinedOwner,
+                ) {
+                    NextAppRoot(
+                        settingsFlow = harness.settingsRepo.settings,
+                        currentAccountFlow = harness.authRepo.currentAccount,
+                        smsUnreadCountFlow = harness.smsUnread,
+                        notifyUnreadCountFlow = harness.notifyUnread,
+                        hostViewModel = harness.hostViewModel,
+                        forumViewModel = harness.forumViewModel,
+                        emojiPanelSlot = { host -> emojiRenderer.Content(host, Modifier) },
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("表情").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        val emojiPanelBounds = composeRule.onNode(
+            SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板"),
+        ).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val leftDp = with(composeRule.density) { emojiPanelBounds.left.toDp().value }
+        val rightDp = with(composeRule.density) { emojiPanelBounds.right.toDp().value }
+        assertTrue("三栏表情面板左缘 ${leftDp}dp 不得越过中右分隔线 338dp", leftDp >= 337.5f)
+        assertTrue("三栏表情面板右缘 ${rightDp}dp 不得溢出窗口 749dp", rightDp <= 749.5f)
+
+        val markers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
+        assertEquals("三栏右栏展开纯色表情面板仍应恰为 3 块玻璃区域", 3, markers.size)
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+        val audit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertEquals("独立 LayerBackdrop 必须仍为 2", 2, audit.layerBackdropCount)
+        assertEquals("严禁父子嵌套 LayerBackdrop", 0, audit.nestedLayerBackdropCount)
+        assertTrue("三栏表情面板展开时 drawBackdrop pass 必须 ≤ 5，实际=${audit.drawBackdropCount}", audit.drawBackdropCount <= 5)
     }
 }
