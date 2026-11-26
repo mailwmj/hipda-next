@@ -73,6 +73,7 @@ import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
+import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
@@ -210,6 +211,8 @@ fun MultiPaneReadingContainer(
     slotHolder: MultiPaneSlotHolder = rememberMultiPaneSlotHolder(hostViewModel),
     shellGlassState: HiGlassState? = null,
     onMiddlePaneWidthChanged: (Dp) -> Unit = {},
+    suppressDetailBottomGlass: Boolean = false,
+    rightPaneOverlay: (@Composable () -> Unit)? = null,
     forumContent: @Composable (ForumChromeSpec, PaddingValues, LazyListState) -> Unit,
     detailContent: @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, LazyListState, () -> Unit) -> Unit,
     secondaryListContent: @Composable (ShellSidebarEntry, Boolean, (() -> Unit)?, PaddingValues, LazyListState) -> Unit = { _, _, _, _, _ -> },
@@ -311,7 +314,9 @@ fun MultiPaneReadingContainer(
     val fullScreenToggle = remember(paneLayout.hasDetailPane, branchAppState.isFullScreenReading, hostViewModel) {
         if (paneLayout.hasDetailPane) FullScreenToggle(branchAppState.isFullScreenReading, hostViewModel::toggleFullScreenReading) else null
     }
-    val rootDetailChrome = remember(paneLayout.hasDetailPane, fullScreenToggle) { DetailChromeSpec(!paneLayout.hasDetailPane, fullScreenToggle) }
+    val rootDetailChrome = remember(paneLayout.hasDetailPane, fullScreenToggle, suppressDetailBottomGlass) {
+        DetailChromeSpec(!paneLayout.hasDetailPane, fullScreenToggle, suppressBottomGlass = suppressDetailBottomGlass)
+    }
 
     val listPaneTitle = stringResource(R.string.shell_pane_list_title)
     val detailPaneTitle = stringResource(R.string.shell_pane_detail_title)
@@ -448,7 +453,12 @@ fun MultiPaneReadingContainer(
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxHeight().semantics { isTraversalGroup = true; paneTitle = detailPaneTitle }) {
-                    if (isActiveDestination) RenderRightSlot(rightSlot, detailPanePadding)
+                    if (isActiveDestination) {
+                        CompositionLocalProvider(LocalHiGlassSuspended provides (LocalHiGlassSuspended.current || rightPaneOverlay != null)) {
+                            RenderRightSlot(rightSlot, detailPanePadding)
+                        }
+                        rightPaneOverlay?.invoke()
+                    }
                 }
             }
             if (!branchAppState.isFullScreenReading) {
