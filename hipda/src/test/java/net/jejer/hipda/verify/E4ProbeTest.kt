@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.layout.LayoutInfo
@@ -51,11 +52,14 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertWidthIsAtLeast
+import androidx.compose.ui.test.down
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.moveBy
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -66,6 +70,7 @@ import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.up
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.Insets
@@ -82,6 +87,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
@@ -94,12 +100,14 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -189,6 +197,10 @@ import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.forum.ForumViewModel
+import net.jejer.hipda.feature.imageviewer.ImageViewerMediaActions
+import net.jejer.hipda.feature.imageviewer.ImageViewerRendererImpl
+import net.jejer.hipda.feature.imageviewer.OriginalDownloadState
+import net.jejer.hipda.feature.imageviewer.OriginalImageDownloader
 import net.jejer.hipda.feature.login.LoginOverlayRendererImpl
 import net.jejer.hipda.feature.messages.MessagesPaneRendererImpl
 import net.jejer.hipda.feature.mine.SearchMinePaneRendererImpl
@@ -227,9 +239,11 @@ import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.feedback.HiRollingNumber
 import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.HiGlassBlurActive
 import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
+import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
 import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
 import net.jejer.hipda.ui.designsystem.glass.assertWcagContrastAtLeast
@@ -975,6 +989,8 @@ class E4ProbeTest {
             "https://www.4d4y.com/forum/\rviewthread.php?tid=1",
             "https://www.4d4y.com/forum/\u0000viewthread.php?tid=1",
             "https:///forum/viewthread.php?tid=1",
+            "https://user@www.4d4y.com/forum/viewthread.php?tid=1",
+            "https://user:pass@www.4d4y.com/forum/viewthread.php?tid=1",
             "http://",
         )
         val context = ApplicationProvider.getApplicationContext<Application>()
@@ -1071,6 +1087,8 @@ class E4ProbeTest {
                 "file:///etc/passwd",
                 "content://settings/secure",
                 "data:text/html,hi",
+                "https://user@www.4d4y.com/forum",
+                "https://user:pass@www.4d4y.com/forum",
             )
             for (badServer in badServers) {
                 composeRule.runOnUiThread {
@@ -1776,12 +1794,527 @@ class E4ProbeTest {
     }
 
     // -------------------------------------------------------------------------
+    // 第 2 轮复验新增探针 (f)(g)：停手 <400ms 立即返回/三栏切帖可挂起持久化 & E14 看图 0 玻璃协同
+    // -------------------------------------------------------------------------
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun probeF1_under400msStopScroll_immediateBack_suspendingSaveSurvivesCancellationAndRestores() {
+        val detailRepo = ProbeThreadDetailRepository().apply {
+            preSavedPositions["1001"] = ReadingPositionEntity(
+                tid = "1001",
+                page = 5,
+                pid = "p502",
+                offsetPx = 20,
+                filterMode = ReadingFilterMode.NONE,
+                updatedAt = 100L,
+            )
+        }
+        val settingsRepo = ProbeSettingsRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val favRepo = ProbeFavoriteRepository()
+        val searchRepo = ProbeSearchRepository()
+        val smsRepo = ProbeSmsRepository()
+        val notifyRepo = ProbeNotifyRepository()
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(ProbeThreadListRepository(), searchRepo, settingsRepo, authRepo, gateway)
+        val offlineImageLoader = createOfflineImageLoader()
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, favRepo, settingsRepo) },
+        )
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = settingsRepo.settings,
+                        currentAccountFlow = authRepo.currentAccount,
+                        smsUnreadCountFlow = MutableStateFlow(0),
+                        notifyUnreadCountFlow = MutableStateFlow(0),
+                        imageLoader = offlineImageLoader,
+                        loginOverlayRenderer = LoginOverlayRendererImpl(authRepo, gateway),
+                        messagesPaneRenderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway),
+                        searchMinePaneRenderer = SearchMinePaneRendererImpl(searchRepo, favRepo, ProbeBrowseHistoryDao(), authRepo, settingsRepo, gateway),
+                        settingsProfilePaneRenderer = SettingsProfilePaneRendererImpl(
+                            ApplicationProvider.getApplicationContext(),
+                            settingsRepo,
+                            ProbeNotificationScheduler(),
+                            offlineImageLoader,
+                            authRepo,
+                            ProbeBlacklistRepository(),
+                            ProbeUserRepository(),
+                        ),
+                        imageViewerRenderer = null,
+                        hostViewModel = hostVm,
+                        forumViewModel = forumVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 打开帖子 1001，等待首轮水合完成，确认停在第 5 页 p502 且未误触发写盘
+        composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 5 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithText("p502", substring = true).assertIsDisplayed()
+        assertEquals(0, detailRepo.saveStartedCalls.size)
+        assertEquals(0, detailRepo.saveCalls.size)
+
+        val vm1001 = ViewModelProvider(
+            hostVm.viewModelStoreOwnerForThread("1001", owner.defaultViewModelProviderFactory),
+        )["thread:1001", ThreadDetailViewModel::class.java]
+        val vmScopeJob = vm1001.viewModelScope.coroutineContext[Job]!!
+
+        // 2. 真实手指滚屏后 <400ms 停手，先硬断言防抖尚未触发 saveReadingPosition
+        scrollDetailDownWithinDebounce("1001")
+        advanceVirtualAndMainLooper(50L)
+        assertEquals("停手 <400ms 内去抖窗口不得提前写盘", 0, detailRepo.saveStartedCalls.size)
+
+        // 3. 挂载会真实挂起的写入闸门，并立即按系统返回退出帖子（触发 onDispose + onCleared 取消 viewModelScope）
+        val writeGate = CompletableDeferred<Unit>()
+        detailRepo.saveDelaysByTid["1001"] = writeGate
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        advanceUntilVirtualCondition(2_500L) {
+            detailRepo.saveStartedCalls.any { it.tid == "1001" } && !vmScopeJob.isActive
+        }
+
+        assertFalse("立即返回并退场后旧帖子 viewModelScope 必须已取消", vmScopeJob.isActive)
+        assertEquals("写入闸门未放行前 saveCalls 必须仍为 0（真实挂起）", 0, detailRepo.saveCalls.count { it.tid == "1001" })
+        val inFlightWrite = detailRepo.saveStartedCalls.last { it.tid == "1001" }
+        assertEquals(5, inFlightWrite.page)
+        assertTrue(
+            "刷盘携带的必须是停手前的最新滚动位置，而非旧位置 p502@20: $inFlightWrite",
+            inFlightWrite.pid != "p502" || inFlightWrite.offsetPx != 20,
+        )
+
+        // 4. 放行真实挂起写入：即使 viewModelScope 已取消仍须在 NonCancellable 中完整写盘，再重进精准恢复
+        detailRepo.saveDelaysByTid.remove("1001")
+        writeGate.complete(Unit)
+        waitUntilRealCondition(3_000L, { "挂起写入放行后未落盘: calls=${detailRepo.saveCalls}" }) {
+            detailRepo.saveCalls.any { it.tid == "1001" }
+        }
+        assertEquals(inFlightWrite, detailRepo.saveCalls.last { it.tid == "1001" })
+        val persisted = detailRepo.preSavedPositions["1001"]!!
+        assertEquals(inFlightWrite.page, persisted.page)
+        assertEquals(inFlightWrite.pid, persisted.pid)
+        assertEquals(inFlightWrite.offsetPx, persisted.offsetPx)
+
+        composeRule.onNodeWithText("探针论坛帖子 1001").assertIsDisplayed().performClick()
+        advanceVirtualAndMainLooper(350L)
+        composeRule.waitForIdle()
+        assertTrue(
+            "重进 1001 后视口应恢复挂载目标楼层 ${inFlightWrite.pid}",
+            composeRule.onAllNodesWithText(inFlightWrite.pid, substring = true).fetchSemanticsNodes().isNotEmpty(),
+        )
+        composeRule.onNodeWithText("p501", substring = true).assertDoesNotExist()
+        assertEquals(2, detailRepo.getReadingPositionCount("1001"))
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun probeF2_threePane_immediateThreadSwitch_under400msAndOverlappingSlowWritePersistLatestCleanly() {
+        val detailRepo = ProbeThreadDetailRepository().apply {
+            preSavedPositions["1001"] = ReadingPositionEntity(
+                tid = "1001",
+                page = 5,
+                pid = "p502",
+                offsetPx = 20,
+                filterMode = ReadingFilterMode.NONE,
+                updatedAt = 100L,
+            )
+            preSavedPositions["1002"] = ReadingPositionEntity(
+                tid = "1002",
+                page = 3,
+                pid = "p304",
+                offsetPx = 44,
+                filterMode = ReadingFilterMode.NONE,
+                updatedAt = 100L,
+            )
+            preSavedPositions["1003"] = ReadingPositionEntity(
+                tid = "1003",
+                page = 2,
+                pid = "p202",
+                offsetPx = 16,
+                filterMode = ReadingFilterMode.NONE,
+                updatedAt = 100L,
+            )
+        }
+        val settingsRepo = ProbeSettingsRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val favRepo = ProbeFavoriteRepository()
+        val searchRepo = ProbeSearchRepository()
+        val smsRepo = ProbeSmsRepository()
+        val notifyRepo = ProbeNotifyRepository()
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(ProbeThreadListRepository(), searchRepo, settingsRepo, authRepo, gateway)
+        val offlineImageLoader = createOfflineImageLoader()
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, favRepo, settingsRepo) },
+        )
+
+        composeRule.setContent {
+            ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = settingsRepo.settings,
+                        currentAccountFlow = authRepo.currentAccount,
+                        smsUnreadCountFlow = MutableStateFlow(0),
+                        notifyUnreadCountFlow = MutableStateFlow(0),
+                        imageLoader = offlineImageLoader,
+                        loginOverlayRenderer = LoginOverlayRendererImpl(authRepo, gateway),
+                        messagesPaneRenderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway),
+                        searchMinePaneRenderer = SearchMinePaneRendererImpl(searchRepo, favRepo, ProbeBrowseHistoryDao(), authRepo, settingsRepo, gateway),
+                        settingsProfilePaneRenderer = SettingsProfilePaneRendererImpl(
+                            ApplicationProvider.getApplicationContext(),
+                            settingsRepo,
+                            ProbeNotificationScheduler(),
+                            offlineImageLoader,
+                            authRepo,
+                            ProbeBlacklistRepository(),
+                            ProbeUserRepository(),
+                        ),
+                        imageViewerRenderer = null,
+                        hostViewModel = hostVm,
+                        forumViewModel = forumVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Part A: 打开 1001 滚屏后 <400ms 立即在三栏中栏切换至 1002，挂起写入在旧 VM 销毁后仍必须落盘
+        composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("p502", substring = true).assertIsDisplayed()
+
+        val vm1001First = ViewModelProvider(
+            hostVm.viewModelStoreOwnerForThread("1001", owner.defaultViewModelProviderFactory),
+        )["thread:1001", ThreadDetailViewModel::class.java]
+        val vmFirstJob = vm1001First.viewModelScope.coroutineContext[Job]!!
+
+        scrollDetailDownWithinDebounce("1001")
+        advanceVirtualAndMainLooper(50L)
+        assertEquals(0, detailRepo.saveStartedCalls.size)
+
+        val switchGate = CompletableDeferred<Unit>()
+        detailRepo.saveDelaysByTid["1001"] = switchGate
+        composeRule.onNodeWithText("探针论坛帖子 1002").performClick()
+        advanceUntilVirtualCondition(2_500L) {
+            detailRepo.saveStartedCalls.any { it.tid == "1001" } && !vmFirstJob.isActive
+        }
+
+        assertFalse("三栏切帖退场后 1001 viewModelScope 必须已取消", vmFirstJob.isActive)
+        assertEquals(0, detailRepo.saveCalls.count { it.tid == "1001" })
+        composeRule.onNodeWithContentDescription("第 3 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithText("p304", substring = true).assertIsDisplayed()
+        val firstSwitchWrite = detailRepo.saveStartedCalls.last { it.tid == "1001" }
+        assertEquals(5, firstSwitchWrite.page)
+        assertTrue(firstSwitchWrite.pid != "p502" || firstSwitchWrite.offsetPx != 20)
+
+        detailRepo.saveDelaysByTid.remove("1001")
+        switchGate.complete(Unit)
+        waitUntilRealCondition(3_000L, { "三栏切帖挂起写入放行后未落盘: ${detailRepo.saveCalls}" }) {
+            detailRepo.saveCalls.any { it.tid == "1001" }
+        }
+        assertEquals(firstSwitchWrite, detailRepo.saveCalls.last { it.tid == "1001" })
+
+        // Part B: 重进 1001 后触发一次慢写入并挂起，挂起期间再滚动并在 <400ms 内切去 1003，验证串行交接且最终落最新位
+        composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+        advanceVirtualAndMainLooper(350L)
+        composeRule.waitForIdle()
+        assertTrue(
+            "重进 1001 后视口应恢复挂载目标楼层 ${firstSwitchWrite.pid}",
+            composeRule.onAllNodesWithText(firstSwitchWrite.pid, substring = true).fetchSemanticsNodes().isNotEmpty(),
+        )
+
+        val vm1001Second = ViewModelProvider(
+            hostVm.viewModelStoreOwnerForThread("1001", owner.defaultViewModelProviderFactory),
+        )["thread:1001", ThreadDetailViewModel::class.java]
+        val vmSecondJob = vm1001Second.viewModelScope.coroutineContext[Job]!!
+        val startIdx = detailRepo.saveStartedCalls.size
+        val savedIdx = detailRepo.saveCalls.size
+
+        val slowGate1 = CompletableDeferred<Unit>()
+        detailRepo.saveDelaysByTid["1001"] = slowGate1
+        scrollDetailDownWithinDebounce("1001")
+        advanceVirtualAndMainLooper(500L)
+        waitUntilRealCondition(2_000L, { "首次慢写入未进入 saveReadingPosition" }) {
+            detailRepo.saveStartedCalls.drop(startIdx).count { it.tid == "1001" } == 1
+        }
+        val midWrite1 = detailRepo.saveStartedCalls.last { it.tid == "1001" }
+        assertEquals(5, midWrite1.page)
+        assertEquals(0, detailRepo.saveCalls.drop(savedIdx).count { it.tid == "1001" })
+
+        // 在第 1 次写入仍挂起时继续滚动并 <400ms 立即切到 1003
+        scrollDetailDownWithinDebounce("1001")
+        advanceVirtualAndMainLooper(50L)
+        composeRule.onNodeWithText("探针论坛帖子 1003").performClick()
+        advanceUntilVirtualCondition(2_500L) { !vmSecondJob.isActive }
+        assertFalse(vmSecondJob.isActive)
+        assertEquals("旧写入放行前，新老写入均不得越序提前落盘", 0, detailRepo.saveCalls.drop(savedIdx).count { it.tid == "1001" })
+
+        detailRepo.saveDelaysByTid.remove("1001")
+        slowGate1.complete(Unit)
+        waitUntilRealCondition(3_000L, { "串行双写放行后未全部落盘: calls=${detailRepo.saveCalls}" }) {
+            detailRepo.saveCalls.drop(savedIdx).count { it.tid == "1001" } >= 2
+        }
+        val completedPair = detailRepo.saveCalls.drop(savedIdx).filter { it.tid == "1001" }
+        assertEquals(2, completedPair.size)
+        assertEquals("先前慢写入必须先完成", midWrite1, completedPair[0])
+        assertEquals(5, completedPair[1].page)
+        assertTrue(
+            "后续 <400ms 补写必须在旧写之后落盘并推进位置: ${completedPair[1]} vs $midWrite1",
+            completedPair[1].pid != midWrite1.pid || completedPair[1].offsetPx != midWrite1.offsetPx,
+        )
+        assertEquals(completedPair[1].pid, detailRepo.preSavedPositions["1001"]?.pid)
+        assertEquals(completedPair[1].offsetPx, detailRepo.preSavedPositions["1001"]?.offsetPx)
+        composeRule.onNodeWithText("p202", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun probeG1_localHiGlassSuspended_pausesBottomToolbarGlassAndSourceDemandCleanly() {
+        var suspendStandalone by mutableStateOf(false)
+        val standaloneGlass = mutableStateOf<net.jejer.hipda.ui.designsystem.glass.HiGlassState?>(null)
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                    val gs = rememberHiGlassState().also { standaloneGlass.value = it }
+                    CompositionLocalProvider(LocalHiGlassSuspended provides suspendStandalone) {
+                        Box(Modifier.fillMaxSize()) {
+                            Box(Modifier.fillMaxSize().hiGlassSource(gs))
+                            ThreadBottomToolbar(
+                                page = 2,
+                                lastPage = 8,
+                                isFavorited = false,
+                                isAttention = false,
+                                glassState = gs,
+                                suppressBottomGlass = false,
+                                isJumpBarExpanded = false,
+                                onExpandedChange = {},
+                                onReplyClick = {},
+                                onJumpToPage = {},
+                                onToggleFavorite = {},
+                                onRefreshClick = {},
+                                onToggleAttention = {},
+                                onCopyLinkClick = {},
+                                onOpenInBrowserClick = {},
+                                onShareClick = {},
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        assertEquals(1, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(3, countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "DrawBackdrop"))
+        assertTrue(standaloneGlass.value!!.hasSourceDemand)
+
+        composeRule.runOnIdle { suspendStandalone = true }
+        composeRule.waitForIdle()
+        assertEquals(0, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, false), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(0, countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "DrawBackdrop"))
+        assertEquals(0, countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "LayerBackdrop"))
+        assertFalse(standaloneGlass.value!!.hasSourceDemand)
+
+        composeRule.runOnIdle { suspendStandalone = false }
+        composeRule.waitForIdle()
+        assertEquals(1, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(3, countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "DrawBackdrop"))
+        assertTrue(standaloneGlass.value!!.hasSourceDemand)
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun probeG2_mergedE14RealImageViewer_suspendsBottomToolbarAndTopBarGlassToZero_andRestoresOnDismiss() {
+        val imageBlock = ContentBlock.Image(
+            fullUrl = "https://www.4d4y.com/forum/attachments/probe_g_full.jpg",
+            thumbUrl = "https://www.4d4y.com/forum/attachments/probe_g_thumb.jpg",
+            fileSizeBytes = 4096L,
+        )
+        val detailRepo = ProbeThreadDetailRepository(
+            imagePages = mapOf(("1001" to 1) to imageBlock),
+        )
+        val settingsRepo = ProbeSettingsRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val favRepo = ProbeFavoriteRepository()
+        val searchRepo = ProbeSearchRepository()
+        val smsRepo = ProbeSmsRepository()
+        val notifyRepo = ProbeNotifyRepository()
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(ProbeThreadListRepository(), searchRepo, settingsRepo, authRepo, gateway)
+        val offlineImageLoader = createOfflineImageLoader()
+        val realE14Renderer = ImageViewerRendererImpl(
+            originalDownloader = object : OriginalImageDownloader {
+                override fun download(url: String) = emptyFlow<OriginalDownloadState>()
+            },
+            mediaActions = object : ImageViewerMediaActions {
+                override suspend fun saveImage(url: String, cachedFile: File?) = false
+                override suspend fun shareImage(url: String, cachedFile: File?) = false
+            },
+        )
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, favRepo, settingsRepo) },
+        )
+
+        composeRule.setContent {
+            ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = settingsRepo.settings,
+                        currentAccountFlow = authRepo.currentAccount,
+                        smsUnreadCountFlow = MutableStateFlow(0),
+                        notifyUnreadCountFlow = MutableStateFlow(0),
+                        imageLoader = offlineImageLoader,
+                        loginOverlayRenderer = LoginOverlayRendererImpl(authRepo, gateway),
+                        messagesPaneRenderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway),
+                        searchMinePaneRenderer = SearchMinePaneRendererImpl(searchRepo, favRepo, ProbeBrowseHistoryDao(), authRepo, settingsRepo, gateway),
+                        settingsProfilePaneRenderer = SettingsProfilePaneRendererImpl(
+                            ApplicationProvider.getApplicationContext(),
+                            settingsRepo,
+                            ProbeNotificationScheduler(),
+                            offlineImageLoader,
+                            authRepo,
+                            ProbeBlacklistRepository(),
+                            ProbeUserRepository(),
+                        ),
+                        imageViewerRenderer = realE14Renderer,
+                        hostViewModel = hostVm,
+                        forumViewModel = forumVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 打开帖子 1001，确认看图前满配三栏共有 3 处 HiGlassMarker（含底部工具条）与活跃模糊采样
+        composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+        assertEquals(3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        val activeBlurBefore = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true), useUnmergedTree = true).fetchSemanticsNodes().size
+        assertTrue("看图前应含顶栏+底栏共 ≥5 个激活模糊表面，实际 $activeBlurBefore", activeBlurBefore >= 5)
+        assertTrue(countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "DrawBackdrop") >= 3)
+        assertTrue(countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "LayerBackdrop") in 1..2)
+
+        // 2. 点击楼层图片打开真实 E14 ImageViewerOverlay，等待 Settled 后验证同屏 0 玻璃 + 0 离屏采样
+        waitUntilRealCondition(5_000L, { "楼层图片未加载就绪" }) {
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image))[0].performClick()
+        advanceUntilVirtualCondition(3_000L) {
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "看图")).fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodes(hasContentDescription("关闭")).fetchSemanticsNodes().isNotEmpty()
+        }
+
+        assertEquals(
+            "打开真实 E14 看图浮层时同屏 HiGlassMarker 必须严格为 0（底部工具条与顶栏全部暂停）",
+            0,
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size,
+        )
+        assertEquals(
+            "打开真实 E14 看图浮层时激活模糊表面 HiGlassBlurActive==true 必须为 0",
+            0,
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true), useUnmergedTree = true).fetchSemanticsNodes().size,
+        )
+        assertTrue(
+            "底层玻璃表面应降级保留但模糊关闭（HiGlassBlurActive==false）",
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, false), useUnmergedTree = true).fetchSemanticsNodes().size >= 5,
+        )
+        assertEquals(
+            "打开真实 E14 看图时全屏 DrawBackdrop 必须严格为 0",
+            0,
+            countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "DrawBackdrop"),
+        )
+        assertEquals(
+            "打开真实 E14 看图时全屏 LayerBackdrop 采样源必须释放为 0",
+            0,
+            countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "LayerBackdrop"),
+        )
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+
+        // 3. 点击 E14 看图“关闭”按钮完成退场动画，硬断言底部工具条与顶栏 3 处玻璃完整恢复且不二次水合
+        composeRule.onNodeWithContentDescription("关闭").performClick()
+        advanceUntilVirtualCondition(3_000L) {
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "看图")).fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.waitForIdle()
+
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+        assertEquals(3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(
+            activeBlurBefore,
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true), useUnmergedTree = true).fetchSemanticsNodes().size,
+        )
+        assertTrue(countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "DrawBackdrop") >= 3)
+        assertTrue(countModifierName(composeRule.onRoot().fetchSemanticsNode().layoutInfo, "LayerBackdrop") in 1..2)
+        composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("末页").assertIsDisplayed()
+    }
+
+    // -------------------------------------------------------------------------
     // 离线测试替身与辅助函数
     // -------------------------------------------------------------------------
 
     private fun advanceVirtualAndMainLooper(millis: Long) {
         composeRule.mainClock.advanceTimeBy(millis)
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(millis))
+    }
+
+    private fun advanceUntilVirtualCondition(
+        timeoutMs: Long,
+        stepMs: Long = 50L,
+        predicate: () -> Boolean,
+    ) {
+        var elapsed = 0L
+        composeRule.waitForIdle()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        while (elapsed < timeoutMs && !predicate()) {
+            advanceVirtualAndMainLooper(stepMs)
+            composeRule.waitForIdle()
+            elapsed += stepMs
+        }
+        assertTrue("虚拟时钟 ${timeoutMs}ms 内未满足条件", predicate())
+    }
+
+    private fun scrollDetailDownWithinDebounce(tid: String) {
+        val listNode = composeRule.onNode(
+            SemanticsMatcher.keyIsDefined(SemanticsProperties.VerticalScrollAxisRange) and
+                hasAnyDescendant(hasText("帖子 $tid 第", substring = true)),
+        )
+        listNode.performTouchInput {
+            val midX = width * 0.5f
+            val startY = height * 0.72f
+            down(Offset(midX, startY))
+            moveBy(Offset(0f, -90f), delayMillis = 16L)
+            moveBy(Offset(0f, -90f), delayMillis = 16L)
+            advanceEventTime(150L)
+            moveBy(Offset.Zero)
+            up()
+        }
     }
 
     private fun countModifierName(root: LayoutInfo, needle: String): Int {
@@ -1968,7 +2501,9 @@ class E4ProbeTest {
     ) : ThreadDetailRepository {
         val preSavedPositions = LinkedHashMap<String, ReadingPositionEntity>()
         val pageDelays = LinkedHashMap<Pair<String, Int>, CompletableDeferred<Unit>>()
+        val saveDelaysByTid = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
         val loadPageCalls = CopyOnWriteArrayList<Pair<String, Int>>()
+        val saveStartedCalls = CopyOnWriteArrayList<SavedReadingCall>()
         val saveCalls = CopyOnWriteArrayList<SavedReadingCall>()
         val getReadingPositionCalls = AtomicInteger(0)
         private val getPositionCountsByTid = ConcurrentHashMap<String, AtomicInteger>()
@@ -2048,7 +2583,10 @@ class E4ProbeTest {
             filterUid: String?,
             filterUserName: String?,
         ) {
-            saveCalls.add(SavedReadingCall(tid, page, pid, offsetPx, filterMode))
+            val call = SavedReadingCall(tid, page, pid, offsetPx, filterMode)
+            saveStartedCalls.add(call)
+            saveDelaysByTid[tid]?.await()
+            saveCalls.add(call)
             preSavedPositions[tid] = ReadingPositionEntity(
                 tid = tid,
                 page = page,
