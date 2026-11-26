@@ -329,6 +329,56 @@ class ImageCompressorTest {
     }
 
     @Test
+    fun prepare_defaultOriginalIsFalse_compressesNormalPhotoWhilePassingGifAndLongImageThrough() = runBlocking {
+        val smallPng = TestImageFactory.writeSolidPng(
+            file = File(tempFolder.root, "default_compress.png"),
+            width = 240,
+            height = 180,
+        )
+        val defaultFileInput = ImageUploadInput.LocalFile(smallPng)
+        val defaultUriInput = ImageUploadInput.ContentUri(Uri.parse("content://net.jejer.hipda.test/media/default.png"))
+        val defaultBytesInput = ImageUploadInput.Bytes(smallPng.readBytes(), mimeType = "image/png")
+        assertFalse("R-D6 S1: ImageUploadInput.LocalFile.original must default to false", defaultFileInput.original)
+        assertFalse("R-D6 S1: ImageUploadInput.ContentUri.original must default to false", defaultUriInput.original)
+        assertFalse("R-D6 S1: ImageUploadInput.Bytes.original must default to false", defaultBytesInput.original)
+
+        val photoRes = compressor.prepare(input = defaultFileInput, maxUploadBytes = 512 * 1024)
+        assertTrue("Expected Success but got $photoRes", photoRes is ImageCompressionResult.Success)
+        val photoPrepared = (photoRes as ImageCompressionResult.Success).image
+        try {
+            assertTrue("Default original=false must compress normal non-GIF photos", photoPrepared.wasCompressed)
+            assertEquals("image/jpeg", photoPrepared.mimeType)
+        } finally {
+            photoPrepared.cleanup()
+        }
+
+        val longPng = TestImageFactory.writeSolidPng(
+            file = File(tempFolder.root, "default_long.png"),
+            width = 100,
+            height = 360,
+        )
+        val longRes = compressor.prepare(input = ImageUploadInput.LocalFile(longPng), maxUploadBytes = 512 * 1024)
+        val longPrepared = (longRes as ImageCompressionResult.Success).image
+        try {
+            assertFalse("Ultra-long image (AR >= 3.0) must still pass through when original defaults to false", longPrepared.wasCompressed)
+            assertEquals("image/png", longPrepared.mimeType)
+        } finally {
+            longPrepared.cleanup()
+        }
+
+        val gifBytes = TestImageFactory.createValidGifBytes(width = 16, height = 16, paddingBytes = 64)
+        val gifRes = compressor.prepare(input = ImageUploadInput.Bytes(gifBytes, mimeType = "image/gif"), maxUploadBytes = 4096)
+        val gifPrepared = (gifRes as ImageCompressionResult.Success).image
+        try {
+            assertFalse("Compliant GIF must still pass through when original defaults to false", gifPrepared.wasCompressed)
+            assertEquals("image/gif", gifPrepared.mimeType)
+        } finally {
+            gifPrepared.cleanup()
+        }
+        assertEquals(0, workDir.listFiles()?.size ?: 0)
+    }
+
+    @Test
     fun prepare_allExifOrientationTransformsProduceExactPixelOrientationAndDimensions() = runBlocking {
         // Source 240x120 landscape quadrants: TL=RED, TR=GREEN, BL=BLUE, BR=YELLOW
         data class ExifCase(

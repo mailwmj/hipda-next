@@ -67,11 +67,14 @@ fun calculateSnackbarRegion(
     bottomPillVisible: Boolean,
     bottomPillClearanceDp: Dp,
     navBarsBottomDp: Dp,
+    detailBottomClearanceDp: Dp = 0.dp,
 ): SnackbarRegionBounds {
     val windowWidth = paneLayout.windowWidthDp.dp
     val defaultBottom = navBarsBottomDp + SNACKBAR_BASE_BOTTOM_CLEARANCE
     val pillBottom = (bottomPillClearanceDp + SNACKBAR_BOTTOM_GAP_ABOVE_CHROME).coerceAtLeast(defaultBottom)
-    if (isFullScreen) return SnackbarRegionBounds(0.dp, windowWidth, defaultBottom)
+    val detailBottom = (detailBottomClearanceDp + SNACKBAR_BOTTOM_GAP_ABOVE_CHROME).coerceAtLeast(defaultBottom)
+    val activeDetailBottom = if (target == PaneSnackbarTarget.DetailPane) detailBottom else defaultBottom
+    if (isFullScreen) return SnackbarRegionBounds(0.dp, windowWidth, activeDetailBottom)
     return when (paneLayout.layoutMode) {
         ShellPaneLayoutMode.CompactThreePane,
         ShellPaneLayoutMode.ExpandedThreePane,
@@ -80,22 +83,25 @@ fun calculateSnackbarRegion(
             val contentW = paneLayout.contentWidthDp.dp
             if (target == PaneSnackbarTarget.DetailPane) {
                 val mid = effectiveMiddleWidthDp.coerceIn(0.dp, contentW)
-                SnackbarRegionBounds(sidebarW + mid, (contentW - mid).coerceAtLeast(0.dp), defaultBottom)
+                SnackbarRegionBounds(sidebarW + mid, (contentW - mid).coerceAtLeast(0.dp), detailBottom)
             } else {
                 SnackbarRegionBounds(sidebarW, contentW, defaultBottom)
             }
         }
         ShellPaneLayoutMode.HingeTwoPane -> if (target == PaneSnackbarTarget.DetailPane) {
             val hingeRight = paneLayout.hingeBoundsDp?.right?.dp ?: paneLayout.middlePaneWidthDp.dp
-            SnackbarRegionBounds(hingeRight, paneLayout.rightPaneWidthDp.dp, defaultBottom)
+            SnackbarRegionBounds(hingeRight, paneLayout.rightPaneWidthDp.dp, detailBottom)
         } else {
             SnackbarRegionBounds(0.dp, paneLayout.middlePaneWidthDp.dp, pillBottom)
         }
-        ShellPaneLayoutMode.SidebarSinglePane -> SnackbarRegionBounds(paneLayout.sidebarWidthDp.dp, paneLayout.contentWidthDp.dp, defaultBottom)
+        ShellPaneLayoutMode.SidebarSinglePane -> SnackbarRegionBounds(paneLayout.sidebarWidthDp.dp, paneLayout.contentWidthDp.dp, activeDetailBottom)
         ShellPaneLayoutMode.SinglePane,
         ShellPaneLayoutMode.CompactSinglePane,
         ShellPaneLayoutMode.HingeFallbackSinglePane,
-        -> SnackbarRegionBounds(0.dp, windowWidth, if (bottomPillVisible) pillBottom else defaultBottom)
+        -> {
+            val baseBottom = if (bottomPillVisible) pillBottom else defaultBottom
+            SnackbarRegionBounds(0.dp, windowWidth, if (target == PaneSnackbarTarget.DetailPane) maxOf(baseBottom, detailBottom) else baseBottom)
+        }
     }
 }
 
@@ -110,13 +116,14 @@ fun MultiPaneSnackbarHost(
     bottomPillClearanceDp: Dp,
     navBarsBottomDp: Dp,
     modifier: Modifier = Modifier,
+    detailBottomClearanceDp: Dp = 0.dp,
 ) {
     val currentVisuals = hostState.currentSnackbarData?.visuals as? PaneSnackbarVisuals
     var cachedTarget by remember { mutableStateOf(PaneSnackbarTarget.ContentArea) }
     if (currentVisuals != null) cachedTarget = currentVisuals.target
     val target = currentVisuals?.target ?: cachedTarget
 
-    val region = calculateSnackbarRegion(paneLayout, effectiveMiddleWidthDp, isFullScreen, target, bottomPillVisible, bottomPillClearanceDp, navBarsBottomDp)
+    val region = calculateSnackbarRegion(paneLayout, effectiveMiddleWidthDp, isFullScreen, target, bottomPillVisible, bottomPillClearanceDp, navBarsBottomDp, detailBottomClearanceDp)
     Box(modifier = modifier.fillMaxSize()) {
         Box(
             modifier = Modifier

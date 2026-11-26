@@ -579,6 +579,41 @@ class ImageUploadRepositoryTest {
     }
 
     @Test
+    fun uploadImage_defaultOriginalFalse_compressesNormalPhotoByDefault() = runBlocking {
+        val stack = createStack()
+        val smallPng = TestImageFactory.writeSolidPng(
+            file = File(tempFolder.root, "default_auto_compress.png"),
+            width = 200,
+            height = 150,
+        )
+        val input = ImageUploadInput.LocalFile(smallPng)
+        assertFalse("R-D6 S1: default original must be false", input.original)
+
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("DISCUZUPLOAD|0|445566|1")
+                .build(),
+        )
+
+        val events = stack.uploadRepo.uploadImage(
+            input = input,
+            uid = "10000",
+            hash = "hash_default_compress",
+            maxUploadBytes = 2 * 1024 * 1024,
+        ).toList()
+
+        val succeeded = events.last() as ImageUploadProgress.Succeeded
+        assertEquals("445566", succeeded.imageId)
+        assertTrue("Normal photo with default original=false must be compressed before upload", succeeded.wasCompressed)
+        val req = server.takeRequest()
+        val rawBody = req.body!!.utf8()
+        assertTrue("Compressed upload filename should use Hi_ prefix", rawBody.contains("filename=\"Hi_"))
+        assertTrue("Compressed upload should encode to JPEG", rawBody.contains("Content-Type: image/jpeg"))
+        assertEquals(0, workDir.listFiles()?.size ?: 0)
+    }
+
+    @Test
     fun uploadImage_umenuLoggedInErrorPageWithLoginKeywords_neverReloginsWhileLoggedOutUmenuDoes() = runBlocking {
         // Direct unit guard for R-D6 S3: #umenu header is authoritative over loose substring markers
         val loggedInDoubleQuote = PostTestFixtures.loggedInHtml(

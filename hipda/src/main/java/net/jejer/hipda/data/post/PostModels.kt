@@ -194,28 +194,30 @@ sealed interface PostSubmitResult {
 /**
  * Image source for [ImageCompressor] and [ImageUploadRepository].
  *
- * [original] defaults to `true` (matching legacy `PostFragment` behavior) so compliant small images
- * without EXIF rotation upload directly without quality loss, while oversized images or images
- * needing EXIF rotation are automatically compressed within the upload byte budget.
+ * [original] defaults to `false` (aligned with `product-design.md` §7.1: auto-compress images
+ * before upload) so ordinary photos are compressed within the upload byte budget by default, while
+ * compliant GIFs and ultra-long images (`aspectRatio >= 3.0`) still pass through directly via
+ * [ImageCompressor]. Callers may explicitly pass `original = true` to upload compliant unrotated
+ * images without re-encoding.
  */
 sealed interface ImageUploadInput {
     val original: Boolean
 
     data class ContentUri(
         val uri: Uri,
-        override val original: Boolean = true,
+        override val original: Boolean = false,
     ) : ImageUploadInput
 
     data class LocalFile(
         val file: File,
-        override val original: Boolean = true,
+        override val original: Boolean = false,
     ) : ImageUploadInput
 
     data class Bytes(
         val bytes: ByteArray,
         val mimeType: String? = null,
         val fileName: String? = null,
-        override val original: Boolean = true,
+        override val original: Boolean = false,
     ) : ImageUploadInput {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
