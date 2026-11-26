@@ -27,6 +27,7 @@ import androidx.work.testing.WorkManagerTestInitHelper
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.Charset
+import java.util.concurrent.CopyOnWriteArrayList
 import javax.xml.parsers.DocumentBuilderFactory
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.Dispatcher
@@ -86,6 +87,7 @@ class M7EntrySwitchVerificationProbeTest {
 
     private lateinit var appContext: Application
     private lateinit var mockServer: MockWebServer
+    private lateinit var dispatcher: OfflineForumDispatcher
     private val gbk: Charset = Charset.forName("GBK")
     private var activeController: ActivityController<MainActivity>? = null
 
@@ -95,7 +97,8 @@ class M7EntrySwitchVerificationProbeTest {
         OkHttp.initialize(appContext)
         WorkManagerTestInitHelper.initializeTestWorkManager(appContext)
         mockServer = MockWebServer()
-        mockServer.dispatcher = OfflineForumDispatcher(gbk)
+        dispatcher = OfflineForumDispatcher(gbk)
+        mockServer.dispatcher = dispatcher
         mockServer.start()
 
         val prefsFile = SettingsModule.settingsDataStoreFile(appContext)
@@ -399,23 +402,23 @@ class M7EntrySwitchVerificationProbeTest {
         val (controller, vm) = launchMainActivity(
             Intent(Intent.ACTION_VIEW, Uri.parse("https://www.4d4y.com/forum/forumdisplay.php?fid=7")),
         )
-        composeRule.waitUntil(5_000) { vm.state.value.activeForumSource == ForumListSource.Forum(7) }
+        waitUntilCondition { vm.state.value.activeForumSource == ForumListSource.Forum(7) }
 
         deliverNewIntent(controller, Intent(Intent.ACTION_VIEW, Uri.parse("https://www.4d4y.com/forum/viewthread.php?tid=88888")))
-        composeRule.waitUntil(5_000) { vm.state.value.selectedThread?.tid == "88888" }
+        waitUntilCondition { vm.state.value.selectedThread?.tid == "88888" }
 
         deliverNewIntent(controller, Intent(Intent.ACTION_VIEW, Uri.parse("https://www.4d4y.com/forum/gotopost.php?pid=555666")))
-        composeRule.waitUntil(5_000) {
+        waitUntilCondition {
             vm.state.value.selectedThread?.tid == "88888" && vm.state.value.selectedThread?.targetPid == "555666"
         }
 
         deliverNewIntent(controller, Intent(Intent.ACTION_VIEW, Uri.parse("https://www.4d4y.com/forum/redirect.php?goto=lastpost&tid=77777")))
-        composeRule.waitUntil(5_000) {
+        waitUntilCondition {
             vm.state.value.selectedThread?.tid == "77777" && vm.state.value.selectedThread?.targetPid == "555777"
         }
 
         deliverNewIntent(controller, Intent(Intent.ACTION_VIEW, Uri.parse("https://www.4d4y.com/forum/space.php?uid=12345")))
-        composeRule.waitUntil(5_000) {
+        waitUntilCondition {
             vm.state.value.detailDrilldownStack == listOf(DetailDrilldownEntry.UserProfile("12345", ""))
         }
 
@@ -424,7 +427,7 @@ class M7EntrySwitchVerificationProbeTest {
         val shadowActivity = Shadows.shadowOf(activity)
         val unsupportedUrl = "https://www.4d4y.com/forum/space.php?username=edgecase"
         deliverNewIntent(controller, Intent(Intent.ACTION_VIEW, Uri.parse(unsupportedUrl)))
-        composeRule.waitUntil(5_000) {
+        waitUntilCondition {
             composeRule.onAllNodesWithText(appContext.getString(R.string.routing_deeplink_unsupported_url))
                 .fetchSemanticsNodes().isNotEmpty()
         }
@@ -516,9 +519,13 @@ class M7EntrySwitchVerificationProbeTest {
     @Test
     fun probe2_dangerousSchemeMatrixAndBadParcelableAdversaryCauseZeroNavigationAndZeroOutboundStarts() {
         val (controller, vm) = launchMainActivity(Intent(Intent.ACTION_MAIN))
-        composeRule.waitUntil(5_000) { vm.state.value.activeForumSource == ForumListSource.Forum(2) }
+        // 等待首屏版块异步加载完全收敛后再记录请求基线，避免启动期后台 forumdisplay 请求在循环中途落网
+        waitUntilCondition {
+            vm.state.value.activeForumSource == ForumListSource.Forum(2) &&
+                composeRule.onAllNodesWithText("离线测试帖").fetchSemanticsNodes().isNotEmpty()
+        }
         val shadowActivity = Shadows.shadowOf(controller.get())
-        val baselineRequests = mockServer.requestCount
+        val baselineRequests = dispatcher.recordedPaths.size
 
         val dangerousPayloads = listOf(
             "javascript:alert(1)",
@@ -551,9 +558,9 @@ class M7EntrySwitchVerificationProbeTest {
             assertNull("Dangerous payload must not start external activity: $payload", shadowActivity.nextStartedActivity)
         }
         assertEquals(
-            "Dangerous scheme matrix must trigger zero extra HTTP requests",
+            "Dangerous scheme matrix must trigger zero extra HTTP requests (got: ${dispatcher.recordedPaths})",
             baselineRequests,
-            mockServer.requestCount,
+            dispatcher.recordedPaths.size,
         )
 
         // BadParcelableException 对抗：外部 Intent 携带非法类 Parcelable Extra 时不崩且仍保留合法 data URI
@@ -562,7 +569,7 @@ class M7EntrySwitchVerificationProbeTest {
             data = Uri.parse("https://www.4d4y.com/forum/viewthread.php?tid=88888"),
         )
         deliverNewIntent(controller, corruptedViewIntent)
-        composeRule.waitUntil(5_000) { vm.state.value.selectedThread?.tid == "88888" }
+        waitUntilCondition { vm.state.value.selectedThread?.tid == "88888" }
 
         // 即使直接对 sanitizeIncomingIntent 传入 BadParcelable Intent 也必须安全脱敏
         val corruptedExtraOnly = buildIntentWithCorruptedParcelableExtra(
@@ -585,6 +592,13 @@ class M7EntrySwitchVerificationProbeTest {
         composeRule.waitForIdle()
         val vm = ViewModelProvider(controller.get())[NextAppHostViewModel::class.java]
         return controller to vm
+    }
+
+    private fun waitUntilCondition(timeoutMillis: Long = 15_000L, condition: () -> Boolean) {
+        composeRule.waitUntil(timeoutMillis) {
+            ShadowLooper.idleMainLooper()
+            condition()
+        }
     }
 
     private fun deliverNewIntent(controller: ActivityController<MainActivity>, intent: Intent) {
@@ -745,9 +759,12 @@ class M7EntrySwitchVerificationProbeTest {
     }
 
     private class OfflineForumDispatcher(private val gbk: Charset) : Dispatcher() {
+        val recordedPaths = CopyOnWriteArrayList<String>()
+
         override fun dispatch(request: RecordedRequest): MockResponse {
             val path = request.url.encodedPath
             val query = request.url.encodedQuery.orEmpty()
+            recordedPaths += "$path?$query"
             val html = when {
                 path.endsWith("gotopost.php") -> threadHtml(tid = "88888", pid = "555666", page = 1)
                 path.endsWith("redirect.php") && query.contains("goto=lastpost") -> threadHtml(tid = "77777", pid = "555777", page = 1)
