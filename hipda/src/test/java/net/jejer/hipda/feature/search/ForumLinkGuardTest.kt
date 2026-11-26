@@ -20,7 +20,7 @@ class ForumLinkGuardTest {
         val users = mutableListOf<Pair<String, String>>()
 
         val threadLink = resolveAllowedForumLink("https://www.4d4y.com/forum/viewthread.php?tid=3478055")
-        assertEquals(ResolvedForumLink.Thread("3478055", 1), threadLink?.target)
+        assertEquals(ResolvedForumLink.Thread("3478055", 1), threadLink)
         assertTrue(dispatchAllowedForumLink("https://www.4d4y.com/forum/viewthread.php?tid=3478055", AppSettings.DEFAULT_FORUM_SERVER, threads::add, forums::add) { u, n -> users += u to n })
 
         assertTrue(dispatchAllowedForumLink("HTTP://www.hi-pda.com/forum/forumdisplay.php?fid=6", AppSettings.DEFAULT_FORUM_SERVER, threads::add, forums::add) { u, n -> users += u to n })
@@ -33,7 +33,7 @@ class ForumLinkGuardTest {
             forumServer = "http://127.0.0.1:8080",
         )
         assertNotNull(customLink)
-        assertEquals(ResolvedForumLink.Thread("9001", 1), customLink?.target)
+        assertEquals(ResolvedForumLink.Thread("9001", 1), customLink)
 
         assertEquals(
             listOf(
@@ -55,6 +55,8 @@ class ForumLinkGuardTest {
             "   ",
             // javascript:
             "javascript:alert(1)",
+            "javascript://www.4d4y.com/forum/viewthread.php?tid=3478055",
+            "JAVASCRIPT://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "javascript:;",
             "JAVASCRIPT:history.back()",
             " JavaScript:alert(1)",
@@ -63,22 +65,27 @@ class ForumLinkGuardTest {
             "java\u0000script:alert(1)",
             // intent:
             "intent://scan/#Intent;scheme=zxing;end",
+            "intent://www.4d4y.com/forum/viewthread.php?tid=3478055#Intent;scheme=https;end",
             "INTENT://evil/#Intent;end",
             " intent://www.4d4y.com/forum/viewthread.php?tid=1",
             // file:
             "file:///data/user/0/net.jejer.hipda/files/secret",
+            "file://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "FILE:///etc/hosts",
             " file:///etc/passwd",
             // content:
             "content://media/external/images/media/1",
+            "content://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "CONTENT://settings/system",
             " content://net.jejer.hipda/db",
             // data:
             "data:text/html,<script>alert(1)</script>",
+            "data:text/html,https://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "DATA:text/plain;base64,QQ==",
             " data:text/html,hi",
             // mailto: (搜索页站内地址仅白名单 http/https)
             "mailto:qa@example.com",
+            "mailto:qa@4d4y.com?subject=https://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "MAILTO:admin@4d4y.com",
             " mailto:qa@example.com",
             // other non-http(s) schemes

@@ -62,27 +62,22 @@ class MineScreenshotTest {
             uiState = FavoritesUiState(
                 selectedKind = FavoriteKind.FAVORITE,
                 isSignedIn = true,
-                favorites = PagedTabState(
-                    items = listOf(
-                        FavoriteThreadItem("3468951", "2026 冬季版规更新与客户端常用技巧整理", "2026-11-26 08:30", "Discovery"),
-                        FavoriteThreadItem("3468902", "低功耗 HomeLab 静音机箱风道改造与硬盘休眠功耗实测", "2026-11-25 21:15", "Geek Talks"),
-                        FavoriteThreadItem("3468810", "今年读完最推荐的五本非虚构电子书与墨水屏排版心得", "2026-11-24 19:40", "E-INK"),
-                        FavoriteThreadItem("3468740", "长途自驾秋季赏枫路线与沿途补能服务区实测攻略", "2026-11-23 14:10", "吃喝玩乐"),
+                tabs = mapOf(
+                    FavoriteKind.FAVORITE to PagedTabState(
+                        items = listOf(
+                            FavoriteThreadItem("3468951", "2026 冬季版规更新与客户端常用技巧整理", "2026-11-26 08:30", "Discovery"),
+                            FavoriteThreadItem("3468902", "低功耗 HomeLab 静音机箱风道改造与硬盘休眠功耗实测", "2026-11-25 21:15", "Geek Talks"),
+                            FavoriteThreadItem("3468810", "今年读完最推荐的五本非虚构电子书与墨水屏排版心得", "2026-11-24 19:40", "E-INK"),
+                            FavoriteThreadItem("3468740", "长途自驾秋季赏枫路线与沿途补能服务区实测攻略", "2026-11-23 14:10", "吃喝玩乐"),
+                        ),
+                        page = 1,
+                        hasMore = false,
+                        hasLoadedOnce = true,
                     ),
-                    page = 1,
-                    hasMore = false,
-                    hasLoadedOnce = true,
                 ),
             ),
             showBack = true,
             onBack = {},
-            onSelectKind = {},
-            onRefresh = {},
-            onLoadMore = {},
-            onRetry = {},
-            onRemoveItem = {},
-            onOpenThread = {},
-            onOpenLogin = {},
         )
     }
 
@@ -105,9 +100,6 @@ class MineScreenshotTest {
                     ),
                     showBack = false,
                     onBack = null,
-                    onOpenThread = {},
-                    onDeleteItem = {},
-                    onClearAll = {},
                 )
             }
         } finally {
@@ -122,17 +114,12 @@ class MineScreenshotTest {
             uiState = FavoritesUiState(
                 selectedKind = FavoriteKind.FAVORITE,
                 isSignedIn = true,
-                favorites = PagedTabState(items = emptyList(), page = 1, hasMore = false, hasLoadedOnce = true),
+                tabs = mapOf(
+                    FavoriteKind.FAVORITE to PagedTabState(items = emptyList(), page = 1, hasMore = false, hasLoadedOnce = true),
+                ),
             ),
             showBack = true,
             onBack = {},
-            onSelectKind = {},
-            onRefresh = {},
-            onLoadMore = {},
-            onRetry = {},
-            onRemoveItem = {},
-            onOpenThread = {},
-            onOpenLogin = {},
         )
     }
 
@@ -143,21 +130,16 @@ class MineScreenshotTest {
             uiState = FavoritesUiState(
                 selectedKind = FavoriteKind.FAVORITE,
                 isSignedIn = true,
-                favorites = PagedTabState(
-                    items = emptyList(),
-                    hasLoadedOnce = true,
-                    error = UiError(R.string.common_error_network, "SocketTimeoutException: connect timed out", UiErrorAction.Retry),
+                tabs = mapOf(
+                    FavoriteKind.FAVORITE to PagedTabState(
+                        items = emptyList(),
+                        hasLoadedOnce = true,
+                        error = UiError(R.string.common_error_network, "SocketTimeoutException: connect timed out", UiErrorAction.Retry),
+                    ),
                 ),
             ),
             showBack = false,
             onBack = null,
-            onSelectKind = {},
-            onRefresh = {},
-            onLoadMore = {},
-            onRetry = {},
-            onRemoveItem = {},
-            onOpenThread = {},
-            onOpenLogin = {},
         )
     }
 

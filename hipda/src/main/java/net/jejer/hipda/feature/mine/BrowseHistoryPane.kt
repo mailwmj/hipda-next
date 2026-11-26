@@ -13,11 +13,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.collectLatest
 import net.jejer.hipda.R
-import net.jejer.hipda.data.local.BrowseHistoryEntity
-import net.jejer.hipda.feature.common.LocalPaneSnackbarController
-import net.jejer.hipda.feature.common.PaneSnackbarTarget
-import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.HiEmptyState
@@ -34,40 +32,37 @@ fun BrowseHistoryPane(
     val resources = LocalResources.current
 
     LaunchedEffect(viewModel, snackbar, resources) {
-        viewModel.snackbarEvents.collect { ev ->
+        viewModel.snackbarEvents.collectLatest { ev ->
             if (ev is BrowseHistorySnackbarEvent.Deleted) {
-                snackbar.show(resources.getString(R.string.mine_snackbar_deleted), PaneSnackbarTarget.ContentArea, resources.getString(R.string.feedback_action_undo)) { viewModel.restoreItems(ev.entities) }
+                snackbar.show(resources.getString(R.string.search_snackbar_deleted), PaneSnackbarTarget.ContentArea, resources.getString(R.string.feedback_action_undo)) { viewModel.undoDelete(ev.token.id) }
+                viewModel.expireUndo(ev.token.id)
             }
         }
     }
-    BrowseHistoryScreenContent(uiState, modifier, showBack, onBack, onOpenThread, viewModel::deleteItem, viewModel::clearAll, contentPadding, listState)
+    BrowseHistoryScreenContent(uiState, modifier, showBack, onBack, contentPadding, listState, viewModel, onOpenThread)
 }
 
 @Composable
 internal fun BrowseHistoryScreenContent(
     uiState: BrowseHistoryUiState, modifier: Modifier = Modifier, showBack: Boolean = false, onBack: (() -> Unit)? = null,
-    onOpenThread: (ThreadNavArgs) -> Unit = {}, onDeleteItem: (BrowseHistoryEntity) -> Unit = {},
-    onClearAll: () -> Unit = {}, contentPadding: PaddingValues = PaddingValues(0.dp),
-    listState: LazyListState = rememberLazyListState(),
+    contentPadding: PaddingValues = PaddingValues(0.dp), listState: LazyListState = rememberLazyListState(),
+    vm: BrowseHistoryViewModel? = null, onOpenThread: (ThreadNavArgs) -> Unit = {},
 ) {
     val cs = MaterialTheme.colorScheme
-    val title = stringResource(R.string.mine_menu_history)
+    val title = stringResource(R.string.shell_sidebar_history)
     val isScrolled by rememberListScrolled(listState)
     val listBottomPadding = rememberListBottomPadding(contentPadding)
     val deleteDesc = stringResource(R.string.mine_action_delete)
 
     Column(modifier.fillMaxSize().background(cs.surface).semantics { paneTitle = title; isTraversalGroup = true }) {
-        MineSolidTopBar(
-            title = title, isScrolled = isScrolled, showBack = showBack, onBack = onBack,
-            trailingAction = if (uiState.items.isNotEmpty()) {
-                {
-                    val clearInt = remember { MutableInteractionSource() }
-                    TextButton(onClick = onClearAll, interactionSource = clearInt, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(clearInt)) {
-                        Text(stringResource(R.string.mine_action_clear_history))
-                    }
+        MineSolidTopBar(title, isScrolled, showBack, onBack, trailingAction = if (uiState.items.isNotEmpty()) {
+            {
+                val clearInt = remember { MutableInteractionSource() }
+                TextButton(onClick = { vm?.clearAll() }, interactionSource = clearInt, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(clearInt)) {
+                    Text(stringResource(R.string.mine_action_clear_history))
                 }
-            } else null,
-        )
+            }
+        } else null)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 uiState.isLoading && uiState.items.isEmpty() -> MineListSkeleton(listBottomPadding)
@@ -76,11 +71,9 @@ internal fun BrowseHistoryScreenContent(
                     items(items = uiState.items, key = { it.tid }) { item ->
                         val formattedTime = remember(item.lastVisitedAt) { formatHistoryTimestamp(item.lastVisitedAt) }
                         Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
-                            MineDismissibleRow(
-                                item.title, item.forumName, item.author, formattedTime, deleteDesc,
-                                onClick = { onOpenThread(ThreadNavArgs(item.tid, item.title, item.fid.toIntOrNull() ?: 0, item.forumName.takeIf(String::isNotBlank), item.author.takeIf(String::isNotBlank))) },
-                                onDismiss = { onDeleteItem(item) },
-                            )
+                            MineThreadRow(item.title, forumName = item.forumName, author = item.author, time = formattedTime, dismissDesc = deleteDesc, onDismiss = { vm?.deleteItem(item) }) {
+                                onOpenThread(ThreadNavArgs(item.tid, item.title, item.fid.toIntOrNull() ?: 0, item.forumName.takeIf(String::isNotBlank), item.author.takeIf(String::isNotBlank)))
+                            }
                             HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
                         }
                     }

@@ -20,6 +20,9 @@ import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.nio.charset.Charset
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
@@ -225,6 +229,189 @@ class MinePagesBehaviorTest {
     }
 
     @Test
+    fun favorites_consecutiveCancel7001Then7002_undoRestoresOnly7002AtOriginalPosition() {
+        server.dispatcher = standardFavoritesDispatcher(
+            listOf("7001" to "收藏甲", "7002" to "收藏乙", "7003" to "收藏丙"),
+        )
+        val authRepo = MutableAuthRepo(testAccount)
+        val (favRepo, gateway) = createMockWebFavoriteRepo(authRepo)
+        val viewModel = FavoritesViewModel(favRepo, authRepo, gateway)
+        val tokens = CopyOnWriteArrayList<FavoriteUndoToken>()
+        val collectJob = scope.launch(Dispatchers.Unconfined) {
+            viewModel.snackbarEvents.collect { if (it is FavoritesSnackbarEvent.Removed) tokens += it.token }
+        }
+        try {
+            composeRule.setContent {
+                MineTestHost {
+                    FavoritesPane(viewModel, showBack = true, onBack = {}, onOpenThread = {}, onOpenLogin = {})
+                }
+            }
+            waitUntilIdleAnd {
+                viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7001", "7002", "7003") &&
+                    composeRule.onAllNodesWithText("收藏甲").fetchSemanticsNodes().isNotEmpty()
+            }
+
+            // 连续取消 7001、7002
+            composeRule.onAllNodesWithContentDescription("取消收藏")[0].performClick()
+            composeRule.waitForIdle()
+            composeRule.onAllNodesWithContentDescription("取消收藏")[0].performClick()
+            waitUntilIdleAnd {
+                tokens.size == 2 && !favRepo.isFavorite("7001") && !favRepo.isFavorite("7002") &&
+                    composeRule.onAllNodesWithText("撤销").fetchSemanticsNodes().isNotEmpty()
+            }
+
+            // 旧令牌（7001）已确认，不能再撤销
+            viewModel.undoRemove(tokens[0].id)
+            composeRule.waitForIdle()
+            assertEquals(listOf("7003"), viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid })
+
+            // 点击当前 Snackbar「撤销」只恢复 7002，且回到 7003 之前
+            composeRule.onNodeWithText("撤销").performClick()
+            waitUntilIdleAnd {
+                favRepo.isFavorite("7002") &&
+                    viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7002", "7003") &&
+                    composeRule.onAllNodesWithText("收藏乙").fetchSemanticsNodes().isNotEmpty()
+            }
+            assertFalse(favRepo.isFavorite("7001"))
+            assertEquals(setOf("7002", "7003"), favRepo.favoriteTids.value)
+            val y7002 = composeRule.onNodeWithText("收藏乙").fetchSemanticsNode().positionInRoot.y
+            val y7003 = composeRule.onNodeWithText("收藏丙").fetchSemanticsNode().positionInRoot.y
+            assertTrue("7002 必须排在 7003 之前", y7002 < y7003)
+        } finally {
+            collectJob.cancel()
+        }
+    }
+
+    @Test
+    fun favorites_cancel7002Then7001_undoRestores7001InOrderAndFallbackRankPreservesOrder() {
+        val failRemove7002 = java.util.concurrent.atomic.AtomicBoolean(false)
+        val remove7002Gate = CountDownLatch(1)
+        val remove7002Entered = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val target = request.target
+                return when {
+                    target.contains("item=favorites&type=thread") -> gbkHtmlResponse(
+                        favoriteListHtml(testAccount.uid, testAccount.username, FavoriteKind.FAVORITE, listOf("7001" to "收藏甲", "7002" to "收藏乙", "7003" to "收藏丙")),
+                    )
+                    target.contains("item=favorites&action=remove") && target.contains("tid=7002") && failRemove7002.get() -> {
+                        remove7002Entered.countDown()
+                        remove7002Gate.await(5, TimeUnit.SECONDS)
+                        gbkXmlResponse("操作失败，请稍后重试。")
+                    }
+                    target.contains("item=favorites&action=remove") -> gbkXmlResponse("此主题已成功从您的收藏夹中移除。")
+                    target.contains("item=favorites&action=add") -> gbkXmlResponse("此主题已成功添加到您的收藏夹中。")
+                    else -> MockResponse(code = 404)
+                }
+            }
+        }
+        val authRepo = MutableAuthRepo(testAccount)
+        val (favRepo, gateway) = createMockWebFavoriteRepo(authRepo)
+        val viewModel = FavoritesViewModel(favRepo, authRepo, gateway)
+
+        composeRule.setContent {
+            MineTestHost {
+                FavoritesPane(viewModel, showBack = true, onBack = {}, onOpenThread = {}, onOpenLogin = {})
+            }
+        }
+        waitUntilIdleAnd {
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7001", "7002", "7003") &&
+                composeRule.onAllNodesWithText("收藏甲").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 1) 先取消 7002、再取消 7001，然后点撤销 -> 恢复 7001，顺序为 [7001, 7003]
+        composeRule.onAllNodesWithContentDescription("取消收藏")[1].performClick()
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithContentDescription("取消收藏")[0].performClick()
+        waitUntilIdleAnd {
+            !favRepo.isFavorite("7002") && !favRepo.isFavorite("7001") &&
+                composeRule.onAllNodesWithText("撤销").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("撤销").performClick()
+        waitUntilIdleAnd {
+            favRepo.isFavorite("7001") &&
+                viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7001", "7003")
+        }
+        assertFalse(favRepo.isFavorite("7002"))
+        assertEquals(setOf("7001", "7003"), favRepo.favoriteTids.value)
+
+        // 2) 锚点消失时按原序秩回插：重新加载 [7001, 7002, 7003]，先取消 7002（锚点 7001，网络失败延迟返回），再取消 7001 -> 回滚 7002 必须落回 [7002, 7003] 而非 [7003, 7002]
+        viewModel.refresh(FavoriteKind.FAVORITE)
+        waitUntilIdleAnd {
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7001", "7002", "7003") &&
+                composeRule.onAllNodesWithText("收藏乙").fetchSemanticsNodes().isNotEmpty()
+        }
+        failRemove7002.set(true)
+        composeRule.onAllNodesWithContentDescription("取消收藏")[1].performClick()
+        assertTrue(remove7002Entered.await(5, TimeUnit.SECONDS))
+        composeRule.onAllNodesWithContentDescription("取消收藏")[0].performClick()
+        waitUntilIdleAnd {
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7003")
+        }
+        remove7002Gate.countDown()
+        waitUntilIdleAnd {
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7002", "7003")
+        }
+    }
+
+    @Test
+    fun favorites_cancelWhileGetListInFlight_doesNotResurrectRemovedItem() {
+        val listCalls = AtomicInteger(0)
+        val secondListStarted = CountDownLatch(1)
+        val releaseSecondList = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val target = request.target
+                return when {
+                    target.contains("item=favorites&type=thread") -> {
+                        if (listCalls.incrementAndGet() == 2) {
+                            secondListStarted.countDown()
+                            releaseSecondList.await(5, TimeUnit.SECONDS)
+                        }
+                        gbkHtmlResponse(
+                            favoriteListHtml(testAccount.uid, testAccount.username, FavoriteKind.FAVORITE, listOf("7001" to "收藏甲", "7002" to "收藏乙", "7003" to "收藏丙")),
+                        )
+                    }
+                    target.contains("item=favorites&action=remove") -> gbkXmlResponse("此主题已成功从您的收藏夹中移除。")
+                    else -> MockResponse(code = 404)
+                }
+            }
+        }
+        val authRepo = MutableAuthRepo(testAccount)
+        val (favRepo, gateway) = createMockWebFavoriteRepo(authRepo)
+        val viewModel = FavoritesViewModel(favRepo, authRepo, gateway)
+
+        composeRule.setContent {
+            MineTestHost {
+                FavoritesPane(viewModel, showBack = true, onBack = {}, onOpenThread = {}, onOpenLogin = {})
+            }
+        }
+        waitUntilIdleAnd {
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7001", "7002", "7003") &&
+                composeRule.onAllNodesWithText("收藏甲").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 发起在途刷新 getList（服务端仍返回旧数据 [7001, 7002, 7003]），期间取消 7001
+        viewModel.refresh(FavoriteKind.FAVORITE)
+        assertTrue(secondListStarted.await(5, TimeUnit.SECONDS))
+        composeRule.onAllNodesWithContentDescription("取消收藏")[0].performClick()
+        waitUntilIdleAnd { !favRepo.isFavorite("7001") }
+
+        // 放行在途 getList 返回，7001 绝不复活
+        releaseSecondList.countDown()
+        waitUntilIdleAnd { !viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).isRefreshing }
+        assertEquals(listOf("7002", "7003"), viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid })
+        assertEquals(setOf("7002", "7003"), favRepo.favoriteTids.value)
+        composeRule.onNodeWithText("收藏甲").assertDoesNotExist()
+
+        // 跨组件直接调用仓库 remove(7002)，列表通过 favoriteTids 实时同步剔除
+        runBlocking { favRepo.remove(FavoriteKind.FAVORITE, "7002") }
+        waitUntilIdleAnd {
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7003")
+        }
+    }
+
+    @Test
     fun myPosts_singlePaneShowsDualTabsAndReplyCarriesTargetPid_sidebarHidesDuplicateTabs() {
         val authRepo = MutableAuthRepo(testAccount)
         val searchRepo = FakeMyPostsSearchRepo(
@@ -354,6 +541,86 @@ class MinePagesBehaviorTest {
     }
 
     @Test
+    fun browseHistory_singleDeleteThenClearAllThenUndo_restoresAllPreClearRecordsWithTimestampsAndOrder() {
+        val dao = database.browseHistoryDao()
+        val e1 = BrowseHistoryEntity("101", "历史一", "2", "Discovery", "alice", 1_764_100_300_000L)
+        val e2 = BrowseHistoryEntity("102", "历史二", "6", "Buy & Sell", "bob", 1_764_100_200_000L)
+        val e3 = BrowseHistoryEntity("103", "历史三", "7", "Geek Talks", "carol", 1_764_100_100_000L)
+        runBlocking { dao.upsert(e1); dao.upsert(e2); dao.upsert(e3) }
+
+        val vm = BrowseHistoryViewModel(dao)
+        composeRule.setContent {
+            MineTestHost { BrowseHistoryPane(vm, showBack = true, onBack = {}, onOpenThread = {}) }
+        }
+        composeRule.waitUntil(5_000L) {
+            composeRule.onAllNodesWithText("历史一").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 先单删 e2，紧接着不等第一条 Snackbar 结束立刻点「清空」
+        composeRule.onAllNodesWithContentDescription("删除")[1].performClick()
+        composeRule.waitUntil(5_000L) {
+            composeRule.onAllNodesWithText("已删除").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("清空").performClick()
+        composeRule.waitUntil(5_000L) {
+            composeRule.onAllNodesWithText("暂无浏览历史").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("撤销").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertTrue(runBlocking { dao.observeRecent(10).first().isEmpty() })
+
+        // 点「撤销」恢复清空前的全部记录 [e1, e3]（含精确时间戳与排序），已确认单删的 e2 不复活
+        composeRule.onNodeWithText("撤销").performClick()
+        composeRule.waitUntil(5_000L) {
+            composeRule.onAllNodesWithText("历史一").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("历史三").fetchSemanticsNodes().isNotEmpty()
+        }
+        val restored = runBlocking { dao.observeRecent(10).first() }
+        assertEquals(listOf(e1, e3), restored)
+        assertEquals(listOf(1_764_100_300_000L, 1_764_100_100_000L), restored.map { it.lastVisitedAt })
+        composeRule.onNodeWithText("历史二").assertDoesNotExist()
+    }
+
+    @Test
+    fun browseHistory_singleDeleteThenClearAll_previousSingleDeleteCanNoLongerBeUndone() {
+        val dao = database.browseHistoryDao()
+        val e1 = BrowseHistoryEntity("201", "记录甲", "2", "Discovery", "alice", 1_764_200_300_000L)
+        val e2 = BrowseHistoryEntity("202", "记录乙", "6", "Buy & Sell", "bob", 1_764_200_200_000L)
+        val e3 = BrowseHistoryEntity("203", "记录丙", "7", "Geek Talks", "carol", 1_764_200_100_000L)
+        runBlocking { dao.upsert(e1); dao.upsert(e2); dao.upsert(e3) }
+
+        val vm = BrowseHistoryViewModel(dao)
+        val tokens = CopyOnWriteArrayList<BrowseHistoryUndoToken>()
+        val collectJob = scope.launch(Dispatchers.Unconfined) {
+            vm.snackbarEvents.collect { if (it is BrowseHistorySnackbarEvent.Deleted) tokens += it.token }
+        }
+        try {
+            composeRule.setContent {
+                MineTestHost { BrowseHistoryPane(vm, showBack = true, onBack = {}, onOpenThread = {}) }
+            }
+            composeRule.waitUntil(5_000L) {
+                composeRule.onAllNodesWithText("记录甲").fetchSemanticsNodes().isNotEmpty()
+            }
+
+            // 单删 e2（令牌 1），紧接着清空（令牌 2 取代令牌 1）
+            composeRule.onAllNodesWithContentDescription("删除")[1].performClick()
+            waitUntilIdleAnd { tokens.size == 1 }
+            composeRule.onNodeWithText("清空").performClick()
+            waitUntilIdleAnd {
+                tokens.size == 2 && composeRule.onAllNodesWithText("暂无浏览历史").fetchSemanticsNodes().isNotEmpty()
+            }
+            assertTrue(tokens[0].id != tokens[1].id)
+
+            // 尝试撤销前一次单删令牌：必须无效，Room 维持空
+            vm.undoDelete(tokens[0].id)
+            composeRule.waitForIdle()
+            assertTrue(runBlocking { dao.observeRecent(10).first().isEmpty() })
+            composeRule.onNodeWithText("记录乙").assertDoesNotExist()
+        } finally {
+            collectJob.cancel()
+        }
+    }
+
+    @Test
     fun signedOut_showsInPlaceLoginPromptAndTriggersCallback() {
         val authRepo = MutableAuthRepo(initialAccount = null)
         val (favRepo, gateway) = createMockWebFavoriteRepo(authRepo)
@@ -421,6 +688,24 @@ class MinePagesBehaviorTest {
                     HiSnackbarHost(hostState = snackbarHostState, bottomClearance = 16.dp)
                 }
             }
+        }
+    }
+
+    private fun waitUntilIdleAnd(timeoutMs: Long = 5_000L, condition: () -> Boolean) {
+        composeRule.waitUntil(timeoutMs) {
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            condition()
+        }
+    }
+
+    private fun standardFavoritesDispatcher(items: List<Pair<String, String>>) = object : Dispatcher() {
+        override fun dispatch(request: RecordedRequest): MockResponse = when {
+            request.target.contains("item=favorites&type=thread") -> gbkHtmlResponse(
+                favoriteListHtml(testAccount.uid, testAccount.username, FavoriteKind.FAVORITE, items),
+            )
+            request.target.contains("item=favorites&action=remove") -> gbkXmlResponse("此主题已成功从您的收藏夹中移除。")
+            request.target.contains("item=favorites&action=add") -> gbkXmlResponse("此主题已成功添加到您的收藏夹中。")
+            else -> MockResponse(code = 404)
         }
     }
 

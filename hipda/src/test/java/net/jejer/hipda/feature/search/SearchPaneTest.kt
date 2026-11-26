@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.AuthState
@@ -100,6 +101,46 @@ class SearchPaneTest {
 
         composeRule.onNodeWithText("键盘").assertIsDisplayed()
         assertEquals(listOf("折叠屏", "键盘", "咖啡"), harness.historyFlow.value)
+    }
+
+    @Test
+    fun recentHistory_consecutiveDeletes_undoRestoresOnlyLatestAndInvalidatesPrevious() {
+        val harness = SearchTestHarness(initialHistory = listOf("折叠屏", "键盘", "咖啡"))
+        val emittedTokens = mutableListOf<SearchHistoryUndoToken>()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
+        val collectJob = scope.launch {
+            harness.viewModel.snackbarEvents.collect {
+                if (it is SearchSnackbarEvent.HistoryDeleted) emittedTokens += it.token
+            }
+        }
+        try {
+            composeRule.setContent { SearchTestHost(harness.viewModel) }
+            composeRule.waitForIdle()
+
+            // 连续快速删除 "折叠屏" 与 "键盘"（上一条 Snackbar 立即替换失效）
+            composeRule.onAllNodesWithContentDescription("删除")[0].performClick()
+            composeRule.waitForIdle()
+            composeRule.onAllNodesWithContentDescription("删除")[0].performClick()
+            composeRule.waitForIdle()
+
+            assertEquals(2, emittedTokens.size)
+            assertEquals(listOf("咖啡"), harness.historyFlow.value)
+
+            // 前一次删除令牌已确认，调用 undoDeleteHistory 无效
+            harness.viewModel.undoDeleteHistory(emittedTokens[0].id)
+            composeRule.waitForIdle()
+            assertEquals(listOf("咖啡"), harness.historyFlow.value)
+
+            // 点当前 Snackbar "撤销" 只恢复最新的 "键盘" 并回到 "咖啡" 之前
+            composeRule.onNodeWithText("撤销").assertIsDisplayed().performClick()
+            composeRule.waitForIdle()
+
+            assertEquals(listOf("键盘", "咖啡"), harness.historyFlow.value)
+            composeRule.onNodeWithText("键盘").assertIsDisplayed()
+            composeRule.onNodeWithText("折叠屏").assertDoesNotExist()
+        } finally {
+            collectJob.cancel()
+        }
     }
 
     @Test
@@ -246,16 +287,26 @@ class SearchPaneTest {
         composeRule.onNodeWithText("打开这个链接").assertIsDisplayed().performClick()
         assertEquals(listOf("10000" to ""), openedUsers)
 
-        // 危险 scheme 与空白/控制字符绕过一律不显示“打开这个链接”
+        // 危险 scheme（含携带 4d4y.com 路径载荷）、大小写/控制字符变体与站外同路径域名一律不显示“打开这个链接”
         val dangerousInputs = listOf(
             "javascript:alert(1)",
+            "javascript://www.4d4y.com/forum/viewthread.php?tid=3478055",
+            "JAVASCRIPT://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "intent://scan/#Intent;scheme=zxing;end",
+            "intent://www.4d4y.com/forum/viewthread.php?tid=3478055#Intent;scheme=https;end",
             "file:///etc/hosts",
+            "file://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "content://media/external/images/media/1",
+            "content://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "data:text/html,<script>alert(1)</script>",
+            "data:text/html,https://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "mailto:qa@example.com",
+            "mailto:qa@4d4y.com?subject=https://www.4d4y.com/forum/viewthread.php?tid=3478055",
             " https://www.4d4y.com/forum/viewthread.php?tid=3478055",
+            "\thttps://www.4d4y.com/forum/viewthread.php?tid=3478055",
             "https://www.4d4y.com/forum/viewthread.php?tid=3478055\n",
+            "https://www.4d4y.com/forum/viewthread.php?tid=3478055\u0000",
+            "https://evil.com/forum/viewthread.php?tid=3478055",
         )
         for (bad in dangerousInputs) {
             inputNode.performTextReplacement(bad)
@@ -306,6 +357,23 @@ class SearchPaneTest {
         composeRule.onNodeWithText("第二页匹配主题").assertIsDisplayed().performClick()
         assertEquals("sid-page", harness.lastSearchId)
         assertEquals(listOf(ThreadNavArgs("5002", "第二页匹配主题", 0, "Discovery", "bob", "88002")), opened)
+    }
+
+    @Test
+    fun clearingAuthorWithEmptyQuery_resetsSubmittedStateToInitial() {
+        val harness = SearchTestHarness(initialHistory = listOf("折叠屏"))
+        composeRule.setContent { SearchTestHost(harness.viewModel) }
+        composeRule.waitForIdle()
+
+        harness.viewModel.onAuthorChange("linus_cn")
+        harness.viewModel.submitSearch()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("没有找到相关内容").assertIsDisplayed()
+
+        harness.viewModel.onAuthorChange("")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("没有找到相关内容").assertDoesNotExist()
+        composeRule.onNodeWithText("最近搜索").assertIsDisplayed()
     }
 
     @androidx.compose.runtime.Composable

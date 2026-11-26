@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.onRoot
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
+import net.jejer.hipda.feature.mine.PagedTabState
 import net.jejer.hipda.parser.search.SearchItem
 import net.jejer.hipda.testing.withAnimatorDurationScale
 import net.jejer.hipda.ui.designsystem.HiColorPresets
@@ -128,13 +129,16 @@ class SearchScreenshotTest {
         query = "折叠屏",
         fullText = true,
         hasSubmitted = true,
-        page = 1,
-        hasMore = true,
-        items = listOf(
-            SearchItem("3478055", "101", "Galaxy Z Fold8 展开态三栏阅读排版与 120Hz 流畅度实测记录", "展开后 749dp 紧凑三栏阅读体验稳定，引用块折行自然，单手切换版块顺手。", "linus_cn", "1", null, "10分钟前", "Discovery"),
-            SearchItem("3478012", "102", "主流大折叠屏外屏与内屏握持重量对比（附通勤一周感受）", "外屏单手刷列表足够轻便，展开读长帖不用反复缩放页面。", "mira", "2", null, "2小时前", "Geek Talks"),
-            SearchItem("3477980", "103", "折叠屏支架与无线充电底座选购汇总，桌面办公实测", null, "kane", "3", null, "昨天", "Buy & Sell"),
-            SearchItem("3477901", "104", "墨水屏与折叠屏睡前阅读护眼对比笔记", "纯黑 OLED 深色模式配合暖色纸感，夜间看长帖不刺眼。", "eink_reader", "4", null, "2026-11-24", "E-INK"),
+        results = PagedTabState(
+            items = listOf(
+                SearchItem("3478055", "101", "Galaxy Z Fold8 展开态三栏阅读排版与 120Hz 流畅度实测记录", "展开后 749dp 紧凑三栏阅读体验稳定，引用块折行自然，单手切换版块顺手。", "linus_cn", "1", null, "10分钟前", "Discovery"),
+                SearchItem("3478012", "102", "主流大折叠屏外屏与内屏握持重量对比（附通勤一周感受）", "外屏单手刷列表足够轻便，展开读长帖不用反复缩放页面。", "mira", "2", null, "2小时前", "Geek Talks"),
+                SearchItem("3477980", "103", "折叠屏支架与无线充电底座选购汇总，桌面办公实测", null, "kane", "3", null, "昨天", "Buy & Sell"),
+                SearchItem("3477901", "104", "墨水屏与折叠屏睡前阅读护眼对比笔记", "纯黑 OLED 深色模式配合暖色纸感，夜间看长帖不刺眼。", "eink_reader", "4", null, "2026-11-24", "E-INK"),
+            ),
+            page = 1,
+            hasMore = true,
+            hasLoadedOnce = true,
         ),
     )
 }
