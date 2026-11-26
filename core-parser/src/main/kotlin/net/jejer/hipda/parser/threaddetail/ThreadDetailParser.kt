@@ -266,17 +266,27 @@ object ThreadDetailParser {
             return null
         }
 
-        val titleHtml = if (pollInfoEl != null) {
+        val titleHtml: String
+        val titleText: String
+        if (pollInfoEl != null) {
             val clonedInfo = pollInfoEl.clone()
             clonedInfo.select("a").remove()
-            DiscuzTextDecoder.decodeDoubleEscapedEntities(clonedInfo.html())
+            titleHtml = DiscuzTextDecoder.decodeDoubleEscapedEntities(clonedInfo.html())
+            titleText = DiscuzTextDecoder.decodeDoubleEscapedEntities(clonedInfo.text()).trim()
         } else {
-            ""
+            titleHtml = ""
+            titleText = ""
         }
 
-        val timerHtml = pollContainer.firstMatch("p.polltimer")
+        val timerEl = pollContainer.firstMatch("p.polltimer")
+        val timerHtml = timerEl
             ?.html()
             ?.let { DiscuzTextDecoder.decodeDoubleEscapedEntities(it) }
+            ?.ifEmpty { null }
+        val timerText = timerEl
+            ?.text()
+            ?.let { DiscuzTextDecoder.decodeDoubleEscapedEntities(it) }
+            ?.trim()
             ?.ifEmpty { null }
 
         val formhash = pollContainer.firstMatch("input[name=formhash]")
@@ -346,6 +356,8 @@ object ThreadDetailParser {
             maxChoices = maxChoices,
             options = options,
             footer = footer,
+            titleText = titleText,
+            timerText = timerText,
         )
     }
 

@@ -53,7 +53,15 @@ class PollParserTest {
         assertEquals("11223344", poll.formhash)
         assertTrue(poll.titleHtml.contains("单选投票"))
         assertFalse(poll.titleHtml.contains("查看投票参与人"))
+        assertEquals("单选投票 , 共有 10 人参与投票", poll.titleText)
+        assertFalse(poll.titleText.contains('<'))
+        assertFalse(poll.titleText.contains('>'))
+        assertFalse(poll.titleText.contains("查看投票参与人"))
         assertEquals("距结束还有: <strong>2 天 4 小时</strong>", poll.timerHtml)
+        assertEquals("距结束还有: 2 天 4 小时", poll.timerText)
+        val timerText = poll.timerText!!
+        assertFalse(timerText.contains('<'))
+        assertFalse(timerText.contains('>'))
         assertEquals("${poll.titleHtml}<br>${poll.timerHtml}", poll.combinedTitleHtml)
         assertEquals("投票后结果可见", poll.footer)
         assertEquals(2, poll.options.size)
@@ -180,5 +188,43 @@ class PollParserTest {
         assertEquals(1, poll!!.maxChoices)
         assertEquals("100.00% (1)", poll.options.single().ratesText)
         assertNull(poll.footer)
+    }
+
+    @Test
+    fun parsePoll_titleTextAndTimerTextStripHtmlTagsDecodeEntitiesAndFallbackSafely() {
+        val doc = Jsoup.parse(
+            """
+            <form id="poll">
+              <div class="pollinfo"><strong>多选投票</strong>: ( 最多可选 <em>2</em> 项 ) &amp;#128512; <a href="misc.php?action=viewvote">查看参与人</a></div>
+              <p class="polltimer">距结束还有: <strong><span>3 天</span> <em>6 小时</em></strong> &amp;#128293;</p>
+              <div class="pollchart"><table><tbody>
+                <tr><td class="selector"><input type="checkbox" value="11" /></td><td class="polloption"><label>选项 A</label></td></tr>
+              </tbody></table></div>
+            </form>
+            """.trimIndent(),
+        )
+        val poll = ThreadDetailParser.parsePoll(doc.firstMatch("form#poll")!!)
+        assertNotNull(poll)
+        assertEquals("多选投票: ( 最多可选 2 项 ) \uD83D\uDE00", poll!!.titleText)
+        assertEquals("距结束还有: 3 天 6 小时 \uD83D\uDD25", poll.timerText)
+        assertFalse(poll.titleText.contains('<') || poll.titleText.contains('>'))
+        val parsedTimerText = poll.timerText!!
+        assertFalse(parsedTimerText.contains('<') || parsedTimerText.contains('>'))
+        assertFalse(poll.titleText.contains("查看参与人"))
+
+        // 直接通过 6 参旧签构造 ThreadPoll 时，默认纯文本属性同样自动剥离全部 HTML 标签
+        val constructed = ThreadPoll(
+            titleHtml = "<strong>单选投票</strong> , 共有 <b>8</b> 人参与",
+            timerHtml = "剩余 <strong>1 天</strong>",
+            formhash = "abcd1234",
+            maxChoices = 1,
+            options = listOf(PollOption("1", "选项")),
+            footer = null,
+        )
+        assertEquals("单选投票 , 共有 8 人参与", constructed.titleText)
+        assertEquals("剩余 1 天", constructed.timerText)
+        assertFalse(constructed.titleText.contains('<') || constructed.titleText.contains('>'))
+        val constructedTimerText = constructed.timerText!!
+        assertFalse(constructedTimerText.contains('<') || constructedTimerText.contains('>'))
     }
 }
