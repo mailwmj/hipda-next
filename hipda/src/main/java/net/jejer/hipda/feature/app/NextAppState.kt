@@ -11,6 +11,9 @@ import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import net.jejer.hipda.ui.shell.ShellSidebarEntrySaver
 
+/** 源码兼容别名：正式枚举位于 `feature/common/ReadingNavContracts.kt`。 */
+typealias SettingsGroup = net.jejer.hipda.feature.common.SettingsGroup
+
 /** 右栏独立下钻栈条目（product-design.md §4.2：帖子 → 用户资料）。 */
 @Immutable
 sealed interface DetailDrilldownEntry {

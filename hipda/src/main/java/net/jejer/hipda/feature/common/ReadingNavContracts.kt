@@ -27,6 +27,21 @@ data class ThreadNavArgs(
 )
 
 @Immutable
+data class SmsConversationArgs(
+    val uid: String,
+    val username: String,
+)
+
+/** 设置 5 个顶层分组（docs/design/copy.md §设置、product-design.md §7.10）。 */
+enum class SettingsGroup {
+    Appearance,
+    ForumAndPost,
+    Notification,
+    NetworkAndCache,
+    About,
+}
+
+@Immutable
 data class ForumChromeSpec(
     val showForumTabs: Boolean,
     val useGlassTopBar: Boolean,
