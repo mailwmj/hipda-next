@@ -374,8 +374,11 @@ class ProguardRulesGuardTest {
             "net.jejer.hipda.feature.login.LoginViewModel",
             "net.jejer.hipda.feature.messages.MessagesListViewModel",
             "net.jejer.hipda.feature.messages.SmsConversationViewModel",
-            // Core screen renderers, emoji & persisted enums
+            // Core screen renderers, E7 emoji panel & persisted enums
             "net.jejer.hipda.emoji.EmojiMap",
+            "net.jejer.hipda.feature.compose.emoji.EmojiPanelRendererImpl",
+            "net.jejer.hipda.feature.compose.emoji.EmojiPanelController",
+            "net.jejer.hipda.feature.compose.emoji.KeyboardHeightTracker",
             "net.jejer.hipda.feature.imageviewer.ImageViewerRendererImpl",
             "net.jejer.hipda.feature.settings.SettingsProfilePaneRendererImpl",
             "net.jejer.hipda.feature.messages.MessagesPaneRendererImpl",
@@ -421,6 +424,7 @@ class ProguardRulesGuardTest {
             "net.jejer.hipda.feature.threaddetail.",
             "net.jejer.hipda.feature.imageviewer.",
             "net.jejer.hipda.feature.compose.",
+            "net.jejer.hipda.feature.compose.emoji.",
             "net.jejer.hipda.emoji.",
             "net.jejer.hipda.feature.settings.",
             "net.jejer.hipda.ui.designsystem.glass.",
