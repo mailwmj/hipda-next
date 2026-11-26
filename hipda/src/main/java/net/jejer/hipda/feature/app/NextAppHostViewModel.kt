@@ -18,6 +18,8 @@ import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.LoginOverlayMode
+import net.jejer.hipda.feature.common.SettingsGroup
+import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
@@ -179,8 +181,21 @@ class NextAppHostViewModel private constructor(
     fun openThread(args: ThreadNavArgs) {
         hasMutatedState = true
         updateReleasingStaleThreads { cur ->
-            cur.copy(selectedThread = args, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
+            cur.copy(selectedThread = args, selectedSmsConversation = null, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
         }
+    }
+
+    /** 中栏短消息列表点开对话，替换右栏根内容并清空下钻栈。 */
+    fun openSmsConversation(args: SmsConversationArgs) {
+        hasMutatedState = true
+        updateReleasingStaleThreads { cur ->
+            cur.copy(selectedThread = null, selectedSmsConversation = args, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
+        }
+    }
+
+    fun selectSettingsGroup(group: SettingsGroup, openDetailInSinglePane: Boolean = false) {
+        hasMutatedState = true
+        _state.update { it.copy(selectedSettingsGroup = group, isSettingsDetailOpen = openDetailInSinglePane) }
     }
 
     fun closeThread() {
@@ -191,6 +206,11 @@ class NextAppHostViewModel private constructor(
     fun pushUserProfile(uid: String, username: String) {
         hasMutatedState = true
         _state.update { it.copy(detailDrilldownStack = it.detailDrilldownStack + DetailDrilldownEntry.UserProfile(uid, username)) }
+    }
+
+    fun pushSmsConversation(args: SmsConversationArgs) {
+        hasMutatedState = true
+        _state.update { it.copy(detailDrilldownStack = it.detailDrilldownStack + DetailDrilldownEntry.SmsConversation(args)) }
     }
 
     fun popDetailDrilldown() {
@@ -264,7 +284,11 @@ class NextAppHostViewModel private constructor(
 }
 
 private fun NextAppState.clearDetailIf(condition: Boolean): NextAppState =
-    if (condition) copy(selectedThread = null, detailDrilldownStack = emptyList(), isFullScreenReading = false) else this
+    if (condition) {
+        copy(selectedThread = null, selectedSmsConversation = null, isSettingsDetailOpen = false, detailDrilldownStack = emptyList(), isFullScreenReading = false)
+    } else {
+        this
+    }
 
 private fun ForumListSource.toSidebarEntry(): ShellSidebarEntry = when (this) {
     ForumListSource.TodayNew -> ShellSidebarEntry.TodayNew
