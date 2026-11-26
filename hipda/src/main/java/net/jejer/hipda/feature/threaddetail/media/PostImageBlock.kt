@@ -168,6 +168,7 @@ fun PostImageBlock(
     val imageLoader = currentHiImageLoader()
     val boundsRegistry = LocalImageViewerBoundsRegistry.current
     val scrollAuthority by rememberUpdatedState(LocalAboveViewportHeightCompensationAuthority.current)
+    val threadGallery by rememberUpdatedState(LocalThreadImageGallery.current)
     val reducedMotion = HiTheme.isReducedMotion
     val displayUrl = resolvedUrls.displayUrl
     val viewerUrl = resolvedUrls.viewerUrl
@@ -310,8 +311,10 @@ fun PostImageBlock(
                             onClick = {
                                 val url = verifiedViewerUrl ?: return@clickable
                                 onOpenImageViewer(
-                                    ImageViewerLaunchArgs(
-                                        urls = listOf(url),
+                                    buildGalleryLaunchArgs(
+                                        clickedUrl = url,
+                                        floorPostId = floorPostId,
+                                        gallery = threadGallery,
                                         sourceBoundsInWindow = layoutTracker.boundsInWindow,
                                     ),
                                 )

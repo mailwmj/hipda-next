@@ -155,6 +155,7 @@ fun SettingsDetailPane(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var activeDialog by rememberSaveable(group) { mutableStateOf<SettingsDialogKind?>(null) }
+    var activeAboutDocument by rememberSaveable(group) { mutableStateOf<AboutAssetDocument?>(null) }
     val groupListStates = SettingsGroup.entries.associateWith { g -> key(g) { rememberLazyListState() } }
     val activeListState = groupListStates.getValue(group)
     val scrolled by remember(activeListState) { derivedStateOf { activeListState.firstVisibleItemIndex > 0 || activeListState.firstVisibleItemScrollOffset > 0 } }
@@ -198,6 +199,7 @@ fun SettingsDetailPane(
                     SettingsGroup.About -> aboutItems(
                         appVersionName = appVersionName,
                         onOpenReleaseThread = { onOpenThread(ThreadNavArgs(tid = CLIENT_RELEASE_TID, title = releaseTitle)) },
+                        onOpenDocument = { activeAboutDocument = it },
                         onViewLogs = { activeDialog = SettingsDialogKind.ErrorLogs; viewModel.loadErrorLogs(null) },
                         onCopyLogs = { withLogs { safe -> runCatching { context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(logsTitle, safe)) }; showContentSnackbar(copiedMsg) } },
                         onShareLogs = { withLogs { safe -> runCatching { val s = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, logsTitle); putExtra(Intent.EXTRA_TEXT, safe) }; context.startActivity(Intent.createChooser(s, logsTitle).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } },
@@ -207,6 +209,9 @@ fun SettingsDetailPane(
         }
     }
     SettingsActiveDialogHost(activeDialog, uiState, viewModel) { activeDialog = null }
+    activeAboutDocument?.let { doc ->
+        AboutAssetDocumentDialog(document = doc, onDismiss = { activeAboutDocument = null })
+    }
 }
 
 private fun LazyListScope.appearanceItems(settings: AppSettings, isDynamicColorSupported: Boolean, vm: SettingsViewModel) {
@@ -300,12 +305,16 @@ private fun LazyListScope.cacheClearRow(key: String, titleRes: Int, clearing: Bo
 private fun LazyListScope.aboutItems(
     appVersionName: String,
     onOpenReleaseThread: () -> Unit,
+    onOpenDocument: (AboutAssetDocument) -> Unit,
     onViewLogs: () -> Unit,
     onCopyLogs: () -> Unit,
     onShareLogs: () -> Unit,
 ) {
     item("version") { ClickableSettingRow(stringResource(R.string.settings_version_title), appVersionName, enabled = false, onClick = {}) }
     item("release_thread") { ClickableSettingRow(stringResource(R.string.settings_release_thread_title), null, showChevron = true, onClick = onOpenReleaseThread) }
+    item("release_notes") { ClickableSettingRow(stringResource(R.string.settings_about_release_notes), null, showChevron = true) { onOpenDocument(AboutAssetDocument.ReleaseNotes) } }
+    item("donors") { ClickableSettingRow(stringResource(R.string.settings_about_donors), null, showChevron = true) { onOpenDocument(AboutAssetDocument.Donors) } }
+    item("license") { ClickableSettingRow(stringResource(R.string.settings_about_license), null, showChevron = true) { onOpenDocument(AboutAssetDocument.License) } }
     item("error_logs") {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.settings_error_logs_title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
