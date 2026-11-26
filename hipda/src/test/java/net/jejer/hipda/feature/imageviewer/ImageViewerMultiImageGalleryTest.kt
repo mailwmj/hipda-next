@@ -29,6 +29,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
+import coil3.ColorImage
+import coil3.decode.DataSource
+import coil3.request.SuccessResult
 import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
 import net.jejer.hipda.feature.common.ImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
@@ -52,7 +55,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.GraphicsMode
 
 /**
  * 覆盖 M7-G2 #9 看图多图横滑与 `LocalThreadImageGallery -> PostImageBlock -> ImageViewerRendererImpl` 端到端链路（撤回即红）：
@@ -60,12 +62,15 @@ import org.robolectric.annotation.GraphicsMode
  * 2. 只要外部通过 `LocalThreadImageGallery` 提供同帖图集，点击正文任意图片（含跨楼层重复 URL）即可精准落至对应 `initialIndex` 并左右横滑。
  */
 @RunWith(RobolectricTestRunner::class)
-@GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(application = Application::class, sdk = [34], qualifiers = "w411dp-h891dp-xhdpi")
 class ImageViewerMultiImageGalleryTest {
 
     @get:Rule
     val composeRule = createComposeRule()
+
+    private fun lightweightImageLoader(): ViewerTestImageLoader = ViewerTestImageLoader { req ->
+        SuccessResult(ColorImage(0xFF336699.toInt(), 800, 600), req, DataSource.MEMORY)
+    }
 
     @Before
     fun setUp() {
@@ -81,7 +86,7 @@ class ImageViewerMultiImageGalleryTest {
 
     @Test
     fun imageViewerOverlay_startsAtInitialIndex1Of3_andSwipesLeftAndRightAcrossAllPages() {
-        val loader = ViewerTestImageLoader.solid(width = 800, height = 600)
+        val loader = lightweightImageLoader()
         var dismissed = false
 
         composeRule.setContent {
@@ -152,7 +157,7 @@ class ImageViewerMultiImageGalleryTest {
                 isAuthorBlocked = false,
             ),
         )
-        val loader = ViewerTestImageLoader.solid(width = 800, height = 600)
+        val loader = lightweightImageLoader()
         val renderer = ImageViewerRendererImpl(FakeOriginalImageDownloader(), FakeImageViewerMediaActions())
         var activeArgs by mutableStateOf<ImageViewerLaunchArgs?>(null)
 

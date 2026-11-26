@@ -27,7 +27,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.GraphicsMode
 
 /**
  * 覆盖 M7-G2 #12 设置「关于」分组 `assets/{release-notes,donors,license}.txt` 三项文档查看（撤回即红）：
@@ -37,7 +36,6 @@ import org.robolectric.annotation.GraphicsMode
  */
 @OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
-@GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(application = Application::class, sdk = [34], qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
 class AboutAssetDocumentsTest {
 
