@@ -1,6 +1,7 @@
 package net.jejer.hipda.feature.compose.emoji
 
 import android.app.Application
+import android.os.Looper
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedDispatcher
@@ -12,8 +13,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -30,6 +33,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +50,7 @@ import net.jejer.hipda.emoji.EmojiMap
 import net.jejer.hipda.feature.app.MultiPaneTestHarness
 import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.common.DetailChromeSpec
+import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
 import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.compose.*
@@ -70,6 +75,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 /**
@@ -1009,6 +1015,159 @@ class EmojiPanelBehaviorTest {
         for (ime in listOf(80, 170, 260)) {
             dispatchInsets(ime)
             assertFrame("${placement.name}-${windowWidthDp.toInt()} 表情→键盘 ime=$ime", baseline)
+        }
+    }
+
+    /** V-E7 原样移植探针 1/3（933×696 CenteredModal）：真实 NextAppRoot + FullEditorHost 单帧步进校验工具栏与图标底缘 ≤ 1dp。 */
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.EXPANDED_933_696)
+    fun probe1b_bugcheck_nextAppRoot_fullEditor_centeredModal933dp_frameByFrameImeEmojiSwap_zeroBottomDisplacement() {
+        verifyNextAppRootCenteredModalProbe(label = "CenteredModal-933x696", navBarDp = 0, imeMaxDp = 260)
+    }
+
+    /** V-E7 原样移植探针 2/3（749×559 CenteredModal）：真实 NextAppRoot + FullEditorHost 单帧步进校验工具栏与图标底缘 ≤ 1dp。 */
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun probe1b_bugcheck_nextAppRoot_fullEditor_centeredModal749dp_frameByFrameImeEmojiSwap_zeroBottomDisplacement() {
+        verifyNextAppRootCenteredModalProbe(label = "CenteredModal-749x559", navBarDp = 0, imeMaxDp = 250)
+    }
+
+    /** V-E7 原样移植探针 3/3（640×1024 CenteredModal）：真实 NextAppRoot + FullEditorHost 单帧步进校验工具栏与图标底缘 ≤ 1dp。 */
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.SIDEBAR_SINGLE_640_1024)
+    fun probe1b_bugcheck_nextAppRoot_fullEditor_centeredModal640dp_frameByFrameImeEmojiSwap_zeroBottomDisplacement() {
+        verifyNextAppRootCenteredModalProbe(label = "CenteredModal-640x1024", navBarDp = 24, imeMaxDp = 280)
+    }
+
+    private fun verifyNextAppRootCenteredModalProbe(label: String, navBarDp: Int, imeMaxDp: Int) {
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val qrVm = QuickReplyViewModel(postRepo, harness.authRepo, clockMs = { 10_000L })
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
+                modelClass.isAssignableFrom(QuickReplyViewModel::class.java) -> qrVm as T
+                modelClass.isAssignableFrom(FullEditorViewModel::class.java) -> editorVm as T
+                else -> harness.vmFactory.create(modelClass)
+            }
+        }
+        val owner = object : ViewModelStoreOwner, HasDefaultViewModelProviderFactory {
+            override val viewModelStore: ViewModelStore = harness.parentOwner.viewModelStore
+            override val defaultViewModelProviderFactory: ViewModelProvider.Factory = factory
+        }
+        var hostView: View? = null
+
+        composeRule.setContent {
+            hostView = LocalView.current
+            ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = harness.settingsRepo.settings,
+                        currentAccountFlow = harness.authRepo.currentAccount,
+                        smsUnreadCountFlow = harness.smsUnread,
+                        notifyUnreadCountFlow = harness.notifyUnread,
+                        hostViewModel = harness.hostViewModel,
+                        forumViewModel = harness.forumViewModel,
+                        fullEditorViewModel = editorVm,
+                        emojiPanelSlot = emojiSlot,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(250L))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+
+        val density = composeRule.density
+        val rootView = requireNotNull(hostView)
+        fun dispatchWindowInsets(imeDp: Int) {
+            val insets = WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.of(0, 0, 0, with(density) { navBarDp.dp.roundToPx() }))
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, with(density) { imeDp.dp.roundToPx() }))
+                .build()
+            composeRule.runOnUiThread { ViewCompat.dispatchApplyWindowInsets(rootView, insets) }
+        }
+        fun assertFrameEdgeStable(phaseLabel: String, baselineDp: Float, actualDp: Float) {
+            val deltaDp = abs(actualDp - baselineDp)
+            assertTrue("[$label][$phaseLabel] 底缘发生位移！baseline=${baselineDp}dp, actual=${actualDp}dp, |Δbottom|=${deltaDp}dp (> 1dp)", deltaDp <= 1f)
+        }
+        fun stepFrameAndCheck(onStep: (String) -> Unit) {
+            Snapshot.sendApplyNotifications()
+            composeRule.mainClock.advanceTimeByFrame()
+            onStep("postCompose")
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            onStep("postLooper")
+            composeRule.mainClock.advanceTimeByFrame()
+            onStep("nextFrame")
+        }
+        fun editorToolbarBottomDp(): Float {
+            val imgBtn = composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode()
+            val toolbarRowBounds = imgBtn.layoutInfo.parentInfo?.let { parentLayout ->
+                val coords = parentLayout.coordinates
+                coords.localToRoot(Offset.Zero).y + coords.size.height
+            } ?: imgBtn.boundsInRoot.bottom
+            return with(density) { toolbarRowBounds.toDp().value }
+        }
+        fun editorInsertImageIconBottomDp(): Float =
+            with(density) { composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode().boundsInRoot.bottom.toDp().value }
+
+        dispatchWindowInsets(imeDp = imeMaxDp)
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(250L)
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(250L))
+        composeRule.waitForIdle()
+
+        val baselineToolbarBottom = editorToolbarBottomDp()
+        val baselineIconBottom = editorInsertImageIconBottomDp()
+
+        composeRule.mainClock.autoAdvance = false
+        try {
+            // 1. IME -> 表情
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            Snapshot.sendApplyNotifications()
+            composeRule.mainClock.advanceTimeByFrame()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertFrameEdgeStable("Editor tapEmoji frame0 toolbar", baselineToolbarBottom, editorToolbarBottomDp())
+            assertFrameEdgeStable("Editor tapEmoji frame0 icon", baselineIconBottom, editorInsertImageIconBottomDp())
+            composeRule.onNodeWithContentDescription("键盘").assertIsDisplayed()
+            composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板")).assertIsDisplayed()
+
+            val hideSteps = listOf(imeMaxDp - 60, imeMaxDp - 130, 60, 0).map { it.coerceAtLeast(0) }
+            for (imeStep in hideSteps) {
+                dispatchWindowInsets(imeDp = imeStep)
+                stepFrameAndCheck { stepLabel ->
+                    assertFrameEdgeStable("Editor hide($imeStep/$stepLabel) toolbar", baselineToolbarBottom, editorToolbarBottomDp())
+                    assertFrameEdgeStable("Editor hide($imeStep/$stepLabel) icon", baselineIconBottom, editorInsertImageIconBottomDp())
+                }
+            }
+
+            // 2. 表情 -> 键盘
+            composeRule.onNodeWithContentDescription("键盘").performClick()
+            Snapshot.sendApplyNotifications()
+            composeRule.mainClock.advanceTimeByFrame()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertFrameEdgeStable("Editor tapKbd frame0 toolbar", baselineToolbarBottom, editorToolbarBottomDp())
+            assertFrameEdgeStable("Editor tapKbd frame0 icon", baselineIconBottom, editorInsertImageIconBottomDp())
+            composeRule.onNodeWithContentDescription("表情").assertIsDisplayed()
+
+            val showSteps = listOf(60, imeMaxDp / 2, imeMaxDp - 40, imeMaxDp)
+            for (imeStep in showSteps) {
+                dispatchWindowInsets(imeDp = imeStep)
+                stepFrameAndCheck { stepLabel ->
+                    assertFrameEdgeStable("Editor show($imeStep/$stepLabel) toolbar", baselineToolbarBottom, editorToolbarBottomDp())
+                    assertFrameEdgeStable("Editor show($imeStep/$stepLabel) icon", baselineIconBottom, editorInsertImageIconBottomDp())
+                }
+            }
+        } finally {
+            composeRule.mainClock.autoAdvance = true
         }
     }
 }
