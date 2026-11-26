@@ -142,6 +142,125 @@ class AccountManagementTest {
     }
 
     @Test
+    fun removeNonCurrentSavedAccount_requiresConfirmationAndPreservesActiveSession() = withAnimatorDurationScale(0f) {
+        val repo = FakeMultiAuthRepository(active = alice, saved = listOf(alice, bob))
+        val vm = AccountManagementViewModel(repo)
+        var visible by mutableStateOf(true)
+
+        setContent {
+            val snackbarHostState = remember { SnackbarHostState() }
+            val controller = remember(snackbarHostState) { SingleHostPaneSnackbarController(snackbarHostState) }
+            HiTheme {
+                CompositionLocalProvider(LocalPaneSnackbarController provides controller) {
+                    Box(Modifier.fillMaxSize()) {
+                        if (visible) AccountManagementOverlay(vm, onAddAccount = {}, onDismiss = { visible = false })
+                        HiSnackbarHost(snackbarHostState, bottomClearance = 16.dp)
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        // 仅非当前账号提供 48x48dp 移除按钮，当前账号不提供行内移除图标
+        onNodeWithContentDescription("清除 alice 的登录信息").assertDoesNotExist()
+        onNodeWithContentDescription("清除 bob 的登录信息")
+            .assertIsDisplayed()
+            .assertWidthIsAtLeast(48.dp)
+            .assertHeightIsAtLeast(48.dp)
+            .performClick()
+        waitForIdle()
+
+        // 点取消：保留 bob，不调 removeAccount / logout
+        onNodeWithText("清除 bob 的保存密码？").assertIsDisplayed()
+        onNodeWithText("取消").performClick()
+        waitForIdle()
+        assertTrue(repo.removeCalls.isEmpty())
+        assertEquals(0, repo.logoutCalls)
+        assertEquals(alice, repo.currentAccount.value)
+        onNodeWithText("bob").assertIsDisplayed()
+
+        // 点确认：仅移除非当前账号 bob，当前账号 alice 保持登录且不登出、不关闭浮层
+        onNodeWithContentDescription("清除 bob 的登录信息").performClick()
+        waitForIdle()
+        onNodeWithText("清除 bob 的保存密码？").assertIsDisplayed()
+        onNodeWithText("清除").performClick()
+        waitForIdle()
+
+        assertEquals(listOf("1002"), repo.removeCalls)
+        assertEquals(0, repo.logoutCalls)
+        assertEquals(alice, repo.currentAccount.value)
+        assertEquals(listOf(alice), repo.savedAccounts.value)
+        assertTrue("移除非当前账号后应保留在账号页查看更新后的列表", visible)
+        onNodeWithText("bob").assertDoesNotExist()
+        onNodeWithText("alice").assertIsDisplayed()
+        onNodeWithText("当前账号").assertIsDisplayed()
+        onNodeWithText("已清除 bob 的登录信息").assertIsDisplayed()
+    }
+
+    @Test
+    fun defaultAuthRepository_removingNonCurrentAccountKeepsActiveSessionAndCookiesIntact() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val nowMs = AtomicLong(1_700_000_000_000L)
+        val sharedCookieStore = InMemorySiteCookieStore(clock = { nowMs.get() })
+        val webViewCookieAccess = TestWebViewCookieAccess()
+        val client = HttpClientModule.provideOkHttpClient(
+            siteCookieStore = sharedCookieStore,
+            userAgentProvider = UserAgentProvider { "TestUA" },
+            transportInterceptor = TransportInterceptor(delegateFactory = { null }, isMainThread = { false }),
+        )
+        try {
+            val baseUrl = "https://www.4d4y.com"
+            val forumUrl = "$baseUrl/forum/".toHttpUrl()
+            val creds = InMemoryCredentialsStore(listOf(alice, bob), activeUid = alice.uid)
+            val settingsRepo = StaticSettingsRepo(AppSettings(forumServer = baseUrl))
+            val gateway = SiteAccessGateway(client, ChallengeDetector(), ChallengeSolver { SolveResult.Cleared }, { nowMs.get() }, scope, 5.seconds)
+            val authRepo = DefaultAuthRepository(
+                credentialsStore = creds,
+                siteCookieStore = sharedCookieStore,
+                settingsRepository = settingsRepo,
+                siteAccessGateway = gateway,
+                recoveryGateway = gateway,
+                clock = { nowMs.get() },
+                scope = scope,
+                webViewCookieAccess = webViewCookieAccess,
+                cookieDispatcher = Dispatchers.Unconfined,
+            )
+
+            // 预置当前账号 alice 的活跃 Cookie 与 cf_clearance
+            sharedCookieStore.saveFromResponse(
+                forumUrl,
+                listOf(
+                    Cookie.parse(forumUrl, "cdb_auth=SYNTH_ALICE_AUTH; Path=/; Max-Age=3600")!!,
+                    Cookie.parse(forumUrl, "cdb_sid=SYNTH_ALICE_SID; Path=/; Max-Age=3600")!!,
+                    Cookie.parse(forumUrl, "cf_clearance=SYNTH_CF_KEEP; Path=/; Max-Age=3600")!!,
+                ),
+            )
+            webViewCookieAccess.seedCookie(forumUrl, "cdb_auth=SYNTH_ALICE_AUTH; Path=/; Max-Age=3600")
+            webViewCookieAccess.seedCookie(forumUrl, "cf_clearance=SYNTH_CF_KEEP; Path=/; Max-Age=3600")
+
+            authRepo.removeAccount(bob.uid)
+
+            assertEquals("当前活跃账号 alice 必须保持不变", alice, authRepo.currentAccount.value)
+            assertEquals(AuthState.SignedIn(alice), authRepo.authState.value)
+            assertEquals("仅移除非当前账号 bob", listOf(alice.uid), authRepo.savedAccounts.value.map { it.uid })
+
+            val remainingSiteNames = sharedCookieStore.loadForRequest(forumUrl).map { it.name }.toSet()
+            assertTrue("移除非当前账号绝不可清除当前 cdb_auth", "cdb_auth" in remainingSiteNames)
+            assertTrue("移除非当前账号绝不可清除当前 cdb_sid", "cdb_sid" in remainingSiteNames)
+            assertTrue("cf_clearance 必须保持完好", "cf_clearance" in remainingSiteNames)
+
+            val remainingWebView = webViewCookieAccess.getCookie(forumUrl.toString()).orEmpty()
+            assertTrue("WebView 当前会话 cdb_auth 必须保持完好", remainingWebView.contains("cdb_auth=SYNTH_ALICE_AUTH"))
+            assertTrue("WebView cf_clearance 必须保持完好", remainingWebView.contains("cf_clearance=SYNTH_CF_KEEP"))
+        } finally {
+            scope.cancel()
+            client.dispatcher.cancelAll()
+            client.dispatcher.executorService.shutdownNow()
+            client.connectionPool.evictAll()
+        }
+    }
+
+    @Test
     fun loginOverlayRendererImpl_switchesFromAccountMenuToLoginAndPreservesModeAcrossRotationWithoutLeakingPassword() = withAnimatorDurationScale(0f) {
         val repo = FakeMultiAuthRepository(active = alice, saved = listOf(alice, bob))
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

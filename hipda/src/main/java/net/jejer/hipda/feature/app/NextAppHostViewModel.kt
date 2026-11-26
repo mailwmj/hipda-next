@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import net.jejer.hipda.BuildConfig
 import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
@@ -33,6 +35,7 @@ import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.routing.DeepLinkTarget
 import net.jejer.hipda.feature.routing.parseIncomingIntent
+import net.jejer.hipda.service.NotificationScheduler
 import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
@@ -53,33 +56,52 @@ class ThreadScopedViewModelStoreOwner(
     override val defaultViewModelCreationExtras: CreationExtras = CreationExtras.Empty,
 ) : ViewModelStoreOwner, HasDefaultViewModelProviderFactory
 
-/** Activity 级宿主 ViewModel：托管按 `tid` 隔离的 [ViewModelStore]、单一导航状态源 [NextAppState]、5 级返回栈、深链路由与分栏偏好持久化。 */
+/** Activity 级宿主 ViewModel：托管按 `tid` 隔离的 [ViewModelStore]、单一导航状态源 [NextAppState]、5 级返回栈、冷启通知调度、版本更新提示、深链路由与分栏偏好持久化。 */
 @HiltViewModel
-class NextAppHostViewModel private constructor(
+class NextAppHostViewModel internal constructor(
     private val settingsRepository: SettingsRepository?,
     private val threadDetailRepository: ThreadDetailRepository?,
-    @Suppress("UNUSED_PARAMETER") marker: Unit,
+    private val notificationScheduler: NotificationScheduler?,
+    private val releaseNotesPromptStore: ReleaseNotesPromptStore?,
+    private val currentVersionCode: Int,
 ) : ViewModel() {
 
     @Inject
     constructor(
         settingsRepository: SettingsRepository,
         threadDetailRepository: ThreadDetailRepository,
-    ) : this(settingsRepository, threadDetailRepository, Unit)
+        notificationScheduler: NotificationScheduler,
+        releaseNotesPromptStore: ReleaseNotesPromptStore,
+    ) : this(
+        settingsRepository = settingsRepository,
+        threadDetailRepository = threadDetailRepository,
+        notificationScheduler = notificationScheduler,
+        releaseNotesPromptStore = releaseNotesPromptStore,
+        currentVersionCode = BuildConfig.VERSION_CODE,
+    )
 
-    constructor(settingsRepository: SettingsRepository) : this(settingsRepository, null, Unit)
+    constructor(
+        settingsRepository: SettingsRepository,
+        threadDetailRepository: ThreadDetailRepository,
+    ) : this(settingsRepository, threadDetailRepository, null, null, BuildConfig.VERSION_CODE)
 
-    constructor() : this(null, null, Unit)
+    constructor(settingsRepository: SettingsRepository) : this(settingsRepository, null, null, null, BuildConfig.VERSION_CODE)
+
+    constructor() : this(null, null, null, null, BuildConfig.VERSION_CODE)
 
     private val threadStores = LinkedHashMap<String, ViewModelStore>()
     private val mountedThreadCounts = HashMap<String, Int>()
     private var hasUserSelectedForum = false
     private var hasMutatedState = false
+    private var releaseNotesPromptDismissed = false
     private var deepLinkResolveJob: Job? = null
     private var deepLinkResolveGen: Long = 0L
 
     private val _state = MutableStateFlow(NextAppState())
     val state: StateFlow<NextAppState> = _state.asStateFlow()
+
+    private val _showReleaseNotesPrompt = MutableStateFlow(false)
+    val showReleaseNotesPrompt: StateFlow<Boolean> = _showReleaseNotesPrompt.asStateFlow()
 
     private val _pendingIntents = MutableStateFlow<List<Intent>>(emptyList())
     internal val pendingIntents: StateFlow<List<Intent>> = _pendingIntents.asStateFlow()
@@ -89,6 +111,51 @@ class NextAppHostViewModel private constructor(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val deepLinkFeedback: SharedFlow<DeepLinkFeedbackEvent> = _deepLinkFeedback.asSharedFlow()
+
+    init {
+        notificationScheduler?.let { scheduler ->
+            viewModelScope.launch {
+                try {
+                    scheduler.syncFromSettings()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
+            }
+        }
+        releaseNotesPromptStore?.let { store ->
+            if (currentVersionCode > 0) {
+                viewModelScope.launch {
+                    val lastSeen = try {
+                        store.getLastSeenVersionCode()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        currentVersionCode
+                    }
+                    if (!releaseNotesPromptDismissed && lastSeen != currentVersionCode) {
+                        _showReleaseNotesPrompt.value = true
+                    }
+                }
+            }
+        }
+    }
+
+    /** 关闭冷启动更新记录提示并立即持久化当前 `versionCode`，确保同版本后续冷启动与旋转不再重复弹出。 */
+    fun dismissReleaseNotesPrompt() {
+        releaseNotesPromptDismissed = true
+        _showReleaseNotesPrompt.value = false
+        val store = releaseNotesPromptStore ?: return
+        if (currentVersionCode <= 0) return
+        viewModelScope.launch {
+            try {
+                store.setLastSeenVersionCode(currentVersionCode)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     internal fun onThreadMounted(tid: String) {
         mountedThreadCounts[tid] = (mountedThreadCounts[tid] ?: 0) + 1

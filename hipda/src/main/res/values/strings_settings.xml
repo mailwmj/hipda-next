@@ -63,6 +63,9 @@
     <!-- 关于 -->
     <string name="settings_version_title">版本</string>
     <string name="settings_release_thread_title">客户端发布帖</string>
+    <string name="settings_about_release_notes">更新记录</string>
+    <string name="settings_about_donors">捐助名单</string>
+    <string name="settings_about_license">开源许可</string>
     <string name="settings_error_logs_title">错误日志</string>
     <string name="settings_error_logs_view">查看</string>
     <string name="settings_error_logs_copy">复制</string>
@@ -88,4 +91,7 @@
     <string name="settings_account_logged_out">已退出登录</string>
     <string name="settings_account_clear_confirm_title">清除 %1$s 的保存密码并退出？</string>
     <string name="settings_account_clear_confirm_action">清除</string>
+    <string name="settings_account_remove_cd">清除 %1$s 的登录信息</string>
+    <string name="settings_account_remove_confirm_title">清除 %1$s 的保存密码？</string>
+    <string name="settings_account_removed">已清除 %1$s 的登录信息</string>
 </resources>
