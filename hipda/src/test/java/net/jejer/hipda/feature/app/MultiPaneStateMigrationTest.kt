@@ -440,6 +440,169 @@ class MultiPaneStateMigrationTest {
         composeRule.onNodeWithText("mem=0,save=0").assertIsDisplayed()
     }
 
+    /** 闭合 R-E3 R2-S1 ①：单次会话连续浏览 21 篇帖子并写入局部 rememberSaveable 状态后，第 1 篇被淘汰归零，最近 20 篇保留。 */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun rE3R2S1_savedDetailStates_exceeding20EvictsOldestInactiveAndRetainsRecent20() {
+        val hostVm = NextAppHostViewModel()
+        val layout = calculateShellPaneLayout(749f, 559f, hasDetailContent = true)
+
+        composeRule.setContent {
+            HiTheme {
+                val collected by hostVm.state.collectAsStateWithLifecycle()
+                MultiPaneReadingContainer(
+                    paneLayout = layout,
+                    appState = collected,
+                    hostViewModel = hostVm,
+                    contentPadding = PaddingValues(0.dp),
+                    persistedPaneSplit = PaneSplit.DEFAULT,
+                    onPaneSplitChange = {},
+                    forumContent = { _, _, _ -> Text("列表") },
+                    detailContent = { args, _, _, _, _ ->
+                        var savedCount by rememberSaveable { mutableIntStateOf(0) }
+                        Column {
+                            Text("当前帖:${args.tid}")
+                            Text("save=${args.tid}:$savedCount")
+                            Button(onClick = { savedCount += 1 }) { Text("写入保存态") }
+                        }
+                    },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        for (i in 1..21) {
+            val tid = i.toString()
+            composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs(tid, "帖子 $tid", 2)) }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("save=$tid:0").assertIsDisplayed()
+            composeRule.onNodeWithText("写入保存态").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("save=$tid:1").assertIsDisplayed()
+        }
+
+        // 最近 20 篇边界内（tid=2 与 tid=20）状态完整保留
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("2", "帖子 2", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=2:1").assertIsDisplayed()
+
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("20", "帖子 20", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=20:1").assertIsDisplayed()
+
+        // 最久未访问的 tid=1 已被 LRU 淘汰，重开回到初始态 0
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("1", "帖子 1", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=1:0").assertIsDisplayed()
+    }
+
+    /** 闭合 R-E3 R2-S1 ②：打开 1..20 后重访 tid=1 刷新为 MRU，再开 tid=21，淘汰的是 tid=2 而 tid=1 保留。 */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun rE3R2S1_savedDetailStates_revisitingOldestRefreshesMruSoSecondOldestIsEvicted() {
+        val hostVm = NextAppHostViewModel()
+        val layout = calculateShellPaneLayout(749f, 559f, hasDetailContent = true)
+
+        composeRule.setContent {
+            HiTheme {
+                val collected by hostVm.state.collectAsStateWithLifecycle()
+                MultiPaneReadingContainer(
+                    paneLayout = layout,
+                    appState = collected,
+                    hostViewModel = hostVm,
+                    contentPadding = PaddingValues(0.dp),
+                    persistedPaneSplit = PaneSplit.DEFAULT,
+                    onPaneSplitChange = {},
+                    forumContent = { _, _, _ -> Text("列表") },
+                    detailContent = { args, _, _, _, _ ->
+                        var savedCount by rememberSaveable { mutableIntStateOf(0) }
+                        Column {
+                            Text("当前帖:${args.tid}")
+                            Text("save=${args.tid}:$savedCount")
+                            Button(onClick = { savedCount += 1 }) { Text("写入保存态") }
+                        }
+                    },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        for (i in 1..20) {
+            val tid = i.toString()
+            composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs(tid, "帖子 $tid", 2)) }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("写入保存态").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("save=$tid:1").assertIsDisplayed()
+        }
+
+        // 重访 tid=1：刷新为 MRU，此时最久未访问项变为 tid=2
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("1", "帖子 1", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=1:1").assertIsDisplayed()
+
+        // 打开第 21 篇帖子：触发 LRU 淘汰 tid=2
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("21", "帖子 21", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("写入保存态").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=21:1").assertIsDisplayed()
+
+        // tid=1 仍保留保存态，tid=2 已被精准淘汰归零
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("1", "帖子 1", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=1:1").assertIsDisplayed()
+
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("2", "帖子 2", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=2:0").assertIsDisplayed()
+    }
+
+    /** 单栏无过渡动画时（旧帖先 dispose、新帖后 mount）同样遵守 20 篇 LRU 上限，不因先离树后挂载延迟淘汰。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun rE3R2S1_savedDetailStates_singlePaneEvictsOldestImmediatelyAt21stThread() {
+        val hostVm = NextAppHostViewModel()
+        val layout = calculateShellPaneLayout(411f, 891f, hasDetailContent = true)
+
+        composeRule.setContent {
+            HiTheme {
+                val collected by hostVm.state.collectAsStateWithLifecycle()
+                MultiPaneReadingContainer(
+                    paneLayout = layout,
+                    appState = collected,
+                    hostViewModel = hostVm,
+                    contentPadding = PaddingValues(0.dp),
+                    persistedPaneSplit = PaneSplit.DEFAULT,
+                    onPaneSplitChange = {},
+                    forumContent = { _, _, _ -> Text("列表") },
+                    detailContent = { args, _, _, _, _ ->
+                        var savedCount by rememberSaveable { mutableIntStateOf(0) }
+                        Column {
+                            Text("save=${args.tid}:$savedCount")
+                            Button(onClick = { savedCount += 1 }) { Text("写入保存态") }
+                        }
+                    },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        for (i in 1..21) {
+            val tid = i.toString()
+            composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs(tid, "帖子 $tid", 2)) }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("写入保存态").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("save=$tid:1").assertIsDisplayed()
+        }
+
+        // 在第 21 篇后直接切回 tid=1：即使单栏先 dispose 21 再 mount 1，tid=1 也必须在第 21 篇挂载时已被淘汰归零
+        composeRule.runOnIdle { hostVm.openThread(ThreadNavArgs("1", "帖子 1", 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("save=1:0").assertIsDisplayed()
+    }
+
     @Test
     @Config(qualifiers = "w749dp-h559dp-xhdpi")
     fun rE0S4_stateRestorationTester_processDeathRestoresForumThreadAndBothLazyListStates() {

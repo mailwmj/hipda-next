@@ -28,6 +28,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.emoji.EmojiMap
@@ -66,7 +67,9 @@ fun SmsConversationScreen(
         if (uiState.scrollToBottomEventId > 0L && uiState.messages.isNotEmpty()) listState.scrollToItem(uiState.messages.lastIndex)
     }
     LaunchedEffect(viewModel, snackbarController, resources) {
-        viewModel.events.collect { event ->
+        viewModel.events.collectLatest { event ->
+            undoSnackbarJob?.cancel()
+            undoSnackbarJob = null
             when (event) {
                 is SmsConversationEvent.CooldownBlocked ->
                     snackbarController.show(resources.getString(R.string.messages_error_cooldown, event.remainingSeconds), PaneSnackbarTarget.DetailPane)

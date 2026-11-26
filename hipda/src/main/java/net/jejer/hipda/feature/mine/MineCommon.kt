@@ -57,6 +57,7 @@ data class PagedTabState<T>(
 /** 唯一最新可撤销令牌管理器：新操作立即覆盖并失效旧令牌，同一时刻仅最新操作可撤销。 */
 internal class UndoTokenManager<T> {
     private var seq = 0L; private var activeId = 0L; private var activePayload: T? = null
+    val hasActiveToken: Boolean get() = activePayload != null
     fun nextId(): Long = ++seq
     fun issue(payload: T, id: Long = ++seq): Long { activeId = id; activePayload = payload; return id }
     fun invalidate(): Long = (++seq).also { clear() }

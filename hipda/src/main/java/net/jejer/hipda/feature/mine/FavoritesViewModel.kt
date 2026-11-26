@@ -42,6 +42,7 @@ class FavoritesViewModel(
         val pendingRemovals = HashSet<String>(); val pendingRestores = HashSet<String>(); val tombstones = HashMap<String, Long>()
         fun reset() { loadJob?.cancel(); loadJob = null; ranks.clear(); nextRank = 0; pendingRemovals.clear(); pendingRestores.clear(); tombstones.clear() }
         fun ensureRanks(items: List<FavoriteThreadItem>) = items.forEach { if (it.tid !in ranks) ranks[it.tid] = nextRank++ }
+        fun rebuildRanks(items: List<FavoriteThreadItem>) { ranks.clear(); nextRank = 0; ensureRanks(items) }
     }
 
     private val state = MutableStateFlow(FavoritesUiState(isSignedIn = authRepository.currentAccount.value != null))
@@ -152,7 +153,12 @@ class FavoritesViewModel(
                 is FavoriteListResult.Success -> if (gen == authGen) updateTab(kind) { cur ->
                     val filtered = res.items.filterNot { it.tid in tr.pendingRemovals || (tr.tombstones[it.tid] ?: 0L) > startSeq }
                     val merged = (if (append) cur.items + filtered else filtered).distinctBy(FavoriteThreadItem::tid)
-                    tr.ensureRanks(merged); cur.markSuccess(merged, res.page, res.hasNextPage)
+                    if (!append && !undoManager.hasActiveToken && tr.pendingRemovals.isEmpty() && tr.pendingRestores.isEmpty()) {
+                        tr.rebuildRanks(merged)
+                    } else {
+                        tr.ensureRanks(merged)
+                    }
+                    cur.markSuccess(merged, res.page, res.hasNextPage)
                 }
                 is FavoriteError -> if (gen == authGen) {
                     val mapped = mapFavoriteError(res); val cf = (res as? FavoriteError.ChallengeRequired)?.let { challengeKind(it.rejected) }

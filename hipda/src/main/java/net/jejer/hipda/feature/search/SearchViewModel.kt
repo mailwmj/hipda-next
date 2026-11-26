@@ -112,9 +112,10 @@ class SearchViewModel(
 
     fun undoDeleteHistory(tokenId: Long) {
         val token = undoManager.consume(tokenId) ?: return
+        val ranksSnapshot = HashMap(historyRanks)
         viewModelScope.launch {
             historyMutex.withLock {
-                val restored = insertByAnchor(searchRepository.searchHistory.first(), token.query, token.anchorQuery, { it }, historyRanks)
+                val restored = insertByAnchor(searchRepository.searchHistory.first(), token.query, token.anchorQuery, { it }, ranksSnapshot)
                 latestHistory = restored
                 searchRepository.restoreSearchHistory(token.query, restored.indexOf(token.query))
             }
@@ -124,7 +125,13 @@ class SearchViewModel(
     fun expireHistoryUndo(tokenId: Long) = undoManager.expire(tokenId)
 
     private fun syncHistoryRanks(history: List<String>) {
-        if (history.any { it !in historyRanks }) { historyRanks.clear(); history.forEachIndexed { i, q -> historyRanks[q] = i } }
+        if (!undoManager.hasActiveToken) {
+            historyRanks.clear()
+            history.forEachIndexed { i, q -> historyRanks[q] = i }
+        } else {
+            var nextRank = (historyRanks.values.maxOrNull() ?: -1) + 1
+            history.forEach { q -> if (q !in historyRanks) historyRanks[q] = nextRank++ }
+        }
     }
 
     private fun resetToInitialState() { activeJob?.cancel(); requestGen++; state.update { it.copy(hasSubmitted = false, searchId = null, results = PagedTabState()) } }

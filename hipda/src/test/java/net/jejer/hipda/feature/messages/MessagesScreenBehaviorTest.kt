@@ -326,6 +326,97 @@ class MessagesScreenBehaviorTest {
         }
 
     @Test
+    fun r2s1_smsConversation_cooldownAndErrorEventsImmediatelyReplaceActiveUndoSnackbar() =
+        withAnimatorDurationScale(0f) {
+            val clock = AtomicLong(1_700_000_000_000L)
+            var failRefresh = false
+            val initialHistory = listOf(SmsMessageItem("20000", "Bob", null, "10:00", "历史首条", false, false))
+            val smsRepo = FakeSmsRepository(
+                clock = { clock.get() },
+                initialMessages = initialHistory,
+                onLoadDetail = {
+                    if (failRefresh) MessageResult.Error("refresh_failed")
+                    else MessageResult.Success(SmsDetailPage("10000", "HiUser", "fh", initialHistory, fakePageMeta(), hasContainer = true))
+                },
+                onSend = { _, _, msg -> if (msg == "尾条成功") SmsSendOutcome.Sent else SmsSendOutcome.Error("500") },
+            )
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val vm = SmsConversationViewModel(smsRepo, FakeAuthRepository(signedIn = true), idleGateway(scope)) { clock.get() }
+            try {
+                setContent {
+                    val snackbarHostState = remember { SnackbarHostState() }
+                    val controller = remember(snackbarHostState) { SingleHostPaneSnackbarController(snackbarHostState) }
+                    HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                        CompositionLocalProvider(LocalPaneSnackbarController provides controller) {
+                            Box(Modifier.fillMaxSize()) {
+                                SmsConversationScreen(SmsConversationArgs("20000", "Bob"), true, {}, { _, _ -> }, {}, PaddingValues(0.dp), vm)
+                                HiSnackbarHost(hostState = snackbarHostState, bottomClearance = 0.dp, modifier = Modifier.align(Alignment.BottomCenter))
+                            }
+                        }
+                    }
+                }
+                waitForIdle()
+
+                // 构造两条失败气泡 + 一条成功气泡（激活 15 秒冷却）
+                onNode(hasSetTextAction()).performTextInput("失败第一条")
+                onNodeWithContentDescription("发送").performClick()
+                waitUntil { onAllNodes(hasContentDescription("发送失败")).fetchSemanticsNodes().size == 1 }
+
+                onNode(hasSetTextAction()).performTextInput("失败第二条")
+                onNodeWithContentDescription("发送").performClick()
+                waitUntil { onAllNodes(hasContentDescription("发送失败")).fetchSemanticsNodes().size == 2 }
+
+                onNode(hasSetTextAction()).performTextInput("尾条成功")
+                onNodeWithContentDescription("发送").performClick()
+                waitUntil { onAllNodes(hasContentDescription("15 秒后可发送")).fetchSemanticsNodes().isNotEmpty() }
+                waitForIdle()
+
+                // 1. 删除第一条失败气泡 -> 10s「已删除 | 撤销」Snackbar 在途（不推进超时）
+                onAllNodes(hasContentDescription("发送失败"))[0].performClick()
+                waitForIdle()
+                onNodeWithText("删除").performClick()
+                waitForIdle()
+                onNodeWithText("失败第一条").assertDoesNotExist()
+                onNodeWithText("已删除").assertIsDisplayed()
+                onNodeWithText("撤销").assertIsDisplayed()
+
+                // 立即对第二条失败气泡点击重发 -> 触发 CooldownBlocked，必须立即顶替旧撤销条且不误触发撤销回调
+                onAllNodes(hasContentDescription("发送失败"))[0].performClick()
+                waitForIdle()
+                onNodeWithText("重发").performClick()
+                waitForIdle()
+
+                onNodeWithText("发送太快，请等 15 秒后再试").assertIsDisplayed()
+                onNodeWithText("已删除").assertDoesNotExist()
+                onNodeWithText("撤销").assertDoesNotExist()
+                onNodeWithText("失败第一条").assertDoesNotExist()
+
+                // 2. 等待冷却提示自然消退后再删第二条失败气泡 -> 立即触发 ShowError（刷新失败）同样即时顶替旧撤销条
+                mainClock.advanceTimeBy(5_000L)
+                waitForIdle()
+                onNodeWithText("发送太快，请等 15 秒后再试").assertDoesNotExist()
+
+                onAllNodes(hasContentDescription("发送失败"))[0].performClick()
+                waitForIdle()
+                onNodeWithText("删除").performClick()
+                waitForIdle()
+                onNodeWithText("失败第二条").assertDoesNotExist()
+                onNodeWithText("已删除").assertIsDisplayed()
+
+                failRefresh = true
+                runOnIdle { vm.refresh() }
+                waitForIdle()
+
+                onNodeWithText("已删除").assertDoesNotExist()
+                onNodeWithText("撤销").assertDoesNotExist()
+                onNodeWithText("重试").assertIsDisplayed()
+                onNodeWithText("失败第二条").assertDoesNotExist()
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
     fun smsList_clearConfirmationDialogAndLoggedOutPromptAndSidebarMorphing() = withAnimatorDurationScale(0f) {
         val clearedUids = mutableListOf<String>()
         val smsRepo = FakeSmsRepository(

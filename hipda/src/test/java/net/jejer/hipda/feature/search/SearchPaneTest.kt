@@ -144,6 +144,41 @@ class SearchPaneTest {
     }
 
     @Test
+    fun rE10R2S1_recentHistory_researchPromotesOldQuery_deleteAndUndoRestoresAtFirstPosition() {
+        val harness = SearchTestHarness(initialHistory = listOf("苹果", "香蕉", "咖啡"))
+        composeRule.setContent { SearchTestHost(harness.viewModel) }
+        composeRule.waitForIdle()
+
+        // 1. 初始 ["苹果", "香蕉", "咖啡"] 已建立秩表 {苹果:0, 香蕉:1, 咖啡:2}（先删再撤确保建秩且令牌已消费清空）
+        composeRule.onAllNodesWithContentDescription("删除")[1].performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("撤销").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        assertEquals(listOf("苹果", "香蕉", "咖啡"), harness.historyFlow.value)
+
+        // 2. 重搜旧词 "咖啡" 使其提升至首位 ["咖啡", "苹果", "香蕉"]，清空输入回到最近搜索列表
+        composeRule.onNodeWithText("咖啡").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { harness.viewModel.clearQuery() }
+        composeRule.waitForIdle()
+        assertEquals(listOf("咖啡", "苹果", "香蕉"), harness.historyFlow.value)
+
+        // 3. 无活跃令牌下删除首位 "咖啡" 后立即点「撤销」-> 必须恢复回第 1 位而非按旧秩错落末尾
+        composeRule.onAllNodesWithContentDescription("删除")[0].performClick()
+        composeRule.waitForIdle()
+        assertEquals(listOf("苹果", "香蕉"), harness.historyFlow.value)
+
+        composeRule.onNodeWithText("撤销").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        assertEquals(listOf("咖啡", "苹果", "香蕉"), harness.historyFlow.value)
+        val yCoffee = composeRule.onNodeWithText("咖啡").fetchSemanticsNode().positionInRoot.y
+        val yApple = composeRule.onNodeWithText("苹果").fetchSemanticsNode().positionInRoot.y
+        val yBanana = composeRule.onNodeWithText("香蕉").fetchSemanticsNode().positionInRoot.y
+        assertTrue("重搜提升后的“咖啡”撤销后必须回到第 1 位（coffee=$yCoffee, apple=$yApple, banana=$yBanana）", yCoffee < yApple && yApple < yBanana)
+    }
+
+    @Test
     fun filterPanel_expandAndCollapse_isInterruptibleMidAnimation() {
         val harness = SearchTestHarness(initialHistory = listOf("折叠屏"))
         composeRule.setContent {
@@ -417,6 +452,7 @@ class SearchPaneTest {
                 lastForumId = forumId
                 lastFullText = fullText
                 lastSearchId = searchId
+                if (recordHistory && query.isNotBlank()) recordSearchHistory(query)
                 return pagedResults[page] ?: nextSearchResult
             }
             override suspend fun getNewPosts(page: Int, searchId: String?, priority: AccessPriority) = nextSearchResult

@@ -197,6 +197,94 @@ class BlacklistScreenAndMockWebServerTest {
     }
 
     @Test
+    fun rE12R2S1_removeAdjacentWhilePreviousInFlight_skipsRemovingNeighborAsAnchorAndRestoresOrder() = withAnimatorDurationScale(0f) {
+        val account = SavedAccount("1001", "alice", "0123456789abcdef0123456789abcdef", lastLoginAt = 1L)
+
+        // 1. ViewModel 级精准校验：挂起移出 C（仍在 removingUsernames）时发起移出 D -> D 令牌的 previousNeighbor 必须跳过 C 锁定为 B
+        val gateC1 = CompletableDeferred<BlacklistMutationResult>()
+        val gateD1 = CompletableDeferred<BlacklistMutationResult>()
+        val bl1 = FakeBlacklistRepo(
+            initial = linkedSetOf("A", "B", "C", "D"),
+            perUserRemoveGates = mapOf("C" to gateC1, "D" to gateD1),
+        )
+        val vm1 = BlacklistViewModel(FakeAuthRepo(account), bl1)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        var removedC: BlacklistUndoToken? = null
+        var removedD: BlacklistUndoToken? = null
+        vm1.removeUser("C", onRemoved = { removedC = it }, onFailed = { fail("unexpected error: $it") })
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertTrue("C 应处于在途移除态", "C" in vm1.uiState.value.removingUsernames)
+        assertTrue("慢网未返回前 C 仍在 activeBlockedSet", "C" in vm1.uiState.value.activeBlockedSet)
+
+        vm1.removeUser("D", onRemoved = { removedD = it }, onFailed = { fail("unexpected error: $it") })
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        bl1.completeRemove("C")
+        gateC1.complete(BlacklistMutationResult.Success("C", bl1.blockedUsernames.value))
+        bl1.completeRemove("D")
+        gateD1.complete(BlacklistMutationResult.Success("D", bl1.blockedUsernames.value))
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertNull("旧令牌 C 被新令牌 D 取代后不得回调 onRemoved", removedC)
+        val tokenD = requireNotNull(removedD) { "D 移除完成后应回调 onRemoved" }
+        assertEquals("D 捕获的前邻居锚点必须跳过在途移除项 C 并锁定为 B", "B", tokenD.previousNeighbor)
+
+        vm1.restoreUser(tokenD, onFailed = { fail("unexpected restore error: $it") })
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(
+            "撤销 D 后必须精确恢复回 B 之后得到 [A, B, D]，绝不得回退插到首位 [D, A, B]",
+            listOf("A", "B", "D"),
+            vm1.uiState.value.orderedUsernames.filter { it in vm1.uiState.value.activeBlockedSet },
+        )
+
+        // 2. 端到端 UI 校验：在黑名单页依次点移出 C（在途进度圈）与 D -> 放行两者 -> 点撤销 -> 界面顺序严格为 [A, B, D]
+        val gateC2 = CompletableDeferred<BlacklistMutationResult>()
+        val gateD2 = CompletableDeferred<BlacklistMutationResult>()
+        val bl2 = FakeBlacklistRepo(
+            initial = linkedSetOf("A", "B", "C", "D"),
+            perUserRemoveGates = mapOf("C" to gateC2, "D" to gateD2),
+        )
+        val vm2 = BlacklistViewModel(FakeAuthRepo(account), bl2)
+        setContent {
+            val snackbarHostState = remember { SnackbarHostState() }
+            val controller = remember(snackbarHostState) { SingleHostPaneSnackbarController(snackbarHostState) }
+            HiTheme {
+                CompositionLocalProvider(LocalPaneSnackbarController provides controller) {
+                    Box(Modifier.fillMaxSize()) {
+                        BlacklistScreen(vm2, onBack = {}, onOpenLogin = {}, contentPadding = PaddingValues(0.dp))
+                        HiSnackbarHost(snackbarHostState, bottomClearance = 16.dp)
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        onAllNodesWithText("移出黑名单")[2].performClick() // C
+        waitForIdle()
+        onAllNodesWithText("移出黑名单")[2].performClick() // C 变为进度圈后，索引 2 为 D
+        waitForIdle()
+        assertEquals(listOf("C", "D"), bl2.removeCalls)
+
+        bl2.completeRemove("C")
+        gateC2.complete(BlacklistMutationResult.Success("C", bl2.blockedUsernames.value))
+        bl2.completeRemove("D")
+        gateD2.complete(BlacklistMutationResult.Success("D", bl2.blockedUsernames.value))
+        waitForIdle()
+
+        onNodeWithText("已将 D 移出黑名单").assertIsDisplayed()
+        onNodeWithText("撤销").performClick()
+        waitForIdle()
+
+        assertEquals(listOf("A", "B", "D"), vm2.uiState.value.orderedUsernames.filter { it in vm2.uiState.value.activeBlockedSet })
+        val topA = onAllNodesWithText("A").onLast().fetchSemanticsNode().boundsInRoot.top
+        val topB = onAllNodesWithText("B").onLast().fetchSemanticsNode().boundsInRoot.top
+        val topD = onAllNodesWithText("D").onLast().fetchSemanticsNode().boundsInRoot.top
+        assertTrue("B 应位于 A 之后（A=$topA, B=$topB）", topB > topA)
+        assertTrue("D 应恢复到 B 之后（B=$topB, D=$topD）", topD > topB)
+    }
+
+    @Test
     fun blacklist_syncRemoveAndUndoAgainstMockWebServer() = runBlocking {
         val server = MockWebServer()
         server.start()
@@ -278,6 +366,7 @@ class BlacklistScreenAndMockWebServerTest {
     private class FakeBlacklistRepo(
         initial: Set<String>,
         private val pendingRemove: CompletableDeferred<BlacklistMutationResult>? = null,
+        private val perUserRemoveGates: Map<String, CompletableDeferred<BlacklistMutationResult>> = emptyMap(),
     ) : BlacklistRepository {
         private val _blocked = MutableStateFlow(initial)
         override val blockedUsernames: StateFlow<Set<String>> = _blocked.asStateFlow()
@@ -293,6 +382,7 @@ class BlacklistScreenAndMockWebServerTest {
 
         override suspend fun removeFromBlacklist(username: String, formhash: String?, priority: AccessPriority): BlacklistMutationResult {
             removeCalls += username
+            perUserRemoveGates[username]?.let { return it.await() }
             if (pendingRemove != null) return pendingRemove.await()
             _blocked.update { it - username }
             return BlacklistMutationResult.Success(username, _blocked.value)

@@ -90,11 +90,11 @@ val NextAppStateSaver: Saver<NextAppState, Any> = listSaver(
             s.detailDrilldownStack.flatMap { e ->
                 when (e) {
                     is DetailDrilldownEntry.UserProfile -> listOf("u", e.uid, e.username)
-                    is DetailDrilldownEntry.SmsConversation -> listOf("s", e.args.uid, e.args.username)
+                    is DetailDrilldownEntry.SmsConversation -> listOf("s", e.args.uid, "")
                 }
             },
             sms?.uid,
-            sms?.username,
+            null,
             s.selectedSettingsGroup.name,
             s.isSettingsDetailOpen,
         )
@@ -115,7 +115,7 @@ val NextAppStateSaver: Saver<NextAppState, Any> = listSaver(
                 val name = p.getOrNull(2).orEmpty()
                 when (p.getOrNull(0)) {
                     "u" -> DetailDrilldownEntry.UserProfile(uid, name)
-                    "s" -> DetailDrilldownEntry.SmsConversation(SmsConversationArgs(uid, name))
+                    "s" -> DetailDrilldownEntry.SmsConversation(SmsConversationArgs(uid, ""))
                     else -> null
                 }
             }
@@ -133,7 +133,7 @@ val NextAppStateSaver: Saver<NextAppState, Any> = listSaver(
             selectedThread = tid?.let {
                 ThreadNavArgs(it, (r.getOrNull(10) as? String).orEmpty(), (r.getOrNull(11) as? Int) ?: 0, r.getOrNull(12) as? String, r.getOrNull(13) as? String, r.getOrNull(14) as? String)
             },
-            selectedSmsConversation = smsUid?.let { SmsConversationArgs(it, (r.getOrNull(17) as? String).orEmpty()) },
+            selectedSmsConversation = smsUid?.let { SmsConversationArgs(it, "") },
             selectedSettingsGroup = (r.getOrNull(18) as? String)?.let { runCatching { SettingsGroup.valueOf(it) }.getOrNull() } ?: SettingsGroup.Appearance,
             isSettingsDetailOpen = (r.getOrNull(19) as? Boolean) ?: false,
             detailDrilldownStack = drilldown,
