@@ -129,8 +129,8 @@ class M7_4b_R8TightenProbeTest {
                 definedDescriptors.addAll(dex.definedClassDescriptors)
             }
 
-            // Verify 3 assets docs & all 101 emoji PNGs survive intact in release APK.
-            for (doc in listOf("assets/license.txt", "assets/release-notes.txt", "assets/donors.txt")) {
+            // Verify 3 assets docs, compiled Baseline Profile (M7-4a + M7-4b), & all 101 emoji PNGs survive intact in release APK.
+            for (doc in listOf("assets/license.txt", "assets/release-notes.txt", "assets/donors.txt", "assets/dexopt/baseline.prof", "assets/dexopt/baseline.profm")) {
                 val e = zip.getEntry(doc)
                 assertTrue("Release APK 缺少 $doc 或为空", e != null && e.size > 0)
             }
