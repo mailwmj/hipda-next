@@ -30,6 +30,10 @@
     <string name="compose_title_new_thread">发新帖</string>
     <string name="compose_title_reply">回复</string>
     <string name="compose_title_quote_reply">引用回复</string>
+    <string name="compose_title_edit_post">编辑</string>
+    <string name="compose_action_restore_original">还原原文</string>
+    <string name="compose_snackbar_original_restored">已还原原文</string>
+    <string name="compose_action_undo">撤销</string>
     <string name="compose_field_forum">版块</string>
     <string name="compose_field_category">分类</string>
     <string name="compose_field_subject_hint">标题</string>

@@ -10,6 +10,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.*
 import androidx.compose.material.icons.Icons
@@ -31,13 +32,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import net.jejer.hipda.R
+import net.jejer.hipda.feature.common.LocalPaneSnackbarController
+import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.feature.common.UiErrorAction
 import net.jejer.hipda.feature.compose.emoji.*
 import net.jejer.hipda.ui.designsystem.*
 import net.jejer.hipda.ui.designsystem.feedback.*
 import net.jejer.hipda.ui.designsystem.motion.*
+import net.jejer.hipda.ui.designsystem.state.HiErrorState
 import net.jejer.hipda.ui.designsystem.state.HiLoadingSpinner
+import net.jejer.hipda.ui.designsystem.state.HiStateAction
 import net.jejer.hipda.ui.shell.ForumMetadata
 import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 
@@ -57,7 +64,6 @@ fun FullEditorScreen(
     val hasEmojiSlot = effectiveEmojiSlot != null
     val keyboardController = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
-    val containerWindowHeightDp = LocalWindowInfo.current.containerDpSize.height
     var activeBodyFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
 
     val imagePickerLauncher = if (LocalActivityResultRegistryOwner.current != null) {
@@ -72,25 +78,41 @@ fun FullEditorScreen(
     val scrollState = rememberScrollState()
     val isScrolled by remember { derivedStateOf { scrollState.value > 0 } }
     val cs = MaterialTheme.colorScheme
+    val snackbarController = LocalPaneSnackbarController.current
+    val snackbarScope = rememberCoroutineScope()
+    val restoredMsg = stringResource(R.string.compose_snackbar_original_restored)
+    val undoLabel = stringResource(R.string.compose_action_undo)
+    val activeRestoreSnackbarJob = remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(uiState.snackbarResetSeq) { activeRestoreSnackbarJob.value?.cancel(); activeRestoreSnackbarJob.value = null }
+    DisposableEffect(Unit) { onDispose { activeRestoreSnackbarJob.value?.cancel() } }
+    val restoreEvent = uiState.restoreSnackbarEvent
+    LaunchedEffect(restoreEvent?.id) {
+        val ev = restoreEvent ?: return@LaunchedEffect
+        viewModel.consumeRestoreSnackbarEvent(ev.id)
+        activeRestoreSnackbarJob.value?.cancel()
+        activeRestoreSnackbarJob.value = snackbarScope.launch {
+            snackbarController.show(restoredMsg, if (isModalCard) PaneSnackbarTarget.ContentArea else PaneSnackbarTarget.DetailPane, undoLabel) {
+                viewModel.undoRestoreOriginal(ev.tokenId)
+            }
+        }
+    }
+
     val titleText = resolveEditorTitle(uiState.mode)
     val previewUriByImageId = remember(uiState.uploads) { buildMap { uiState.uploads.forEach { u -> val id = u.imageIdOrNull; val uri = u.contentUri; if (id != null && uri != null) put(id, uri) } } }
+    val isEditWaitingOriginal = uiState.isEditPost && uiState.editOriginal == null
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val windowHeightDp = if (isModalCard && containerWindowHeightDp > 0.dp) containerWindowHeightDp else maxHeight
-        val imeBottomPx = WindowInsets.ime.getBottom(density)
-        val navBarBottomPx = if (isModalCard) 0 else WindowInsets.navigationBars.getBottom(density)
-        val navBarBottomDp = with(density) { navBarBottomPx.toDp() }
+        val windowHeightDp = maxHeight
+        val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(density).toDp() }
         val emojiController = rememberEmojiPanelController(
-            imeBottomPx = imeBottomPx,
-            navBarBottomPx = navBarBottomPx,
-            navBarBottomDp = navBarBottomDp,
             windowHeightDp = windowHeightDp,
             onShowKeyboard = { runCatching { activeBodyFocusRequester?.requestFocus() }; keyboardController?.show() },
             onHideKeyboard = { keyboardController?.hide() },
-            consumeImeInSlot = !isModalCard,
         )
-        LaunchedEffect(uiState.isOpen, uiState.sessionId) { emojiController.close() }
-        val isEmojiPanelOpen = emojiController.isEmojiModeActive && hasEmojiSlot
+        val navBarBottomDp = emojiController.navBarBottomDp
+        val bottomSlotHeightDp = if (isEditWaitingOriginal) 0.dp else emojiController.bottomSlotHeightDp
+        LaunchedEffect(uiState.isOpen, uiState.sessionId, isEditWaitingOriginal) { emojiController.close() }
+        val isEmojiPanelOpen = emojiController.isEmojiModeActive && hasEmojiSlot && !isEditWaitingOriginal
 
         val closeEditor: () -> Unit = { emojiController.close(); keyboardController?.hide(); viewModel.requestClose(emitSavedSnackbar = true) }
         val handleBack: () -> Unit = { if (emojiController.isBackInterceptActive) emojiController.close() else closeEditor() }
@@ -99,49 +121,95 @@ fun FullEditorScreen(
         if (registerBackHandler) key(uiState.sessionId) { BackHandler(enabled = uiState.isOpen) { latestHandleBack() } }
 
         val onInputPress: () -> Unit = { if (emojiController.isEmojiModeActive) emojiController.switchToKeyboard() }
-
-        Column(
-            modifier = Modifier.fillMaxSize().background(cs.surface)
-                .semantics { paneTitle = titleText; isTraversalGroup = true },
-        ) {
-            FullEditorTopBar(titleText, resolveEditorSubtitle(uiState.mode), isScrolled, !isModalCard, uiState.isSubmitting, uiState.cooldownSeconds, uiState.canTapSend, closeEditor, viewModel::submit)
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState)) {
-                if (!uiState.isLoggedIn) EditorGuestBanner(onOpenLogin)
-                AnimatedVisibility(uiState.showDraftRestoredBanner, enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(), exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut()) {
-                    EditorDraftRestoredBanner(viewModel::clearRestoredDraft)
+        val emojiHost = remember(emojiController.panelContentHeightDp, windowHeightDp, viewModel, emojiController) {
+            QuickReplyEmojiPanelHost(
+                keyboardHeightDp = emojiController.panelContentHeightDp,
+                windowHeightDp = windowHeightDp,
+                onInsertEmoji = viewModel::onInsertEmoji,
+                onBackspace = viewModel::onBackspace,
+                onClose = { emojiController.close() },
+            )
+        }
+        val editorInterior: @Composable (Modifier) -> Unit = { colModifier ->
+            Column(colModifier.semantics { paneTitle = titleText; isTraversalGroup = true }) {
+                FullEditorTopBar(titleText, resolveEditorSubtitle(uiState.mode), isScrolled, !isModalCard, uiState.isSubmitting, uiState.effectiveCooldownSeconds, uiState.canTapSend, uiState.canRestoreOriginal, closeEditor, viewModel::restoreOriginal, viewModel::submit)
+                if (isEditWaitingOriginal) {
+                    EditOriginalStatusArea(uiState.isLoadingEditOriginal, uiState.editLoadError, viewModel::retryEditLoad, onOpenLogin, Modifier.weight(1f).fillMaxWidth())
+                    return@Column
                 }
-                if (uiState.isNewThread) {
-                    NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
+                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState)) {
+                    if (!uiState.isLoggedIn) EditorGuestBanner(onOpenLogin)
+                    AnimatedVisibility(uiState.showDraftRestoredBanner, enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(), exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut()) {
+                        EditorDraftRestoredBanner(viewModel::clearRestoredDraft)
+                    }
+                    if (uiState.isNewThread) {
+                        NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
+                    } else if (uiState.isEditPost && uiState.showsEditSubjectField) {
+                        EditPostMetaSection(uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.validationError, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
+                    }
+                    ImageUploadStrip(uiState.uploads, uiState.insertedImageIds, uiState.uploadSummaryProgress, viewModel::onInsertUploadedImage, viewModel::retryUpload, viewModel::removeUpload)
+                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, previewUriByImageId, resolveBodyPlaceholder(uiState.mode), viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress)
+                    if (uiState.validationError == FullEditorValidationError.ContentTooShort) {
+                        Text(stringResource(FullEditorValidationError.ContentTooShort.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
+                    }
+                    uiState.inlineError?.let { EditorInlineErrorRow(it, viewModel::submit, onOpenLogin) }
+                    Spacer(Modifier.height(16.dp))
                 }
-                ImageUploadStrip(uiState.uploads, uiState.insertedImageIds, uiState.uploadSummaryProgress, viewModel::onInsertUploadedImage, viewModel::retryUpload, viewModel::removeUpload)
-                EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, previewUriByImageId, resolveBodyPlaceholder(uiState.mode), viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress)
-                if (uiState.validationError == FullEditorValidationError.ContentTooShort) {
-                    Text(stringResource(FullEditorValidationError.ContentTooShort.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
-                }
-                uiState.inlineError?.let { EditorInlineErrorRow(it, viewModel::submit, onOpenLogin) }
-                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
+                FullEditorBottomToolbar(
+                    hasEmojiSlot, isEmojiPanelOpen,
+                    if (isModalCard || bottomSlotHeightDp > 0.dp || isEmojiPanelOpen) 0.dp else navBarBottomDp,
+                    launchImagePicker,
+                ) { if (hasEmojiSlot) emojiController.toggle() }
             }
-            HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
-            FullEditorBottomToolbar(
-                hasEmojiSlot, isEmojiPanelOpen,
-                if (emojiController.bottomSlotHeightDp > 0.dp || isEmojiPanelOpen) 0.dp else navBarBottomDp,
-                launchImagePicker,
-            ) { if (hasEmojiSlot) emojiController.toggle() }
-            val emojiHost = remember(emojiController.panelContentHeightDp, windowHeightDp, viewModel, emojiController) {
-                QuickReplyEmojiPanelHost(
-                    keyboardHeightDp = emojiController.panelContentHeightDp,
-                    windowHeightDp = windowHeightDp,
-                    onInsertEmoji = viewModel::onInsertEmoji,
-                    onBackspace = viewModel::onBackspace,
-                    onClose = { emojiController.close() },
+        }
+
+        Column(Modifier.fillMaxSize()) {
+            if (isModalCard) {
+                val cardShape = if (bottomSlotHeightDp > 0.dp) HiShapeTokens.Large.copy(bottomStart = CornerSize(0.dp), bottomEnd = CornerSize(0.dp)) else HiShapeTokens.Large
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth().padding(
+                        top = statusBarTopDp + 24.dp,
+                        bottom = if (bottomSlotHeightDp > 0.dp) 0.dp else navBarBottomDp + 24.dp,
+                    ),
+                    contentAlignment = if (bottomSlotHeightDp > 0.dp) Alignment.BottomCenter else Alignment.Center,
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight().heightIn(max = 720.dp).clip(cardShape),
+                        shape = cardShape, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
+                    ) { editorInterior(Modifier.fillMaxSize().background(cs.surface)) }
+                }
+            } else {
+                editorInterior(Modifier.weight(1f).fillMaxWidth().background(cs.surface))
+            }
+            if (!isEditWaitingOriginal) {
+                EmojiPanelSlotBox(
+                    controller = emojiController,
+                    emojiPanelSlot = effectiveEmojiSlot,
+                    host = emojiHost,
+                    registerBackHandler = registerBackHandler && hasEmojiSlot,
                 )
             }
-            EmojiPanelSlotBox(
-                controller = emojiController,
-                emojiPanelSlot = effectiveEmojiSlot,
-                host = emojiHost,
-                registerBackHandler = registerBackHandler && hasEmojiSlot,
-            )
+        }
+    }
+}
+
+@Composable
+private fun EditOriginalStatusArea(isLoading: Boolean, error: FullEditorInlineError?, onRetry: () -> Unit, onOpenLogin: () -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier, Alignment.Center) {
+        if (isLoading) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                HiLoadingSpinner(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                Text(stringResource(R.string.state_loading), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            val msg = resolveEditorErrorMessage(LocalContext.current, error) ?: stringResource(R.string.common_error_load_failed)
+            val action = when (error?.uiError?.action) {
+                UiErrorAction.Login -> HiStateAction(stringResource(R.string.common_action_login), onOpenLogin)
+                UiErrorAction.Reverify -> HiStateAction(stringResource(R.string.challenge_action_retry), onRetry)
+                UiErrorAction.Retry, null -> if (error?.uiError?.messageRes == R.string.compose_error_real_name_required) null else HiStateAction(stringResource(R.string.common_action_retry), onRetry)
+            }
+            HiErrorState(message = msg, action = action)
         }
     }
 }
@@ -177,7 +245,11 @@ private fun rememberSyncedTextFieldState(
 }
 
 @Composable
-private fun FullEditorTopBar(title: String, subtitle: String?, isScrolled: Boolean, applyStatusBarInset: Boolean, isSubmitting: Boolean, cooldownSeconds: Int, canTapSend: Boolean, onBackClick: () -> Unit, onSendClick: () -> Unit) {
+private fun FullEditorTopBar(
+    title: String, subtitle: String?, isScrolled: Boolean, applyStatusBarInset: Boolean,
+    isSubmitting: Boolean, cooldownSeconds: Int, canTapSend: Boolean, showRestoreOriginal: Boolean,
+    onBackClick: () -> Unit, onRestoreOriginalClick: () -> Unit, onSendClick: () -> Unit,
+) {
     val cs = MaterialTheme.colorScheme
     val barBg by animateColorAsState(if (isScrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "FullEditorTopBarColor")
     Column(Modifier.fillMaxWidth().background(barBg)) {
@@ -191,6 +263,20 @@ private fun FullEditorTopBar(title: String, subtitle: String?, isScrolled: Boole
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (!subtitle.isNullOrBlank()) Text(subtitle, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (showRestoreOriginal) {
+                    val restoreInt = remember { MutableInteractionSource() }
+                    TextButton(
+                        onClick = onRestoreOriginalClick,
+                        enabled = !isSubmitting,
+                        shape = HiShapeTokens.Small,
+                        interactionSource = restoreInt,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(restoreInt),
+                    ) {
+                        Text(stringResource(R.string.compose_action_restore_original), maxLines = 1, softWrap = false)
+                    }
+                    Spacer(Modifier.width(4.dp))
                 }
                 EditorSendButton(isSubmitting, cooldownSeconds, canTapSend, onSendClick)
             }
@@ -242,7 +328,7 @@ private fun <K> EditorDropdownField(label: String, selectedLabel: String?, isErr
 }
 
 @Composable
-private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumMetadata>, typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, validationError: FullEditorValidationError?, onSelectForum: (Int) -> Unit, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}) {
+private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumMetadata>, typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSelectForum: (Int) -> Unit, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val forumOptions = remember(availableForums) { availableForums.map { it.fid to it.fullName } }
     val selectedForumName = selectedFid?.takeIf { it > 0 }?.let { ForumMetadataRegistry.resolve(it).fullName }
@@ -257,23 +343,45 @@ private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumM
         if (validationError == FullEditorValidationError.SelectForum || validationError == FullEditorValidationError.SelectCategory) {
             Text(stringResource(validationError.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error)
         }
-        val subjectHint = stringResource(R.string.compose_field_subject_hint)
-        val subjectStyle = MaterialTheme.typography.titleMedium.copy(color = cs.onSurface)
-        val subjectFieldState = rememberSyncedTextFieldState(text = subject, onTextChanged = { txt, _ -> onSubjectChanged(txt) })
-        val subjectInteraction = remember { MutableInteractionSource() }
-        val latestOnInputPress by rememberUpdatedState(onInputPress)
-        LaunchedEffect(subjectInteraction) { subjectInteraction.interactions.collect { if (it is PressInteraction.Press) latestOnInputPress() } }
-        val titleErr = validationError == FullEditorValidationError.EnterTitle || validationError == FullEditorValidationError.TitleTooShort
-        Box(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clip(HiShapeTokens.Small).background(cs.surfaceContainerLow).border(1.dp, if (titleErr) cs.error else cs.outlineVariant, HiShapeTokens.Small).padding(horizontal = 12.dp, vertical = 12.dp), Alignment.CenterStart) {
-            BasicTextField(
-                subjectFieldState, Modifier.fillMaxWidth().semantics { contentDescription = subjectHint }, textStyle = subjectStyle, cursorBrush = SolidColor(cs.primary),
-                interactionSource = subjectInteraction, lineLimits = TextFieldLineLimits.MultiLine(1, 2),
-                decorator = { inner -> Box(Modifier.fillMaxWidth()) { if (subjectFieldState.text.isEmpty()) Text(subjectHint, style = subjectStyle, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis); inner() } },
-            )
-        }
-        if (titleErr) Text(stringResource(validationError.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error)
+        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress)
     }
     HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+}
+
+@Composable
+private fun EditPostMetaSection(typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}) {
+    val cs = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (hasSelectableCategories) {
+            val catOptions = remember(typeOptions) { typeOptions.entries.filter { it.key.isNotBlank() && it.key != "0" }.map { it.key to it.value } }
+            EditorDropdownField(stringResource(R.string.compose_field_category), catOptions.firstOrNull { it.first == selectedTypeId }?.second, validationError == FullEditorValidationError.SelectCategory, catOptions, selectedTypeId, onSelectCategory, Modifier.fillMaxWidth())
+            if (validationError == FullEditorValidationError.SelectCategory) {
+                Text(stringResource(validationError.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error)
+            }
+        }
+        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress)
+    }
+    HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+}
+
+@Composable
+private fun EditorSubjectField(subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}) {
+    val cs = MaterialTheme.colorScheme
+    val subjectHint = stringResource(R.string.compose_field_subject_hint)
+    val subjectStyle = MaterialTheme.typography.titleMedium.copy(color = cs.onSurface)
+    val subjectFieldState = rememberSyncedTextFieldState(text = subject, syncVersion = syncVersion, onTextChanged = { txt, _ -> onSubjectChanged(txt) })
+    val subjectInteraction = remember { MutableInteractionSource() }
+    val latestOnInputPress by rememberUpdatedState(onInputPress)
+    LaunchedEffect(subjectInteraction) { subjectInteraction.interactions.collect { if (it is PressInteraction.Press) latestOnInputPress() } }
+    val titleErr = validationError == FullEditorValidationError.EnterTitle || validationError == FullEditorValidationError.TitleTooShort
+    Box(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clip(HiShapeTokens.Small).background(cs.surfaceContainerLow).border(1.dp, if (titleErr) cs.error else cs.outlineVariant, HiShapeTokens.Small).padding(horizontal = 12.dp, vertical = 12.dp), Alignment.CenterStart) {
+        BasicTextField(
+            subjectFieldState, Modifier.fillMaxWidth().semantics { contentDescription = subjectHint }, textStyle = subjectStyle, cursorBrush = SolidColor(cs.primary),
+            interactionSource = subjectInteraction, lineLimits = TextFieldLineLimits.MultiLine(1, 2),
+            decorator = { inner -> Box(Modifier.fillMaxWidth()) { if (subjectFieldState.text.isEmpty()) Text(subjectHint, style = subjectStyle, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis); inner() } },
+        )
+    }
+    if (titleErr) Text(stringResource(validationError.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error)
 }
 
 @Composable
@@ -334,16 +442,18 @@ private fun EditorGuestBanner(onOpenLogin: () -> Unit) = HiCappedFontScale {
     }
 }
 
+private fun resolveEditorErrorMessage(ctx: android.content.Context, error: FullEditorInlineError?): String? = when {
+    error == null -> null
+    error.cooldownMessageSeconds != null -> ctx.getString(R.string.compose_error_cooldown, error.cooldownMessageSeconds)
+    !error.customMessage.isNullOrBlank() && !UNSAFE_ERROR_PATTERNS.containsMatchIn(error.customMessage) -> error.customMessage
+    error.uiError != null -> ctx.getString(error.uiError.messageRes)
+    else -> null
+}
+
 @Composable
 private fun EditorInlineErrorRow(error: FullEditorInlineError, onRetry: () -> Unit, onOpenLogin: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val ctx = LocalContext.current
-    val msg = when {
-        error.cooldownMessageSeconds != null -> ctx.getString(R.string.compose_error_cooldown, error.cooldownMessageSeconds)
-        !error.customMessage.isNullOrBlank() && !UNSAFE_ERROR_PATTERNS.containsMatchIn(error.customMessage) -> error.customMessage
-        error.uiError != null -> ctx.getString(error.uiError.messageRes)
-        else -> return
-    }
+    val msg = resolveEditorErrorMessage(LocalContext.current, error) ?: return
     val action = error.uiError?.action
     val actionLabel = when (action) { UiErrorAction.Retry -> stringResource(R.string.common_action_retry); UiErrorAction.Login -> stringResource(R.string.common_action_login); UiErrorAction.Reverify -> stringResource(R.string.challenge_action_retry); null -> null }
     HiCappedFontScale {
@@ -374,7 +484,12 @@ private fun FullEditorBottomToolbar(hasEmojiSlot: Boolean, isEmojiPanelOpen: Boo
 
 @Composable
 private fun resolveEditorTitle(mode: FullEditorMode): String = stringResource(
-    when (mode) { is FullEditorMode.NewThread -> R.string.compose_title_new_thread; is FullEditorMode.QuotePost -> R.string.compose_title_quote_reply; is FullEditorMode.Reply -> R.string.compose_title_reply },
+    when (mode) {
+        is FullEditorMode.NewThread -> R.string.compose_title_new_thread
+        is FullEditorMode.QuotePost -> R.string.compose_title_quote_reply
+        is FullEditorMode.Reply -> R.string.compose_title_reply
+        is FullEditorMode.EditPost -> R.string.compose_title_edit_post
+    },
 )
 
 @Composable
@@ -383,9 +498,12 @@ private fun resolveEditorSubtitle(mode: FullEditorMode): String? = when (mode) {
     is FullEditorMode.QuotePost -> if (mode.targetFloor != null && !mode.targetAuthor.isNullOrBlank()) stringResource(R.string.compose_quote_placeholder_floor_user, mode.targetFloor, mode.targetAuthor) else mode.targetAuthor?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
     is FullEditorMode.ReplyPost -> mode.targetAuthor?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
     is FullEditorMode.ReplyThread -> mode.threadAuthor?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
+    is FullEditorMode.EditPost -> if (mode.floorNumber != null && !mode.author.isNullOrBlank()) stringResource(R.string.thread_detail_floor_title, mode.floorNumber, mode.author) else null
 }
 
 @Composable
-private fun resolveBodyPlaceholder(mode: FullEditorMode): String = resolveEditorSubtitle(mode) ?: stringResource(R.string.compose_field_body_hint)
+private fun resolveBodyPlaceholder(mode: FullEditorMode): String =
+    if (mode is FullEditorMode.EditPost) stringResource(R.string.compose_field_body_hint)
+    else resolveEditorSubtitle(mode) ?: stringResource(R.string.compose_field_body_hint)
 
 private val UNSAFE_ERROR_PATTERNS = Regex("""(?:Exception|Throwable|HTTP\s*[45]\d{2}|\[attachimg\])""", RegexOption.IGNORE_CASE)

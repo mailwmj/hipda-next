@@ -385,25 +385,19 @@ fun QuickReplySheet(
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val paneHeightDp = maxHeight
         val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(density).toDp() }
-        val imeBottomPx = WindowInsets.ime.getBottom(density)
-        val systemNavBarBottomPx = WindowInsets.navigationBars.getBottom(density)
-        val navBarBottomDp = maxOf(with(density) { systemNavBarBottomPx.toDp() }, bottomInset)
-        val navBarBottomPx = with(density) { navBarBottomDp.roundToPx() }
         val emojiController = rememberEmojiPanelController(
-            imeBottomPx = imeBottomPx,
-            navBarBottomPx = navBarBottomPx,
-            navBarBottomDp = navBarBottomDp,
             windowHeightDp = paneHeightDp,
             onShowKeyboard = { runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show() },
             onHideKeyboard = { keyboardController?.hide() },
         )
+        val navBarBottomDp = maxOf(emojiController.navBarBottomDp, bottomInset)
         SideEffect {
             closeEmojiPanelAction.value = { emojiController.close() }
             onInputPressedAction.value = { if (emojiController.isEmojiModeActive) emojiController.switchToKeyboard() }
         }
         val isEmojiPanelOpen = emojiController.isEmojiModeActive && hasEmojiPanel
         val onToggleEmoji: () -> Unit = { if (hasEmojiPanel) emojiController.toggle() }
-        val bottomOccupiedDp = if (hasEmojiPanel) emojiController.bottomSlotHeightDp else with(density) { imeBottomPx.toDp() }
+        val bottomOccupiedDp = emojiController.bottomSlotHeightDp
         val metrics = calculateQuickReplyLayoutMetrics(paneHeightDp, statusBarTopDp, bottomOccupiedDp, navBarBottomDp)
         val innerBottomPadding = if (bottomOccupiedDp > 0.dp || isEmojiPanelOpen) 8.dp else (navBarBottomDp + 8.dp)
         val plan = resolveSheetSlotPlan(
@@ -498,7 +492,7 @@ fun QuickReplySheet(
                         textFieldState.edit {
                             val s = selection.min
                             if (s != selection.max) { delete(s, selection.max); selection = TextRange(s) }
-                            else if (s > 0) { val prev = previousGraphemeOffset(asCharSequence(), s); delete(prev, s); selection = TextRange(prev) }
+                            else if (s > 0) { val prev = previousEmojiOrGraphemeOffset(asCharSequence(), s); delete(prev, s); selection = TextRange(prev) }
                         }
                     },
                     onClose = { emojiController.close() },

@@ -67,7 +67,7 @@ val QuickReplyTargetSaver: Saver<QuickReplyTarget?, Any> = listSaver(
     },
 )
 
-/** `E5`（快速回复面板）向 `E6`（完整编辑器）的无损交接载荷。 */
+/** `E5`（快速回复面板）向 `E6`（完整编辑器）的无损交接载荷，并兼容 `E6b` 楼层编辑入口。 */
 @Immutable
 data class FullEditorHandoff(
     val tid: String,
@@ -83,6 +83,9 @@ data class FullEditorHandoff(
     val threadAuthor: String? = null,
     val hadPersistedDraft: Boolean = false,
     val showDraftRestoredBanner: Boolean = false,
+    val editPid: String? = null,
+    val editPage: Int = 1,
+    val isFirstFloor: Boolean = false,
 )
 
 /** 零耦合完整编辑器交接插槽：由 [ComposeSlotBindingModule] `@BindsOptionalOf` 暴露，`E6` 绑定后启用「展开全屏」与「插入图片」。 */
@@ -120,9 +123,14 @@ interface ComposeSlotsEntryPoint {
     fun emojiPanelRenderer(): Optional<QuickReplyEmojiPanelRenderer>
 }
 
-/** 完整编辑器回复成功后通知当前打开的 `ThreadDetailPane` 执行末页插楼或非末页 Snackbar 联动。 */
+/** 完整编辑器回复或编辑成功后通知当前打开的 `ThreadDetailPane` 执行插楼、原地刷新或非末页 Snackbar 联动。 */
 @Immutable
-data class FullEditorReplySubmitted(val tid: String, val redirectedPage: ThreadDetailPage?)
+data class FullEditorReplySubmitted(
+    val tid: String,
+    val redirectedPage: ThreadDetailPage?,
+    val editedPid: String? = null,
+    val editedPage: Int? = null,
+)
 
 /** 宿主向 `ThreadDetailPane` 下发的完整编辑器回复成功事件流（可选，未提供时由宿主兜底提示）。 */
 val LocalFullEditorReplyResults = staticCompositionLocalOf<SharedFlow<FullEditorReplySubmitted>?> { null }
@@ -165,6 +173,8 @@ internal fun rememberResolvedEmojiPanelSlot(
     rememberResolvedComposeSlots(explicitExpandToFullEditor = null, explicitEmojiPanelSlot = explicitEmojiPanelSlot).emojiPanelSlot
 
 internal fun safeReplyDraftKey(tid: String): DraftKey? = runCatching { DraftKey.reply(tid.trim()) }.getOrNull()
+
+internal fun safeEditDraftKey(pid: String): DraftKey? = runCatching { DraftKey.edit(pid.trim()) }.getOrNull()
 
 internal fun resolveComposeLoggedIn(account: SavedAccount?, state: AuthState): Boolean =
     account != null && state !is AuthState.SignedOut && state !is AuthState.SessionExpired

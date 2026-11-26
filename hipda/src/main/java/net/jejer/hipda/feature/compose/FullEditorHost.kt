@@ -57,8 +57,20 @@ class FullEditorRequestBus @Inject constructor() : FullEditorLauncher {
 
     override fun open(handoff: FullEditorHandoff) = enqueue(FullEditorRequest.fromHandoff(handoff))
     fun openNewThread(initialFid: Int? = null) = enqueue(FullEditorRequest.NewThread(initialFid))
+    fun openEditPost(fid: Int, tid: String, pid: String, page: Int = 1, isFirstFloor: Boolean = false, floorNumber: Int? = null, author: String? = null) =
+        enqueue(FullEditorRequest.EditPost(fid, tid, pid, page, isFirstFloor, floorNumber, author))
     fun enqueue(request: FullEditorRequest) { _pendingRequest.value = PendingFullEditorRequest(seq.incrementAndGet(), request) }
     fun consume(id: Long) { val cur = _pendingRequest.value; if (cur?.id == id) _pendingRequest.compareAndSet(cur, null) }
+}
+
+/** 宿主级编辑器结果通道：兼容 `SharedFlow<FullEditorReplySubmitted>`，并供首楼整帖删除通知刷新列表。 */
+@OptIn(kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi::class)
+internal class FullEditorHostChannel(
+    private val delegate: MutableSharedFlow<FullEditorReplySubmitted>,
+    private val refreshForumProvider: () -> Unit,
+) : SharedFlow<FullEditorReplySubmitted> by delegate {
+    fun emit(event: FullEditorReplySubmitted) { delegate.tryEmit(event) }
+    fun notifyThreadDeleted() { refreshForumProvider() }
 }
 
 @Composable
@@ -79,6 +91,10 @@ data class FullEditorSavedState(
     val hadPersistedDraft: Boolean = false,
     val showDraftRestoredBanner: Boolean = false,
     val activeTextBlockOrdinal: Int = 0,
+    val editOriginalSubject: String? = null,
+    val editOriginalTypeId: String = "0",
+    val editOriginalSerializedBody: String = "",
+    val editOriginalImageIds: List<String> = emptyList(),
 )
 
 val FullEditorSavedStateSaver: Saver<FullEditorSavedState, Any> = listSaver(
@@ -88,7 +104,12 @@ val FullEditorSavedStateSaver: Saver<FullEditorSavedState, Any> = listSaver(
             is FullEditorMode.ReplyThread -> listOf("reply", m.tid, m.fid, "", "", -1, m.threadAuthor.orEmpty())
             is FullEditorMode.ReplyPost -> listOf("reply_post", m.tid, m.fid, m.targetPid, m.targetAuthor.orEmpty(), m.targetFloor ?: -1, m.threadAuthor.orEmpty())
             is FullEditorMode.QuotePost -> listOf("quote", m.tid, m.fid, m.targetPid, m.targetAuthor.orEmpty(), m.targetFloor ?: -1, m.threadAuthor.orEmpty())
-        } + listOf(s.selectedFid ?: -1, s.selectedTypeId, s.subject, s.serializedBody, s.selectionStart, s.selectionEnd, s.uploadedImageIds, s.hadPersistedDraft, s.showDraftRestoredBanner, s.activeTextBlockOrdinal)
+            is FullEditorMode.EditPost -> listOf("edit", m.tid, m.fid, m.pid, m.author.orEmpty(), m.floorNumber ?: -1, "${m.page}:${if (m.isFirstFloor) 1 else 0}")
+        } + listOf(
+            s.selectedFid ?: -1, s.selectedTypeId, s.subject, s.serializedBody, s.selectionStart, s.selectionEnd,
+            s.uploadedImageIds, s.hadPersistedDraft, s.showDraftRestoredBanner, s.activeTextBlockOrdinal,
+            s.editOriginalSubject.orEmpty(), s.editOriginalSubject != null, s.editOriginalTypeId, s.editOriginalSerializedBody, s.editOriginalImageIds,
+        )
     },
     restore = { r ->
         if (r.size < 16) FullEditorSavedState() else {
@@ -98,10 +119,20 @@ val FullEditorSavedStateSaver: Saver<FullEditorSavedState, Any> = listSaver(
                 "reply" -> FullEditorMode.ReplyThread(tid, fid, op)
                 "reply_post" -> FullEditorMode.ReplyPost(tid, fid, pid, author, floor, op)
                 "quote" -> FullEditorMode.QuotePost(tid, fid, pid, author, floor, op)
+                "edit" -> {
+                    val parts = op.orEmpty().split(':')
+                    FullEditorMode.EditPost(fid.coerceAtLeast(0), tid, pid, parts.getOrNull(0)?.toIntOrNull()?.coerceAtLeast(1) ?: 1, parts.getOrNull(1) == "1", floor, author)
+                }
                 else -> FullEditorMode.NewThread(fid.takeIf { it > 0 })
             }
+            val hasOrig = (r.getOrNull(18) as? Boolean) == true
             @Suppress("UNCHECKED_CAST")
-            FullEditorSavedState(true, mode, (r[7] as Int).takeIf { it > 0 }, r[8] as String, r[9] as String, r[10] as String, r[11] as Int, r[12] as Int, (r[13] as? List<String>).orEmpty(), r[14] as Boolean, r[15] as Boolean, (r.getOrNull(16) as? Int)?.coerceAtLeast(0) ?: 0)
+            FullEditorSavedState(
+                true, mode, (r[7] as Int).takeIf { it > 0 }, r[8] as String, r[9] as String, r[10] as String, r[11] as Int, r[12] as Int,
+                (r[13] as? List<String>).orEmpty(), r[14] as Boolean, r[15] as Boolean, (r.getOrNull(16) as? Int)?.coerceAtLeast(0) ?: 0,
+                if (hasOrig) (r.getOrNull(17) as? String).orEmpty() else null, (r.getOrNull(19) as? String) ?: "0",
+                (r.getOrNull(20) as? String).orEmpty(), (r.getOrNull(21) as? List<String>).orEmpty(),
+            )
         }
     },
 )
@@ -131,7 +162,14 @@ fun rememberFullEditorHostController(
     var pendingReq by remember { mutableStateOf<PendingFullEditorRequest?>(null) }
     var mountedVm by remember(injectedViewModel) { mutableStateOf(injectedViewModel) }
     var backAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-    val replyResults = remember { MutableSharedFlow<FullEditorReplySubmitted>(extraBufferCapacity = 4, onBufferOverflow = BufferOverflow.DROP_OLDEST) }
+    val latestSelectedTid by rememberUpdatedState(selectedThreadTid)
+    val latestRefreshForum by rememberUpdatedState(onRefreshForum)
+    val latestOpenThread by rememberUpdatedState(onOpenThread)
+    val latestOpenLogin by rememberUpdatedState(onOpenLogin)
+    val latestEmojiSlot by rememberUpdatedState(emojiPanelSlot)
+    val replyResults = remember {
+        FullEditorHostChannel(MutableSharedFlow(extraBufferCapacity = 4, onBufferOverflow = BufferOverflow.DROP_OLDEST)) { latestRefreshForum() }
+    }
 
     val open: (FullEditorRequest) -> Unit = { req -> reqSeq += 1L; pendingReq = PendingFullEditorRequest(reqSeq, req) }
     val resolvedBus = injectedRequestBus ?: rememberHiltFullEditorRequestBus()
@@ -154,12 +192,6 @@ fun rememberFullEditorHostController(
     }
     if (vm != null && uiState?.isOpen == true) SideEffect { val exp = vm.exportSavedState(); if (savedState != exp) savedState = exp }
 
-    val latestSelectedTid by rememberUpdatedState(selectedThreadTid)
-    val latestRefreshForum by rememberUpdatedState(onRefreshForum)
-    val latestOpenThread by rememberUpdatedState(onOpenThread)
-    val latestOpenLogin by rememberUpdatedState(onOpenLogin)
-    val latestEmojiSlot by rememberUpdatedState(emojiPanelSlot)
-
     LaunchedEffect(vm, snackbarController, resources) {
         val targetVm = vm ?: return@LaunchedEffect
         fun showBar(msgRes: Int, target: PaneSnackbarTarget, actionRes: Int, onAction: () -> Unit) {
@@ -175,8 +207,13 @@ fun rememberFullEditorHostController(
                 }
                 is FullEditorEvent.ReplySubmitted -> {
                     savedState = FullEditorSavedState()
-                    if (latestSelectedTid == ev.tid) replyResults.tryEmit(FullEditorReplySubmitted(ev.tid, ev.redirectedPage))
+                    if (latestSelectedTid == ev.tid) replyResults.emit(FullEditorReplySubmitted(ev.tid, ev.redirectedPage))
                     else showBar(R.string.compose_snackbar_reply_sent, PaneSnackbarTarget.DetailPane, R.string.compose_action_view) { latestOpenThread(ThreadNavArgs(ev.tid, targetPid = ev.redirectedPage?.floors?.lastOrNull()?.postId)) }
+                }
+                is FullEditorEvent.PostEdited -> {
+                    savedState = FullEditorSavedState()
+                    if (ev.isFirstFloor) latestRefreshForum()
+                    replyResults.emit(FullEditorReplySubmitted(ev.tid, ev.redirectedPage, editedPid = ev.pid, editedPage = ev.page))
                 }
                 FullEditorEvent.Closed -> savedState = FullEditorSavedState()
             }
@@ -213,9 +250,11 @@ fun FullEditorPlacementFrame(placement: FullEditorPlacement, windowWidthDp: Floa
         FullEditorPlacement.CenteredModal -> Box(modifier.fillMaxSize()) {
             val scrimInt = remember { MutableInteractionSource() }
             Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = 0.40f)).clickable(scrimInt, null, enabled = !isSubmitting, onClick = onRequestClose))
-            Surface(
-                Modifier.align(Alignment.Center).systemBarsPadding().imePadding().padding(vertical = 24.dp).width(calculateCenteredModalWidthDp(windowWidthDp)).fillMaxHeight().heightIn(max = 720.dp).clip(HiShapeTokens.Large),
-                shape = HiShapeTokens.Large, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
+            Box(
+                Modifier.align(Alignment.Center)
+                    .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
+                    .width(calculateCenteredModalWidthDp(windowWidthDp))
+                    .fillMaxHeight(),
             ) { content(true) }
         }
         FullEditorPlacement.RightPane -> Surface(modifier.fillMaxSize(), color = cs.surface, contentColor = cs.onSurface) {

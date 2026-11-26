@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
@@ -18,9 +19,13 @@ import net.jejer.hipda.data.favorite.FavoriteError
 import net.jejer.hipda.data.favorite.FavoriteKind
 import net.jejer.hipda.data.favorite.FavoriteMutationResult
 import net.jejer.hipda.data.favorite.FavoriteRepository
+import net.jejer.hipda.data.local.DraftKey
 import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.network.access.SiteAccessGateway
+import net.jejer.hipda.data.post.PostRepository
+import net.jejer.hipda.data.post.PostSubmitRequest
+import net.jejer.hipda.data.post.PostSubmitResult
 import net.jejer.hipda.data.settings.AppSettings
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.threaddetail.*
@@ -93,6 +98,9 @@ private data class FavoriteUndoToken(
     val targetActive: Boolean,
 )
 
+@Immutable data class FloorDeleteError(val uiError: UiError? = null, val cooldownMessageSeconds: Int? = null, val customMessage: String? = null)
+@Immutable data class FloorDeleteDialogState(val floor: PostFloor, val isDeleting: Boolean = false, val error: FloorDeleteError? = null)
+
 @Immutable
 data class ThreadDetailUiState(
     val tid: String = "",
@@ -128,6 +136,8 @@ data class ThreadDetailUiState(
     val forumServer: String = AppSettings.DEFAULT_FORUM_SERVER,
     val snackbarEvent: ThreadDetailSnackbarEvent? = null,
     val snackbarResetSeq: Long = 0L,
+    val deleteDialog: FloorDeleteDialogState? = null,
+    val isThreadDeleted: Boolean = false,
 ) {
     val hasPreviousPage: Boolean get() = floors.isNotEmpty() && firstLoadedPage > 1
     val hasNextPage: Boolean get() = floors.isNotEmpty() && lastLoadedPage < lastPage
@@ -173,12 +183,14 @@ private data class DetailMetaState(
     val forumServer: String = AppSettings.DEFAULT_FORUM_SERVER,
     val snackbarEvent: ThreadDetailSnackbarEvent? = null,
     val snackbarResetSeq: Long = 0L,
+    val deleteDialog: FloorDeleteDialogState? = null,
+    val isThreadDeleted: Boolean = false,
 )
 
 /**
  * 帖子详情 ViewModel（按 `tid` 托管保活；支持双向连续加载、单飞防重、头尾独立错误重试、
  * 本页/跨页精确跳楼与高亮、`只看楼主`/`只看此人` 过滤、1 楼投票提交刷新、带首轮恢复门闩的阅读位置记忆、
- * 返回位置栈、收藏/关注可撤销切换与登录自动重载，并保留 2/3 参兼容构造）。
+ * 返回位置栈、收藏/关注可撤销切换、编辑后原地刷新楼层、删除本人楼层与登录自动重载，并保留 2/3/4/5 参兼容构造）。
  */
 @HiltViewModel
 class ThreadDetailViewModel(
@@ -189,14 +201,25 @@ class ThreadDetailViewModel(
     private var authRepository: AuthRepository? = null
     private var favoriteRepository: FavoriteRepository? = null
     private var settingsRepository: SettingsRepository? = null
+    private var postRepository: PostRepository? = null
 
     constructor(
         threadDetailRepository: ThreadDetailRepository,
         siteAccessGateway: SiteAccessGateway,
         authRepository: AuthRepository?,
         favoriteRepository: FavoriteRepository? = null,
+        settingsRepository: SettingsRepository? = null,
     ) : this(threadDetailRepository, siteAccessGateway) {
-        initOptionalRepositories(authRepository, favoriteRepository, null)
+        initOptionalRepositories(authRepository, favoriteRepository, settingsRepository, null)
+    }
+
+    constructor(
+        threadDetailRepository: ThreadDetailRepository,
+        siteAccessGateway: SiteAccessGateway,
+        authRepository: AuthRepository?,
+        postRepository: PostRepository?,
+    ) : this(threadDetailRepository, siteAccessGateway) {
+        initOptionalRepositories(authRepository, null, null, postRepository)
     }
 
     @Inject
@@ -206,8 +229,9 @@ class ThreadDetailViewModel(
         authRepository: AuthRepository,
         favoriteRepository: FavoriteRepository,
         settingsRepository: SettingsRepository,
+        postRepository: PostRepository,
     ) : this(threadDetailRepository, siteAccessGateway) {
-        initOptionalRepositories(authRepository, favoriteRepository, settingsRepository)
+        initOptionalRepositories(authRepository, favoriteRepository, settingsRepository, postRepository)
     }
 
     private var boundTid: String? = null
@@ -220,6 +244,8 @@ class ThreadDetailViewModel(
     private var pollJob: Job? = null
     private var favoriteJob: Job? = null
     private var attentionJob: Job? = null
+    private var deleteJob: Job? = null
+    private var editRefreshJob: Job? = null
     private var preFilterAnchor: FilterReturnAnchor? = null
     private var latestObservedAnchor: ReadingPositionAnchor? = null
     private var pendingHydrationSnapshot: ReadingPositionSnapshot? = null
@@ -261,6 +287,7 @@ class ThreadDetailViewModel(
             isFavorited = m.isFavorited, isAttention = m.isAttention,
             canPopPositionStack = m.canPopPositionStack, forumServer = m.forumServer,
             snackbarEvent = m.snackbarEvent, snackbarResetSeq = m.snackbarResetSeq,
+            deleteDialog = m.deleteDialog, isThreadDeleted = m.isThreadDeleted,
         )
     }.filterNotNull().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), ThreadDetailUiState())
 
@@ -268,6 +295,7 @@ class ThreadDetailViewModel(
         authRepo: AuthRepository?,
         favRepo: FavoriteRepository?,
         settingsRepo: SettingsRepository?,
+        postRepo: PostRepository?,
     ) {
         authRepo?.let { auth ->
             authRepository = auth
@@ -276,6 +304,7 @@ class ThreadDetailViewModel(
         }
         favRepo?.let { favoriteRepository = it; attachFavoriteRepository(it) }
         settingsRepo?.let { settingsRepository = it; attachSettingsRepository(it) }
+        postRepo?.let { postRepository = it }
     }
 
     override fun onCleared() {
@@ -328,6 +357,8 @@ class ThreadDetailViewModel(
         pollJob?.cancel(); pollJob = null
         favoriteJob?.cancel(); favoriteJob = null
         attentionJob?.cancel(); attentionJob = null
+        deleteJob?.cancel(); deleteJob = null
+        editRefreshJob?.cancel(); editRefreshJob = null
         activeUndoToken = null
         readingPositionController.beginSession(args.tid)
         val nextEpoch = ++sessionGeneration
@@ -733,6 +764,80 @@ class ThreadDetailViewModel(
         metaState.update { if (it.pollError != null) it.copy(pollError = null) else it }
     }
 
+    /** 编辑楼层成功后原地刷新该楼层内容（优先复用服务端跳转页，否则静默回拉），不重置阅读位置。 */
+    fun onPostEdited(pid: String, page: Int? = null, redirectedPage: ThreadDetailPage? = null) {
+        val cleanPid = pid.trim(); val cur = metaState.value
+        if (cleanPid.isEmpty() || cur.tid.isBlank()) return
+        redirectedPage?.floors?.firstOrNull { it.postId == cleanPid }?.let { applyEditedFloorInPlace(cleanPid, it, redirectedPage.title); return }
+        val gen = sessionGeneration
+        val targetPage = cur.rawFloors.firstOrNull { it.postId == cleanPid }?.page?.takeIf { it > 0 } ?: page?.takeIf { it > 0 } ?: cur.page
+        editRefreshJob?.cancel()
+        editRefreshJob = viewModelScope.launch {
+            val fromPage = (threadDetailRepository.loadPage(cur.tid, targetPage, cur.filter.toRepositoryFilter(), recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking) as? ThreadDetailLoadResult.Success)
+                ?.let { ok -> ok.page.floors.firstOrNull { it.postId == cleanPid }?.let { it to ok.title } }
+            if (gen != sessionGeneration) return@launch
+            if (fromPage != null) { applyEditedFloorInPlace(cleanPid, fromPage.first, fromPage.second); return@launch }
+            (threadDetailRepository.loadByPostId(cleanPid, cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking) as? ThreadDetailLoadResult.Success)
+                ?.takeIf { gen == sessionGeneration }?.let { ok -> ok.page.floors.firstOrNull { it.postId == cleanPid }?.let { applyEditedFloorInPlace(cleanPid, it, ok.title) } }
+        }
+    }
+
+    private fun applyEditedFloorInPlace(pid: String, updated: PostFloor, refreshedTitle: String) = metaState.update { s ->
+        if (s.rawFloors.none { it.postId == pid }) s else s.copy(
+            title = if (updated.floor == 1 && refreshedTitle.isNotBlank()) refreshedTitle else s.title,
+            rawFloors = s.rawFloors.map { if (it.postId == pid) updated.copy(page = it.page.takeIf { p -> p > 0 } ?: updated.page) else it },
+        )
+    }
+
+    /** 打开删除自己楼层的二次确认框（零网络请求）。 */
+    fun requestDeleteFloor(floor: PostFloor) {
+        val cur = metaState.value
+        if (cur.tid.isBlank() || cur.deleteDialog?.isDeleting == true) return
+        if (cur.currentUserUid.isNullOrBlank()) { emitLoginNotice(); return }
+        if (cur.currentUserUid == floor.uid) metaState.update { it.copy(deleteDialog = FloorDeleteDialogState(floor)) }
+    }
+
+    /** 取消或返回关闭删除确认框（删除进行中防误关；零网络请求）。 */
+    fun dismissDeleteFloorDialog() {
+        val dialog = metaState.value.deleteDialog ?: return
+        if (!dialog.isDeleting) metaState.update { it.copy(deleteDialog = null) }
+    }
+
+    /** 确认删除自己楼层（不可撤销，严禁弹撤销 Snackbar；成功移除楼层保位/整帖删除关闭，失败保留楼层原地提示）。 */
+    fun confirmDeleteFloor() {
+        val cur = metaState.value; val dialog = cur.deleteDialog ?: return
+        if (dialog.isDeleting || deleteJob?.isActive == true || cur.tid.isBlank()) return
+        val repo = postRepository ?: run { metaState.update { it.copy(deleteDialog = dialog.copy(error = FloorDeleteError(UiError(R.string.common_error_load_failed)))) }; return }
+        if (cur.currentUserUid.isNullOrBlank()) { metaState.update { it.copy(deleteDialog = dialog.copy(error = FloorDeleteError(UiError(R.string.thread_detail_login_to_operate, action = UiErrorAction.Login)))) }; return }
+        val floor = dialog.floor; val gen = sessionGeneration
+        val req = PostSubmitRequest.DeletePost(cur.fid.coerceAtLeast(0), cur.tid, floor.postId, floor.page.takeIf { it > 0 } ?: cur.page.coerceAtLeast(1), draftKey = runCatching { DraftKey.edit(floor.postId.trim()) }.getOrNull())
+        metaState.update { it.copy(deleteDialog = dialog.copy(isDeleting = true, error = null)) }
+        deleteJob = viewModelScope.launch {
+            val result = runCatching { repo.submitPost(req) }.onFailure { if (it is CancellationException) throw it }.getOrElse { PostSubmitResult.NetworkError(it.message.orEmpty(), it) }
+            if (gen != sessionGeneration) return@launch
+            if (result is PostSubmitResult.Success) {
+                metaState.update { s ->
+                    if (result.threadDeleted) s.copy(deleteDialog = null, isThreadDeleted = true)
+                    else s.copy(rawFloors = s.rawFloors.filterNot { it.postId == floor.postId }, highlightedFloor = s.highlightedFloor?.takeUnless { it.postId == floor.postId }, deleteDialog = null)
+                }
+            } else {
+                val err = mapDeleteFailure(result)
+                metaState.update { s -> s.copy(deleteDialog = s.deleteDialog?.copy(isDeleting = false, error = err)) }
+            }
+        }
+    }
+
+    private fun mapDeleteFailure(result: PostSubmitResult): FloorDeleteError = when (result) {
+        is PostSubmitResult.CooldownActive -> FloorDeleteError(cooldownMessageSeconds = result.remainingSeconds.coerceAtLeast(1))
+        is PostSubmitResult.AuthRequired -> FloorDeleteError(UiErrorMapper.mapAuthRequired(result.reason))
+        is PostSubmitResult.ChallengeRequired -> FloorDeleteError(UiError(if (result.rejected) R.string.challenge_status_rejected else R.string.challenge_status_incomplete, action = UiErrorAction.Reverify))
+        PostSubmitResult.RealNameBindRequired -> FloorDeleteError(UiError(R.string.compose_error_real_name_required))
+        is PostSubmitResult.SiteError -> FloorDeleteError(UiError(R.string.common_error_load_failed, result.message.trim().ifEmpty { null }), customMessage = result.message.trim().ifEmpty { null })
+        is PostSubmitResult.NetworkError -> FloorDeleteError(UiError(R.string.common_error_network, result.message.trim().ifEmpty { null }))
+        is PostSubmitResult.InvalidInput -> FloorDeleteError(UiError(R.string.common_error_load_failed, result.message.trim().ifEmpty { null }), customMessage = result.message.trim().ifEmpty { null })
+        else -> FloorDeleteError(UiError(R.string.common_error_load_failed))
+    }
+
     fun submitPollVote(poll: ThreadPoll, optionIds: List<String>) {
         val cur = metaState.value
         if (cur.tid.isBlank() || cur.isPollSubmitting || pollJob?.isActive == true) return
@@ -906,7 +1011,13 @@ class ThreadDetailViewModel(
                     val activeUid = resolveAuthUid(account, state)
                     metaState.update { cur ->
                         val nextPollErr = if (activeUid != null && cur.pollError?.action == UiErrorAction.Login) null else cur.pollError
-                        if (cur.currentUserUid == activeUid && cur.pollError == nextPollErr) cur else cur.copy(currentUserUid = activeUid, pollError = nextPollErr)
+                        val nextDelDialog = if (activeUid != null && cur.deleteDialog?.error?.uiError?.action == UiErrorAction.Login) {
+                            cur.deleteDialog.copy(error = null)
+                        } else {
+                            cur.deleteDialog
+                        }
+                        if (cur.currentUserUid == activeUid && cur.pollError == nextPollErr && cur.deleteDialog == nextDelDialog) cur
+                        else cur.copy(currentUserUid = activeUid, pollError = nextPollErr, deleteDialog = nextDelDialog)
                     }
                     val accountActivated = account != null &&
                         (account.uid != prevAccount?.uid || account.lastLoginAt != prevAccount?.lastLoginAt) &&

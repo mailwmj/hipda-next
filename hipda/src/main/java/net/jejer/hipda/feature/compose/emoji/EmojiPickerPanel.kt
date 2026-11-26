@@ -37,6 +37,7 @@ import net.jejer.hipda.emoji.EmojiGroup
 import net.jejer.hipda.emoji.EmojiMap
 import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
 import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelRenderer
+import net.jejer.hipda.feature.compose.previousGraphemeOffset
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
@@ -60,6 +61,21 @@ class EmojiPanelRendererImpl @Inject constructor() : QuickReplyEmojiPanelRendere
     override fun Content(host: QuickReplyEmojiPanelHost, modifier: Modifier) {
         EmojiPickerPanel(host = host, modifier = modifier)
     }
+}
+
+private val FORUM_EMOJI_CODES_BY_LENGTH: List<String> by lazy {
+    EmojiMap.groups.flatMap { it.codes }.sortedByDescending { it.length }
+}
+
+/** 回删定位：光标前紧邻完整论坛表情代码（按 [EmojiMap] 最长优先匹配，含 `:)` 等短码）时整枚删除，否则按字形簇回退 1 格。 */
+fun previousEmojiOrGraphemeOffset(text: CharSequence, cursor: Int): Int {
+    val safeCursor = cursor.coerceIn(0, text.length)
+    if (safeCursor <= 0) return 0
+    for (code in FORUM_EMOJI_CODES_BY_LENGTH) {
+        val start = safeCursor - code.length
+        if (start >= 0 && text.regionMatches(start, code, 0, code.length)) return start
+    }
+    return previousGraphemeOffset(text, safeCursor)
 }
 
 /** 将 `:emoji` 分类映射到 `:hipda` 本地化无障碍字符串资源（闭合 `C1b#3`，不读取硬编码 `EmojiGroup.name`）。 */

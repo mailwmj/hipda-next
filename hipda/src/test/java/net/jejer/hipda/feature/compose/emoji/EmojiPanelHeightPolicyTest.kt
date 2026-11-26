@@ -159,4 +159,30 @@ class EmojiPanelHeightPolicyTest {
         val moduleSrc = File(moduleDir, "src/main/java/net/jejer/hipda/di/ComposeEmojiModule.kt").readText()
         assertTrue("ComposeEmojiModule 应安装到 SingletonComponent", moduleSrc.contains("@InstallIn(SingletonComponent::class)"))
     }
+
+    @Test
+    fun previousEmojiOrGraphemeOffset_deletesAll61ForumCodes_chinese_surrogatePairs_andIncompleteCodes() {
+        assertEquals(0, previousEmojiOrGraphemeOffset("", 0))
+        assertEquals(0, previousEmojiOrGraphemeOffset("abc", 0))
+
+        // 覆盖 :emoji C1b 全部 61 个规范论坛表情代码（含 :) 短码、:loveliness: 长码、{:2_41:} / {:3_57:}）
+        EmojiMap.groups.flatMap { it.codes }.forEach { code ->
+            val text = "前${code}后"
+            val cursorAfterCode = 1 + code.length
+            assertEquals("应整枚删除论坛表情 $code", 1, previousEmojiOrGraphemeOffset(text, cursorAfterCode))
+        }
+
+        // 残缺代码只删 1 个字符，不误删前文
+        assertEquals(7, previousEmojiOrGraphemeOffset("头{:2_41:", 8))
+        assertEquals(1, previousEmojiOrGraphemeOffset("头:)", 3))
+        assertEquals(1, previousEmojiOrGraphemeOffset("头:", 2))
+
+        // 普通中文、Unicode 代理对（😀 / 𠮷）与组合变音字形簇（e + combining acute）安全回删
+        assertEquals(1, previousEmojiOrGraphemeOffset("你好", 2))
+        val surrogatePair = "中😀𠮷"
+        assertEquals(3, previousEmojiOrGraphemeOffset(surrogatePair, surrogatePair.length)) // 删 𠮷 (2 UTF-16 units)
+        assertEquals(1, previousEmojiOrGraphemeOffset(surrogatePair, 3)) // 删 😀 (2 UTF-16 units)
+        val combiningCluster = "ae\u0301"
+        assertEquals(1, previousEmojiOrGraphemeOffset(combiningCluster, combiningCluster.length))
+    }
 }
