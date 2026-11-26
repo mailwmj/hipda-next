@@ -9,17 +9,21 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.Face
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
@@ -28,6 +32,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,6 +44,12 @@ import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.emoji.EmojiMap
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.feature.compose.ComposeVectorIcons
+import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
+import net.jejer.hipda.feature.compose.emoji.EmojiPanelSlotBox
+import net.jejer.hipda.feature.compose.emoji.previousEmojiOrGraphemeOffset
+import net.jejer.hipda.feature.compose.emoji.rememberEmojiPanelController
+import net.jejer.hipda.feature.compose.rememberResolvedEmojiPanelSlot
 import net.jejer.hipda.feature.threaddetail.body.InlineDrawableSpec
 import net.jejer.hipda.feature.threaddetail.body.ResolvedForumEmoji
 import net.jejer.hipda.feature.threaddetail.body.buildInlineTextContentMap
@@ -58,16 +69,30 @@ fun SmsConversationScreen(
     args: SmsConversationArgs, showBack: Boolean, onBack: () -> Unit,
     onOpenUserProfile: (uid: String, username: String) -> Unit, onOpenLogin: () -> Unit,
     contentPadding: PaddingValues, viewModel: SmsConversationViewModel, modifier: Modifier = Modifier,
+    emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
 ) {
     LaunchedEffect(args.uid, args.username) { viewModel.bindConversation(args) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val effectiveEmojiSlot = rememberResolvedEmojiPanelSlot(emojiPanelSlot)
+    val hasEmojiSlot = effectiveEmojiSlot != null
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val snackbarController = LocalPaneSnackbarController.current
     val resources = LocalResources.current
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val inputFocusRequester = remember { FocusRequester() }
     val uriHandler = LocalUriHandler.current
     val onSafeLinkClick: (String) -> Unit = remember(uriHandler) { { rawUrl -> sanitizeMessageLinkUrl(rawUrl)?.let { runCatching { uriHandler.openUri(it) } } } }
+
+    var inputFieldValue by remember(args.uid, args.username) {
+        mutableStateOf(TextFieldValue(uiState.inputText, TextRange(uiState.inputText.length)))
+    }
+    LaunchedEffect(uiState.inputText) {
+        if (uiState.inputText != inputFieldValue.text) {
+            inputFieldValue = TextFieldValue(uiState.inputText, TextRange(uiState.inputText.length))
+        }
+    }
 
     var activeSnackbarJob by remember { mutableStateOf<Job?>(null) }
     LaunchedEffect(uiState.scrollToBottomEventId) {
@@ -91,74 +116,137 @@ fun SmsConversationScreen(
     val layoutDir = LocalLayoutDirection.current
     val peerName = uiState.peerUsername.ifBlank { args.username }
     val cs = MaterialTheme.colorScheme
+    val canShowInputBar = uiState.error?.action != UiErrorAction.Login
 
-    Column(modifier.fillMaxSize().background(cs.surface).imePadding()) {
-        var menuExpanded by remember { mutableStateOf(false) }
-        MessagesSolidTopBarFrame(
-            title = peerName, showBack = showBack, onBack = onBack, isScrolled = isScrolled,
-            onTitleClick = if (args.uid.isNotBlank()) ({ onOpenUserProfile(args.uid, peerName) }) else null,
-            actions = {
-                if (args.uid.isNotBlank() && !uiState.isClearing) {
-                    Box {
-                        val moreInteraction = remember { MutableInteractionSource() }
-                        IconButton(onClick = { menuExpanded = true }, interactionSource = moreInteraction, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(moreInteraction)) {
-                            Icon(Icons.Rounded.MoreVert, stringResource(R.string.messages_action_more), tint = cs.onSurface)
-                        }
-                        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }, modifier = Modifier.background(cs.surfaceContainerHigh)) {
-                            DropdownMenuItem(text = { Text(stringResource(R.string.messages_action_clear), color = cs.error) }, onClick = { menuExpanded = false; showClearDialog = true })
+    BoxWithConstraints(modifier.fillMaxSize().background(cs.surface)) {
+        val windowHeightDp = maxHeight
+        val emojiController = rememberEmojiPanelController(
+            windowHeightDp = windowHeightDp,
+            onShowKeyboard = { runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show() },
+            onHideKeyboard = { keyboardController?.hide() },
+        )
+        LaunchedEffect(args.uid, args.username, canShowInputBar) { emojiController.close() }
+        val isEmojiPanelOpen = emojiController.isEmojiModeActive && hasEmojiSlot && canShowInputBar
+
+        Column(Modifier.fillMaxSize()) {
+            var menuExpanded by remember { mutableStateOf(false) }
+            MessagesSolidTopBarFrame(
+                title = peerName, showBack = showBack, onBack = onBack, isScrolled = isScrolled,
+                onTitleClick = if (args.uid.isNotBlank()) ({ onOpenUserProfile(args.uid, peerName) }) else null,
+                actions = {
+                    if (args.uid.isNotBlank() && !uiState.isClearing) {
+                        Box {
+                            val moreInteraction = remember { MutableInteractionSource() }
+                            IconButton(onClick = { menuExpanded = true }, interactionSource = moreInteraction, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(moreInteraction)) {
+                                Icon(Icons.Rounded.MoreVert, stringResource(R.string.messages_action_more), tint = cs.onSurface)
+                            }
+                            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }, modifier = Modifier.background(cs.surfaceContainerHigh)) {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.messages_action_clear), color = cs.error) }, onClick = { menuExpanded = false; showClearDialog = true })
+                            }
                         }
                     }
-                }
-            },
-        )
+                },
+            )
 
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            MessagePaneStateBox(
-                uiState.messages.isEmpty(), uiState.isLoading, uiState.hasLoadedOnce, uiState.error, uiState.challengeState, uiState.challengeFailure,
-                stringResource(R.string.common_empty_sms), PaddingValues(0.dp), viewModel::refresh, onOpenLogin,
-                skeleton = { MessagesListSkeleton(compact = false, contentPadding = PaddingValues(0.dp)) },
-            ) {
-                PullToRefreshBox(isRefreshing = uiState.isRefreshing, onRefresh = { viewModel.refresh() }, modifier = Modifier.fillMaxSize()) {
-                    LazyColumn(
-                        state = listState, modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(12.dp + contentPadding.calculateStartPadding(layoutDir), 12.dp, 12.dp + contentPadding.calculateEndPadding(layoutDir), 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        items(uiState.messages, key = { it.id }) { bubble ->
-                            SmsBubbleRow(
-                                item = bubble,
-                                onLinkClick = onSafeLinkClick,
-                                onCopy = {
-                                    val copiedLabel = resources.getString(R.string.messages_action_copy)
-                                    if (copySmsBubblePlainTextToClipboard(context, copiedLabel, bubble.rawMessage ?: bubble.contentHtml, isPlainText = bubble.rawMessage != null)) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                MessagePaneStateBox(
+                    uiState.messages.isEmpty(), uiState.isLoading, uiState.hasLoadedOnce, uiState.error, uiState.challengeState, uiState.challengeFailure,
+                    stringResource(R.string.common_empty_sms), PaddingValues(0.dp), viewModel::refresh, onOpenLogin,
+                    skeleton = { MessagesListSkeleton(compact = false, contentPadding = PaddingValues(0.dp)) },
+                ) {
+                    PullToRefreshBox(isRefreshing = uiState.isRefreshing, onRefresh = { viewModel.refresh() }, modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState, modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(12.dp + contentPadding.calculateStartPadding(layoutDir), 12.dp, 12.dp + contentPadding.calculateEndPadding(layoutDir), 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            items(uiState.messages, key = { it.id }) { bubble ->
+                                SmsBubbleRow(
+                                    item = bubble,
+                                    onLinkClick = onSafeLinkClick,
+                                    onCopy = {
+                                        val copiedLabel = resources.getString(R.string.messages_action_copy)
+                                        if (copySmsBubblePlainTextToClipboard(context, copiedLabel, bubble.rawMessage ?: bubble.contentHtml, isPlainText = bubble.rawMessage != null)) {
+                                            activeSnackbarJob?.cancel()
+                                            activeSnackbarJob = coroutineScope.launch {
+                                                snackbarController.show(resources.getString(R.string.messages_snackbar_copied), PaneSnackbarTarget.DetailPane)
+                                            }
+                                        }
+                                    },
+                                    onResend = { viewModel.resendMessage(bubble.id) },
+                                    onDelete = {
+                                        val token = viewModel.deleteFailedMessage(bubble.id) ?: return@SmsBubbleRow
                                         activeSnackbarJob?.cancel()
                                         activeSnackbarJob = coroutineScope.launch {
-                                            snackbarController.show(resources.getString(R.string.messages_snackbar_copied), PaneSnackbarTarget.DetailPane)
+                                            snackbarController.show(resources.getString(R.string.messages_snackbar_deleted), PaneSnackbarTarget.DetailPane, resources.getString(R.string.feedback_action_undo)) {
+                                                viewModel.restoreDeletedMessage(token)
+                                            }
                                         }
-                                    }
-                                },
-                                onResend = { viewModel.resendMessage(bubble.id) },
-                                onDelete = {
-                                    val token = viewModel.deleteFailedMessage(bubble.id) ?: return@SmsBubbleRow
-                                    activeSnackbarJob?.cancel()
-                                    activeSnackbarJob = coroutineScope.launch {
-                                        snackbarController.show(resources.getString(R.string.messages_snackbar_deleted), PaneSnackbarTarget.DetailPane, resources.getString(R.string.feedback_action_undo)) {
-                                            viewModel.restoreDeletedMessage(token)
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault())),
-                            )
+                                    },
+                                    modifier = Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault())),
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
 
-        if (uiState.error?.action != UiErrorAction.Login) {
-            val imeBottomDp = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
-            val inputBarBottomPadding = (contentPadding.calculateBottomPadding() - imeBottomDp).coerceAtLeast(0.dp)
-            SmsSolidInputBar(uiState.inputText, uiState.cooldownSeconds, uiState.canSend, inputBarBottomPadding, viewModel::onInputChange, viewModel::sendMessage)
+            if (canShowInputBar) {
+                val inputBarBottomPadding = if (isEmojiPanelOpen) 0.dp else (contentPadding.calculateBottomPadding() - emojiController.bottomSlotHeightDp).coerceAtLeast(0.dp)
+                SmsSolidInputBar(
+                    inputValue = inputFieldValue,
+                    cooldownSeconds = uiState.cooldownSeconds,
+                    canSend = uiState.canSend,
+                    bottomPadding = inputBarBottomPadding,
+                    hasEmojiSlot = hasEmojiSlot,
+                    isEmojiPanelOpen = isEmojiPanelOpen,
+                    focusRequester = inputFocusRequester,
+                    onInputChange = { next ->
+                        inputFieldValue = next
+                        if (next.text != uiState.inputText) viewModel.onInputChange(next.text)
+                    },
+                    onInputPress = { if (emojiController.isEmojiModeActive) emojiController.switchToKeyboard() },
+                    onToggleEmoji = { if (hasEmojiSlot) emojiController.toggle() },
+                    onSend = viewModel::sendMessage,
+                )
+                val emojiHost = remember(emojiController.panelContentHeightDp, windowHeightDp, viewModel, emojiController) {
+                    QuickReplyEmojiPanelHost(
+                        keyboardHeightDp = emojiController.panelContentHeightDp,
+                        windowHeightDp = windowHeightDp,
+                        onInsertEmoji = { code ->
+                            val cur = inputFieldValue
+                            val s = cur.selection.min.coerceIn(0, cur.text.length)
+                            val e = cur.selection.max.coerceIn(0, cur.text.length)
+                            val nextText = cur.text.substring(0, s) + code + cur.text.substring(e)
+                            inputFieldValue = TextFieldValue(nextText, TextRange(s + code.length))
+                            viewModel.onInputChange(nextText)
+                        },
+                        onBackspace = {
+                            val cur = inputFieldValue
+                            val s = cur.selection.min.coerceIn(0, cur.text.length)
+                            val e = cur.selection.max.coerceIn(0, cur.text.length)
+                            val next = when {
+                                s != e -> TextFieldValue(cur.text.substring(0, s) + cur.text.substring(e), TextRange(s))
+                                s > 0 -> previousEmojiOrGraphemeOffset(cur.text, s).let { prev ->
+                                    TextFieldValue(cur.text.substring(0, prev) + cur.text.substring(s), TextRange(prev))
+                                }
+                                else -> cur
+                            }
+                            if (next != cur) {
+                                inputFieldValue = next
+                                viewModel.onInputChange(next.text)
+                            }
+                        },
+                        onClose = { emojiController.close() },
+                    )
+                }
+                EmojiPanelSlotBox(
+                    controller = emojiController,
+                    emojiPanelSlot = effectiveEmojiSlot,
+                    host = emojiHost,
+                    registerBackHandler = hasEmojiSlot,
+                )
+            }
         }
     }
 
@@ -198,6 +286,9 @@ private fun SmsBubbleRow(item: SmsBubbleUiItem, onLinkClick: (String) -> Unit, o
     var copyMenuExpanded by remember(item.id) { mutableStateOf(false) }
     val bubbleInteraction = remember { MutableInteractionSource() }
     val copyLabel = stringResource(R.string.messages_action_copy)
+    val rawContent = item.rawMessage ?: item.contentHtml
+    val isPlainText = item.rawMessage != null
+    val canCopy = remember(rawContent, isPlainText) { extractSmsBubblePlainText(rawContent, isPlainText).isNotEmpty() }
 
     Row(modifier.fillMaxWidth(), horizontalArrangement = if (item.isMine) Arrangement.End else Arrangement.Start, verticalAlignment = Alignment.Bottom) {
         if (!item.isMine) MessageAvatar(item.avatarUrl, item.author, 32.dp, Modifier.padding(end = 8.dp))
@@ -205,17 +296,20 @@ private fun SmsBubbleRow(item: SmsBubbleUiItem, onLinkClick: (String) -> Unit, o
         Column(horizontalAlignment = if (item.isMine) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Box {
                 Surface(shape = HiShapeTokens.Medium, color = bubbleBg, contentColor = bubbleFg, modifier = Modifier.widthIn(max = BUBBLE_MAX_WIDTH)) {
-                    SmsBubbleBody(
-                        item.rawMessage ?: item.contentHtml, bubbleFg, cs.primary, onLinkClick,
+                    val bodyModifier = if (canCopy) {
                         Modifier.combinedClickable(
                             interactionSource = bubbleInteraction, indication = hiListItemPressIndication(), onClick = {}, onLongClickLabel = copyLabel, hapticFeedbackEnabled = false,
                             onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); copyMenuExpanded = true },
-                        ).padding(horizontal = 12.dp, vertical = 9.dp),
-                        isPlainText = item.rawMessage != null,
-                    )
+                        ).padding(horizontal = 12.dp, vertical = 9.dp)
+                    } else {
+                        Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                    }
+                    SmsBubbleBody(rawContent, bubbleFg, cs.primary, onLinkClick, bodyModifier, isPlainText = isPlainText)
                 }
-                DropdownMenu(expanded = copyMenuExpanded, onDismissRequest = { copyMenuExpanded = false }, modifier = Modifier.background(cs.surfaceContainerHigh)) {
-                    DropdownMenuItem(text = { Text(copyLabel) }, onClick = { copyMenuExpanded = false; onCopy() })
+                if (canCopy) {
+                    DropdownMenu(expanded = copyMenuExpanded, onDismissRequest = { copyMenuExpanded = false }, modifier = Modifier.background(cs.surfaceContainerHigh)) {
+                        DropdownMenuItem(text = { Text(copyLabel) }, onClick = { copyMenuExpanded = false; onCopy() })
+                    }
                 }
             }
             if (item.time.isNotBlank()) Text(item.time, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
@@ -307,17 +401,42 @@ internal fun buildSmsAnnotatedText(parts: List<SmsTextPart>, linkColor: Color, d
 
 @Composable
 private fun SmsSolidInputBar(
-    inputText: String, cooldownSeconds: Int, canSend: Boolean, bottomPadding: Dp,
-    onInputChange: (String) -> Unit, onSend: () -> Unit,
+    inputValue: TextFieldValue, cooldownSeconds: Int, canSend: Boolean, bottomPadding: Dp,
+    hasEmojiSlot: Boolean, isEmojiPanelOpen: Boolean, focusRequester: FocusRequester,
+    onInputChange: (TextFieldValue) -> Unit, onInputPress: () -> Unit, onToggleEmoji: () -> Unit, onSend: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
     val inCooldown = cooldownSeconds > 0
     val sendCd = if (inCooldown) stringResource(R.string.messages_cooldown_cd, cooldownSeconds) else stringResource(R.string.messages_action_send)
+    val inputInteraction = remember { MutableInteractionSource() }
+    val latestOnInputPress by rememberUpdatedState(onInputPress)
+    LaunchedEffect(inputInteraction) {
+        inputInteraction.interactions.collect { if (it is PressInteraction.Press) latestOnInputPress() }
+    }
 
     Column(Modifier.fillMaxWidth().background(cs.surfaceContainerLow).padding(bottom = bottomPadding)) {
         HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-            OutlinedTextField(value = inputText, onValueChange = onInputChange, placeholder = { Text(stringResource(R.string.messages_input_hint), maxLines = 1) }, maxLines = 4, shape = HiShapeTokens.Large, modifier = Modifier.weight(1f))
+        Row(
+            Modifier.fillMaxWidth().padding(start = if (hasEmojiSlot) 4.dp else 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (hasEmojiSlot) 4.dp else 8.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            if (hasEmojiSlot) {
+                val emojiCd = stringResource(if (isEmojiPanelOpen) R.string.compose_action_keyboard else R.string.compose_action_emoji)
+                val emojiInteraction = remember { MutableInteractionSource() }
+                IconButton(
+                    onClick = onToggleEmoji, interactionSource = emojiInteraction,
+                    modifier = Modifier.padding(bottom = 4.dp).defaultMinSize(48.dp, 48.dp).hiPressScale(emojiInteraction),
+                ) {
+                    HiIconSwitch(if (isEmojiPanelOpen) ComposeVectorIcons.Keyboard else Icons.Rounded.Face, emojiCd, tint = cs.onSurface, iconSize = 22.dp)
+                }
+            }
+            OutlinedTextField(
+                value = inputValue, onValueChange = onInputChange,
+                placeholder = { Text(stringResource(R.string.messages_input_hint), maxLines = 1) },
+                maxLines = 4, shape = HiShapeTokens.Large, interactionSource = inputInteraction,
+                modifier = Modifier.weight(1f).focusRequester(focusRequester),
+            )
             val sendInteraction = remember { MutableInteractionSource() }
             FilledIconButton(
                 onClick = onSend, enabled = canSend, interactionSource = sendInteraction,

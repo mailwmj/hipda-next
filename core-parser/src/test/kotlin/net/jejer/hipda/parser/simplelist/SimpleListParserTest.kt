@@ -20,7 +20,7 @@ class SimpleListParserTest {
         assertEquals(3, page.maxPage)
         assertTrue(page.meta.session.isLoggedIn)
         assertEquals("10000", page.meta.session.uid)
-        assertTrue(page.items.isNotEmpty())
+        assertTrue(page.items.size >= 30, "Expected >= 30 threads in my_threads.html, got ${page.items.size}")
 
         val first = page.items[0]
         assertEquals("3410683", first.tid)
@@ -38,7 +38,7 @@ class SimpleListParserTest {
         assertEquals(before, doc.outerHtml(), "SimpleListParser.parseMyReplies must not mutate Document")
         assertTrue(page.hasTable)
         assertEquals(34, page.maxPage)
-        assertTrue(page.items.isNotEmpty())
+        assertTrue(page.items.size >= 30, "Expected >= 30 replies in my_posts.html, got ${page.items.size}")
 
         val first = page.items[0]
         assertEquals("3474137", first.tid)
@@ -58,7 +58,7 @@ class SimpleListParserTest {
         assertEquals(before, doc.outerHtml(), "SimpleListParser.parseFavoritesList must not mutate Document")
         assertEquals(4, page.maxPage)
         assertEquals("00000000", page.meta.formhash)
-        assertTrue(page.items.isNotEmpty())
+        assertEquals(75, page.items.size)
 
         val first = page.items[0]
         assertEquals("3468951", first.tid)

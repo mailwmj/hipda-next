@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 表情选择面板分类标签与无障碍文案（闭合 C1b#3，严禁硬编码消费 EmojiGroup.name） -->
+    <string name="emoji_panel_title">表情面板</string>
+    <string name="emoji_group_default">默认表情</string>
+    <string name="emoji_group_monkey">酷猴表情</string>
+    <string name="emoji_group_dumb">呆呆表情</string>
+    <string name="emoji_group_fallback">表情分类 %1$d</string>
+    <string name="emoji_item_cd">表情 %1$s</string>
+    <string name="emoji_action_backspace">删除</string>
+</resources>

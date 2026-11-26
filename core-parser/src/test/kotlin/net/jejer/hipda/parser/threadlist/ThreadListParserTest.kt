@@ -55,6 +55,7 @@ class ThreadListParserTest {
         assertEquals("#EE1B2E", multipageThread.titleColor)
         assertTrue(p1.threads.any { it.withPic })
         assertTrue(p1.threads.any { it.isNew })
+        assertTrue(p1.threads.any { it.titleColor == "#3C9D40" })
 
         // 2. forum_2_p2_lastpost.html：第 2 页、含双重转义 Emoji 💩、彩色标题 #3C9D40、多页 + 附图
         val p2Doc = SampleFixtures.parseSampleDocument(SAMPLE_FORUM2_P2_LASTPOST)

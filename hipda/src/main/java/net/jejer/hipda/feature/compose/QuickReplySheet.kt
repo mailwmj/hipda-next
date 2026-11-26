@@ -6,6 +6,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -31,10 +32,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.text.BreakIterator
-import kotlin.math.min
 import kotlinx.coroutines.*
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.feature.compose.emoji.*
 import net.jejer.hipda.ui.designsystem.*
 import net.jejer.hipda.ui.designsystem.feedback.*
 import net.jejer.hipda.ui.designsystem.glass.*
@@ -73,11 +74,8 @@ fun calculateQuickReplyLayoutMetrics(paneHeightDp: Dp, statusBarTopDp: Dp, imeBo
 }
 
 /** 按 §7.4 计算表情面板高度：优先复用最近键盘高度，缺失时按窗口高比例回退。 */
-fun calculateEmojiPanelHeight(lastKeyboardHeightDp: Dp, windowHeightDp: Dp): Dp {
-    if (lastKeyboardHeightDp > 0.dp) return lastKeyboardHeightDp
-    val ratio = if (windowHeightDp < QuickReplyNormalWindowMinHeight) 0.35f else 0.45f
-    return min(280f, windowHeightDp.value * ratio).coerceAtLeast(0f).dp
-}
+fun calculateEmojiPanelHeight(lastKeyboardHeightDp: Dp, windowHeightDp: Dp): Dp =
+    resolveEmojiPanelHeight(lastKeyboardHeightDp, windowHeightDp)
 
 private enum class SheetMotionPhase { Entering, Open, Dismissing, Expanding }
 
@@ -205,8 +203,14 @@ fun QuickReplySheet(
     val offsetYPx = remember { Animatable(if (reducedMotion) 0f else fallbackHeightPx) }
     var isDragging by remember { mutableStateOf(false) }
     var dragOffsetYPx by remember { mutableFloatStateOf(0f) }
-    var isEmojiPanelOpen by remember { mutableStateOf(false) }
-    var lastObservedImeDp by remember { mutableStateOf(0.dp) }
+    val closeEmojiPanelAction = remember { mutableStateOf<() -> Unit>({}) }
+    val onInputPressedAction = remember { mutableStateOf<() -> Unit>({}) }
+    val inputInteractionSource = remember { MutableInteractionSource() }
+    LaunchedEffect(inputInteractionSource) {
+        inputInteractionSource.interactions.collect { interaction ->
+            if (interaction is PressInteraction.Press) onInputPressedAction.value()
+        }
+    }
 
     val dismissThresholdPx = with(density) { QuickReplyDragDismissThreshold.toPx() }
     val expandThresholdPx = with(density) { QuickReplyDragExpandThreshold.toPx() }
@@ -231,8 +235,10 @@ fun QuickReplySheet(
         if (latestReducedMotion) offsetYPx.snapTo(0f) else offsetYPx.animateTo(0f, animationSpec = HiMotion.spatialDefault())
         if (phase == SheetMotionPhase.Entering) phase = SheetMotionPhase.Open
     }
-    LaunchedEffect(uiState.target.tid, uiState.isLoggedIn, isEmojiPanelOpen) {
-        if (uiState.isLoggedIn && !isEmojiPanelOpen && phase != SheetMotionPhase.Dismissing) {
+    LaunchedEffect(uiState.target.tid, uiState.isLoggedIn) {
+        if (!uiState.isLoggedIn) {
+            closeEmojiPanelAction.value()
+        } else if (phase != SheetMotionPhase.Dismissing) {
             runCatching { inputFocusRequester.requestFocus() }
             keyboardController?.show()
         }
@@ -241,7 +247,7 @@ fun QuickReplySheet(
     val launchTerminalTransition: (SheetMotionPhase, Float, AnimationSpec<Float>, Float, () -> Unit) -> Unit = remember(scope) {
         { targetPhase, targetY, spec, velocity, onComplete ->
             phase = targetPhase
-            isEmojiPanelOpen = false
+            closeEmojiPanelAction.value()
             keyboardController?.hide()
             val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
             if (latestReducedMotion) {
@@ -360,7 +366,7 @@ fun QuickReplySheet(
         }
     }
 
-    BackHandler(enabled = true) { if (isEmojiPanelOpen) isEmojiPanelOpen = false else requestDismiss(0f) }
+    BackHandler(enabled = true) { requestDismiss(0f) }
 
     val contextLabel = resolveReplyContextLabel(uiState.target)
     val collapseCd = stringResource(R.string.compose_quick_reply_collapse_cd)
@@ -376,24 +382,24 @@ fun QuickReplySheet(
     val smallLinePx = remember(bodySmallStyle, density) { textMeasurer.measure("测", style = bodySmallStyle).size.height }
     DisposableEffect(Unit) { onDispose { latestOnOccupiedChanged(0.dp, false) } }
 
-    val onToggleEmoji: () -> Unit = {
-        if (isEmojiPanelOpen) { isEmojiPanelOpen = false; runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show() }
-        else { keyboardController?.hide(); isEmojiPanelOpen = true }
-    }
-
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val paneHeightDp = maxHeight
         val statusBarTopDp = with(density) { WindowInsets.hiTopSafeBar.getTop(density).toDp() }
-        val imeBottomDp = with(density) { WindowInsets.ime.getBottom(density).toDp() }
-        val navBarBottomDp = maxOf(with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }, bottomInset)
-        LaunchedEffect(imeBottomDp) {
-            if (imeBottomDp > 0.dp) { lastObservedImeDp = imeBottomDp; if (isEmojiPanelOpen) isEmojiPanelOpen = false }
+        val emojiController = rememberEmojiPanelController(
+            windowHeightDp = paneHeightDp,
+            onShowKeyboard = { runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show() },
+            onHideKeyboard = { keyboardController?.hide() },
+        )
+        val navBarBottomDp = maxOf(emojiController.navBarBottomDp, bottomInset)
+        SideEffect {
+            closeEmojiPanelAction.value = { emojiController.close() }
+            onInputPressedAction.value = { if (emojiController.isEmojiModeActive) emojiController.switchToKeyboard() }
         }
-        val emojiPanelHeightDp = if (isEmojiPanelOpen && hasEmojiPanel) calculateEmojiPanelHeight(lastObservedImeDp, paneHeightDp) else 0.dp
-        val effectiveImeOrEmojiDp = if (isEmojiPanelOpen && hasEmojiPanel) emojiPanelHeightDp else imeBottomDp
-        val metrics = calculateQuickReplyLayoutMetrics(paneHeightDp, statusBarTopDp, effectiveImeOrEmojiDp, navBarBottomDp)
-        val outerBottomPadding = if (isEmojiPanelOpen && hasEmojiPanel) 0.dp else imeBottomDp
-        val innerBottomPadding = if (imeBottomDp > 0.dp || (isEmojiPanelOpen && hasEmojiPanel)) 8.dp else (navBarBottomDp + 8.dp)
+        val isEmojiPanelOpen = emojiController.isEmojiModeActive && hasEmojiPanel
+        val onToggleEmoji: () -> Unit = { if (hasEmojiPanel) emojiController.toggle() }
+        val bottomOccupiedDp = emojiController.bottomSlotHeightDp
+        val metrics = calculateQuickReplyLayoutMetrics(paneHeightDp, statusBarTopDp, bottomOccupiedDp, navBarBottomDp)
+        val innerBottomPadding = if (bottomOccupiedDp > 0.dp || isEmojiPanelOpen) 8.dp else (navBarBottomDp + 8.dp)
         val plan = resolveSheetSlotPlan(
             density, metrics.maxSheetHeightDp, uiState.isLoggedIn, metrics.isCompactShortScreen, canExpandToFullEditor,
             uiState.showDraftRestoredBanner, uiState.inlineError != null, uiState.inlineError?.uiError?.action != null,
@@ -413,7 +419,7 @@ fun QuickReplySheet(
                 )
             }
         }
-        val totalOccupiedBottomDp = if (phase == SheetMotionPhase.Dismissing) 0.dp else with(density) { measuredSheetHeightPx.toDp() } + effectiveImeOrEmojiDp
+        val totalOccupiedBottomDp = if (phase == SheetMotionPhase.Dismissing) 0.dp else with(density) { measuredSheetHeightPx.toDp() } + bottomOccupiedDp
         LaunchedEffect(totalOccupiedBottomDp, metrics.shouldLiftUnderlyingList) {
             latestOnOccupiedChanged(totalOccupiedBottomDp, metrics.shouldLiftUnderlyingList)
         }
@@ -431,7 +437,7 @@ fun QuickReplySheet(
 
         Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = outerBottomPadding)
+                .align(Alignment.BottomCenter).fillMaxWidth()
                 .graphicsLayer { translationY = effectiveOffsetYPx }
                 .semantics { paneTitle = contextLabel; isTraversalGroup = true },
         ) {
@@ -454,7 +460,7 @@ fun QuickReplySheet(
                                     .padding(start = 8.dp, end = 8.dp, top = plan.compactVerticalPaddingDp, bottom = plan.compactVerticalPaddingDp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 40.dp, 6.dp, inputNestedScroll, Modifier.weight(1f))
+                                QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 40.dp, 6.dp, inputNestedScroll, inputInteractionSource, Modifier.weight(1f))
                                 if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.InsertImage, stringResource(R.string.compose_action_insert_image)) { requestExpandToFullEditor(true, 0f) }
                                 if (hasEmojiPanel) QuickReplyEmojiToggleButton(isEmojiPanelOpen, onToggleEmoji)
                                 if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen)) { requestExpandToFullEditor(false, 0f) }
@@ -465,7 +471,7 @@ fun QuickReplySheet(
                         else -> {
                             if (plan.topSpacerDp > 0.dp) Spacer(Modifier.height(plan.topSpacerDp))
                             QuickReplyInputBox(
-                                textFieldState, inputScrollState, contextLabel, inputFocusRequester, 44.dp, 10.dp, inputNestedScroll,
+                                textFieldState, inputScrollState, contextLabel, inputFocusRequester, 44.dp, 10.dp, inputNestedScroll, inputInteractionSource,
                                 Modifier.fillMaxWidth().heightIn(min = plan.inputMinHeightDp, max = plan.inputMaxHeightDp).padding(horizontal = 16.dp, vertical = 4.dp),
                             )
                             if (plan.showErrorInline) uiState.inlineError?.let { QuickReplyInlineErrorStrip(it, compact = false, plan.errorHeightDp, viewModel::submit, onOpenLogin) }
@@ -478,23 +484,26 @@ fun QuickReplySheet(
                     }
                 }
             }
-            if (isEmojiPanelOpen && effectiveEmojiSlot != null) {
-                val emojiHost = remember(emojiPanelHeightDp, paneHeightDp, textFieldState, keyboardController) {
-                    QuickReplyEmojiPanelHost(
-                        keyboardHeightDp = emojiPanelHeightDp, windowHeightDp = paneHeightDp,
-                        onInsertEmoji = { code -> textFieldState.edit { val s = selection.min; if (s != selection.max) delete(s, selection.max); insert(s, code); selection = TextRange(s + code.length) } },
-                        onBackspace = {
-                            textFieldState.edit {
-                                val s = selection.min
-                                if (s != selection.max) { delete(s, selection.max); selection = TextRange(s) }
-                                else if (s > 0) { val prev = previousGraphemeOffset(asCharSequence(), s); delete(prev, s); selection = TextRange(prev) }
-                            }
-                        },
-                        onClose = { isEmojiPanelOpen = false; keyboardController?.show() },
-                    )
-                }
-                Box(Modifier.fillMaxWidth().height(emojiPanelHeightDp).background(cs.surfaceContainerLow)) { effectiveEmojiSlot(emojiHost) }
+            val emojiHost = remember(emojiController.panelContentHeightDp, paneHeightDp, textFieldState, emojiController) {
+                QuickReplyEmojiPanelHost(
+                    keyboardHeightDp = emojiController.panelContentHeightDp, windowHeightDp = paneHeightDp,
+                    onInsertEmoji = { code -> textFieldState.edit { val s = selection.min; if (s != selection.max) delete(s, selection.max); insert(s, code); selection = TextRange(s + code.length) } },
+                    onBackspace = {
+                        textFieldState.edit {
+                            val s = selection.min
+                            if (s != selection.max) { delete(s, selection.max); selection = TextRange(s) }
+                            else if (s > 0) { val prev = previousEmojiOrGraphemeOffset(asCharSequence(), s); delete(prev, s); selection = TextRange(prev) }
+                        }
+                    },
+                    onClose = { emojiController.close() },
+                )
             }
+            EmojiPanelSlotBox(
+                controller = emojiController,
+                emojiPanelSlot = effectiveEmojiSlot,
+                host = emojiHost,
+                registerBackHandler = hasEmojiPanel,
+            )
         }
     }
 }
@@ -571,7 +580,7 @@ private fun QuickReplyDraftRestoredBanner(rowHeight: Dp, onClear: () -> Unit) {
 private fun QuickReplyInputBox(
     textFieldState: TextFieldState, scrollState: androidx.compose.foundation.ScrollState, placeholder: String,
     focusRequester: FocusRequester, minHeight: Dp, verticalInnerPadding: Dp,
-    nestedScrollConnection: NestedScrollConnection, modifier: Modifier = Modifier,
+    nestedScrollConnection: NestedScrollConnection, interactionSource: MutableInteractionSource, modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
     val textStyle = HiTheme.typography.postBody.copy(color = cs.onSurface)
@@ -584,6 +593,7 @@ private fun QuickReplyInputBox(
     ) {
         BasicTextField(
             state = textFieldState, textStyle = textStyle, cursorBrush = SolidColor(cs.primary),
+            interactionSource = interactionSource,
             lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 1),
             modifier = Modifier.fillMaxWidth().focusRequester(focusRequester).semantics { contentDescription = placeholder },
             decorator = { inner ->

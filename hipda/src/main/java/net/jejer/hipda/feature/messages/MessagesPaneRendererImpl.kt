@@ -5,10 +5,12 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import java.util.Optional
 import javax.inject.Inject
 import javax.inject.Singleton
 import net.jejer.hipda.data.auth.AuthRepository
@@ -18,6 +20,8 @@ import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.feature.common.MessagesPaneRenderer
 import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
+import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelRenderer
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 
 /** [MessagesPaneRenderer] 生产实现：零耦合接入 `E-slots` 外壳插槽，由 `di/MessagesUiModule` `@Binds @Singleton` 暴露。 */
@@ -27,7 +31,15 @@ class MessagesPaneRendererImpl @Inject constructor(
     private val notifyRepository: NotifyRepository,
     private val authRepository: AuthRepository,
     private val siteAccessGateway: SiteAccessGateway,
+    private val emojiPanelRenderer: Optional<QuickReplyEmojiPanelRenderer>,
 ) : MessagesPaneRenderer {
+
+    constructor(
+        smsRepository: SmsRepository,
+        notifyRepository: NotifyRepository,
+        authRepository: AuthRepository,
+        siteAccessGateway: SiteAccessGateway,
+    ) : this(smsRepository, notifyRepository, authRepository, siteAccessGateway, Optional.empty())
 
     @Composable
     override fun ListContent(
@@ -66,6 +78,12 @@ class MessagesPaneRendererImpl @Inject constructor(
         }
         val vmKey = "sms_conversation:${currentAccount?.uid.orEmpty()}:${args.uid.ifBlank { args.username }}"
         val vm: SmsConversationViewModel = viewModel(key = vmKey, factory = factory)
-        SmsConversationScreen(args, showBack, onBack, onOpenUserProfile, onOpenLogin, contentPadding, vm)
+        val slot = remember(emojiPanelRenderer) {
+            emojiPanelRenderer.orElse(null)?.let { renderer ->
+                val content: @Composable (QuickReplyEmojiPanelHost) -> Unit = { host -> renderer.Content(host, Modifier) }
+                content
+            }
+        }
+        SmsConversationScreen(args, showBack, onBack, onOpenUserProfile, onOpenLogin, contentPadding, vm, emojiPanelSlot = slot)
     }
 }

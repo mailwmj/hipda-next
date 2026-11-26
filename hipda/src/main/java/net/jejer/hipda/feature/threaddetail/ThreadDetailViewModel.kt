@@ -793,8 +793,9 @@ class ThreadDetailViewModel(
     fun requestDeleteFloor(floor: PostFloor) {
         val cur = metaState.value
         if (cur.tid.isBlank() || cur.deleteDialog?.isDeleting == true) return
-        if (cur.currentUserUid.isNullOrBlank()) { emitLoginNotice(); return }
-        if (cur.currentUserUid == floor.uid) metaState.update { it.copy(deleteDialog = FloorDeleteDialogState(floor)) }
+        val liveUid = resolveLiveUserUid(cur.currentUserUid)
+        if (liveUid.isNullOrBlank()) { emitLoginNotice(); return }
+        if (liveUid == floor.uid) metaState.update { it.copy(currentUserUid = liveUid, deleteDialog = FloorDeleteDialogState(floor)) }
     }
 
     /** 取消或返回关闭删除确认框（删除进行中防误关；零网络请求）。 */
@@ -803,12 +804,16 @@ class ThreadDetailViewModel(
         if (!dialog.isDeleting) metaState.update { it.copy(deleteDialog = null) }
     }
 
-    /** 确认删除自己楼层（不可撤销，严禁弹撤销 Snackbar；成功移除楼层保位/整帖删除关闭，失败保留楼层原地提示）。 */
+    /** 确认删除自己楼层（不可撤销，严禁弹撤销 Snackbar；成功移除楼层保位/末页删空回上一页/整帖删除关闭，失败保留楼层原地提示）。 */
     fun confirmDeleteFloor() {
         val cur = metaState.value; val dialog = cur.deleteDialog ?: return
         if (dialog.isDeleting || deleteJob?.isActive == true || cur.tid.isBlank()) return
         val repo = postRepository ?: run { metaState.update { it.copy(deleteDialog = dialog.copy(error = FloorDeleteError(UiError(R.string.common_error_load_failed)))) }; return }
-        if (cur.currentUserUid.isNullOrBlank()) { metaState.update { it.copy(deleteDialog = dialog.copy(error = FloorDeleteError(UiError(R.string.thread_detail_login_to_operate, action = UiErrorAction.Login)))) }; return }
+        val liveUid = resolveLiveUserUid(cur.currentUserUid)
+        if (liveUid.isNullOrBlank() || liveUid != dialog.floor.uid) {
+            metaState.update { it.copy(currentUserUid = liveUid, deleteDialog = null) }
+            return
+        }
         val floor = dialog.floor; val gen = sessionGeneration
         val req = PostSubmitRequest.DeletePost(cur.fid.coerceAtLeast(0), cur.tid, floor.postId, floor.page.takeIf { it > 0 } ?: cur.page.coerceAtLeast(1), draftKey = runCatching { DraftKey.edit(floor.postId.trim()) }.getOrNull())
         metaState.update { it.copy(deleteDialog = dialog.copy(isDeleting = true, error = null)) }
@@ -816,14 +821,103 @@ class ThreadDetailViewModel(
             val result = runCatching { repo.submitPost(req) }.onFailure { if (it is CancellationException) throw it }.getOrElse { PostSubmitResult.NetworkError(it.message.orEmpty(), it) }
             if (gen != sessionGeneration) return@launch
             if (result is PostSubmitResult.Success) {
-                metaState.update { s ->
-                    if (result.threadDeleted) s.copy(deleteDialog = null, isThreadDeleted = true)
-                    else s.copy(rawFloors = s.rawFloors.filterNot { it.postId == floor.postId }, highlightedFloor = s.highlightedFloor?.takeUnless { it.postId == floor.postId }, deleteDialog = null)
-                }
+                handleDeleteFloorSuccess(floor, result)
             } else {
                 val err = mapDeleteFailure(result)
                 metaState.update { s -> s.copy(deleteDialog = s.deleteDialog?.copy(isDeleting = false, error = err)) }
             }
+        }
+    }
+
+    private fun handleDeleteFloorSuccess(floor: PostFloor, result: PostSubmitResult.Success) {
+        if (result.threadDeleted) {
+            metaState.update { it.copy(deleteDialog = null, isThreadDeleted = true) }
+            return
+        }
+        val latest = metaState.value
+        val remaining = latest.rawFloors.filterNot { it.postId == floor.postId }
+        if (remaining.isEmpty()) {
+            val redirected = result.redirectedPage?.takeIf { latest.filter is ThreadDetailFilterUi.All }
+            val redirectedFloors = redirected?.floors?.filterNot { it.postId == floor.postId }.orEmpty()
+            if (redirected != null && redirectedFloors.isNotEmpty()) {
+                commitRedirectedPageAfterDelete(redirected, redirectedFloors)
+                return
+            }
+            val currentPage = maxOf(latest.page, floor.page).coerceAtLeast(1)
+            val fallbackPage = when {
+                result.redirectedPage != null && result.redirectedPage.page in 1 until currentPage -> result.redirectedPage.page
+                currentPage > 1 -> currentPage - 1
+                latest.lastPage > 1 -> 1
+                else -> null
+            }
+            if (fallbackPage != null) {
+                metaState.update { it.copy(deleteDialog = null, highlightedFloor = null) }
+                loadInternal(
+                    page = fallbackPage,
+                    filter = latest.filter,
+                    priority = AccessPriority.UserBlocking,
+                    scrollToLast = fallbackPage < currentPage,
+                )
+            } else {
+                metaState.update { it.copy(rawFloors = emptyList(), highlightedFloor = null, deleteDialog = null) }
+            }
+            return
+        }
+        val maxRemainingPage = remaining.maxOf { it.page }.coerceAtLeast(1)
+        val emptiedTailPage = floor.page > 0 && floor.page == latest.lastLoadedPage && remaining.none { it.page == floor.page }
+        metaState.update { s ->
+            val nextLastLoaded = if (emptiedTailPage) minOf(s.lastLoadedPage, maxRemainingPage) else s.lastLoadedPage
+            val serverLast = result.redirectedPage?.lastPage?.takeIf { it > 0 }
+            val nextLastPage = when {
+                serverLast != null -> maxOf(serverLast, nextLastLoaded)
+                emptiedTailPage && s.lastLoadedPage >= s.lastPage -> maxRemainingPage
+                else -> s.lastPage
+            }
+            s.copy(
+                page = s.page.coerceAtMost(nextLastPage),
+                lastLoadedPage = nextLastLoaded,
+                lastPage = nextLastPage,
+                rawFloors = remaining,
+                highlightedFloor = s.highlightedFloor?.takeUnless { it.postId == floor.postId },
+                deleteDialog = null,
+            )
+        }
+    }
+
+    private fun commitRedirectedPageAfterDelete(redirected: ThreadDetailPage, floors: List<PostFloor>) {
+        val resolvedPage = redirected.page.coerceAtLeast(1)
+        val resolvedLastPage = redirected.lastPage.coerceAtLeast(resolvedPage)
+        val opUid = floors.firstOrNull { it.floor == 1 }?.uid?.takeIf { it.isNotBlank() }
+        val opName = floors.firstOrNull { it.floor == 1 }?.author?.takeIf { it.isNotBlank() }
+        val generation = ++sessionGeneration
+        val scrollTarget = PendingScrollTarget(++scrollTokenSeq, floors.lastOrNull()?.postId, 0)
+        cancelPagingJobs()
+        loadJob?.cancel()
+        metaState.update { s ->
+            s.copy(
+                fid = redirected.fid.takeIf { it > 0 } ?: s.fid,
+                title = redirected.title.ifBlank { s.title },
+                threadAuthorId = opUid ?: s.threadAuthorId,
+                threadAuthorName = opName ?: s.threadAuthorName,
+                page = resolvedPage,
+                requestedPage = resolvedPage,
+                firstLoadedPage = resolvedPage,
+                lastLoadedPage = resolvedPage,
+                lastPage = resolvedLastPage,
+                rawFloors = floors,
+                isLoading = false,
+                isPrepending = false,
+                isAppending = false,
+                isAuthRequired = false,
+                error = null,
+                prependError = null,
+                appendError = null,
+                challengeFailure = null,
+                pendingScroll = scrollTarget,
+                highlightedFloor = null,
+                resetEpoch = generation,
+                deleteDialog = null,
+            )
         }
     }
 
@@ -1005,16 +1099,22 @@ class ThreadDetailViewModel(
         var prevEpoch = auth.sessionEpoch
         viewModelScope.launch {
             combine(auth.currentAccount, auth.authState) { account, state -> account to state }
-                .drop(1)
                 .collect { (account, state) ->
                     val epoch = auth.sessionEpoch
                     val activeUid = resolveAuthUid(account, state)
+                    val prevDialog = metaState.value.deleteDialog
+                    if (prevDialog != null && (activeUid == null || activeUid != prevDialog.floor.uid)) {
+                        deleteJob?.cancel()
+                        deleteJob = null
+                    }
                     metaState.update { cur ->
                         val nextPollErr = if (activeUid != null && cur.pollError?.action == UiErrorAction.Login) null else cur.pollError
-                        val nextDelDialog = if (activeUid != null && cur.deleteDialog?.error?.uiError?.action == UiErrorAction.Login) {
-                            cur.deleteDialog.copy(error = null)
-                        } else {
-                            cur.deleteDialog
+                        val dialog = cur.deleteDialog
+                        val nextDelDialog = when {
+                            dialog == null -> null
+                            activeUid == null || activeUid != dialog.floor.uid -> null
+                            dialog.error?.uiError?.action == UiErrorAction.Login -> dialog.copy(error = null)
+                            else -> dialog
                         }
                         if (cur.currentUserUid == activeUid && cur.pollError == nextPollErr && cur.deleteDialog == nextDelDialog) cur
                         else cur.copy(currentUserUid = activeUid, pollError = nextPollErr, deleteDialog = nextDelDialog)
@@ -1079,6 +1179,7 @@ class ThreadDetailViewModel(
         filter: ThreadDetailFilterUi,
         priority: AccessPriority,
         scrollToTop: Boolean = false,
+        scrollToLast: Boolean = false,
         restoreAnchor: FilterReturnAnchor? = null,
         authRetryAttempted: Boolean = false,
     ) {
@@ -1096,6 +1197,7 @@ class ThreadDetailViewModel(
                 val scrollTarget = when {
                     floors.isEmpty() -> null
                     restoreAnchor != null -> PendingScrollTarget(++scrollTokenSeq, restoreAnchor.postId, restoreAnchor.scrollOffset)
+                    scrollToLast -> PendingScrollTarget(++scrollTokenSeq, floors.lastOrNull()?.postId, 0)
                     scrollToTop -> PendingScrollTarget(++scrollTokenSeq, null, 0)
                     else -> null
                 }
@@ -1103,7 +1205,7 @@ class ThreadDetailViewModel(
             },
             onAuthRetry = {
                 if (!authRetryAttempted && authVersion != startedAuthVersion) {
-                    loadInternal(targetPage, filter, priority, scrollToTop, restoreAnchor, authRetryAttempted = true)
+                    loadInternal(targetPage, filter, priority, scrollToTop, scrollToLast, restoreAnchor, authRetryAttempted = true)
                     true
                 } else {
                     false
@@ -1335,6 +1437,9 @@ class ThreadDetailViewModel(
         val session = res.page.meta.session
         return if (session.isLoggedIn) session.uid?.takeIf { it.isNotBlank() } else null
     }
+
+    private fun resolveLiveUserUid(fallbackUid: String?): String? =
+        authRepository?.let { resolveAuthUid(it.currentAccount.value, it.authState.value) } ?: fallbackUid
 
     private fun resolveAuthUid(account: SavedAccount?, state: AuthState): String? =
         if (account != null && state !is AuthState.SignedOut && state !is AuthState.SessionExpired) {

@@ -126,6 +126,16 @@ class PostFavoriteUploadParserTest {
         assertEquals("[quote]被引用的内容[/quote]", replyPostInfo.quoteText)
         assertEquals("enc_author", replyPostInfo.noticeAuthor)
 
+        for (mode in listOf(PrePostMode.REPLY_THREAD, PrePostMode.QUICK_REPLY)) {
+            val replyModeInfo = (PrePostParser.parse(quoteHtml, mode) as PrePostParseResult.Success).info
+            assertEquals("q1234567", replyModeInfo.formhash)
+            assertEquals("qhash999", replyModeInfo.hash)
+            assertEquals("10000", replyModeInfo.uid)
+            assertEquals("", replyModeInfo.quoteText)
+            assertNull(replyModeInfo.noticeAuthor)
+            assertNull(replyModeInfo.maxUploadFileSizeBytes)
+        }
+
         // 3. 缺 formhash 错页（带 alert_error 且不能变异 DOM，以及无 alert_error 兜底）
         val errorDoc = Jsoup.parse(
             """<html><body><div class="alert_error">您所在的用户组无法发帖 <a href="index.php">[返回]</a></div></body></html>""",

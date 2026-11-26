@@ -51,6 +51,7 @@ import net.jejer.hipda.feature.app.DetailDrilldownEntry
 import net.jejer.hipda.feature.app.MultiPaneTestHarness
 import net.jejer.hipda.feature.app.NextAppHostViewModel
 import net.jejer.hipda.feature.app.NextAppRoot
+import net.jejer.hipda.feature.common.AppIntentConstants
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.SettingsGroup
 import net.jejer.hipda.feature.common.SmsConversationArgs
@@ -66,7 +67,6 @@ import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.ui.shell.HiShellTestTags
 import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
-import net.jejer.hipda.utils.Constants
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -97,33 +97,33 @@ class DeepLinkAndPostRoutingTest {
         val vm = NextAppHostViewModel()
 
         // 1. 4 个桌面快捷方式动作（与 res/xml/shortcuts.xml 一致）
-        assertEquals(DeepLinkTarget.TodayNew, parseIncomingIntent(Intent(Constants.INTENT_NEW_POSTS)))
+        assertEquals(DeepLinkTarget.TodayNew, parseIncomingIntent(Intent(AppIntentConstants.INTENT_NEW_POSTS)))
         vm.applyDeepLink(DeepLinkTarget.TodayNew)
         assertEquals(ForumListSource.TodayNew, vm.state.value.activeForumSource)
         assertEquals(ShellSidebarEntry.TodayNew, vm.state.value.selectedSidebarEntry)
 
-        assertEquals(DeepLinkTarget.Search, parseIncomingIntent(Intent(Constants.INTENT_SEARCH)))
+        assertEquals(DeepLinkTarget.Search, parseIncomingIntent(Intent(AppIntentConstants.INTENT_SEARCH)))
         vm.applyDeepLink(DeepLinkTarget.Search)
         assertEquals(ShellDestination.Search, vm.state.value.selectedDestination)
         assertEquals(ShellSidebarEntry.Search, vm.state.value.selectedSidebarEntry)
 
-        assertEquals(DeepLinkTarget.Sms, parseIncomingIntent(Intent(Constants.INTENT_SMS)))
+        assertEquals(DeepLinkTarget.Sms, parseIncomingIntent(Intent(AppIntentConstants.INTENT_SMS)))
         vm.applyDeepLink(DeepLinkTarget.Sms)
         assertEquals(ShellDestination.Messages, vm.state.value.selectedDestination)
         assertEquals(ShellSidebarEntry.Sms, vm.state.value.selectedSidebarEntry)
 
-        assertEquals(DeepLinkTarget.Favorites, parseIncomingIntent(Intent(Constants.INTENT_FAVORITE)))
+        assertEquals(DeepLinkTarget.Favorites, parseIncomingIntent(Intent(AppIntentConstants.INTENT_FAVORITE)))
         vm.applyDeepLink(DeepLinkTarget.Favorites)
         assertEquals(ShellDestination.Mine, vm.state.value.selectedDestination)
         assertEquals(ShellSidebarEntry.FavoritesAndAttention, vm.state.value.selectedSidebarEntry)
 
         // 2. 3 类系统通知点击 Intent
         // 2a. 单条未读短消息含合法 uid（附带原始 EXTRA_USERNAME 必须被忽略脱敏为空串）
-        val singleSmsIntent = Intent(Constants.INTENT_NOTIFICATION).apply {
-            putExtra(Constants.EXTRA_SMS_COUNT, 1)
-            putExtra(Constants.EXTRA_THREAD_COUNT, 0)
-            putExtra(Constants.EXTRA_UID, "10086")
-            putExtra(Constants.EXTRA_USERNAME, "UNTRUSTED_PII_NAME")
+        val singleSmsIntent = Intent(AppIntentConstants.INTENT_NOTIFICATION).apply {
+            putExtra(AppIntentConstants.EXTRA_SMS_COUNT, 1)
+            putExtra(AppIntentConstants.EXTRA_THREAD_COUNT, 0)
+            putExtra(AppIntentConstants.EXTRA_UID, "10086")
+            putExtra(AppIntentConstants.EXTRA_USERNAME, "UNTRUSTED_PII_NAME")
         }
         assertEquals(DeepLinkTarget.SmsConversation("10086"), parseIncomingIntent(singleSmsIntent))
         vm.applyDeepLink(DeepLinkTarget.SmsConversation("10086"))
@@ -132,34 +132,34 @@ class DeepLinkAndPostRoutingTest {
         assertEquals(SmsConversationArgs("10086", ""), vm.state.value.selectedSmsConversation)
 
         // 2b. 多条未读短消息（或单条但 uid 非法/混合提醒）-> 短消息列表
-        val multiSmsIntent = Intent(Constants.INTENT_NOTIFICATION).apply {
-            putExtra(Constants.EXTRA_SMS_COUNT, 3)
-            putExtra(Constants.EXTRA_THREAD_COUNT, 0)
-            putExtra(Constants.EXTRA_UID, "10086")
+        val multiSmsIntent = Intent(AppIntentConstants.INTENT_NOTIFICATION).apply {
+            putExtra(AppIntentConstants.EXTRA_SMS_COUNT, 3)
+            putExtra(AppIntentConstants.EXTRA_THREAD_COUNT, 0)
+            putExtra(AppIntentConstants.EXTRA_UID, "10086")
         }
         assertEquals(DeepLinkTarget.Sms, parseIncomingIntent(multiSmsIntent))
         vm.applyDeepLink(DeepLinkTarget.Sms)
         assertEquals(ShellSidebarEntry.Sms, vm.state.value.selectedSidebarEntry)
         assertNull(vm.state.value.selectedSmsConversation)
 
-        val badUidSingleSms = Intent(Constants.INTENT_NOTIFICATION).apply {
-            putExtra(Constants.EXTRA_SMS_COUNT, 1)
-            putExtra(Constants.EXTRA_THREAD_COUNT, 0)
-            putExtra(Constants.EXTRA_UID, "../evil")
+        val badUidSingleSms = Intent(AppIntentConstants.INTENT_NOTIFICATION).apply {
+            putExtra(AppIntentConstants.EXTRA_SMS_COUNT, 1)
+            putExtra(AppIntentConstants.EXTRA_THREAD_COUNT, 0)
+            putExtra(AppIntentConstants.EXTRA_UID, "../evil")
         }
         assertEquals(DeepLinkTarget.Sms, parseIncomingIntent(badUidSingleSms))
 
-        val mixedIntent = Intent(Constants.INTENT_NOTIFICATION).apply {
-            putExtra(Constants.EXTRA_SMS_COUNT, 1)
-            putExtra(Constants.EXTRA_THREAD_COUNT, 2)
-            putExtra(Constants.EXTRA_UID, "10086")
+        val mixedIntent = Intent(AppIntentConstants.INTENT_NOTIFICATION).apply {
+            putExtra(AppIntentConstants.EXTRA_SMS_COUNT, 1)
+            putExtra(AppIntentConstants.EXTRA_THREAD_COUNT, 2)
+            putExtra(AppIntentConstants.EXTRA_UID, "10086")
         }
         assertEquals(DeepLinkTarget.Sms, parseIncomingIntent(mixedIntent))
 
         // 2c. 仅提醒 -> Notify
-        val notifyOnlyIntent = Intent(Constants.INTENT_NOTIFICATION).apply {
-            putExtra(Constants.EXTRA_SMS_COUNT, 0)
-            putExtra(Constants.EXTRA_THREAD_COUNT, 5)
+        val notifyOnlyIntent = Intent(AppIntentConstants.INTENT_NOTIFICATION).apply {
+            putExtra(AppIntentConstants.EXTRA_SMS_COUNT, 0)
+            putExtra(AppIntentConstants.EXTRA_THREAD_COUNT, 5)
         }
         assertEquals(DeepLinkTarget.Notify, parseIncomingIntent(notifyOnlyIntent))
         vm.applyDeepLink(DeepLinkTarget.Notify)
@@ -240,12 +240,12 @@ class DeepLinkAndPostRoutingTest {
         val selfResolve = ResolveInfo().apply {
             activityInfo = ActivityInfo().apply {
                 packageName = selfPkg
-                name = "$selfPkg.ui.IntentActivity"
+                name = "net.jejer.hipda.ng.IntentActivity"
                 exported = true
             }
         }
-        shadowPm.addActivityIfNotPresent(android.content.ComponentName(selfPkg, "$selfPkg.ui.IntentActivity"))
-        shadowPm.addIntentFilterForActivity(android.content.ComponentName(selfPkg, "$selfPkg.ui.IntentActivity"), filter)
+        shadowPm.addActivityIfNotPresent(android.content.ComponentName(selfPkg, "net.jejer.hipda.ng.IntentActivity"))
+        shadowPm.addIntentFilterForActivity(android.content.ComponentName(selfPkg, "net.jejer.hipda.ng.IntentActivity"), filter)
 
         val launchedOnlySelf = mutableListOf<Intent>()
         val openerOnlySelf = AndroidExternalLinkOpener(context) { launchedOnlySelf += it }
@@ -495,7 +495,7 @@ class DeepLinkAndPostRoutingTest {
             assertEquals(ForumListSource.Forum(6), host.state.value.activeForumSource)
 
             // 热启动收到 onNewIntent（快捷方式 search）-> 仅消费一次
-            controller.newIntent(Intent(Constants.INTENT_SEARCH))
+            controller.newIntent(Intent(AppIntentConstants.INTENT_SEARCH))
             pumpFrames()
             assertEquals(ShellSidebarEntry.Search, host.state.value.selectedSidebarEntry)
 

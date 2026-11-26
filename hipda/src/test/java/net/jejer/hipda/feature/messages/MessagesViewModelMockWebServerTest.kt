@@ -57,7 +57,7 @@ import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.UiErrorAction
-import net.jejer.hipda.parser.LegacyTestSupport
+import net.jejer.hipda.parser.SampleTestLoader
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
@@ -171,7 +171,7 @@ class MessagesViewModelMockWebServerTest {
         val stateCollector = backgroundScope.launch { vm.uiState.collect {} }
 
         // 1. 加载真实脱敏对话样本
-        server.enqueue(gbkHtmlResponse(LegacyTestSupport.loadSample("sms/sms_detail.html")))
+        server.enqueue(gbkHtmlResponse(SampleTestLoader.loadSample("sms/sms_detail.html")))
         vm.bindConversation(SmsConversationArgs(uid = "20000", username = "HiPeer"))
         waitUntil { vm.uiState.value.hasLoadedOnce }
         assertEquals(9, vm.uiState.value.messages.size)
@@ -233,7 +233,7 @@ class MessagesViewModelMockWebServerTest {
         val eventCollector = backgroundScope.launch { vm.events.collect { events += it } }
 
         // 1. 加载真实脱敏 sms_list.html 验证 50 条解析，再用双会话列表验证清空单个会话仅移除目标 uid
-        server.enqueue(gbkHtmlResponse(LegacyTestSupport.loadSample("sms/sms_list.html")))
+        server.enqueue(gbkHtmlResponse(SampleTestLoader.loadSample("sms/sms_list.html")))
         vm.bindEntry(ShellSidebarEntry.Sms)
         waitUntil { vm.uiState.value.sms.hasLoadedOnce }
         assertEquals(50, vm.uiState.value.sms.items.size)

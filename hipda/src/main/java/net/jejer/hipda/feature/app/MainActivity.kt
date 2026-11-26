@@ -14,6 +14,7 @@ import javax.inject.Inject
 import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.message.NotifyRepository
 import net.jejer.hipda.data.settings.SettingsRepository
+import net.jejer.hipda.feature.common.AppIntentConstants
 import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LoginOverlayRenderer
 import net.jejer.hipda.feature.common.MessagesPaneRenderer
@@ -24,7 +25,6 @@ import net.jejer.hipda.feature.routing.AttachmentDownloader
 import net.jejer.hipda.feature.routing.EXTRA_DEEP_LINK_URL
 import net.jejer.hipda.ui.designsystem.applyHiEdgeToEdge
 import net.jejer.hipda.ui.designsystem.isSystemNightModeActive
-import net.jejer.hipda.utils.Constants
 
 /**
  * 正式主入口 Activity：承载新版 Compose 外壳 [NextAppRoot]，统一接管桌面图标启动、
@@ -95,11 +95,11 @@ class MainActivity : ComponentActivity() {
             smsCount: Int = 0,
             threadCount: Int = 0,
             uid: String? = null,
-        ): Intent = Intent(Constants.INTENT_NOTIFICATION).setClass(context, MainActivity::class.java).apply {
+        ): Intent = Intent(AppIntentConstants.INTENT_NOTIFICATION).setClass(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(Constants.EXTRA_SMS_COUNT, smsCount)
-            putExtra(Constants.EXTRA_THREAD_COUNT, threadCount)
-            if (!uid.isNullOrBlank()) putExtra(Constants.EXTRA_UID, uid)
+            putExtra(AppIntentConstants.EXTRA_SMS_COUNT, smsCount)
+            putExtra(AppIntentConstants.EXTRA_THREAD_COUNT, threadCount)
+            if (!uid.isNullOrBlank()) putExtra(AppIntentConstants.EXTRA_UID, uid)
         }
 
         internal fun isLaunchedFromHistory(intent: Intent?): Boolean =
@@ -107,23 +107,23 @@ class MainActivity : ComponentActivity() {
 
         /**
          * 导出入口安全边界：只提取已知字段构造干净 Intent，免疫不可反序列化 Extra 导致的 `BadParcelableException`，
-         * 并显式丢弃 [Constants.EXTRA_USERNAME] 等不信任字段。
+         * 并显式丢弃 [AppIntentConstants.EXTRA_USERNAME] 等不信任字段。
          */
         internal fun sanitizeIncomingIntent(raw: Intent?): Intent? {
             if (raw == null) return null
             val action = raw.action
             val data = raw.data
             val explicitUrl = runCatching { raw.getStringExtra(EXTRA_DEEP_LINK_URL) }.getOrNull()
-            val smsCount = runCatching { raw.getIntExtra(Constants.EXTRA_SMS_COUNT, 0) }.getOrDefault(0)
-            val threadCount = runCatching { raw.getIntExtra(Constants.EXTRA_THREAD_COUNT, 0) }.getOrDefault(0)
-            val uid = runCatching { raw.getStringExtra(Constants.EXTRA_UID) }.getOrNull()
+            val smsCount = runCatching { raw.getIntExtra(AppIntentConstants.EXTRA_SMS_COUNT, 0) }.getOrDefault(0)
+            val threadCount = runCatching { raw.getIntExtra(AppIntentConstants.EXTRA_THREAD_COUNT, 0) }.getOrDefault(0)
+            val uid = runCatching { raw.getStringExtra(AppIntentConstants.EXTRA_UID) }.getOrNull()
             return Intent(action).apply {
                 if (data != null) this.data = data
                 if (explicitUrl != null) putExtra(EXTRA_DEEP_LINK_URL, explicitUrl)
-                if (action == Constants.INTENT_NOTIFICATION) {
-                    putExtra(Constants.EXTRA_SMS_COUNT, smsCount)
-                    putExtra(Constants.EXTRA_THREAD_COUNT, threadCount)
-                    if (!uid.isNullOrBlank()) putExtra(Constants.EXTRA_UID, uid)
+                if (action == AppIntentConstants.INTENT_NOTIFICATION) {
+                    putExtra(AppIntentConstants.EXTRA_SMS_COUNT, smsCount)
+                    putExtra(AppIntentConstants.EXTRA_THREAD_COUNT, threadCount)
+                    if (!uid.isNullOrBlank()) putExtra(AppIntentConstants.EXTRA_UID, uid)
                 }
             }
         }

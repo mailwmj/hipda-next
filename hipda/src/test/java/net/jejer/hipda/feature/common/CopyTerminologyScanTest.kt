@@ -67,21 +67,8 @@ class CopyTerminologyScanTest {
     }
 
     companion object {
-        /** 只能缩短的遗留白名单：仅限 M7-2 随旧设置页删除的 `strings_preference.xml` 2 处既有命中。 */
-        private val ALLOWLIST: List<AllowlistEntry> = listOf(
-            AllowlistEntry(
-                relativePath = "src/main/res/values/strings_preference.xml",
-                resourceName = "pref_category_notification",
-                matchedRule = "消息通知",
-                reason = "旧设置页遗留字符串，M7-2 删除旧界面时清零",
-            ),
-            AllowlistEntry(
-                relativePath = "src/main/res/values/strings_preference.xml",
-                resourceName = "pref_title_forum",
-                matchedRule = "版面",
-                reason = "旧设置页遗留字符串，M7-2 删除旧界面时清零",
-            ),
-        )
+        /** 只能缩短的遗留白名单：M7-2 删除旧 `strings_preference.xml` 后已清零。 */
+        private val ALLOWLIST: List<AllowlistEntry> = emptyList()
 
         /** `product-design.md` §8 右栏全部 30 个精确禁止词组。 */
         val FORBIDDEN_PHRASES: List<String> = listOf(
