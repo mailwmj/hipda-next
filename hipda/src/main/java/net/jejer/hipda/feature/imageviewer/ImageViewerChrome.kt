@@ -29,7 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
-import net.jejer.hipda.ui.designsystem.hiTopSafeBar
+import net.jejer.hipda.ui.designsystem.hiFullscreenOverlaySafePadding
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.HiLoadingSpinner
@@ -60,7 +60,7 @@ internal fun ImageViewerTopBar(
     val closeDesc = stringResource(R.string.image_viewer_action_close)
     val pageText = stringResource(R.string.image_viewer_page_indicator, currentPage + 1, totalPages.coerceAtLeast(1))
     val closeInteraction = remember { MutableInteractionSource() }
-    Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).windowInsetsPadding(WindowInsets.hiTopSafeBar)) {
+    Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).hiFullscreenOverlaySafePadding(includeTop = true, includeBottomNav = false)) {
         Row(
             modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 56.dp).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -107,7 +107,7 @@ internal fun ImageViewerBottomBar(
     val cancelDesc = stringResource(R.string.image_viewer_loading_cancel)
     val isDownloading = downloadState is OriginalDownloadState.Downloading
     val isCompleted = downloadState is OriginalDownloadState.Completed
-    Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).hiFullscreenOverlaySafePadding(includeTop = false, includeBottomNav = true), horizontalAlignment = Alignment.CenterHorizontally) {
         HorizontalDivider(thickness = 0.5.dp, color = ImageViewerPalette.BorderHairline)
         Row(
             modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),

@@ -1,5 +1,6 @@
 package net.jejer.hipda.feature.settings
 
+import android.Manifest
 import android.app.Application
 import android.content.ClipboardManager
 import android.content.Intent
@@ -36,6 +37,7 @@ import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.feedback.HiSnackbarHost
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
 import org.junit.Assert.*
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -48,6 +50,11 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(application = Application::class, sdk = [34], qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
 class SettingsViewModelAndScreenTest {
+
+    @Before
+    fun grantNotificationPermission() {
+        shadowOf(ApplicationProvider.getApplicationContext<Application>()).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    }
 
     @Test
     fun appearanceSettings_persistAndThemeSwitchPreservesCompositionScrollAndFocus() = withAnimatorDurationScale(0f) {

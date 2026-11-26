@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
+import net.jejer.hipda.ui.designsystem.hiHorizontalSafeInsets
 import net.jejer.hipda.ui.shell.*
 
 const val FULL_EDITOR_RIGHT_PANE_MIN_WIDTH_DP: Float = 560f
@@ -247,14 +248,14 @@ fun FullEditorPlacementFrame(placement: FullEditorPlacement, windowWidthDp: Floa
     val cs = MaterialTheme.colorScheme
     when (placement) {
         FullEditorPlacement.FullScreen -> Surface(modifier.fillMaxSize(), color = cs.surface, contentColor = cs.onSurface) {
-            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Horizontal))) { content(false) }
+            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.hiHorizontalSafeInsets)) { content(false) }
         }
         FullEditorPlacement.CenteredModal -> Box(modifier.fillMaxSize()) {
             val scrimInt = remember { MutableInteractionSource() }
             Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = 0.40f)).clickable(scrimInt, null, enabled = !isSubmitting, onClick = onRequestClose))
             Box(
                 Modifier.align(Alignment.Center)
-                    .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
+                    .windowInsetsPadding(WindowInsets.hiHorizontalSafeInsets)
                     .width(calculateCenteredModalWidthDp(windowWidthDp))
                     .fillMaxHeight(),
             ) { content(true) }

@@ -2,14 +2,9 @@ package net.jejer.hipda.feature.app
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.SnackbarDuration
@@ -30,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import net.jejer.hipda.feature.common.PaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.ui.designsystem.feedback.HiSnackbarHost
+import net.jejer.hipda.ui.designsystem.hiHorizontalSafeInsets
 import net.jejer.hipda.ui.shell.ShellPaneLayout
 import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 
@@ -134,7 +130,7 @@ fun MultiPaneSnackbarHost(
     val horizontalSafeInsets = if (paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) {
         Modifier
     } else {
-        Modifier.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Horizontal))
+        Modifier.windowInsetsPadding(WindowInsets.hiHorizontalSafeInsets)
     }
     Box(modifier = modifier.fillMaxSize().then(horizontalSafeInsets)) {
         Box(

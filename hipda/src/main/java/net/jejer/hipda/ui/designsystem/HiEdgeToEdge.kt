@@ -10,11 +10,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 
 /** 浅色主题下在 API 26 无法渲染深色导航栏图标时的半透明深色护底，与 AndroidX EdgeToEdge 默认值一致。 */
@@ -49,6 +53,29 @@ fun Context.isSystemNightModeActive(): Boolean =
 /** 顶部安全区：合并状态栏与顶部挖孔/刘海，确保 Android 15/16 强制全面屏下顶栏与内容均不被挖孔遮挡。 */
 val WindowInsets.Companion.hiTopSafeBar: WindowInsets
     @Composable get() = WindowInsets.statusBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Top)
+
+/** 水平安全区：合并横屏经典三键导航栏与横向刘海/挖孔，供壳层与壳外浮层统一避让左右系统区域。 */
+val WindowInsets.Companion.hiHorizontalSafeInsets: WindowInsets
+    @Composable get() = WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Horizontal)
+
+/**
+ * 壳外全屏浮层共享安全区 Modifier：统一避让顶部（[hiTopSafeBar]）、水平（[hiHorizontalSafeInsets]）
+ * 及可选底部导航栏与 IME，保证横屏左右三键导航、竖屏深挖孔与 `< 480dp` 横屏下控件零遮挡。
+ */
+@Composable
+fun Modifier.hiFullscreenOverlaySafePadding(
+    includeTop: Boolean = true,
+    includeBottomNav: Boolean = true,
+    includeIme: Boolean = false,
+): Modifier {
+    var insets = WindowInsets.hiHorizontalSafeInsets
+    if (includeTop) insets = insets.union(WindowInsets.hiTopSafeBar)
+    if (includeBottomNav) {
+        insets = insets.union(WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Bottom))
+    }
+    val safe = windowInsetsPadding(insets)
+    return if (includeIme) safe.imePadding() else safe
+}
 
 internal tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
     is ComponentActivity -> this

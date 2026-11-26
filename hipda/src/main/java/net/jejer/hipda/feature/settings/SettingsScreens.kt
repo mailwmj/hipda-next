@@ -14,6 +14,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -164,15 +165,25 @@ fun SettingsDetailPane(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val latestViewModel by rememberUpdatedState(viewModel)
+    val latestSettings by rememberUpdatedState(uiState.settings)
+    var hasSystemNotificationPermission by remember(context) { mutableStateOf(hasNotificationPermission(context)) }
     var notificationPermissionDenied by rememberSaveable { mutableStateOf(false) }
     var pendingEnableNotificationsAfterSettings by rememberSaveable { mutableStateOf(false) }
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && hasNotificationPermission(context)) {
-                notificationPermissionDenied = false
-                if (pendingEnableNotificationsAfterSettings) {
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val wasGranted = hasSystemNotificationPermission
+                val hasNow = hasNotificationPermission(context)
+                hasSystemNotificationPermission = hasNow
+                if (hasNow) {
+                    notificationPermissionDenied = false
+                    if (pendingEnableNotificationsAfterSettings || (!wasGranted && latestSettings.notificationsEnabled)) {
+                        pendingEnableNotificationsAfterSettings = false
+                        latestViewModel.setNotificationsEnabled(true)
+                    }
+                } else if (wasGranted && latestSettings.notificationsEnabled) {
                     pendingEnableNotificationsAfterSettings = false
-                    latestViewModel.setNotificationsEnabled(true)
+                    notificationPermissionDenied = true
                 }
             }
         }
@@ -181,34 +192,44 @@ fun SettingsDetailPane(
     }
     val notificationPermissionLauncher = if (LocalActivityResultRegistryOwner.current != null) {
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            hasSystemNotificationPermission = granted || hasNotificationPermission(context)
             if (granted) {
                 notificationPermissionDenied = false
                 pendingEnableNotificationsAfterSettings = false
-                viewModel.setNotificationsEnabled(true)
+                latestViewModel.setNotificationsEnabled(true)
             } else {
                 notificationPermissionDenied = true
                 pendingEnableNotificationsAfterSettings = false
-                viewModel.setNotificationsEnabled(false)
+                latestViewModel.setNotificationsEnabled(false)
             }
         }
     } else {
         null
     }
+    val effectiveNotificationsChecked = uiState.settings.notificationsEnabled && hasSystemNotificationPermission
     val onToggleNotifications: (Boolean) -> Unit = { enabled ->
         if (!enabled) {
             notificationPermissionDenied = false
             pendingEnableNotificationsAfterSettings = false
             viewModel.setNotificationsEnabled(false)
-        } else if (hasNotificationPermission(context)) {
-            notificationPermissionDenied = false
-            pendingEnableNotificationsAfterSettings = false
-            viewModel.setNotificationsEnabled(true)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && notificationPermissionLauncher != null) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            notificationPermissionDenied = true
-            pendingEnableNotificationsAfterSettings = false
-            viewModel.setNotificationsEnabled(false)
+            val hasNow = hasNotificationPermission(context)
+            hasSystemNotificationPermission = hasNow
+            when {
+                hasNow -> {
+                    notificationPermissionDenied = false
+                    pendingEnableNotificationsAfterSettings = false
+                    viewModel.setNotificationsEnabled(true)
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && notificationPermissionLauncher != null -> {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                else -> {
+                    notificationPermissionDenied = true
+                    pendingEnableNotificationsAfterSettings = false
+                    viewModel.setNotificationsEnabled(false)
+                }
+            }
         }
     }
     val onOpenPermissionSettings: () -> Unit = {
@@ -254,6 +275,7 @@ fun SettingsDetailPane(
                     )
                     SettingsGroup.Notification -> notificationItems(
                         settings = uiState.settings,
+                        notificationsChecked = effectiveNotificationsChecked,
                         vm = viewModel,
                         onToggleNotifications = onToggleNotifications,
                         notificationPermissionDenied = notificationPermissionDenied,
@@ -334,6 +356,7 @@ private fun LazyListScope.forumAndPostItems(
 
 private fun LazyListScope.notificationItems(
     settings: AppSettings,
+    notificationsChecked: Boolean,
     vm: SettingsViewModel,
     onToggleNotifications: (Boolean) -> Unit,
     notificationPermissionDenied: Boolean,
@@ -344,7 +367,7 @@ private fun LazyListScope.notificationItems(
 ) {
     item("notifications_enabled") {
         Column(Modifier.fillMaxWidth()) {
-            SwitchSettingRow(stringResource(R.string.settings_notifications_title), null, settings.notificationsEnabled, onToggleNotifications)
+            SwitchSettingRow(stringResource(R.string.settings_notifications_title), null, notificationsChecked, onToggleNotifications)
             HiExpandableSection(notificationPermissionDenied) {
                 NotificationPermissionDeniedBanner(onOpenSettings = onOpenPermissionSettings)
             }
@@ -528,7 +551,7 @@ private fun FontSizeSettingBlock(fontStep: Int, lineSpacing: LineSpacing, onSele
 
 @Composable
 private fun SwitchSettingRow(title: String, summary: String?, checked: Boolean, onCheckedChange: (Boolean) -> Unit) =
-    ClickableSettingRow(title, summary, role = Role.Switch, trailing = { Switch(checked = checked, onCheckedChange = null) }) { onCheckedChange(!checked) }
+    ClickableSettingRow(title, summary, role = Role.Switch, toggleChecked = checked, trailing = { Switch(checked = checked, onCheckedChange = null) }) { onCheckedChange(!checked) }
 
 @Composable
 private fun ClickableSettingRow(
@@ -537,13 +560,20 @@ private fun ClickableSettingRow(
     showChevron: Boolean = false,
     enabled: Boolean = true,
     role: Role? = null,
+    toggleChecked: Boolean? = null,
     trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
     Row(
         modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 56.dp)
-            .then(if (enabled) Modifier.clickable(remember { MutableInteractionSource() }, hiListItemPressIndication(), role = role, onClick = onClick) else Modifier)
+            .then(
+                when {
+                    !enabled -> Modifier
+                    toggleChecked != null -> Modifier.toggleable(toggleChecked, remember { MutableInteractionSource() }, hiListItemPressIndication(), role = role) { onClick() }
+                    else -> Modifier.clickable(remember { MutableInteractionSource() }, hiListItemPressIndication(), role = role, onClick = onClick)
+                },
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
