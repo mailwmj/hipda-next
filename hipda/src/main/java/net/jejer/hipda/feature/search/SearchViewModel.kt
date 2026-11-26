@@ -152,7 +152,7 @@ class SearchViewModel(
                     val mapped = UiErrorMapper.map(res); val cf = (res as? SearchError.ChallengeRequired)?.let { challengeKind(it.rejected) }
                     val keep = isRefresh && state.value.results.items.isNotEmpty()
                     state.update { it.copy(hasSubmitted = true, results = it.results.markError(keep, mapped, cf)) }
-                    if (keep && res !is SearchError.AuthRequired) _snackbarEvents.tryEmit(SearchSnackbarEvent.RefreshError(undoManager.nextId(), mapped))
+                    if (keep && res !is SearchError.AuthRequired) _snackbarEvents.tryEmit(SearchSnackbarEvent.RefreshError(undoManager.invalidate(), mapped))
                 }
             }
         }

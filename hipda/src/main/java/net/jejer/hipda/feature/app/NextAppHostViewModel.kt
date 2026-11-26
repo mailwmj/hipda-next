@@ -1,5 +1,6 @@
 package net.jejer.hipda.feature.app
 
+import android.content.Intent
 import androidx.lifecycle.HasDefaultViewModelProviderFactory
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -9,23 +10,40 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.data.settings.SettingsRepository
+import net.jejer.hipda.data.threaddetail.ThreadDetailLoadResult
+import net.jejer.hipda.data.threaddetail.ThreadDetailRepository
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.SettingsGroup
 import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.routing.DeepLinkTarget
+import net.jejer.hipda.feature.routing.parseIncomingIntent
 import net.jejer.hipda.ui.shell.ShellDestination
 import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import net.jejer.hipda.ui.shell.mapDestinationToSidebarEntry
 import net.jejer.hipda.ui.shell.toShellDestination
+
+/** 外部链接/站内跳转异步解析失败或无法识别时发给宿主 Snackbar 的反馈事件。 */
+sealed interface DeepLinkFeedbackEvent {
+    data class UnsupportedUrl(val url: String) : DeepLinkFeedbackEvent
+    data object PostResolveFailed : DeepLinkFeedbackEvent
+}
 
 /** 按 `tid` 隔离托管的 [ViewModelStoreOwner]，显式实现 [HasDefaultViewModelProviderFactory] 支持 `hiltViewModel()`。 */
 class ThreadScopedViewModelStoreOwner(
@@ -35,25 +53,42 @@ class ThreadScopedViewModelStoreOwner(
     override val defaultViewModelCreationExtras: CreationExtras = CreationExtras.Empty,
 ) : ViewModelStoreOwner, HasDefaultViewModelProviderFactory
 
-/** Activity 级宿主 ViewModel：托管按 `tid` 隔离的 [ViewModelStore]、单一导航状态源 [NextAppState]、5 级返回栈与 `SettingsRepository` 分栏偏好持久化。 */
+/** Activity 级宿主 ViewModel：托管按 `tid` 隔离的 [ViewModelStore]、单一导航状态源 [NextAppState]、5 级返回栈、深链路由与分栏偏好持久化。 */
 @HiltViewModel
 class NextAppHostViewModel private constructor(
     private val settingsRepository: SettingsRepository?,
+    private val threadDetailRepository: ThreadDetailRepository?,
     @Suppress("UNUSED_PARAMETER") marker: Unit,
 ) : ViewModel() {
 
     @Inject
-    constructor(settingsRepository: SettingsRepository) : this(settingsRepository, Unit)
+    constructor(
+        settingsRepository: SettingsRepository,
+        threadDetailRepository: ThreadDetailRepository,
+    ) : this(settingsRepository, threadDetailRepository, Unit)
 
-    constructor() : this(null, Unit)
+    constructor(settingsRepository: SettingsRepository) : this(settingsRepository, null, Unit)
+
+    constructor() : this(null, null, Unit)
 
     private val threadStores = LinkedHashMap<String, ViewModelStore>()
     private val mountedThreadCounts = HashMap<String, Int>()
     private var hasUserSelectedForum = false
     private var hasMutatedState = false
+    private var deepLinkResolveJob: Job? = null
+    private var deepLinkResolveGen: Long = 0L
 
     private val _state = MutableStateFlow(NextAppState())
     val state: StateFlow<NextAppState> = _state.asStateFlow()
+
+    private val _pendingIntents = MutableStateFlow<List<Intent>>(emptyList())
+    internal val pendingIntents: StateFlow<List<Intent>> = _pendingIntents.asStateFlow()
+
+    private val _deepLinkFeedback = MutableSharedFlow<DeepLinkFeedbackEvent>(
+        extraBufferCapacity = 8,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val deepLinkFeedback: SharedFlow<DeepLinkFeedbackEvent> = _deepLinkFeedback.asSharedFlow()
 
     internal fun onThreadMounted(tid: String) {
         mountedThreadCounts[tid] = (mountedThreadCounts[tid] ?: 0) + 1
@@ -113,6 +148,7 @@ class NextAppHostViewModel private constructor(
     }
 
     fun selectDestination(destination: ShellDestination) {
+        cancelDeepLinkResolve()
         hasMutatedState = true
         updateReleasingStaleThreads { cur ->
             val changed = cur.selectedDestination != destination
@@ -133,6 +169,7 @@ class NextAppHostViewModel private constructor(
     }
 
     fun selectSidebarEntry(entry: ShellSidebarEntry) {
+        cancelDeepLinkResolve()
         hasMutatedState = true
         val nextSource = entry.toForumListSourceOrNull()
         if (nextSource != null) hasUserSelectedForum = true
@@ -152,6 +189,7 @@ class NextAppHostViewModel private constructor(
     }
 
     fun selectForumSource(source: ForumListSource) {
+        cancelDeepLinkResolve()
         hasMutatedState = true
         hasUserSelectedForum = true
         updateReleasingStaleThreads { cur ->
@@ -166,7 +204,29 @@ class NextAppHostViewModel private constructor(
         }
     }
 
+    /** 导航至「设置」并直达指定分组（例如论坛/侧栏「管理版块」直达 [SettingsGroup.ForumAndPost]，单栏自动进入分组详情）。 */
+    fun openSettingsGroup(group: SettingsGroup, openDetailInSinglePane: Boolean = false) {
+        cancelDeepLinkResolve()
+        hasMutatedState = true
+        updateReleasingStaleThreads { cur ->
+            cur.copy(
+                selectedDestination = ShellDestination.Mine,
+                selectedSidebarEntry = ShellSidebarEntry.Settings,
+                lastVisitedMineEntry = ShellSidebarEntry.Settings,
+                activeMineSubPage = ShellSidebarEntry.Settings,
+                hingeShowingMineMenu = false,
+                selectedSettingsGroup = group,
+                isSettingsDetailOpen = openDetailInSinglePane,
+                selectedThread = null,
+                selectedSmsConversation = null,
+                detailDrilldownStack = emptyList(),
+                isFullScreenReading = false,
+            )
+        }
+    }
+
     fun returnToMineMenu(keepSubListInRightPane: Boolean = false) {
+        cancelDeepLinkResolve()
         hasMutatedState = true
         updateReleasingStaleThreads { cur ->
             cur.copy(
@@ -179,6 +239,7 @@ class NextAppHostViewModel private constructor(
 
     /** 中栏点击帖子只替换右栏根帖子并清空下钻栈，绝不压栈（product-design.md §4.2）。 */
     fun openThread(args: ThreadNavArgs) {
+        cancelDeepLinkResolve()
         hasMutatedState = true
         updateReleasingStaleThreads { cur ->
             cur.copy(selectedThread = args, selectedSmsConversation = null, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
@@ -187,9 +248,192 @@ class NextAppHostViewModel private constructor(
 
     /** 中栏短消息列表点开对话，替换右栏根内容并清空下钻栈。 */
     fun openSmsConversation(args: SmsConversationArgs) {
+        cancelDeepLinkResolve()
         hasMutatedState = true
         updateReleasingStaleThreads { cur ->
             cur.copy(selectedThread = null, selectedSmsConversation = args, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
+        }
+    }
+
+    /** 接收 Activity 传入的 Intent 排队等待 `settings.forumServer` 就绪后一次性消费（旋转不重复触发）。 */
+    fun submitIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        val copy = Intent(intent)
+        _pendingIntents.update { it + copy }
+    }
+
+    /** 原子取出待处理 Intent 列表并按 [forumServer] 解析消费；非法/非深链 Intent 静默忽略且不污染状态。 */
+    fun consumePendingIntents(forumServer: String) {
+        val batch = _pendingIntents.getAndUpdate { emptyList() }
+        for (intent in batch) {
+            val target = parseIncomingIntent(intent, forumServer) ?: continue
+            applyDeepLink(target)
+        }
+    }
+
+    /** 统一应用外部链接、桌面快捷方式与系统通知解析结果。 */
+    fun applyDeepLink(target: DeepLinkTarget) {
+        cancelDeepLinkResolve()
+        when (target) {
+            DeepLinkTarget.TodayNew -> {
+                selectForumSource(ForumListSource.TodayNew)
+                clearDetailAndOverlay()
+            }
+            DeepLinkTarget.Search -> {
+                selectSidebarEntry(ShellSidebarEntry.Search)
+                clearDetailAndOverlay()
+            }
+            DeepLinkTarget.Sms -> {
+                selectSidebarEntry(ShellSidebarEntry.Sms)
+                clearDetailAndOverlay()
+            }
+            DeepLinkTarget.Notify -> {
+                selectSidebarEntry(ShellSidebarEntry.Notify)
+                clearDetailAndOverlay()
+            }
+            DeepLinkTarget.Favorites -> {
+                selectSidebarEntry(ShellSidebarEntry.FavoritesAndAttention)
+                clearDetailAndOverlay()
+            }
+            is DeepLinkTarget.SmsConversation -> {
+                hasMutatedState = true
+                updateReleasingStaleThreads { cur ->
+                    cur.copy(
+                        selectedDestination = ShellDestination.Messages,
+                        selectedSidebarEntry = ShellSidebarEntry.Sms,
+                        activeMessageEntry = ShellSidebarEntry.Sms,
+                        activeMineSubPage = null,
+                        hingeShowingMineMenu = false,
+                        selectedThread = null,
+                        selectedSmsConversation = SmsConversationArgs(target.uid, ""),
+                        isSettingsDetailOpen = false,
+                        detailDrilldownStack = emptyList(),
+                        isFullScreenReading = false,
+                        loginOverlayMode = null,
+                    )
+                }
+            }
+            is DeepLinkTarget.Forum -> {
+                selectForumSource(ForumListSource.Forum(target.fid))
+                clearDetailAndOverlay()
+            }
+            is DeepLinkTarget.Thread -> {
+                if (target.page > 1 && threadDetailRepository != null) {
+                    resolveThreadTargetAsync(fallbackTid = target.tid) {
+                        val res = threadDetailRepository.loadPage(target.tid, target.page, recordHistory = false, priority = AccessPriority.UserBlocking)
+                        (res as? ThreadDetailLoadResult.Success)?.let { ok ->
+                            ThreadNavArgs(
+                                tid = target.tid,
+                                title = ok.title,
+                                fid = ok.fid,
+                                forumName = ok.forumName,
+                                targetPid = ok.page.floors.firstOrNull()?.postId,
+                            )
+                        }
+                    }
+                } else {
+                    openThread(ThreadNavArgs(tid = target.tid))
+                    clearOverlayIfOpen()
+                }
+            }
+            is DeepLinkTarget.ThreadLastPage -> {
+                if (threadDetailRepository != null) {
+                    resolveThreadTargetAsync(fallbackTid = target.tid) {
+                        val res = threadDetailRepository.loadLastPage(target.tid, recordHistory = false, priority = AccessPriority.UserBlocking)
+                        (res as? ThreadDetailLoadResult.Success)?.let { ok ->
+                            ThreadNavArgs(
+                                tid = target.tid,
+                                title = ok.title,
+                                fid = ok.fid,
+                                forumName = ok.forumName,
+                                targetPid = ok.page.floors.lastOrNull()?.postId,
+                            )
+                        }
+                    }
+                } else {
+                    openThread(ThreadNavArgs(tid = target.tid))
+                    clearOverlayIfOpen()
+                }
+            }
+            is DeepLinkTarget.Post -> {
+                val explicitTid = target.tid?.takeIf { it.isNotBlank() }
+                if (explicitTid != null) {
+                    openThread(ThreadNavArgs(tid = explicitTid, targetPid = target.pid))
+                    clearOverlayIfOpen()
+                } else if (threadDetailRepository != null) {
+                    resolveThreadTargetAsync(fallbackTid = null) {
+                        val res = threadDetailRepository.loadByPostId(target.pid, tid = null, recordHistory = false, priority = AccessPriority.UserBlocking)
+                        val ok = res as? ThreadDetailLoadResult.Success ?: return@resolveThreadTargetAsync null
+                        val resolvedTid = ok.tid?.takeIf { it.isNotBlank() } ?: return@resolveThreadTargetAsync null
+                        ThreadNavArgs(
+                            tid = resolvedTid,
+                            title = ok.title,
+                            fid = ok.fid,
+                            forumName = ok.forumName,
+                            targetPid = ok.targetPostId?.takeIf { it.isNotBlank() } ?: target.pid,
+                        )
+                    }
+                } else {
+                    _deepLinkFeedback.tryEmit(DeepLinkFeedbackEvent.PostResolveFailed)
+                }
+            }
+            is DeepLinkTarget.User -> {
+                hasMutatedState = true
+                updateReleasingStaleThreads { cur ->
+                    cur.copy(
+                        selectedThread = null,
+                        selectedSmsConversation = null,
+                        isSettingsDetailOpen = false,
+                        isFullScreenReading = false,
+                        loginOverlayMode = null,
+                        detailDrilldownStack = listOf(DetailDrilldownEntry.UserProfile(target.uid, "")),
+                    )
+                }
+            }
+            is DeepLinkTarget.UnsupportedUrl -> {
+                _deepLinkFeedback.tryEmit(DeepLinkFeedbackEvent.UnsupportedUrl(target.url))
+            }
+        }
+    }
+
+    private fun resolveThreadTargetAsync(
+        fallbackTid: String?,
+        resolver: suspend () -> ThreadNavArgs?,
+    ) {
+        hasMutatedState = true
+        val gen = ++deepLinkResolveGen
+        deepLinkResolveJob = viewModelScope.launch {
+            val resolved = runCatching { resolver() }.getOrNull()
+            if (gen != deepLinkResolveGen) return@launch
+            when {
+                resolved != null -> {
+                    openThread(resolved)
+                    clearOverlayIfOpen()
+                }
+                fallbackTid != null -> {
+                    openThread(ThreadNavArgs(tid = fallbackTid))
+                    clearOverlayIfOpen()
+                }
+                else -> _deepLinkFeedback.tryEmit(DeepLinkFeedbackEvent.PostResolveFailed)
+            }
+        }
+    }
+
+    private fun cancelDeepLinkResolve() {
+        deepLinkResolveGen++
+        deepLinkResolveJob?.cancel()
+        deepLinkResolveJob = null
+    }
+
+    private fun clearDetailAndOverlay() {
+        updateReleasingStaleThreads { cur ->
+            cur.clearDetailIf(true).copy(loginOverlayMode = null)
+        }
+    }
+
+    private fun clearOverlayIfOpen() {
+        if (_state.value.loginOverlayMode != null) {
+            _state.update { it.copy(loginOverlayMode = null) }
         }
     }
 
@@ -199,6 +443,7 @@ class NextAppHostViewModel private constructor(
     }
 
     fun closeThread() {
+        cancelDeepLinkResolve()
         hasMutatedState = true
         updateReleasingStaleThreads { it.clearDetailIf(true) }
     }
@@ -237,6 +482,7 @@ class NextAppHostViewModel private constructor(
     fun handleBack(layoutMode: ShellPaneLayoutMode): Boolean {
         val action = resolveMultiPaneBackAction(_state.value, layoutMode)
         if (action == MultiPaneBackAction.PassToSystem) return false
+        cancelDeepLinkResolve()
         hasMutatedState = true
         updateReleasingStaleThreads { cur -> applyMultiPaneBackAction(cur, action) }
         return true
@@ -279,6 +525,7 @@ class NextAppHostViewModel private constructor(
     }
 
     override fun onCleared() {
+        cancelDeepLinkResolve()
         threadStores.values.toList().also { threadStores.clear() }.forEach(ViewModelStore::clear)
     }
 }

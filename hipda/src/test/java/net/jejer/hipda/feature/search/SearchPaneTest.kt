@@ -5,7 +5,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
@@ -176,6 +179,121 @@ class SearchPaneTest {
         val yApple = composeRule.onNodeWithText("苹果").fetchSemanticsNode().positionInRoot.y
         val yBanana = composeRule.onNodeWithText("香蕉").fetchSemanticsNode().positionInRoot.y
         assertTrue("重搜提升后的“咖啡”撤销后必须回到第 1 位（coffee=$yCoffee, apple=$yApple, banana=$yBanana）", yCoffee < yApple && yApple < yBanana)
+    }
+
+    @Test
+    fun rM6PolishS1_unmountingSearchPaneWhileUndoInFlight_expiresTokenAndRebuildsRanks() {
+        val harness = SearchTestHarness(initialHistory = listOf("苹果", "香蕉", "咖啡"))
+        val emittedTokens = mutableListOf<SearchHistoryUndoToken>()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
+        val collectJob = scope.launch {
+            harness.viewModel.snackbarEvents.collect {
+                if (it is SearchSnackbarEvent.HistoryDeleted) emittedTokens += it.token
+            }
+        }
+        var showSearchPane by mutableStateOf(true)
+        try {
+            composeRule.setContent {
+                if (showSearchPane) SearchTestHost(harness.viewModel)
+            }
+            composeRule.waitForIdle()
+
+            // 删除 "苹果" 后 10 秒撤销条在途（不推进超时）立即切离页面
+            composeRule.onAllNodesWithContentDescription("删除")[0].performClick()
+            composeRule.waitForIdle()
+            assertEquals(1, emittedTokens.size)
+            assertEquals(listOf("香蕉", "咖啡"), harness.historyFlow.value)
+            composeRule.onNodeWithText("已删除").assertIsDisplayed()
+
+            showSearchPane = false
+            composeRule.waitForIdle()
+
+            // 切离取消 LaunchedEffect 后 try/finally 必须已过期旧令牌，旧令牌无法再撤回
+            harness.viewModel.undoDeleteHistory(emittedTokens[0].id)
+            composeRule.waitForIdle()
+            assertEquals("切离页面后旧撤销令牌必须失效，绝不得恢复“苹果”", listOf("香蕉", "咖啡"), harness.historyFlow.value)
+
+            // 回到搜索页并重搜旧词 "咖啡" 升至首位 -> 因活跃令牌已归 false，秩表应重建为 {咖啡:0, 香蕉:1}
+            showSearchPane = true
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("咖啡").assertIsDisplayed().performClick()
+            composeRule.waitForIdle()
+            composeRule.runOnIdle { harness.viewModel.clearQuery() }
+            composeRule.waitForIdle()
+            assertEquals(listOf("咖啡", "香蕉"), harness.historyFlow.value)
+
+            // 删除首位 "咖啡" 后点撤销 -> 必须恢复回第 1 位而非按过期旧秩落回末尾
+            composeRule.onAllNodesWithContentDescription("删除")[0].performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("撤销").assertIsDisplayed().performClick()
+            composeRule.waitForIdle()
+
+            assertEquals(listOf("咖啡", "香蕉"), harness.historyFlow.value)
+            val yCoffee = composeRule.onNodeWithText("咖啡").fetchSemanticsNode().positionInRoot.y
+            val yBanana = composeRule.onNodeWithText("香蕉").fetchSemanticsNode().positionInRoot.y
+            assertTrue("重排后撤销首位“咖啡”必须回到第 1 位（coffee=$yCoffee, banana=$yBanana）", yCoffee < yBanana)
+        } finally {
+            collectJob.cancel()
+        }
+    }
+
+    @Test
+    fun rM6PolishS1_refreshErrorPreemptingUndo_invalidatesTokenAndAllowsRankRebuild() {
+        val harness = SearchTestHarness(initialHistory = listOf("苹果", "香蕉", "咖啡"))
+        harness.nextSearchResult = SearchResult.Success(
+            page = 1,
+            fullText = false,
+            searchPage = SearchPage(
+                searchId = "sid-s1",
+                maxPage = 1,
+                items = listOf(SearchItem("901", null, "初始结果", null, "alice", "1", null, "刚刚", "Discovery")),
+                meta = emptyMeta(),
+            ),
+        )
+        val emittedTokens = mutableListOf<SearchHistoryUndoToken>()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
+        val uiCollectJob = scope.launch { harness.viewModel.uiState.collect {} }
+        val eventCollectJob = scope.launch {
+            harness.viewModel.snackbarEvents.collect {
+                if (it is SearchSnackbarEvent.HistoryDeleted) emittedTokens += it.token
+            }
+        }
+        try {
+            // 1. 先提交一次带结果搜索，再删除 "香蕉"（不挂载 SearchPane，隔离验证 ViewModel RefreshError 路径的 undoManager.invalidate()）
+            harness.viewModel.submitHistoryQuery("苹果")
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            harness.viewModel.deleteHistory("香蕉")
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            assertEquals(1, emittedTokens.size)
+            assertEquals(listOf("苹果", "咖啡"), harness.historyFlow.value)
+
+            // 2. 刷新报错触发 RefreshError 顶替撤销条 -> 必须同步 invalidate() 活跃令牌
+            harness.nextSearchResult = SearchError.NetworkError("offline")
+            harness.viewModel.refresh()
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+
+            // 旧令牌必须立即失效
+            harness.viewModel.undoDeleteHistory(emittedTokens[0].id)
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            assertEquals("刷新报错顶替后旧令牌必须失效", listOf("苹果", "咖啡"), harness.historyFlow.value)
+
+            // 3. 随后重搜 "咖啡" 升至首位，再删再撤 -> 秩表已重建，必须恢复到第 1 位
+            harness.nextSearchResult = SearchResult.Success(1, false, SearchPage("sid-2", 1, emptyList(), emptyMeta()))
+            harness.viewModel.submitHistoryQuery("咖啡")
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            assertEquals(listOf("咖啡", "苹果"), harness.historyFlow.value)
+
+            harness.viewModel.deleteHistory("咖啡")
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            assertEquals(2, emittedTokens.size)
+            harness.viewModel.undoDeleteHistory(emittedTokens[1].id)
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+
+            assertEquals("RefreshError invalidate 后重排撤销首位必须回到第 1 位", listOf("咖啡", "苹果"), harness.historyFlow.value)
+        } finally {
+            eventCollectJob.cancel()
+            uiCollectJob.cancel()
+        }
     }
 
     @Test

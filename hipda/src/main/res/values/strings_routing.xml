@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="routing_attachment_downloading">正在下载…</string>
+    <string name="routing_attachment_saved">已保存到下载</string>
+    <string name="routing_attachment_download_failed">下载失败</string>
+    <string name="routing_deeplink_unsupported_url">无法识别该链接</string>
+    <string name="routing_action_open_in_browser">在浏览器中打开</string>
+    <string name="routing_error_no_browser">未找到可用的浏览器</string>
+</resources>

@@ -103,7 +103,7 @@ class FavoritesViewModel(
             tr.tombstones.remove(item.tid)
             updateTab(kind) { it.copy(items = insertByAnchor(it.items, item, anchorTid, FavoriteThreadItem::tid, tr.ranks)) }
             undoManager.expire(token.id)
-            _snackbarEvents.tryEmit(FavoritesSnackbarEvent.ActionError(undoManager.nextId(), mapFavoriteError(err)))
+            _snackbarEvents.tryEmit(FavoritesSnackbarEvent.ActionError(undoManager.invalidate(), mapFavoriteError(err)))
         }
     }
 
@@ -114,7 +114,7 @@ class FavoritesViewModel(
         updateTab(token.kind) { it.copy(items = insertByAnchor(it.items, item, token.anchorTid, FavoriteThreadItem::tid, tr.ranks)) }
         enqueueTidMutation(token.kind, item.tid, { favoriteRepository.add(token.kind, item.tid) }, { tr.pendingRestores.remove(item.tid) }) { err ->
             updateTab(token.kind) { it.copy(items = it.items.filterNot { x -> x.tid == item.tid }) }
-            _snackbarEvents.tryEmit(FavoritesSnackbarEvent.ActionError(undoManager.nextId(), mapFavoriteError(err)))
+            _snackbarEvents.tryEmit(FavoritesSnackbarEvent.ActionError(undoManager.invalidate(), mapFavoriteError(err)))
         }
     }
 
@@ -164,7 +164,7 @@ class FavoritesViewModel(
                     val mapped = mapFavoriteError(res); val cf = (res as? FavoriteError.ChallengeRequired)?.let { challengeKind(it.rejected) }
                     val keep = isRefresh && state.value.tabState(kind).items.isNotEmpty()
                     updateTab(kind) { it.markError(keep, mapped, cf) }
-                    if (keep && res !is FavoriteError.AuthRequired) _snackbarEvents.tryEmit(FavoritesSnackbarEvent.ActionError(undoManager.nextId(), mapped))
+                    if (keep && res !is FavoriteError.AuthRequired) _snackbarEvents.tryEmit(FavoritesSnackbarEvent.ActionError(undoManager.invalidate(), mapped))
                 }
             }
         }

@@ -16,8 +16,9 @@
 
         <activity
             android:name=".debug.next.NextAppActivity"
-            android:exported="false"
+            android:exported="true"
             android:label="@string/preview_next_app_title"
+            android:launchMode="singleTop"
             android:theme="@android:style/Theme.Material.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
 
