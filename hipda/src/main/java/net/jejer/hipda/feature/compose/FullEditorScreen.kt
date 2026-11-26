@@ -10,6 +10,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.*
 import androidx.compose.material.icons.Icons
@@ -57,7 +58,6 @@ fun FullEditorScreen(
     val hasEmojiSlot = effectiveEmojiSlot != null
     val keyboardController = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
-    val containerWindowHeightDp = LocalWindowInfo.current.containerDpSize.height
     var activeBodyFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
 
     val imagePickerLauncher = if (LocalActivityResultRegistryOwner.current != null) {
@@ -76,19 +76,15 @@ fun FullEditorScreen(
     val previewUriByImageId = remember(uiState.uploads) { buildMap { uiState.uploads.forEach { u -> val id = u.imageIdOrNull; val uri = u.contentUri; if (id != null && uri != null) put(id, uri) } } }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val windowHeightDp = if (isModalCard && containerWindowHeightDp > 0.dp) containerWindowHeightDp else maxHeight
-        val imeBottomPx = WindowInsets.ime.getBottom(density)
-        val navBarBottomPx = if (isModalCard) 0 else WindowInsets.navigationBars.getBottom(density)
-        val navBarBottomDp = with(density) { navBarBottomPx.toDp() }
+        val windowHeightDp = maxHeight
+        val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(density).toDp() }
         val emojiController = rememberEmojiPanelController(
-            imeBottomPx = imeBottomPx,
-            navBarBottomPx = navBarBottomPx,
-            navBarBottomDp = navBarBottomDp,
             windowHeightDp = windowHeightDp,
             onShowKeyboard = { runCatching { activeBodyFocusRequester?.requestFocus() }; keyboardController?.show() },
             onHideKeyboard = { keyboardController?.hide() },
-            consumeImeInSlot = !isModalCard,
         )
+        val navBarBottomDp = emojiController.navBarBottomDp
+        val bottomSlotHeightDp = emojiController.bottomSlotHeightDp
         LaunchedEffect(uiState.isOpen, uiState.sessionId) { emojiController.close() }
         val isEmojiPanelOpen = emojiController.isEmojiModeActive && hasEmojiSlot
 
@@ -99,42 +95,60 @@ fun FullEditorScreen(
         if (registerBackHandler) key(uiState.sessionId) { BackHandler(enabled = uiState.isOpen) { latestHandleBack() } }
 
         val onInputPress: () -> Unit = { if (emojiController.isEmojiModeActive) emojiController.switchToKeyboard() }
-
-        Column(
-            modifier = Modifier.fillMaxSize().background(cs.surface)
-                .semantics { paneTitle = titleText; isTraversalGroup = true },
-        ) {
-            FullEditorTopBar(titleText, resolveEditorSubtitle(uiState.mode), isScrolled, !isModalCard, uiState.isSubmitting, uiState.cooldownSeconds, uiState.canTapSend, closeEditor, viewModel::submit)
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState)) {
-                if (!uiState.isLoggedIn) EditorGuestBanner(onOpenLogin)
-                AnimatedVisibility(uiState.showDraftRestoredBanner, enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(), exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut()) {
-                    EditorDraftRestoredBanner(viewModel::clearRestoredDraft)
+        val emojiHost = remember(emojiController.panelContentHeightDp, windowHeightDp, viewModel, emojiController) {
+            QuickReplyEmojiPanelHost(
+                keyboardHeightDp = emojiController.panelContentHeightDp,
+                windowHeightDp = windowHeightDp,
+                onInsertEmoji = viewModel::onInsertEmoji,
+                onBackspace = viewModel::onBackspace,
+                onClose = { emojiController.close() },
+            )
+        }
+        val editorInterior: @Composable (Modifier) -> Unit = { colModifier ->
+            Column(colModifier.semantics { paneTitle = titleText; isTraversalGroup = true }) {
+                FullEditorTopBar(titleText, resolveEditorSubtitle(uiState.mode), isScrolled, !isModalCard, uiState.isSubmitting, uiState.cooldownSeconds, uiState.canTapSend, closeEditor, viewModel::submit)
+                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState)) {
+                    if (!uiState.isLoggedIn) EditorGuestBanner(onOpenLogin)
+                    AnimatedVisibility(uiState.showDraftRestoredBanner, enter = hiExpandVertically(expandFrom = Alignment.Top) + hiFadeIn(), exit = hiShrinkVertically(shrinkTowards = Alignment.Top) + hiFadeOut()) {
+                        EditorDraftRestoredBanner(viewModel::clearRestoredDraft)
+                    }
+                    if (uiState.isNewThread) {
+                        NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
+                    }
+                    ImageUploadStrip(uiState.uploads, uiState.insertedImageIds, uiState.uploadSummaryProgress, viewModel::onInsertUploadedImage, viewModel::retryUpload, viewModel::removeUpload)
+                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, previewUriByImageId, resolveBodyPlaceholder(uiState.mode), viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress)
+                    if (uiState.validationError == FullEditorValidationError.ContentTooShort) {
+                        Text(stringResource(FullEditorValidationError.ContentTooShort.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
+                    }
+                    uiState.inlineError?.let { EditorInlineErrorRow(it, viewModel::submit, onOpenLogin) }
+                    Spacer(Modifier.height(16.dp))
                 }
-                if (uiState.isNewThread) {
-                    NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
-                }
-                ImageUploadStrip(uiState.uploads, uiState.insertedImageIds, uiState.uploadSummaryProgress, viewModel::onInsertUploadedImage, viewModel::retryUpload, viewModel::removeUpload)
-                EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, previewUriByImageId, resolveBodyPlaceholder(uiState.mode), viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress)
-                if (uiState.validationError == FullEditorValidationError.ContentTooShort) {
-                    Text(stringResource(FullEditorValidationError.ContentTooShort.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
-                }
-                uiState.inlineError?.let { EditorInlineErrorRow(it, viewModel::submit, onOpenLogin) }
-                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
+                FullEditorBottomToolbar(
+                    hasEmojiSlot, isEmojiPanelOpen,
+                    if (isModalCard || bottomSlotHeightDp > 0.dp || isEmojiPanelOpen) 0.dp else navBarBottomDp,
+                    launchImagePicker,
+                ) { if (hasEmojiSlot) emojiController.toggle() }
             }
-            HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
-            FullEditorBottomToolbar(
-                hasEmojiSlot, isEmojiPanelOpen,
-                if (emojiController.bottomSlotHeightDp > 0.dp || isEmojiPanelOpen) 0.dp else navBarBottomDp,
-                launchImagePicker,
-            ) { if (hasEmojiSlot) emojiController.toggle() }
-            val emojiHost = remember(emojiController.panelContentHeightDp, windowHeightDp, viewModel, emojiController) {
-                QuickReplyEmojiPanelHost(
-                    keyboardHeightDp = emojiController.panelContentHeightDp,
-                    windowHeightDp = windowHeightDp,
-                    onInsertEmoji = viewModel::onInsertEmoji,
-                    onBackspace = viewModel::onBackspace,
-                    onClose = { emojiController.close() },
-                )
+        }
+
+        Column(Modifier.fillMaxSize()) {
+            if (isModalCard) {
+                val cardShape = if (bottomSlotHeightDp > 0.dp) HiShapeTokens.Large.copy(bottomStart = CornerSize(0.dp), bottomEnd = CornerSize(0.dp)) else HiShapeTokens.Large
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth().padding(
+                        top = statusBarTopDp + 24.dp,
+                        bottom = if (bottomSlotHeightDp > 0.dp) 0.dp else navBarBottomDp + 24.dp,
+                    ),
+                    contentAlignment = if (bottomSlotHeightDp > 0.dp) Alignment.BottomCenter else Alignment.Center,
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight().heightIn(max = 720.dp).clip(cardShape),
+                        shape = cardShape, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
+                    ) { editorInterior(Modifier.fillMaxSize().background(cs.surface)) }
+                }
+            } else {
+                editorInterior(Modifier.weight(1f).fillMaxWidth().background(cs.surface))
             }
             EmojiPanelSlotBox(
                 controller = emojiController,

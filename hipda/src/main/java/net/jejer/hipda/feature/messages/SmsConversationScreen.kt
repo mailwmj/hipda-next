@@ -47,8 +47,8 @@ import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.feature.compose.ComposeVectorIcons
 import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
 import net.jejer.hipda.feature.compose.emoji.EmojiPanelSlotBox
+import net.jejer.hipda.feature.compose.emoji.previousEmojiOrGraphemeOffset
 import net.jejer.hipda.feature.compose.emoji.rememberEmojiPanelController
-import net.jejer.hipda.feature.compose.previousGraphemeOffset
 import net.jejer.hipda.feature.compose.rememberResolvedEmojiPanelSlot
 import net.jejer.hipda.feature.threaddetail.body.InlineDrawableSpec
 import net.jejer.hipda.feature.threaddetail.body.ResolvedForumEmoji
@@ -80,7 +80,6 @@ fun SmsConversationScreen(
     val snackbarController = LocalPaneSnackbarController.current
     val resources = LocalResources.current
     val context = LocalContext.current
-    val density = LocalDensity.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val inputFocusRequester = remember { FocusRequester() }
     val uriHandler = LocalUriHandler.current
@@ -121,13 +120,7 @@ fun SmsConversationScreen(
 
     BoxWithConstraints(modifier.fillMaxSize().background(cs.surface)) {
         val windowHeightDp = maxHeight
-        val imeBottomPx = WindowInsets.ime.getBottom(density)
-        val navBarBottomDp = maxOf(with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }, contentPadding.calculateBottomPadding())
-        val navBarBottomPx = with(density) { navBarBottomDp.roundToPx() }
         val emojiController = rememberEmojiPanelController(
-            imeBottomPx = imeBottomPx,
-            navBarBottomPx = navBarBottomPx,
-            navBarBottomDp = navBarBottomDp,
             windowHeightDp = windowHeightDp,
             onShowKeyboard = { runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show() },
             onHideKeyboard = { keyboardController?.hide() },
@@ -234,7 +227,7 @@ fun SmsConversationScreen(
                             val e = cur.selection.max.coerceIn(0, cur.text.length)
                             val next = when {
                                 s != e -> TextFieldValue(cur.text.substring(0, s) + cur.text.substring(e), TextRange(s))
-                                s > 0 -> previousGraphemeOffset(cur.text, s).let { prev ->
+                                s > 0 -> previousEmojiOrGraphemeOffset(cur.text, s).let { prev ->
                                     TextFieldValue(cur.text.substring(0, prev) + cur.text.substring(s), TextRange(prev))
                                 }
                                 else -> cur

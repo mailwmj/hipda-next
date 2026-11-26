@@ -213,9 +213,11 @@ fun FullEditorPlacementFrame(placement: FullEditorPlacement, windowWidthDp: Floa
         FullEditorPlacement.CenteredModal -> Box(modifier.fillMaxSize()) {
             val scrimInt = remember { MutableInteractionSource() }
             Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = 0.40f)).clickable(scrimInt, null, enabled = !isSubmitting, onClick = onRequestClose))
-            Surface(
-                Modifier.align(Alignment.Center).systemBarsPadding().imePadding().padding(vertical = 24.dp).width(calculateCenteredModalWidthDp(windowWidthDp)).fillMaxHeight().heightIn(max = 720.dp).clip(HiShapeTokens.Large),
-                shape = HiShapeTokens.Large, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
+            Box(
+                Modifier.align(Alignment.Center)
+                    .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
+                    .width(calculateCenteredModalWidthDp(windowWidthDp))
+                    .fillMaxHeight(),
             ) { content(true) }
         }
         FullEditorPlacement.RightPane -> Surface(modifier.fillMaxSize(), color = cs.surface, contentColor = cs.onSurface) {
