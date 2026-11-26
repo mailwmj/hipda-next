@@ -49,6 +49,7 @@ import coil3.request.SuccessResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import net.jejer.hipda.data.account.SavedAccount
@@ -79,6 +80,7 @@ import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.ui.shell.HiShellTestTags
 import net.jejer.hipda.ui.shell.ShellDestination
+import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -597,6 +599,196 @@ class FeaturePaneSlotsTest {
         val saved = with(NextAppStateSaver) { scope.save(original) }
         val restored = NextAppStateSaver.restore(requireNotNull(saved))
         assertEquals(original, restored)
+    }
+
+    /** 闭合 R-E-slots S1：旧 16 元保存态（含 chunked(2) 无标签多级 UserProfile，甚至用户名恰为 "u"/"s"）无损兼容恢复。 */
+    @Test
+    fun s1_nextAppStateSaver_restoresLegacy16ElementUserProfileDrilldownLosslessly() {
+        val legacy16 = listOf(
+            ShellDestination.Forum.name,
+            "forum:2",
+            2,
+            "sms",
+            null,
+            null,
+            false,
+            false,
+            2,
+            "1001", "旧版帖子标题", 2, "Discovery", "alice", null,
+            listOf("42", "u", "77", "s", "99", "charlie"),
+        )
+        assertEquals(16, legacy16.size)
+        val restored = requireNotNull(NextAppStateSaver.restore(legacy16))
+        assertEquals("1001", restored.selectedThread?.tid)
+        assertEquals(
+            listOf(
+                DetailDrilldownEntry.UserProfile("42", "u"),
+                DetailDrilldownEntry.UserProfile("77", "s"),
+                DetailDrilldownEntry.UserProfile("99", "charlie"),
+            ),
+            restored.detailDrilldownStack,
+        )
+        assertNull(restored.selectedSmsConversation)
+        assertEquals(SettingsGroup.Appearance, restored.selectedSettingsGroup)
+        assertEquals(false, restored.isSettingsDetailOpen)
+    }
+
+    /** 闭合 R-E-slots S2：物理铰链双栏下在设置内打开帖子（如关于→客户端发布帖），右栏应展示 ThreadDetail，按返回回到 SettingsDetail。 */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun s2_hingeTwoPane_settingsOpeningThread_showsThreadDetailInRightPaneAndBackReturnsToSettingsDetail() {
+        // 1. 纯函数判定
+        val settingsWithThread = NextAppState(
+            selectedDestination = ShellDestination.Mine,
+            selectedSidebarEntry = ShellSidebarEntry.Settings,
+            hingeShowingMineMenu = false,
+            selectedThread = ThreadNavArgs("1005", "客户端发布帖", 2),
+        )
+        val roles = resolveHingeTwoPaneRoles(settingsWithThread)
+        assertEquals(HingeLeftPaneRole.SettingsGroups, roles.left)
+        assertEquals(HingeRightPaneRole.ThreadDetail, roles.right)
+        assertEquals(MultiPaneBackAction.CloseDetailThread, resolveMultiPaneBackAction(settingsWithThread, ShellPaneLayoutMode.HingeTwoPane))
+
+        // 2. 真实铰链双栏 UI 闭环
+        val hingeInfo = verticalHingeLayoutInfo(leftDp = 371f, rightDp = 378f, heightDp = 559f, density = 2f, isSeparating = true)
+        withWindowLayoutFlow(flowOf(hingeInfo)) {
+            val harness = MultiPaneTestHarness()
+            var backDispatcher: OnBackPressedDispatcher? = null
+            val fakeSettings = object : SettingsProfilePaneRenderer {
+                @Composable
+                override fun SettingsGroupsContent(
+                    selectedGroup: SettingsGroup, isSidebar: Boolean, showBack: Boolean, onBack: (() -> Unit)?,
+                    onSelectGroup: (SettingsGroup) -> Unit, contentPadding: PaddingValues, listState: LazyListState,
+                ) {
+                    Column(Modifier.fillMaxSize().padding(contentPadding)) { Text("铰链设置组:${selectedGroup.name}") }
+                }
+
+                @Composable
+                override fun SettingsDetailContent(
+                    group: SettingsGroup, showBack: Boolean, onBack: (() -> Unit)?,
+                    onOpenThread: (ThreadNavArgs) -> Unit, onOpenLogin: () -> Unit, contentPadding: PaddingValues,
+                ) {
+                    Column(Modifier.fillMaxSize().padding(contentPadding)) {
+                        Text("铰链设置详情:${group.name}")
+                        Button(onClick = { onOpenThread(ThreadNavArgs("1005", "客户端发布帖", 2)) }) { Text("打开客户端发布帖") }
+                    }
+                }
+
+                @Composable
+                override fun UserProfileContent(
+                    uid: String, username: String, showBack: Boolean, onBack: () -> Unit,
+                    onOpenThread: (ThreadNavArgs) -> Unit, onOpenSmsConversation: (SmsConversationArgs) -> Unit,
+                    onOpenLogin: () -> Unit, contentPadding: PaddingValues,
+                ) = Unit
+            }
+
+            composeRule.setContent {
+                backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+                CompositionLocalProvider(LocalViewModelStoreOwner provides harness.parentOwner) {
+                    NextAppRoot(
+                        settingsFlow = harness.settingsRepo.settings,
+                        currentAccountFlow = harness.authRepo.currentAccount,
+                        smsUnreadCountFlow = harness.smsUnread,
+                        notifyUnreadCountFlow = harness.notifyUnread,
+                        settingsProfilePaneRenderer = fakeSettings,
+                        hostViewModel = harness.hostViewModel,
+                        forumViewModel = harness.forumViewModel,
+                    )
+                }
+            }
+            composeRule.waitForIdle()
+            val dispatcher = requireNotNull(backDispatcher)
+
+            composeRule.runOnIdle { harness.hostViewModel.selectSidebarEntry(ShellSidebarEntry.Settings) }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("铰链设置组:Appearance").assertIsDisplayed()
+            composeRule.onNodeWithText("铰链设置详情:Appearance").assertIsDisplayed()
+
+            composeRule.onNodeWithText("打开客户端发布帖").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("铰链设置组:Appearance").assertIsDisplayed()
+            composeRule.onNodeWithText("测试帖子标题 1005").assertIsDisplayed()
+
+            composeRule.runOnIdle { dispatcher.onBackPressed() }
+            composeRule.waitForIdle()
+            assertNull(harness.hostViewModel.state.value.selectedThread)
+            composeRule.onNodeWithText("铰链设置详情:Appearance").assertIsDisplayed()
+        }
+    }
+
+    /** 闭合 R-E-slots S3：看图浮层退场期（无自持 BackHandler 时）宿主兜底 BackHandler 拦截返回不误关底层帖子，且三栏全屏看图 Snackbar 相对整窗居中。 */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun s3_imageViewerOverlay_fallbackBackHandlerProtectsUnderlyingThread_andFullScreenSnackbarCentersInWindow() {
+        val imageUrl = "https://www.4d4y.com/forum/attachments/s3_demo.jpg"
+        val harness = MultiPaneTestHarness()
+        val imageDetailRepo = SingleImageThreadDetailRepository(imageUrl)
+        val imageVmFactory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = when (modelClass) {
+                ThreadDetailViewModel::class.java -> ThreadDetailViewModel(imageDetailRepo, harness.gateway) as T
+                else -> harness.vmFactory.create(modelClass)
+            }
+        }
+        val imageParentOwner = object : androidx.lifecycle.ViewModelStoreOwner, androidx.lifecycle.HasDefaultViewModelProviderFactory {
+            override val viewModelStore = androidx.lifecycle.ViewModelStore()
+            override val defaultViewModelProviderFactory = imageVmFactory
+        }
+        var backDispatcher: OnBackPressedDispatcher? = null
+        val fakeViewerWithoutOwnBackHandler = object : ImageViewerRenderer {
+            @Composable
+            override fun Overlay(args: ImageViewerLaunchArgs, onDismiss: () -> Unit) {
+                val snackbar = LocalPaneSnackbarController.current
+                val scope = rememberCoroutineScope()
+                Surface(Modifier.fillMaxSize()) {
+                    Column(Modifier.fillMaxSize().padding(24.dp)) {
+                        Text("看图S3浮层")
+                        Button(onClick = { scope.launch { snackbar.show("已保存到相册") } }) { Text("触发全屏提示") }
+                    }
+                }
+            }
+        }
+
+        harness.hostViewModel.openThread(ThreadNavArgs("1001", "含图测试帖", 2))
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            CompositionLocalProvider(LocalViewModelStoreOwner provides imageParentOwner) {
+                NextAppRoot(
+                    settingsFlow = harness.settingsRepo.settings,
+                    currentAccountFlow = harness.authRepo.currentAccount,
+                    smsUnreadCountFlow = harness.smsUnread,
+                    notifyUnreadCountFlow = harness.notifyUnread,
+                    imageLoader = createSolidTestImageLoader(),
+                    imageViewerRenderer = fakeViewerWithoutOwnBackHandler,
+                    hostViewModel = harness.hostViewModel,
+                    forumViewModel = harness.forumViewModel,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        val dispatcher = requireNotNull(backDispatcher)
+
+        val imageMatcher = SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image) and
+            hasClickAction() and
+            hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "正文"))
+        composeRule.onAllNodes(imageMatcher, useUnmergedTree = true).onFirst().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("看图S3浮层").assertIsDisplayed()
+
+        // 全屏看图内弹出的 Snackbar 容器应对齐整窗 749dp 水平居中（中心 = 374.5dp，而非偏右 406.5dp）
+        composeRule.onNodeWithText("触发全屏提示").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("已保存到相册").assertIsDisplayed()
+        val snackbarCardBounds = composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsProperties.LiveRegion))
+            .fetchSemanticsNode().boundsInRoot
+        val centerXDp = with(composeRule.density) { snackbarCardBounds.center.x.toDp().value }
+        assertEquals("全屏看图 Snackbar 容器应相对整窗 749dp 居中", 374.5f, centerXDp, 1.5f)
+
+        // 浮层未注册自持 BackHandler（模拟退场动画禁用期）时触发系统返回：仅关浮层，绝不误关底层帖子 1001
+        composeRule.runOnIdle { dispatcher.onBackPressed() }
+        composeRule.waitForIdle()
+        assertTrue(composeRule.onAllNodesWithText("看图S3浮层").fetchSemanticsNodes().isEmpty())
+        assertEquals("兜底 BackHandler 拦截后底层帖子 1001 必须保持打开", "1001", harness.hostViewModel.state.value.selectedThread?.tid)
     }
 }
 

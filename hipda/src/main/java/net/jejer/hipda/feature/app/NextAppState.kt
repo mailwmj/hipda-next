@@ -104,13 +104,20 @@ val NextAppStateSaver: Saver<NextAppState, Any> = listSaver(
         val tid = r.getOrNull(9) as? String
         val smsUid = r.getOrNull(16) as? String
         @Suppress("UNCHECKED_CAST")
-        val drilldown = (r.getOrNull(15) as? List<String>).orEmpty().chunked(3).mapNotNull { p ->
-            val uid = p.getOrNull(1)?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            val name = p.getOrNull(2).orEmpty()
-            when (p.getOrNull(0)) {
-                "u" -> DetailDrilldownEntry.UserProfile(uid, name)
-                "s" -> DetailDrilldownEntry.SmsConversation(SmsConversationArgs(uid, name))
-                else -> null
+        val rawDrilldown = (r.getOrNull(15) as? List<String>).orEmpty()
+        val drilldown = if (r.size < 20) {
+            rawDrilldown.chunked(2).mapNotNull { p ->
+                p.getOrNull(0)?.takeIf { it.isNotEmpty() }?.let { DetailDrilldownEntry.UserProfile(it, p.getOrNull(1).orEmpty()) }
+            }
+        } else {
+            rawDrilldown.chunked(3).mapNotNull { p ->
+                val uid = p.getOrNull(1)?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val name = p.getOrNull(2).orEmpty()
+                when (p.getOrNull(0)) {
+                    "u" -> DetailDrilldownEntry.UserProfile(uid, name)
+                    "s" -> DetailDrilldownEntry.SmsConversation(SmsConversationArgs(uid, name))
+                    else -> null
+                }
             }
         }
         NextAppState(

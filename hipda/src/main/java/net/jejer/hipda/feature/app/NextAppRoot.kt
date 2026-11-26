@@ -1,5 +1,6 @@
 package net.jejer.hipda.feature.app
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -59,6 +60,7 @@ import net.jejer.hipda.ui.designsystem.state.HiStateAction
 import net.jejer.hipda.ui.shell.HiAdaptiveShell
 import net.jejer.hipda.ui.shell.HiSidebarAccount
 import net.jejer.hipda.ui.shell.HiSidebarState
+import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import net.jejer.hipda.ui.shell.calculateShellPaneLayout
 
@@ -114,6 +116,7 @@ fun NextAppRoot(
     val openLoginOrAccount: (LoginOverlayMode) -> Unit = { mode ->
         if (loginOverlayRenderer != null) hostViewModel.openLoginOverlay(mode) else onFallbackLoginClick?.invoke()
     }
+    val openLogin = { openLoginOrAccount(LoginOverlayMode.Login) }
     val sidebarState = remember(appState.selectedSidebarEntry, settings.followedForums, smsUnread, notifyUnread, account, sidebarCollapsedPref, appState.isFullScreenReading) {
         HiSidebarState(
             selectedEntry = appState.selectedSidebarEntry,
@@ -171,7 +174,7 @@ fun NextAppRoot(
                                 selectedTid = appState.selectedThread?.tid,
                                 onSelectSource = hostViewModel::selectForumSource,
                                 onOpenThread = hostViewModel::openThread,
-                                onOpenLogin = { openLoginOrAccount(LoginOverlayMode.Login) },
+                                onOpenLogin = openLogin,
                                 listState = listState,
                                 contentPadding = padding,
                                 shellContentScope = this,
@@ -183,7 +186,7 @@ fun NextAppRoot(
                                 args = args,
                                 chromeSpec = chromeSpec,
                                 onBack = onBack,
-                                onOpenLogin = { openLoginOrAccount(LoginOverlayMode.Login) },
+                                onOpenLogin = openLogin,
                                 listState = listState,
                                 contentPadding = padding,
                                 onOpenImageViewer = { launchArgs ->
@@ -193,7 +196,6 @@ fun NextAppRoot(
                             )
                         },
                         secondaryListContent = { entry, showBack, onBack, padding, listState ->
-                            val openLogin = { openLoginOrAccount(LoginOverlayMode.Login) }
                             when {
                                 (entry == ShellSidebarEntry.Sms || entry == ShellSidebarEntry.Notify) && messagesPaneRenderer != null ->
                                     messagesPaneRenderer.ListContent(
@@ -240,8 +242,7 @@ fun NextAppRoot(
                             val onBack = if (showBack) ({ hostViewModel.handleBack(paneLayout.layoutMode); Unit }) else null
                             if (settingsProfilePaneRenderer != null) {
                                 settingsProfilePaneRenderer.SettingsDetailContent(
-                                    appState.selectedSettingsGroup, showBack, onBack,
-                                    hostViewModel::openThread, { openLoginOrAccount(LoginOverlayMode.Login) }, padding,
+                                    appState.selectedSettingsGroup, showBack, onBack, hostViewModel::openThread, openLogin, padding,
                                 )
                             } else {
                                 UnbuiltEntryPlaceholder(stringResource(R.string.shell_sidebar_settings), showBack, onBack, padding)
@@ -251,7 +252,7 @@ fun NextAppRoot(
                             if (settingsProfilePaneRenderer != null) {
                                 settingsProfilePaneRenderer.UserProfileContent(
                                     profile.uid, profile.username, showBack, onBack,
-                                    hostViewModel::openThread, hostViewModel::pushSmsConversation, { openLoginOrAccount(LoginOverlayMode.Login) }, padding,
+                                    hostViewModel::openThread, hostViewModel::pushSmsConversation, openLogin, padding,
                                 )
                             } else {
                                 UnbuiltEntryPlaceholder(profile.username.ifBlank { profile.uid }, showBack, onBack, padding)
@@ -260,7 +261,7 @@ fun NextAppRoot(
                         smsConversationContent = { args, showBack, onBack, padding ->
                             if (messagesPaneRenderer != null) {
                                 messagesPaneRenderer.ConversationContent(
-                                    args, showBack, onBack, hostViewModel::pushUserProfile, { openLoginOrAccount(LoginOverlayMode.Login) }, padding,
+                                    args, showBack, onBack, hostViewModel::pushUserProfile, openLogin, padding,
                                 )
                             } else {
                                 UnbuiltEntryPlaceholder(args.username.ifBlank { args.uid }, showBack, onBack, padding)
@@ -270,6 +271,9 @@ fun NextAppRoot(
                 }
 
                 val imageViewerArgs = activeImageViewerArgs
+                val isImageViewerOpen = imageViewerArgs != null && imageViewerRenderer != null
+                // 兜底拦截：在 E14 看图浮层自持 BackHandler 之前注册，防止退场动画期间连按返回穿透误关底层帖子（R-E-slots S3）
+                BackHandler(enabled = isImageViewerOpen) { activeImageViewerArgs = null }
                 if (imageViewerArgs != null && imageViewerRenderer != null) {
                     imageViewerRenderer.Overlay(args = imageViewerArgs, onDismiss = { activeImageViewerArgs = null })
                 }
@@ -280,11 +284,12 @@ fun NextAppRoot(
                 }
 
                 val bottomPillVisible = !latestPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || latestPaneLayout.hasDetailPane)
+                val snackbarFullScreen = appState.isFullScreenReading || (isImageViewerOpen && latestPaneLayout.layoutMode != ShellPaneLayoutMode.HingeTwoPane)
                 MultiPaneSnackbarHost(
                     hostState = snackbarHostState,
                     paneLayout = latestPaneLayout,
                     effectiveMiddleWidthDp = latestMiddleWidthDp,
-                    isFullScreen = appState.isFullScreenReading,
+                    isFullScreen = snackbarFullScreen,
                     bottomPillVisible = bottomPillVisible,
                     bottomPillClearanceDp = latestBottomPaddingDp,
                     navBarsBottomDp = navBarsBottomDp,
