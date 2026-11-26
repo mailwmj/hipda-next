@@ -31,7 +31,9 @@ import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.compose.FakeImageUploadRepository
 import net.jejer.hipda.feature.compose.FakePostRepository
+import net.jejer.hipda.feature.compose.FullEditorViewModel
 import net.jejer.hipda.feature.compose.QuickReplyViewModel
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
@@ -473,5 +475,91 @@ class MultiPaneGlassBudgetTest {
         assertEquals(2, restoredAudit.layerBackdropCount)
         assertEquals(0, restoredAudit.nestedLayerBackdropCount)
         assertTrue(restoredAudit.drawBackdropCount <= 5)
+    }
+
+    /**
+     * E6 验收项 5（1280dp 平板横屏右栏 ≥ 560dp 右栏内展开完整编辑器玻璃预算守卫）：
+     * - 右栏内展开完整编辑器覆盖详情区并向底部工具条传 `suppressBottomGlass = true`，编辑器本身纯色 0 `HiGlassMarker`；
+     * - 守住全屏 `HiGlassMarker ≤ 3`、独立 `LayerBackdrop ≤ 2`、0 嵌套、静止 `drawBackdrop ≤ 5`；
+     * - 关闭编辑器后底部三段工具条自动恢复。
+     */
+    @Test
+    @Config(qualifiers = "w1280dp-h800dp-xhdpi")
+    fun tablet1280_rightPaneFullEditorExpanded_suppressesDetailBottomGlassAndStaysWithinGlassBudget() {
+        val harness = MultiPaneTestHarness()
+        val fakePostRepo = FakePostRepository()
+        val fakeUploadRepo = FakeImageUploadRepository()
+        val editorVm = FullEditorViewModel(fakePostRepo, fakeUploadRepo, harness.authRepo, harness.settingsRepo) { 10_000L }
+        val combinedFactory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = when {
+                modelClass.isAssignableFrom(QuickReplyViewModel::class.java) ->
+                    QuickReplyViewModel(fakePostRepo, harness.authRepo) as T
+                modelClass.isAssignableFrom(FullEditorViewModel::class.java) -> editorVm as T
+                else -> harness.vmFactory.create(modelClass)
+            }
+        }
+        val combinedOwner = object : androidx.lifecycle.ViewModelStoreOwner, androidx.lifecycle.HasDefaultViewModelProviderFactory {
+            override val viewModelStore = harness.parentOwner.viewModelStore
+            override val defaultViewModelProviderFactory = combinedFactory
+        }
+
+        composeRule.setContent {
+            ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides combinedOwner,
+                ) {
+                    NextAppRoot(
+                        settingsFlow = harness.settingsRepo.settings,
+                        currentAccountFlow = harness.authRepo.currentAccount,
+                        smsUnreadCountFlow = harness.smsUnread,
+                        notifyUnreadCountFlow = harness.notifyUnread,
+                        hostViewModel = harness.hostViewModel,
+                        forumViewModel = harness.forumViewModel,
+                        fullEditorViewModel = editorVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 打开帖子 1001 -> 打开快速回复 -> 点击「展开全屏」在 1280dp 右栏（680dp ≥ 560dp）内展开完整编辑器
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+
+        // 验证编辑器位于右栏（左缘 ≥ 600dp = 220左栏 + 380中栏）且底部三段工具条已因 suppressBottomGlass = true 卸载
+        val editorSendBounds = composeRule.onNodeWithContentDescription("发送").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "1280dp 下完整编辑器应在右栏内展开（发送按钮左缘 ${with(composeRule.density) { editorSendBounds.left.toDp().value }}dp 应 ≥ 600dp）",
+            with(composeRule.density) { editorSendBounds.left.toDp().value } >= 600f,
+        )
+        assertEquals(
+            "右栏内展开完整编辑器时底层详情底部三段工具条必须已卸载",
+            0,
+            composeRule.onAllNodes(
+                SemanticsMatcher("pageCapsule") { node ->
+                    node.config.contains(SemanticsProperties.ContentDescription) &&
+                        node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开跳页") }
+                },
+            ).fetchSemanticsNodes().size,
+        )
+
+        val editorMarkers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
+        assertTrue("1280dp 右栏展开完整编辑器时 HiGlassMarker 必须 ≤ 3，实际=${editorMarkers.size}", editorMarkers.size <= 3)
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+        val editorAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertTrue("独立 LayerBackdrop 必须 ≤ 2，实际=${editorAudit.layerBackdropCount}", editorAudit.layerBackdropCount <= 2)
+        assertEquals("严禁父子嵌套 LayerBackdrop", 0, editorAudit.nestedLayerBackdropCount)
+        assertTrue("静止 drawBackdrop pass 必须 ≤ 5，实际=${editorAudit.drawBackdropCount}", editorAudit.drawBackdropCount <= 5)
+
+        // 2. 点击顶栏返回关闭编辑器，底部三段工具条自动恢复且玻璃预算保持 3 / 2 / ≤ 5
+        composeRule.onNodeWithContentDescription("返回").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").assertIsDisplayed()
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
     }
 }

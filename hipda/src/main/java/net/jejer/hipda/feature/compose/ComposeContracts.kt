@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
@@ -16,6 +17,8 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import dagger.hilt.internal.GeneratedComponentManagerHolder
 import java.util.Optional
+import kotlinx.coroutines.flow.SharedFlow
+import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 
 /** 快速回复目标模式（普通回复主题 / 回复指定楼层 / 引用指定楼层）。 */
 enum class QuickReplyMode { ReplyThread, ReplyPost, QuotePost }
@@ -108,6 +111,16 @@ interface ComposeSlotsEntryPoint {
     fun emojiPanelRenderer(): Optional<QuickReplyEmojiPanelRenderer>
 }
 
+/** 完整编辑器回复成功后通知当前打开的 `ThreadDetailPane` 执行末页插楼或非末页 Snackbar 联动。 */
+@Immutable
+data class FullEditorReplySubmitted(
+    val tid: String,
+    val redirectedPage: ThreadDetailPage?,
+)
+
+/** 宿主向 `ThreadDetailPane` 下发的完整编辑器回复成功事件流（可选，未提供时由宿主兜底提示）。 */
+val LocalFullEditorReplyResults = staticCompositionLocalOf<SharedFlow<FullEditorReplySubmitted>?> { null }
+
 @Immutable
 internal data class ResolvedComposeSlots(
     val onExpandToFullEditor: ((FullEditorHandoff) -> Unit)?,
@@ -133,3 +146,9 @@ internal fun rememberResolvedComposeSlots(
     }
     return remember(expand, emoji) { ResolvedComposeSlots(expand, emoji) }
 }
+
+@Composable
+internal fun rememberResolvedEmojiPanelSlot(
+    explicitEmojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)?,
+): (@Composable (QuickReplyEmojiPanelHost) -> Unit)? =
+    rememberResolvedComposeSlots(explicitExpandToFullEditor = null, explicitEmojiPanelSlot = explicitEmojiPanelSlot).emojiPanelSlot

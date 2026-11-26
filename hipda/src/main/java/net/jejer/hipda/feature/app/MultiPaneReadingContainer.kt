@@ -210,6 +210,8 @@ fun MultiPaneReadingContainer(
     slotHolder: MultiPaneSlotHolder = rememberMultiPaneSlotHolder(hostViewModel),
     shellGlassState: HiGlassState? = null,
     onMiddlePaneWidthChanged: (Dp) -> Unit = {},
+    suppressDetailBottomGlass: Boolean = false,
+    rightPaneOverlay: (@Composable () -> Unit)? = null,
     forumContent: @Composable (ForumChromeSpec, PaddingValues, LazyListState) -> Unit,
     detailContent: @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, LazyListState, () -> Unit) -> Unit,
     secondaryListContent: @Composable (ShellSidebarEntry, Boolean, (() -> Unit)?, PaddingValues, LazyListState) -> Unit = { _, _, _, _, _ -> },
@@ -311,7 +313,9 @@ fun MultiPaneReadingContainer(
     val fullScreenToggle = remember(paneLayout.hasDetailPane, branchAppState.isFullScreenReading, hostViewModel) {
         if (paneLayout.hasDetailPane) FullScreenToggle(branchAppState.isFullScreenReading, hostViewModel::toggleFullScreenReading) else null
     }
-    val rootDetailChrome = remember(paneLayout.hasDetailPane, fullScreenToggle) { DetailChromeSpec(!paneLayout.hasDetailPane, fullScreenToggle) }
+    val rootDetailChrome = remember(paneLayout.hasDetailPane, fullScreenToggle, suppressDetailBottomGlass) {
+        DetailChromeSpec(!paneLayout.hasDetailPane, fullScreenToggle, suppressBottomGlass = suppressDetailBottomGlass)
+    }
 
     val listPaneTitle = stringResource(R.string.shell_pane_list_title)
     val detailPaneTitle = stringResource(R.string.shell_pane_detail_title)
@@ -448,7 +452,10 @@ fun MultiPaneReadingContainer(
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxHeight().semantics { isTraversalGroup = true; paneTitle = detailPaneTitle }) {
-                    if (isActiveDestination) RenderRightSlot(rightSlot, detailPanePadding)
+                    if (isActiveDestination) {
+                        RenderRightSlot(rightSlot, detailPanePadding)
+                        rightPaneOverlay?.invoke()
+                    }
                 }
             }
             if (!branchAppState.isFullScreenReading) {

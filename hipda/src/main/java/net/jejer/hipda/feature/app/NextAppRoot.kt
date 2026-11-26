@@ -28,6 +28,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,6 +72,13 @@ import net.jejer.hipda.feature.common.SafeLinkPolicy
 import net.jejer.hipda.feature.common.SearchMinePaneRenderer
 import net.jejer.hipda.feature.common.SettingsGroup
 import net.jejer.hipda.feature.common.SettingsProfilePaneRenderer
+import net.jejer.hipda.feature.compose.FullEditorPlacement
+import net.jejer.hipda.feature.compose.FullEditorRequest
+import net.jejer.hipda.feature.compose.FullEditorRequestBus
+import net.jejer.hipda.feature.compose.FullEditorViewModel
+import net.jejer.hipda.feature.compose.LocalFullEditorReplyResults
+import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
+import net.jejer.hipda.feature.compose.rememberFullEditorHostController
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
 import net.jejer.hipda.feature.routing.AndroidExternalLinkOpener
@@ -111,6 +119,9 @@ fun NextAppRoot(
     hostViewModel: NextAppHostViewModel = viewModel(),
     forumViewModel: ForumViewModel = viewModel(),
     onFallbackLoginClick: (() -> Unit)? = null,
+    fullEditorViewModel: FullEditorViewModel? = null,
+    fullEditorRequestBus: FullEditorRequestBus? = null,
+    emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
 ) {
     // 同步读取 StateFlow 当前值；冷流（如 DataStore 进程重启首帧读盘）在首个真实值到达前不渲染默认分栏，杜绝首帧回跳闪烁（R-E3 B3）
     val initialSettings = remember(settingsFlow) { (settingsFlow as? StateFlow<AppSettings>)?.value }
@@ -293,6 +304,21 @@ fun NextAppRoot(
         )
     }
 
+    val editorHost = rememberFullEditorHostController(
+        paneLayout = latestPaneLayout,
+        windowHeightDp = windowDpSize.height.value,
+        effectiveMiddleWidthDp = latestMiddleWidthDp,
+        selectedThreadTid = appState.selectedThread?.tid,
+        snackbarController = snackbarController,
+        coroutineScope = coroutineScope,
+        onRefreshForum = { forumViewModel.refresh() },
+        onOpenThread = hostViewModel::openThread,
+        onOpenLogin = openLogin,
+        injectedViewModel = fullEditorViewModel,
+        injectedRequestBus = fullEditorRequestBus,
+        emojiPanelSlot = emojiPanelSlot,
+    )
+
     HiTheme(themeConfig.themeMode, themeConfig.pureBlack, themeConfig.seed, themeConfig.fontSizeStep, themeConfig.lineHeightPreset) {
         CompositionLocalProvider(
             LocalHiImageLoader provides imageLoader,
@@ -300,10 +326,11 @@ fun NextAppRoot(
             LocalImageViewerBoundsRegistry provides imageViewerBoundsRegistry,
             LocalPostLinkDispatcher provides postLinkDispatcher,
             LocalAttachmentDownloadHandler provides attachmentDownloadHandler,
+            LocalFullEditorReplyResults provides editorHost.replyResults,
         ) {
             Box(modifier = modifier.fillMaxSize()) {
-                // 全屏看图覆盖期间暂停底层液态玻璃与 GPU 离屏采样，守住同屏 0 玻璃预算（V-E14 probeM4）
-                CompositionLocalProvider(LocalHiGlassSuspended provides isImageViewerOpen) {
+                // 全屏看图或单栏全屏编辑器覆盖期间暂停底层液态玻璃与 GPU 离屏采样（V-E14 probeM4 / E6 §4.2）
+                CompositionLocalProvider(LocalHiGlassSuspended provides (isImageViewerOpen || editorHost.isFullScreen)) {
                 HiAdaptiveShell(
                     selected = appState.selectedDestination,
                     onSelect = hostViewModel::selectDestination,
@@ -334,6 +361,10 @@ fun NextAppRoot(
                         slotHolder = slotHolder,
                         shellGlassState = shellGlassState,
                         onMiddlePaneWidthChanged = { latestMiddleWidthDp = it },
+                        suppressDetailBottomGlass = editorHost.isInRightPane,
+                        rightPaneOverlay = if (editorHost.isInRightPane) {
+                            { editorHost.renderInPlacement(FullEditorPlacement.RightPane, windowDpSize.width.value) }
+                        } else null,
                         forumContent = { chromeSpec, padding, listState ->
                             ForumPane(
                                 source = appState.activeForumSource,
@@ -345,6 +376,9 @@ fun NextAppRoot(
                                 listState = listState,
                                 contentPadding = padding,
                                 shellContentScope = this,
+                                onNewThreadClick = {
+                                    editorHost.open(FullEditorRequest.NewThread((appState.activeForumSource as? ForumListSource.Forum)?.fid))
+                                },
                                 onManageForumsClick = {
                                     hostViewModel.openSettingsGroup(
                                         group = SettingsGroup.ForumAndPost,
@@ -366,6 +400,8 @@ fun NextAppRoot(
                                     if (imageViewerRenderer != null) activeImageViewerArgs = launchArgs
                                 },
                                 onOpenUserProfile = hostViewModel::pushUserProfile,
+                                onExpandToFullEditor = { handoff -> editorHost.open(FullEditorRequest.fromHandoff(handoff)) },
+                                emojiPanelSlot = emojiPanelSlot,
                             )
                         },
                         secondaryListContent = { entry, showBack, onBack, padding, listState ->
@@ -442,6 +478,12 @@ fun NextAppRoot(
                         },
                     )
                 }
+                }
+
+                // 完整编辑器返回拦截与全屏/居中模态承载（按打开态 sessionId 重挂，高于 PositionStack/多栏返回栈，低于看图与登录浮层）
+                if (editorHost.isVisible) {
+                    key(editorHost.sessionId) { BackHandler(enabled = true, onBack = editorHost.handleBack) }
+                    if (!editorHost.isInRightPane) editorHost.renderInPlacement(editorHost.placement, windowDpSize.width.value)
                 }
 
                 // 兜底拦截：在看图浮层自持 BackHandler 之前注册；真实 E14 浮层在退场动画结束前全程保持启用吞掉重复返回（V-E14 probeM3b / R-E-slots S3）
