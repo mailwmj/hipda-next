@@ -2,48 +2,23 @@ package net.jejer.hipda.feature.messages
 
 import androidx.compose.runtime.Immutable
 import net.jejer.hipda.emoji.EmojiMap
+import net.jejer.hipda.feature.common.SafeLinkPolicy
 import net.jejer.hipda.parser.common.DiscuzTextDecoder
 import net.jejer.hipda.parser.threaddetail.ThreadDetailParser
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 
-private val MAILTO_ADDRESS_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$")
 private val PLAIN_HTTP_URL_REGEX = Regex("""https?://[^\s<>"'\]\[(){}\u3000-\u303F\uFF00-\uFFEF]+""", RegexOption.IGNORE_CASE)
 private val COLLAPSE_SPACE_REGEX = Regex("\\s+")
 private val SORTED_EMOJI_CODES: List<String> by lazy { EmojiMap.groups.flatMap { it.codes }.distinct().sortedByDescending { it.length } }
 
-/**
- * 短消息链接严格 scheme 白名单（渲染层与点击层共用）：仅放行 `http`、`https` 与经校验的 `mailto:<email>`；
- * 拒绝 `javascript:`、`intent:`、`file:`、`content:`、`data:`、大小写/空白/控制字符/零宽字符绕过及相对路径。
- */
-fun sanitizeMessageLinkUrl(rawUrl: String?): String? {
-    if (rawUrl.isNullOrEmpty() || hasDisallowedUrlChar(rawUrl)) return null
-    if (rawUrl.startsWith("mailto:", ignoreCase = true)) {
-        val addr = rawUrl.substring(7)
-        val at = addr.indexOf('@')
-        val valid = addr.isNotEmpty() && !addr.contains("..") && at > 0 && at == addr.lastIndexOf('@') &&
-            !addr.startsWith('.') && addr[at - 1] != '.' && MAILTO_ADDRESS_REGEX.matches(addr)
-        return if (valid) "mailto:$addr" else null
-    }
-    return sanitizeHttpOrHttpsUrl(rawUrl)
-}
+/** 短消息链接严格 scheme 白名单（委托统一 [SafeLinkPolicy.sanitizeLinkUrl]）。 */
+fun sanitizeMessageLinkUrl(rawUrl: String?): String? = SafeLinkPolicy.sanitizeLinkUrl(rawUrl)
 
-/** 短消息图片与头像 URL 严格 scheme 白名单：仅放行 `http` 与 `https`（明确拒绝 `mailto:` 及全部危险 scheme）。 */
-fun sanitizeMessageImageUrl(rawUrl: String?): String? =
-    if (rawUrl.isNullOrEmpty() || hasDisallowedUrlChar(rawUrl)) null else sanitizeHttpOrHttpsUrl(rawUrl)
-
-private fun sanitizeHttpOrHttpsUrl(rawUrl: String): String? {
-    if (!rawUrl.startsWith("http://", ignoreCase = true) && !rawUrl.startsWith("https://", ignoreCase = true)) return null
-    val parsed = rawUrl.toHttpUrlOrNull() ?: return null
-    return if ((parsed.scheme == "http" || parsed.scheme == "https") && parsed.host.isNotBlank()) parsed.toString() else null
-}
-
-private fun hasDisallowedUrlChar(url: String): Boolean = url.any { ch ->
-    ch.isISOControl() || ch.isWhitespace() || Character.isSpaceChar(ch) || ch == '\u200B' || ch == '\uFEFF'
-}
+/** 短消息图片与头像 URL 严格 scheme 白名单（委托统一 [SafeLinkPolicy.sanitizeHttpUrl]）。 */
+fun sanitizeMessageImageUrl(rawUrl: String?): String? = SafeLinkPolicy.sanitizeHttpUrl(rawUrl)
 
 @Immutable
 sealed interface SmsTextPart {

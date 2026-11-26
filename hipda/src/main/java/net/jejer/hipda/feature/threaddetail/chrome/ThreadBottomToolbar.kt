@@ -41,9 +41,8 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import java.net.URI
-import java.util.Locale
 import net.jejer.hipda.R
+import net.jejer.hipda.feature.common.SafeLinkPolicy
 import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
@@ -70,7 +69,6 @@ private val ToolbarHorizontalMargin: Dp = 16.dp
 private val ToolbarSegmentGap: Dp = 8.dp
 private val ToolbarCollapsedMaxWidth: Dp = 560.dp
 private val RightCapsuleWidth: Dp = 96.dp
-private val ControlOrWhitespaceRegex = Regex("[\\u0000-\\u001F\\u007F\\s]")
 private const val PROGRESS_FILL_LIGHT_ALPHA: Float = 0.48f
 private const val PROGRESS_FILL_DARK_ALPHA: Float = 0.44f
 
@@ -88,17 +86,8 @@ fun resolveProgressCapsuleColors(colorScheme: ColorScheme, darkTheme: Boolean): 
     return ProgressCapsuleColors(colorScheme.primaryContainer.copy(alpha = fillAlpha), colorScheme.onSurface)
 }
 
-/** 外部链接 scheme 安全白名单（`DISPATCH.md` §4）：仅允许带有效 host 且无控制/空白字符的 `http`/`https` URL。 */
-fun sanitizeExternalHttpUrl(rawUrl: String?): String? {
-    val candidate = rawUrl?.trim() ?: return null
-    if (candidate.isEmpty() || ControlOrWhitespaceRegex.containsMatchIn(candidate)) return null
-    val uri = runCatching { URI(candidate) }.getOrNull() ?: return null
-    val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: return null
-    if (scheme != "http" && scheme != "https") return null
-    val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
-    if (!uri.rawUserInfo.isNullOrEmpty() || uri.rawAuthority.isNullOrBlank() || host.contains('@')) return null
-    return uri.toASCIIString()
-}
+/** 外部链接 scheme 安全白名单（`DISPATCH.md` §4）：委托至 [SafeLinkPolicy.sanitizeHttpUrl]，仅允许无 `rawUserInfo` 的 `http`/`https` URL。 */
+fun sanitizeExternalHttpUrl(rawUrl: String?): String? = SafeLinkPolicy.sanitizeHttpUrl(rawUrl)
 
 /** 根据论坛服务器地址、帖子 `tid` 与当前页码构造经 [sanitizeExternalHttpUrl] 校验的帖子链接。 */
 fun buildSafeThreadUrl(forumServer: String, tid: String, page: Int = 1): String? {
