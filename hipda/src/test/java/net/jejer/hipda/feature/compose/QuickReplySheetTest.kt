@@ -775,4 +775,151 @@ class QuickReplySheetTest {
         assertFalse("把手上拉展开全屏不得开启图片选择器", handoffs.single().openImagePickerImmediately)
         assertTrue("展开全屏不得重弹已保存草稿", snackbars.events.none { it.message == "已保存草稿" })
     }
+
+    /**
+     * R-E5 第 2 轮阻断 `B1-R2` 回归测试（修复前必红）：
+     * 覆盖弹簧动画运行期（`offsetYPx.isRunning == true`）单批轻扫收起 / 回弹 / 上拉展开，
+     * 以及退场动画中再拖拽、展开动画中按系统返回，全部断言最终到达确定终态且不卡死在 `Dismissing`/`Expanding`。
+     */
+    @Test
+    fun midSpringSingleBatchGestures_andExitExpandInterrupts_neverDeadlockSheet() {
+        val tid = "2606010"
+        val postRepo = FakePostRepository()
+        val authRepo = FakeQuickReplyAuthRepository()
+        val qrVm = QuickReplyViewModel(postRepo, authRepo, clockMs = { 10_000L })
+        val detailVm = ThreadDetailViewModel(FakeComposeThreadDetailRepository(totalPages = 1), createIdleComposeGateway(), authRepo)
+        val snackbars = RecordingPaneSnackbarController()
+        val handoffs = mutableListOf<FullEditorHandoff>()
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            CompositionLocalProvider(LocalPaneSnackbarController provides snackbars) {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        ThreadDetailPane(
+                            args = ThreadNavArgs(tid = tid, title = "弹簧中断与状态机终态测试", fid = 2, author = "linus_hi"),
+                            chromeSpec = DetailChromeSpec(showBack = true),
+                            onBack = {},
+                            onOpenLogin = {},
+                            viewModel = detailVm,
+                            quickReplyViewModel = qrVm,
+                            onExpandToFullEditor = { handoffs += it },
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        val density = composeRule.density
+
+        // 1. 入场弹簧进行中（32ms，offsetYPx.isRunning == true）单批下拉 120dp -> 必须顺利收起而非卡死在 Dismissing
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.mainClock.advanceTimeBy(32L)
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(density) { 120.dp.toPx() }), delayMillis = 40L)
+            up()
+        }
+        composeRule.mainClock.autoAdvance = true
+        composeRule.waitForIdle()
+        assertEquals("入场弹簧进行中单批下拉 120dp 必须完成收起，不得卡死在 Dismissing", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+
+        // 2. 回弹弹簧进行中：先慢拉 30dp 松手进入 spatialSnap 回弹，32ms 后单批微拉 24dp 仍回正且返回键可用，再回弹中单批下拉 120dp 必须收起
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(density) { 30.dp.toPx() }), delayMillis = 240L)
+            advanceEventTime(120L)
+            up()
+        }
+        composeRule.mainClock.advanceTimeBy(32L)
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(density) { 24.dp.toPx() }), delayMillis = 240L)
+            advanceEventTime(120L)
+            up()
+        }
+        composeRule.mainClock.autoAdvance = true
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed()
+
+        // 回弹弹簧进行中单批下拉 120dp -> 必须完成收起
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(density) { 30.dp.toPx() }), delayMillis = 240L)
+            advanceEventTime(120L)
+            up()
+        }
+        composeRule.mainClock.advanceTimeBy(32L)
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(density) { 120.dp.toPx() }), delayMillis = 40L)
+            up()
+        }
+        composeRule.mainClock.autoAdvance = true
+        composeRule.waitForIdle()
+        assertEquals("回弹弹簧进行中单批下拉 120dp 必须完成收起", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+
+        // 3. 回弹弹簧进行中（offsetYPx.isRunning == true）单批把手上拉 -90dp -> 必须完成展开全屏并回调 handoff，不得卡死在 Expanding
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(density) { 28.dp.toPx() }), delayMillis = 240L)
+            advanceEventTime(120L)
+            up()
+        }
+        composeRule.mainClock.advanceTimeBy(32L)
+        composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, with(density) { -90.dp.toPx() }), delayMillis = 40L)
+            up()
+        }
+        composeRule.mainClock.autoAdvance = true
+        composeRule.waitForIdle()
+        assertEquals("回弹弹簧进行中单批上拉展开必须交付 handoff", 1, handoffs.size)
+        assertEquals("回弹弹簧进行中单批上拉展开后必须卸载面板", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+
+        // 4. 退场动画进行中（32ms）再次拖拽把手 -> 必须到达已关闭终态且不卡死，重开后返回键仍正常
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithContentDescription("收起回复面板").performClick()
+        composeRule.mainClock.advanceTimeBy(32L)
+        if (composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().isNotEmpty()) {
+            composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                down(center)
+                moveBy(Offset(0f, with(density) { -40.dp.toPx() }), delayMillis = 40L)
+                up()
+            }
+        }
+        composeRule.mainClock.autoAdvance = true
+        composeRule.waitForIdle()
+        assertEquals("退场动画进行中再次拖拽必须完成关闭", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+
+        // 5. 展开动画进行中（32ms）按系统返回 -> 必须正常完成展开终态并卸载面板，不卡死
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.mainClock.advanceTimeBy(32L)
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.mainClock.autoAdvance = true
+        composeRule.waitForIdle()
+        assertEquals("展开动画进行中按返回必须正常交付 handoff 终态", 2, handoffs.size)
+        assertEquals("展开动画进行中按返回后必须卸载面板", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+
+        // 最终复验：再次打开面板后系统返回与点击收起均保持完全可用
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertEquals("连续中断场景后再次打开并按返回必须正常关闭", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+    }
 }

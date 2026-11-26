@@ -1,24 +1,15 @@
 package net.jejer.hipda.feature.compose
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.LocalIndication
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.DraggableState
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.*
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Face
 import androidx.compose.material3.*
@@ -26,50 +17,27 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.*
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.PathBuilder
-import androidx.compose.ui.graphics.vector.path
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.graphics.vector.*
+import androidx.compose.ui.input.nestedscroll.*
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.*
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Velocity
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.text.BreakIterator
 import kotlin.math.min
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import net.jejer.hipda.R
-import net.jejer.hipda.feature.common.LocalPaneSnackbarController
-import net.jejer.hipda.feature.common.PaneSnackbarTarget
-import net.jejer.hipda.feature.common.UiErrorAction
-import net.jejer.hipda.ui.designsystem.HiCappedFontScale
-import net.jejer.hipda.ui.designsystem.HiShapeTokens
-import net.jejer.hipda.ui.designsystem.HiTheme
-import net.jejer.hipda.ui.designsystem.feedback.HiIconSwitch
-import net.jejer.hipda.ui.designsystem.feedback.HiRollingNumber
-import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
-import net.jejer.hipda.ui.designsystem.glass.HiGlassState
-import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
-import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
-import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
+import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.ui.designsystem.*
+import net.jejer.hipda.ui.designsystem.feedback.*
+import net.jejer.hipda.ui.designsystem.glass.*
 import net.jejer.hipda.ui.designsystem.motion.*
 import net.jejer.hipda.ui.designsystem.state.HiLoadingSpinner
 
@@ -112,7 +80,79 @@ fun calculateEmojiPanelHeight(lastKeyboardHeightDp: Dp, windowHeightDp: Dp): Dp 
 }
 
 private enum class SheetMotionPhase { Entering, Open, Dismissing, Expanding }
-private enum class QuickReplySlot { Guest, Handle, Context, Draft, Input, Error, BottomBar, CompactRow, LiveRegion }
+
+/** 纯函数计算的面板各槽位显隐与锁定像素高度计划（R-E5 B1 / 第 2 轮精简：标准 `Column` 零 `SubcomposeLayout`）。 */
+@Immutable
+internal data class SheetSlotPlan(
+    val useCompactRow: Boolean = false,
+    val showHandle: Boolean = false,
+    val showContext: Boolean = false,
+    val showExpandInContext: Boolean = false,
+    val expandInBottomBar: Boolean = false,
+    val showDraft: Boolean = false,
+    val showErrorInline: Boolean = false,
+    val shedErrorToSnackbar: Boolean = false,
+    val topSpacerDp: Dp = 0.dp,
+    val contextHeightDp: Dp = 28.dp,
+    val draftHeightDp: Dp = 56.dp,
+    val errorHeightDp: Dp = 48.dp,
+    val bottomBarHeightDp: Dp = 60.dp,
+    val inputMinHeightDp: Dp = 0.dp,
+    val inputMaxHeightDp: Dp = 0.dp,
+    val compactVerticalPaddingDp: Dp = 0.dp,
+    val compactRowMaxHeightDp: Dp = 0.dp,
+)
+
+internal fun resolveSheetSlotPlan(
+    density: Density, maxSheetHeightDp: Dp, isLoggedIn: Boolean, isCompactShortScreen: Boolean,
+    canExpandToFullEditor: Boolean, hasDraftBanner: Boolean, hasInlineError: Boolean, inlineErrorHasAction: Boolean,
+    bottomBarBottomPaddingDp: Dp, oneLineBodyPx: Int, ctxLinePx: Int, smallLinePx: Int,
+): SheetSlotPlan = with(density) {
+    val maxH = maxSheetHeightDp.roundToPx().coerceAtLeast(0)
+    val touch48Px = 48.dp.roundToPx()
+    val handlePx = QuickReplyHandleHeight.roundToPx()
+    val slimCtxPx = maxOf(28.dp.roundToPx(), ctxLinePx)
+    val fullCtxPx = maxOf(touch48Px, ctxLinePx)
+    val draftPx = maxOf(touch48Px, smallLinePx) + 8.dp.roundToPx()
+    val errorPx = if (inlineErrorHasAction) maxOf(touch48Px, smallLinePx) else (smallLinePx + 8.dp.roundToPx())
+    val bottomBarPx = touch48Px + 4.dp.roundToPx() + bottomBarBottomPaddingDp.roundToPx()
+    val minStandardInputPx = oneLineBodyPx + 30.dp.roundToPx()
+    val preferredStandardInputPx = maxOf(minStandardInputPx, 72.dp.roundToPx())
+    val compactMinContentPx = maxOf(touch48Px, oneLineBodyPx + 14.dp.roundToPx())
+    val topPadPx = 6.dp.roundToPx()
+
+    if (!isLoggedIn) {
+        val guestPx = touch48Px + 12.dp.roundToPx() + if (isCompactShortScreen) 0 else bottomBarBottomPaddingDp.roundToPx()
+        var rem = (maxH - guestPx).coerceAtLeast(0)
+        val showCtx = rem >= slimCtxPx; if (showCtx) rem -= slimCtxPx
+        return SheetSlotPlan(showHandle = !isCompactShortScreen && rem >= handlePx, showContext = showCtx, contextHeightDp = slimCtxPx.toDp())
+    }
+
+    val twoRowFitsBase = maxH >= bottomBarPx + minStandardInputPx + topPadPx
+    val twoRowFitsError = !hasInlineError || maxH >= bottomBarPx + minStandardInputPx + errorPx + topPadPx
+    val compactFitsError = !hasInlineError || maxH >= compactMinContentPx + errorPx
+    val useCompact = !twoRowFitsBase || (hasInlineError && !twoRowFitsError && compactFitsError)
+    val compactVPadPx = if (useCompact) ((maxH - compactMinContentPx - if (hasInlineError && compactFitsError) errorPx else 0).coerceAtLeast(0) / 2).coerceAtMost(6.dp.roundToPx()) else 0
+    var rem = (maxH - if (useCompact) (compactMinContentPx + compactVPadPx * 2) else (bottomBarPx + minStandardInputPx)).coerceAtLeast(0)
+    val showErr = hasInlineError && rem >= errorPx; if (showErr) rem -= errorPx
+    val showFullCtx = !useCompact && canExpandToFullEditor && rem >= fullCtxPx
+    val showCtx = showFullCtx || rem >= slimCtxPx
+    val ctxH = if (showFullCtx) fullCtxPx else slimCtxPx; if (showCtx) rem -= ctxH
+    val showDraft = hasDraftBanner && !isCompactShortScreen && rem >= draftPx; if (showDraft) rem -= draftPx
+    val showHandle = !isCompactShortScreen && rem >= handlePx; if (showHandle) rem -= handlePx
+    val topSpacerPx = if (!useCompact && !showHandle && !showCtx && !showDraft) minOf(topPadPx, rem) else 0
+    val chromePx = (if (showHandle) handlePx else 0) + (if (showCtx) ctxH else 0) + (if (showDraft) draftPx else 0) + (if (showErr) errorPx else 0)
+    val inputMaxPx = if (useCompact) 0 else (maxH - chromePx - topSpacerPx - bottomBarPx).coerceAtLeast(minStandardInputPx.coerceAtMost(maxH))
+    SheetSlotPlan(
+        useCompactRow = useCompact, showHandle = showHandle, showContext = showCtx, showExpandInContext = showFullCtx,
+        expandInBottomBar = !useCompact && canExpandToFullEditor && !showFullCtx, showDraft = showDraft,
+        showErrorInline = showErr, shedErrorToSnackbar = hasInlineError && !showErr, topSpacerDp = topSpacerPx.toDp(),
+        contextHeightDp = ctxH.toDp(), draftHeightDp = draftPx.toDp(), errorHeightDp = errorPx.toDp(), bottomBarHeightDp = bottomBarPx.toDp(),
+        inputMinHeightDp = minOf(preferredStandardInputPx, inputMaxPx).toDp(), inputMaxHeightDp = inputMaxPx.toDp(),
+        compactVerticalPaddingDp = compactVPadPx.toDp(),
+        compactRowMaxHeightDp = if (useCompact) (maxH - chromePx).coerceAtLeast(compactMinContentPx.coerceAtMost(maxH)).toDp() else 0.dp,
+    )
+}
 
 /** 代理对与 Emoji 簇安全回删定位：优先按字形簇回退，兜底按 Unicode 码点回退，绝不残留孤立高代理项（R-E5 S1）。 */
 internal fun previousGraphemeOffset(text: CharSequence, cursor: Int): Int {
@@ -198,50 +238,54 @@ fun QuickReplySheet(
         }
     }
 
-    val requestDismiss: (Float) -> Unit = remember(viewModel, keyboardController, focusManager, scope, fallbackHeightPx) {
-        { initialVelocity ->
-            if (phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
-                phase = SheetMotionPhase.Dismissing
-                isEmojiPanelOpen = false
-                keyboardController?.hide()
-                focusManager.clearFocus(force = false)
-                viewModel.onDismissSession(emitSavedSnackbar = true)
-                val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
-                val targetY = measuredSheetHeightPx.coerceAtLeast(fallbackHeightPx)
-                if (latestReducedMotion) {
-                    isDragging = false; dragOffsetYPx = 0f
-                    scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetYPx.snapTo(targetY) }
-                    latestOnDismissFinished()
-                } else {
-                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+    val launchTerminalTransition: (SheetMotionPhase, Float, AnimationSpec<Float>, Float, () -> Unit) -> Unit = remember(scope) {
+        { targetPhase, targetY, spec, velocity, onComplete ->
+            phase = targetPhase
+            isEmojiPanelOpen = false
+            keyboardController?.hide()
+            val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
+            if (latestReducedMotion) {
+                isDragging = false; dragOffsetYPx = 0f
+                scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetYPx.snapTo(targetY) }
+                onComplete()
+            } else {
+                scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    var completed = false
+                    try {
                         offsetYPx.snapTo(startY); isDragging = false; dragOffsetYPx = 0f
-                        offsetYPx.animateTo(targetY, HiMotion.exit(HiMotion.spatialDefault()), initialVelocity.coerceAtLeast(0f))
-                        latestOnDismissFinished()
+                        offsetYPx.animateTo(targetY, spec, velocity)
+                        completed = true
+                    } finally {
+                        isDragging = false; dragOffsetYPx = 0f
+                        if (completed || scope.coroutineContext[Job]?.isActive == true) onComplete()
+                        else phase = SheetMotionPhase.Open
                     }
                 }
             }
         }
     }
 
-    val requestExpandToFullEditor: (Boolean, Float) -> Unit = remember(viewModel, textFieldState, keyboardController, scope, maxUpwardDragPx) {
+    val requestDismiss: (Float) -> Unit = remember(viewModel, focusManager, fallbackHeightPx, launchTerminalTransition) {
+        { initialVelocity ->
+            if (phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
+                focusManager.clearFocus(force = false)
+                viewModel.onDismissSession(emitSavedSnackbar = true)
+                val targetY = measuredSheetHeightPx.coerceAtLeast(fallbackHeightPx)
+                launchTerminalTransition(SheetMotionPhase.Dismissing, targetY, HiMotion.exit(HiMotion.spatialDefault()), initialVelocity.coerceAtLeast(0f)) {
+                    latestOnDismissFinished()
+                }
+            }
+        }
+    }
+
+    val requestExpandToFullEditor: (Boolean, Float) -> Unit = remember(viewModel, textFieldState, maxUpwardDragPx, launchTerminalTransition) {
         { openImagePicker, initialVelocity ->
             val handler = latestOnExpand
             if (handler != null && phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
-                phase = SheetMotionPhase.Expanding
-                isEmojiPanelOpen = false
-                keyboardController?.hide()
-                val text = textFieldState.text.toString()
                 val sel = textFieldState.selection
-                val handoff = viewModel.onHandoffToFullEditor(text, sel.start, sel.end, openImagePicker)
-                val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
-                if (latestReducedMotion) {
-                    isDragging = false; dragOffsetYPx = 0f; handler(handoff); latestOnDismissFinished()
-                } else {
-                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                        offsetYPx.snapTo(startY); isDragging = false; dragOffsetYPx = 0f
-                        offsetYPx.animateTo(-maxUpwardDragPx * 0.5f, HiMotion.spatialDefault(), initialVelocity.coerceAtMost(0f))
-                        handler(handoff); latestOnDismissFinished()
-                    }
+                val handoff = viewModel.onHandoffToFullEditor(textFieldState.text.toString(), sel.start, sel.end, openImagePicker)
+                launchTerminalTransition(SheetMotionPhase.Expanding, -maxUpwardDragPx * 0.5f, HiMotion.spatialDefault(), initialVelocity.coerceAtMost(0f)) {
+                    handler(handoff); latestOnDismissFinished()
                 }
             }
         }
@@ -250,12 +294,15 @@ fun QuickReplySheet(
     val onDragDelta: (Float, Boolean) -> Unit = remember(scope, maxUpwardDragPx, fallbackHeightPx) {
         { deltaY, allowUpwardExpand ->
             if (phase != SheetMotionPhase.Dismissing && phase != SheetMotionPhase.Expanding) {
+                val wasDragging = isDragging
                 val minOffset = if (allowUpwardExpand && latestCanExpand) -maxUpwardDragPx else 0f
                 val maxOffset = measuredSheetHeightPx.coerceAtLeast(fallbackHeightPx)
-                val base = if (isDragging) dragOffsetYPx else offsetYPx.value
+                val base = if (wasDragging) dragOffsetYPx else offsetYPx.value
                 dragOffsetYPx = (base + deltaY).coerceIn(minOffset, maxOffset)
                 isDragging = true
-                if (offsetYPx.isRunning) scope.launch { offsetYPx.stop() }
+                if (!wasDragging && offsetYPx.isRunning) {
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetYPx.stop() }
+                }
             }
         }
     }
@@ -269,8 +316,12 @@ fun QuickReplySheet(
                     allowUpwardExpand && latestCanExpand && (cur <= -expandThresholdPx || (cur < 0f && velocityY <= expandVelocityPx)) ->
                         requestExpandToFullEditor(false, velocityY)
                     else -> scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                        offsetYPx.snapTo(cur); isDragging = false; dragOffsetYPx = 0f
-                        if (latestReducedMotion) offsetYPx.snapTo(0f) else offsetYPx.animateTo(0f, HiMotion.spatialSnap(), velocityY)
+                        try {
+                            offsetYPx.snapTo(cur); isDragging = false; dragOffsetYPx = 0f
+                            if (latestReducedMotion) offsetYPx.snapTo(0f) else offsetYPx.animateTo(0f, HiMotion.spatialSnap(), velocityY)
+                        } finally {
+                            isDragging = false; dragOffsetYPx = 0f
+                        }
                     }
                 }
             }
@@ -316,21 +367,13 @@ fun QuickReplySheet(
     val cs = MaterialTheme.colorScheme
     val context = LocalContext.current
     val snackbarController = LocalPaneSnackbarController.current
-    var isErrorShedToSnackbar by remember { mutableStateOf(false) }
-    LaunchedEffect(uiState.inlineError, isErrorShedToSnackbar) {
-        val err = uiState.inlineError
-        if (err != null && isErrorShedToSnackbar) {
-            val resolved = resolveInlineErrorContent(context, err) ?: return@LaunchedEffect
-            snackbarController.show(
-                message = resolved.first, target = PaneSnackbarTarget.DetailPane, actionLabel = resolved.second,
-                onAction = when (err.uiError?.action) {
-                    UiErrorAction.Login -> onOpenLogin
-                    UiErrorAction.Retry, UiErrorAction.Reverify -> viewModel::submit
-                    null -> null
-                },
-            )
-        }
-    }
+    val textMeasurer = rememberTextMeasurer()
+    val postBodyStyle = HiTheme.typography.postBody
+    val labelLargeStyle = MaterialTheme.typography.labelLarge
+    val bodySmallStyle = MaterialTheme.typography.bodySmall
+    val oneLineBodyPx = remember(postBodyStyle, density) { textMeasurer.measure("测", style = postBodyStyle).size.height }
+    val ctxLinePx = remember(labelLargeStyle, density) { textMeasurer.measure("测", style = labelLargeStyle).size.height }
+    val smallLinePx = remember(bodySmallStyle, density) { textMeasurer.measure("测", style = bodySmallStyle).size.height }
     DisposableEffect(Unit) { onDispose { latestOnOccupiedChanged(0.dp, false) } }
 
     val onToggleEmoji: () -> Unit = {
@@ -349,6 +392,27 @@ fun QuickReplySheet(
         val emojiPanelHeightDp = if (isEmojiPanelOpen && hasEmojiPanel) calculateEmojiPanelHeight(lastObservedImeDp, paneHeightDp) else 0.dp
         val effectiveImeOrEmojiDp = if (isEmojiPanelOpen && hasEmojiPanel) emojiPanelHeightDp else imeBottomDp
         val metrics = calculateQuickReplyLayoutMetrics(paneHeightDp, statusBarTopDp, effectiveImeOrEmojiDp, navBarBottomDp)
+        val outerBottomPadding = if (isEmojiPanelOpen && hasEmojiPanel) 0.dp else imeBottomDp
+        val innerBottomPadding = if (imeBottomDp > 0.dp || (isEmojiPanelOpen && hasEmojiPanel)) 8.dp else (navBarBottomDp + 8.dp)
+        val plan = resolveSheetSlotPlan(
+            density, metrics.maxSheetHeightDp, uiState.isLoggedIn, metrics.isCompactShortScreen, canExpandToFullEditor,
+            uiState.showDraftRestoredBanner, uiState.inlineError != null, uiState.inlineError?.uiError?.action != null,
+            innerBottomPadding, oneLineBodyPx, ctxLinePx, smallLinePx,
+        )
+        LaunchedEffect(uiState.inlineError, plan.shedErrorToSnackbar) {
+            val err = uiState.inlineError
+            if (err != null && plan.shedErrorToSnackbar) {
+                val resolved = resolveInlineErrorContent(context, err) ?: return@LaunchedEffect
+                snackbarController.show(
+                    message = resolved.first, target = PaneSnackbarTarget.DetailPane, actionLabel = resolved.second,
+                    onAction = when (err.uiError?.action) {
+                        UiErrorAction.Login -> onOpenLogin
+                        UiErrorAction.Retry, UiErrorAction.Reverify -> viewModel::submit
+                        null -> null
+                    },
+                )
+            }
+        }
         val totalOccupiedBottomDp = if (phase == SheetMotionPhase.Dismissing) 0.dp else with(density) { measuredSheetHeightPx.toDp() } + effectiveImeOrEmojiDp
         LaunchedEffect(totalOccupiedBottomDp, metrics.shouldLiftUnderlyingList) {
             latestOnOccupiedChanged(totalOccupiedBottomDp, metrics.shouldLiftUnderlyingList)
@@ -361,9 +425,9 @@ fun QuickReplySheet(
                 .background(cs.scrim.copy(alpha = HiGlassTokens.SheetScrimAlpha * (1f - dismissProgress)))
                 .clickable(remember { MutableInteractionSource() }, indication = null) { requestDismiss(0f) },
         )
-
-        val outerBottomPadding = if (isEmojiPanelOpen && hasEmojiPanel) 0.dp else imeBottomDp
-        val innerBottomPadding = if (imeBottomDp > 0.dp || (isEmojiPanelOpen && hasEmojiPanel)) 8.dp else (navBarBottomDp + 8.dp)
+        if (!plan.showContext) {
+            Box(Modifier.size(1.dp).semantics { liveRegion = LiveRegionMode.Polite; stateDescription = contextLabel })
+        }
 
         Column(
             modifier = Modifier
@@ -377,37 +441,42 @@ fun QuickReplySheet(
                 modifier = Modifier.fillMaxWidth().heightIn(max = metrics.maxSheetHeightDp)
                     .onSizeChanged { if (it.height > 0) measuredSheetHeightPx = it.height.toFloat() },
             ) {
-                QuickReplyAdaptiveSheetLayout(
-                    isLoggedIn = uiState.isLoggedIn, isCompactShortScreen = metrics.isCompactShortScreen,
-                    canExpandToFullEditor = canExpandToFullEditor, hasDraftBanner = uiState.showDraftRestoredBanner,
-                    hasInlineError = uiState.inlineError != null, inlineErrorHasAction = uiState.inlineError?.uiError?.action != null,
-                    bottomBarBottomPadding = innerBottomPadding,
-                    onErrorShedChanged = { shed -> if (isErrorShedToSnackbar != shed) isErrorShedToSnackbar = shed },
-                    dragHandle = { QuickReplyDragHandle(collapseCd, headerDragState, { onDragSettled(it, true) }) { requestDismiss(0f) } },
-                    contextRow = { showExpand -> QuickReplyContextRow(contextLabel, showExpand, headerDragState, { onDragSettled(it, true) }) { requestExpandToFullEditor(false, 0f) } },
-                    draftBanner = { QuickReplyDraftRestoredBanner(viewModel::clearRestoredDraft) },
-                    inputBox = { QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 44.dp, 10.dp, inputNestedScroll, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) },
-                    inlineErrorStrip = { compact -> uiState.inlineError?.let { QuickReplyInlineErrorStrip(it, compact, viewModel::submit, onOpenLogin) } },
-                    bottomActionBar = { includeExpand ->
-                        QuickReplyBottomActionBar(
-                            includeExpand && canExpandToFullEditor, canExpandToFullEditor, hasEmojiPanel, isEmojiPanelOpen,
-                            uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, innerBottomPadding,
-                            { requestExpandToFullEditor(false, 0f) }, { requestExpandToFullEditor(true, 0f) }, onToggleEmoji, viewModel::submit,
-                        )
-                    },
-                    compactRow = { vPad ->
-                        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = vPad, bottom = vPad), verticalAlignment = Alignment.CenterVertically) {
-                            QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 40.dp, 6.dp, inputNestedScroll, Modifier.weight(1f))
-                            if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.InsertImage, stringResource(R.string.compose_action_insert_image)) { requestExpandToFullEditor(true, 0f) }
-                            if (hasEmojiPanel) QuickReplyEmojiToggleButton(isEmojiPanelOpen, onToggleEmoji)
-                            if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen)) { requestExpandToFullEditor(false, 0f) }
-                            Spacer(Modifier.width(4.dp))
-                            QuickReplySendButton(uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, viewModel::submit)
+                Column(Modifier.fillMaxWidth()) {
+                    if (plan.showHandle) QuickReplyDragHandle(collapseCd, headerDragState, { onDragSettled(it, true) }) { requestDismiss(0f) }
+                    if (plan.showContext) QuickReplyContextRow(contextLabel, plan.showExpandInContext, plan.contextHeightDp, headerDragState, { onDragSettled(it, true) }) { requestExpandToFullEditor(false, 0f) }
+                    if (plan.showDraft) QuickReplyDraftRestoredBanner(plan.draftHeightDp, viewModel::clearRestoredDraft)
+                    when {
+                        !uiState.isLoggedIn -> QuickReplyGuestPrompt(metrics.isCompactShortScreen, innerBottomPadding, onOpenLogin)
+                        plan.useCompactRow -> {
+                            if (plan.showErrorInline) uiState.inlineError?.let { QuickReplyInlineErrorStrip(it, compact = true, plan.errorHeightDp, viewModel::submit, onOpenLogin) }
+                            Row(
+                                Modifier.fillMaxWidth().heightIn(max = plan.compactRowMaxHeightDp)
+                                    .padding(start = 8.dp, end = 8.dp, top = plan.compactVerticalPaddingDp, bottom = plan.compactVerticalPaddingDp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 40.dp, 6.dp, inputNestedScroll, Modifier.weight(1f))
+                                if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.InsertImage, stringResource(R.string.compose_action_insert_image)) { requestExpandToFullEditor(true, 0f) }
+                                if (hasEmojiPanel) QuickReplyEmojiToggleButton(isEmojiPanelOpen, onToggleEmoji)
+                                if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen)) { requestExpandToFullEditor(false, 0f) }
+                                Spacer(Modifier.width(4.dp))
+                                QuickReplySendButton(uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, viewModel::submit)
+                            }
                         }
-                    },
-                    guestPrompt = { compact -> QuickReplyGuestPrompt(compact, innerBottomPadding, onOpenLogin) },
-                    liveRegionFallback = { Box(Modifier.size(1.dp).semantics { liveRegion = LiveRegionMode.Polite; stateDescription = contextLabel }) },
-                )
+                        else -> {
+                            if (plan.topSpacerDp > 0.dp) Spacer(Modifier.height(plan.topSpacerDp))
+                            QuickReplyInputBox(
+                                textFieldState, inputScrollState, contextLabel, inputFocusRequester, 44.dp, 10.dp, inputNestedScroll,
+                                Modifier.fillMaxWidth().heightIn(min = plan.inputMinHeightDp, max = plan.inputMaxHeightDp).padding(horizontal = 16.dp, vertical = 4.dp),
+                            )
+                            if (plan.showErrorInline) uiState.inlineError?.let { QuickReplyInlineErrorStrip(it, compact = false, plan.errorHeightDp, viewModel::submit, onOpenLogin) }
+                            QuickReplyBottomActionBar(
+                                plan.expandInBottomBar, canExpandToFullEditor, hasEmojiPanel, isEmojiPanelOpen,
+                                uiState.isSubmitting, uiState.cooldownSeconds, uiState.canSend, innerBottomPadding, plan.bottomBarHeightDp,
+                                { requestExpandToFullEditor(false, 0f) }, { requestExpandToFullEditor(true, 0f) }, onToggleEmoji, viewModel::submit,
+                            )
+                        }
+                    }
+                }
             }
             if (isEmojiPanelOpen && effectiveEmojiSlot != null) {
                 val emojiHost = remember(emojiPanelHeightDp, paneHeightDp, textFieldState, keyboardController) {
@@ -427,105 +496,6 @@ fun QuickReplySheet(
                 Box(Modifier.fillMaxWidth().height(emojiPanelHeightDp).background(cs.surfaceContainerLow)) { effectiveEmojiSlot(emojiHost) }
             }
         }
-    }
-}
-
-/** 基于真实测量剩余高度的优先级自适应布局（`SubcomposeLayout`），先预算后单次 subcompose 杜绝残留语义与裁切（R-E5 B1）。 */
-@Composable
-private fun QuickReplyAdaptiveSheetLayout(
-    isLoggedIn: Boolean, isCompactShortScreen: Boolean, canExpandToFullEditor: Boolean,
-    hasDraftBanner: Boolean, hasInlineError: Boolean, inlineErrorHasAction: Boolean, bottomBarBottomPadding: Dp,
-    onErrorShedChanged: (Boolean) -> Unit,
-    dragHandle: @Composable () -> Unit, contextRow: @Composable (Boolean) -> Unit, draftBanner: @Composable () -> Unit,
-    inputBox: @Composable () -> Unit, inlineErrorStrip: @Composable (Boolean) -> Unit,
-    bottomActionBar: @Composable (Boolean) -> Unit, compactRow: @Composable (Dp) -> Unit,
-    guestPrompt: @Composable (Boolean) -> Unit, liveRegionFallback: @Composable () -> Unit,
-) {
-    val textMeasurer = rememberTextMeasurer()
-    val postBodyStyle = HiTheme.typography.postBody
-    val labelLargeStyle = MaterialTheme.typography.labelLarge
-    val bodySmallStyle = MaterialTheme.typography.bodySmall
-    val density = LocalDensity.current
-    val oneLineBodyPx = remember(postBodyStyle, density) { textMeasurer.measure("测", style = postBodyStyle).size.height }
-    val ctxLinePx = remember(labelLargeStyle, density) { textMeasurer.measure("测", style = labelLargeStyle).size.height }
-    val smallLinePx = remember(bodySmallStyle, density) { textMeasurer.measure("测", style = bodySmallStyle).size.height }
-
-    SubcomposeLayout(Modifier.fillMaxWidth()) { constraints ->
-        val maxW = constraints.maxWidth
-        val maxH = if (constraints.hasBoundedHeight) constraints.maxHeight else QuickReplyMaxHeight.roundToPx()
-        val loose = Constraints(minWidth = maxW, maxWidth = maxW, minHeight = 0, maxHeight = Constraints.Infinity)
-        val textStyles = Triple(oneLineBodyPx, ctxLinePx, smallLinePx)
-        val touch48Px = 48.dp.roundToPx()
-        val handleEstPx = QuickReplyHandleHeight.roundToPx()
-        val slimCtxEstPx = maxOf(28.dp.roundToPx(), textStyles.second)
-        val fullCtxEstPx = maxOf(touch48Px, textStyles.second)
-        val draftEstPx = maxOf(touch48Px, textStyles.third) + 8.dp.roundToPx()
-        val errorEstPx = if (inlineErrorHasAction) maxOf(touch48Px, textStyles.third) else (textStyles.third + 8.dp.roundToPx())
-        val bottomBarEstPx = touch48Px + 4.dp.roundToPx() + bottomBarBottomPadding.roundToPx()
-        val minStandardInputPx = textStyles.first + 30.dp.roundToPx()
-        val preferredStandardInputPx = maxOf(minStandardInputPx, 72.dp.roundToPx())
-        val compactMinContentPx = maxOf(touch48Px, textStyles.first + 14.dp.roundToPx())
-        val topPadPx = 6.dp.roundToPx()
-
-        fun measureSlot(slot: QuickReplySlot, c: Constraints = loose, content: @Composable () -> Unit) = subcompose(slot, content).map { it.measure(c) }
-        fun List<androidx.compose.ui.layout.Placeable>.totalHeight(): Int = sumOf { it.height }
-        fun placeVertically(totalH: Int, live: List<androidx.compose.ui.layout.Placeable>, vararg rows: Pair<Int, List<androidx.compose.ui.layout.Placeable>>) =
-            layout(maxW, totalH.coerceAtMost(maxH)) {
-                live.forEach { it.placeRelative(0, 0) }
-                var y = 0
-                rows.forEach { (gap, list) -> y += gap; list.forEach { it.placeRelative(0, y); y += it.height } }
-            }
-        fun measureDraftAndHandle(remIn: Int): Triple<List<androidx.compose.ui.layout.Placeable>, List<androidx.compose.ui.layout.Placeable>, Int> {
-            var r = remIn
-            val draft = if (hasDraftBanner && !isCompactShortScreen && r >= draftEstPx) measureSlot(QuickReplySlot.Draft, content = draftBanner) else emptyList()
-            r = (r - draft.totalHeight()).coerceAtLeast(0)
-            val handle = if (!isCompactShortScreen && r >= handleEstPx) measureSlot(QuickReplySlot.Handle, content = dragHandle) else emptyList()
-            return Triple(draft, handle, (r - handle.totalHeight()).coerceAtLeast(0))
-        }
-
-        if (!isLoggedIn) {
-            val guest = measureSlot(QuickReplySlot.Guest, Constraints(maxW, maxW, 0, maxH)) { guestPrompt(isCompactShortScreen) }
-            var rem = (maxH - guest.totalHeight()).coerceAtLeast(0)
-            val ctx = if (rem >= slimCtxEstPx) measureSlot(QuickReplySlot.Context) { contextRow(false) } else emptyList()
-            rem = (rem - ctx.totalHeight()).coerceAtLeast(0)
-            val handle = if (!isCompactShortScreen && rem >= handleEstPx) measureSlot(QuickReplySlot.Handle, content = dragHandle) else emptyList()
-            val live = if (ctx.isEmpty()) measureSlot(QuickReplySlot.LiveRegion, Constraints.fixed(1, 1), liveRegionFallback) else emptyList()
-            onErrorShedChanged(false)
-            return@SubcomposeLayout placeVertically(handle.totalHeight() + ctx.totalHeight() + guest.totalHeight(), live, 0 to handle, 0 to ctx, 0 to guest)
-        }
-
-        val twoRowFitsBase = maxH >= bottomBarEstPx + minStandardInputPx + topPadPx
-        val twoRowFitsError = !hasInlineError || maxH >= bottomBarEstPx + minStandardInputPx + errorEstPx + topPadPx
-        val compactFitsError = !hasInlineError || maxH >= compactMinContentPx + errorEstPx
-        if (!twoRowFitsBase || (hasInlineError && !twoRowFitsError && compactFitsError)) {
-            val compactVPad = ((maxH - compactMinContentPx - if (hasInlineError && compactFitsError) errorEstPx else 0).coerceAtLeast(0) / 2).coerceAtMost(6.dp.roundToPx())
-            var rem = (maxH - compactMinContentPx - compactVPad * 2).coerceAtLeast(0)
-            val placedError = if (hasInlineError && rem >= errorEstPx) measureSlot(QuickReplySlot.Error) { inlineErrorStrip(true) } else emptyList()
-            rem = (rem - placedError.totalHeight()).coerceAtLeast(0)
-            val placedCtx = if (rem >= slimCtxEstPx) measureSlot(QuickReplySlot.Context) { contextRow(false) } else emptyList()
-            val (placedDraft, placedHandle, _) = measureDraftAndHandle((rem - placedCtx.totalHeight()).coerceAtLeast(0))
-            val usedH = placedHandle.totalHeight() + placedCtx.totalHeight() + placedDraft.totalHeight() + placedError.totalHeight()
-            val placedCompact = measureSlot(QuickReplySlot.CompactRow, Constraints(maxW, maxW, 0, (maxH - usedH).coerceAtLeast(compactMinContentPx.coerceAtMost(maxH)))) { compactRow(compactVPad.toDp()) }
-            val live = if (placedCtx.isEmpty()) measureSlot(QuickReplySlot.LiveRegion, Constraints.fixed(1, 1), liveRegionFallback) else emptyList()
-            onErrorShedChanged(hasInlineError && placedError.isEmpty())
-            return@SubcomposeLayout placeVertically(usedH + placedCompact.totalHeight(), live, 0 to placedHandle, 0 to placedCtx, 0 to placedDraft, 0 to placedError, 0 to placedCompact)
-        }
-
-        var rem = (maxH - bottomBarEstPx - minStandardInputPx).coerceAtLeast(0)
-        val placedError = if (hasInlineError && rem >= errorEstPx) measureSlot(QuickReplySlot.Error) { inlineErrorStrip(false) } else emptyList()
-        rem = (rem - placedError.totalHeight()).coerceAtLeast(0)
-        val showFullCtx = canExpandToFullEditor && rem >= fullCtxEstPx
-        val placedCtx = if (showFullCtx) measureSlot(QuickReplySlot.Context) { contextRow(true) }
-        else if (rem >= slimCtxEstPx) measureSlot(QuickReplySlot.Context) { contextRow(false) } else emptyList()
-        val (placedDraft, placedHandle, remAfterChrome) = measureDraftAndHandle((rem - placedCtx.totalHeight()).coerceAtLeast(0))
-        val placedBottomBar = measureSlot(QuickReplySlot.BottomBar) { bottomActionBar(canExpandToFullEditor && !showFullCtx) }
-        val topSpacerH = if (placedHandle.isEmpty() && placedCtx.isEmpty() && placedDraft.isEmpty()) minOf(topPadPx, remAfterChrome) else 0
-        val usedNonInputH = placedHandle.totalHeight() + placedCtx.totalHeight() + placedDraft.totalHeight() + topSpacerH + placedError.totalHeight() + placedBottomBar.totalHeight()
-        val inputMaxH = (maxH - usedNonInputH).coerceAtLeast(minStandardInputPx.coerceAtMost(maxH))
-        val placedInput = measureSlot(QuickReplySlot.Input, Constraints(maxW, maxW, minOf(preferredStandardInputPx, inputMaxH), inputMaxH), inputBox)
-        val live = if (placedCtx.isEmpty()) measureSlot(QuickReplySlot.LiveRegion, Constraints.fixed(1, 1), liveRegionFallback) else emptyList()
-        onErrorShedChanged(hasInlineError && placedError.isEmpty())
-        placeVertically(usedNonInputH + placedInput.totalHeight(), live, 0 to placedHandle, 0 to placedCtx, 0 to placedDraft, topSpacerH to placedInput, 0 to placedError, 0 to placedBottomBar)
     }
 }
 
@@ -566,12 +536,12 @@ private fun QuickReplyDragHandle(collapseCd: String, dragState: DraggableState, 
 }
 
 @Composable
-private fun QuickReplyContextRow(contextLabel: String, showExpandButton: Boolean, dragState: DraggableState, onDragStopped: (Float) -> Unit, onExpandClick: () -> Unit) {
+private fun QuickReplyContextRow(contextLabel: String, showExpandButton: Boolean, rowHeight: Dp, dragState: DraggableState, onDragStopped: (Float) -> Unit, onExpandClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     HiCappedFontScale {
         Row(
             Modifier.fillMaxWidth().draggable(dragState, Orientation.Vertical, onDragStopped = { onDragStopped(it) })
-                .heightIn(min = if (showExpandButton) 48.dp else 28.dp).padding(start = 16.dp, end = if (showExpandButton) 4.dp else 16.dp),
+                .height(rowHeight).padding(start = 16.dp, end = if (showExpandButton) 4.dp else 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(contextLabel, style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite })
@@ -581,11 +551,11 @@ private fun QuickReplyContextRow(contextLabel: String, showExpandButton: Boolean
 }
 
 @Composable
-private fun QuickReplyDraftRestoredBanner(onClear: () -> Unit) {
+private fun QuickReplyDraftRestoredBanner(rowHeight: Dp, onClear: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     HiCappedFontScale {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clip(HiShapeTokens.Small)
+            Modifier.fillMaxWidth().height(rowHeight).padding(horizontal = 16.dp, vertical = 4.dp).clip(HiShapeTokens.Small)
                 .background(cs.secondaryContainer.copy(alpha = 0.78f)).padding(start = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -627,12 +597,12 @@ private fun QuickReplyInputBox(
 }
 
 @Composable
-private fun QuickReplyInlineErrorStrip(error: QuickReplyInlineError, compact: Boolean, onRetry: () -> Unit, onOpenLogin: () -> Unit) {
+private fun QuickReplyInlineErrorStrip(error: QuickReplyInlineError, compact: Boolean, rowHeight: Dp, onRetry: () -> Unit, onOpenLogin: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val (message, actionLabel) = resolveInlineErrorContent(LocalContext.current, error) ?: return
     val action = error.uiError?.action
     HiCappedFontScale {
-        Row(Modifier.fillMaxWidth().padding(horizontal = if (compact) 12.dp else 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().height(rowHeight).padding(horizontal = if (compact) 12.dp else 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(message, style = MaterialTheme.typography.bodySmall, color = cs.error, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (actionLabel != null && action != null) {
                 TextButton(onClick = { if (action == UiErrorAction.Login) onOpenLogin() else onRetry() }, shape = HiShapeTokens.Small, modifier = Modifier.defaultMinSize(48.dp, 48.dp)) { Text(actionLabel) }
@@ -661,11 +631,11 @@ private fun QuickReplyGuestPrompt(compact: Boolean, bottomPadding: Dp, onOpenLog
 @Composable
 private fun QuickReplyBottomActionBar(
     showExpand: Boolean, showInsertImage: Boolean, showEmojiToggle: Boolean, isEmojiPanelOpen: Boolean, isSubmitting: Boolean,
-    cooldownSeconds: Int, canSend: Boolean, bottomPadding: Dp,
+    cooldownSeconds: Int, canSend: Boolean, bottomPadding: Dp, rowHeight: Dp,
     onExpandClick: () -> Unit, onInsertImageClick: () -> Unit, onToggleEmojiClick: () -> Unit, onSendClick: () -> Unit,
 ) {
     HiCappedFontScale {
-        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = bottomPadding), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(rowHeight).padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = bottomPadding), verticalAlignment = Alignment.CenterVertically) {
             if (showInsertImage) QuickReplyToolIconButton(ComposeVectorIcons.InsertImage, stringResource(R.string.compose_action_insert_image), onInsertImageClick)
             if (showEmojiToggle) QuickReplyEmojiToggleButton(isEmojiPanelOpen, onToggleEmojiClick)
             if (showExpand) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen), onExpandClick)
