@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
@@ -206,6 +207,13 @@ val HiGlassBlurActive: SemanticsPropertyKey<Boolean> = SemanticsPropertyKey(
     mergePolicy = { parentValue, childValue -> parentValue ?: childValue },
 )
 
+/**
+ * 全局毛玻璃暂停开关：当全屏纯色浮层（如看图）覆盖底层内容时设为 `true`，
+ * 底层全部 [HiGlassSurface] 与 [HiGlassRegion] 停止 `drawBackdrop`、释放 [HiGlassState] 离屏 GPU 采样源需求
+ * 并移除 [HiGlassMarker]，守住同屏 0 玻璃预算且消除不可见离屏拷贝开销。
+ */
+val LocalHiGlassSuspended: ProvidableCompositionLocal<Boolean> = compositionLocalOf { false }
+
 private val LocalInsideHiGlassRegion = staticCompositionLocalOf { false }
 
 /**
@@ -220,9 +228,10 @@ fun HiGlassRegion(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val alreadyInRegion = LocalInsideHiGlassRegion.current
+    val glassSuspended = LocalHiGlassSuspended.current
     Box(
         modifier = modifier.then(
-            if (alreadyInRegion) Modifier else Modifier.semantics { this[HiGlassMarker] = true },
+            if (alreadyInRegion || glassSuspended) Modifier else Modifier.semantics { this[HiGlassMarker] = true },
         ),
         contentAlignment = contentAlignment,
     ) {
@@ -523,7 +532,8 @@ fun HiGlassSurface(
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val darkTheme = HiTheme.state.darkTheme
-    val renderTier = environment.renderTier
+    val glassSuspended = LocalHiGlassSuspended.current
+    val renderTier = if (glassSuspended) GlassRenderTier.SOLID_DEGRADED else environment.renderTier
     val styleSpec = remember(colorScheme, darkTheme, renderTier, floating, surfaceColor, style) {
         resolveHiGlassStyleSpec(
             colorScheme = colorScheme,
@@ -538,7 +548,7 @@ fun HiGlassSurface(
         styleSpec.toBackdropConfig(renderTier)
     }
     val layerBackdrop = state.layerBackdrop
-    val useBackdrop = backdropConfig.backdropEnabled && layerBackdrop != null
+    val useBackdrop = !glassSuspended && backdropConfig.backdropEnabled && layerBackdrop != null
 
     DisposableEffect(state, useBackdrop) {
         if (useBackdrop) {
@@ -616,7 +626,7 @@ fun HiGlassSurface(
     Box(
         modifier = modifier
             .semantics {
-                if (!insideGlassRegion) {
+                if (!insideGlassRegion && !glassSuspended) {
                     this[HiGlassMarker] = true
                 }
                 this[HiGlassBlurActive] = styleSpec.blurEnabled

@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.IntSize
 import kotlin.math.abs
 
 /** 看图手势与几何常量（对齐 `docs/design/product-design.md` §6.3 与 E14 卡片）。 */
@@ -18,7 +19,14 @@ object ImageViewerMotionSpec {
     const val MAX_PINCH_ZOOM_SCALE: Float = 5.0f
     const val ZOOMED_IN_THRESHOLD: Float = 1.01f
     const val EDGE_EPSILON_PX: Float = 1.5f
+    const val MAX_ORIGINAL_DECODE_DIMENSION_PX: Int = 4096
 }
+
+/** 原图经 Coil 解码的安全最大像素边界：按视口 2× 保留缩放清晰度并硬封顶 4096px，防止超大位图触发 Canvas too large（R-E14 S1）。 */
+fun computeOriginalDecodeBounds(viewportWidthPx: Int, viewportHeightPx: Int): IntSize = IntSize(
+    width = (viewportWidthPx.coerceAtLeast(1) * 2).coerceAtMost(ImageViewerMotionSpec.MAX_ORIGINAL_DECODE_DIMENSION_PX),
+    height = (viewportHeightPx.coerceAtLeast(1) * 2).coerceAtMost(ImageViewerMotionSpec.MAX_ORIGINAL_DECODE_DIMENSION_PX),
+)
 
 /** 下拉关闭跟手阶段的瞬时缩放与背景遮罩不透明度。 */
 @Immutable
@@ -26,7 +34,7 @@ data class DragDismissMetrics(val scale: Float, val scrimAlpha: Float)
 
 /** 下拉 `0 → 240dp` 期间：缩放线性 `1.0f → 0.8f`，遮罩线性 `1.0f → 0.3f`；超过 `240dp` 钳制下限。 */
 fun computeDragDismissMetrics(dragOffsetYPx: Float, maxDragPx: Float): DragDismissMetrics {
-    if (maxDragPx <= 0f) return DragDismissMetrics(scale = 1f, scrimAlpha = 1f)
+    if (maxDragPx <= 0f) return DragDismissMetrics(1f, 1f)
     val fraction = (dragOffsetYPx.coerceAtLeast(0f) / maxDragPx).coerceIn(0f, 1f)
     return DragDismissMetrics(
         scale = (1f - (1f - ImageViewerMotionSpec.MIN_DRAG_SCALE) * fraction).coerceIn(ImageViewerMotionSpec.MIN_DRAG_SCALE, 1f),
@@ -43,20 +51,14 @@ fun shouldDismissOnRelease(
 ): Boolean = dragOffsetYPx > dismissDistancePx || velocityYPxPerSec > dismissVelocityPxPerSec
 
 /** 计算静止态图片在全屏容器内的展示边界（长图贴宽满视口，常规图按比例居中 Fit）。 */
-fun computeRestImageRect(
-    containerSize: Size,
-    imageWidth: Int,
-    imageHeight: Int,
-    fallbackBounds: Rect? = null,
-): Rect {
+fun computeRestImageRect(containerSize: Size, imageWidth: Int, imageHeight: Int, fallbackBounds: Rect? = null): Rect {
     val cw = containerSize.width
     val ch = containerSize.height
     if (cw <= 0f || ch <= 0f) return Rect.Zero
     if (isLongImage(imageWidth, imageHeight)) return Rect(0f, 0f, cw, ch)
     val aspectRatio = when {
         imageWidth > 0 && imageHeight > 0 -> imageWidth.toFloat() / imageHeight.toFloat()
-        fallbackBounds != null && fallbackBounds.width > 0f && fallbackBounds.height > 0f ->
-            fallbackBounds.width / fallbackBounds.height
+        fallbackBounds != null && fallbackBounds.width > 0f && fallbackBounds.height > 0f -> fallbackBounds.width / fallbackBounds.height
         else -> return Rect(0f, 0f, cw, ch)
     }
     val (fitW, fitH) = if (cw / ch > aspectRatio) (ch * aspectRatio to ch) else (cw to cw / aspectRatio)
@@ -82,8 +84,7 @@ fun computeDoubleTapZoomTarget(
 ): Pair<Float, Offset> {
     if (currentScale > ImageViewerMotionSpec.ZOOMED_IN_THRESHOLD) return 1f to Offset.Zero
     val targetScale = ImageViewerMotionSpec.DOUBLE_TAP_ZOOM_SCALE
-    val desiredPan = (tapOffset - contentCenter) * (1f - targetScale)
-    return targetScale to clampPanOffset(desiredPan, targetScale, baseContentSize, viewportSize)
+    return targetScale to clampPanOffset((tapOffset - contentCenter) * (1f - targetScale), targetScale, baseContentSize, viewportSize)
 }
 
 /** 计算双指捏合围绕 [centroid] 的新 `(scale, pan)` 并钳制边界。 */
@@ -101,8 +102,7 @@ fun computePinchTransform(
     if (newScale <= 1f) return 1f to Offset.Zero
     val ratio = newScale / currentScale.coerceAtLeast(0.01f)
     val c = centroid - contentCenter
-    val rawPan = (currentPan - c) * ratio + c + panChange
-    return newScale to clampPanOffset(rawPan, newScale, baseContentSize, viewportSize)
+    return newScale to clampPanOffset((currentPan - c) * ratio + c + panChange, newScale, baseContentSize, viewportSize)
 }
 
 /** 放大态水平拖拽是否已抵边缘、应交还 `HorizontalPager` 翻页。 */
