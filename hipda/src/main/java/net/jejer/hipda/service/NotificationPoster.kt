@@ -69,6 +69,18 @@ class AndroidNotificationPoster @Inject constructor(
         )
 
         val accentColor = ContextCompat.getColor(context, R.color.icon_blue)
+        val publicText = if (singleSms != null) {
+            context.getString(R.string.notification_single_sms_body_fallback)
+        } else {
+            content.text
+        }
+        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle(context.getString(R.string.notification_summary_title))
+            .setContentText(publicText)
+            .setSmallIcon(R.drawable.ic_stat_hi)
+            .setColor(accentColor)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(content.title)
             .setContentText(content.text)
@@ -78,6 +90,8 @@ class AndroidNotificationPoster @Inject constructor(
             .setSmallIcon(R.drawable.ic_stat_hi)
             .setColor(accentColor)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
             .build()
 
         try {
@@ -111,6 +125,8 @@ class AndroidNotificationPoster @Inject constructor(
     companion object {
         const val CHANNEL_ID: String = "HIPDA_NOTI"
         const val NOTIFICATION_ID: Int = 0
+        internal const val MAX_SUMMARY_PREVIEW_CHARS: Int = 80
+        private val WHITESPACE_REGEX = Regex("\\s+")
 
         fun formatNotificationContent(
             context: Context,
@@ -126,7 +142,7 @@ class AndroidNotificationPoster @Inject constructor(
                 } else {
                     context.getString(R.string.notification_single_sms_title_fallback)
                 }
-                val text = singleSms.summary.trim().ifEmpty {
+                val text = truncateSummaryPreview(singleSms.summary).ifEmpty {
                     context.getString(R.string.notification_single_sms_body_fallback)
                 }
                 return NotificationDisplayContent(title = title, text = text)
@@ -155,6 +171,12 @@ class AndroidNotificationPoster @Inject constructor(
                 title = context.getString(R.string.notification_summary_title),
                 text = text,
             )
+        }
+
+        private fun truncateSummaryPreview(raw: String): String {
+            val collapsed = raw.trim().replace(WHITESPACE_REGEX, " ")
+            if (collapsed.length <= MAX_SUMMARY_PREVIEW_CHARS) return collapsed
+            return collapsed.take(MAX_SUMMARY_PREVIEW_CHARS - 1).trimEnd() + "…"
         }
     }
 }

@@ -19,9 +19,6 @@
     <string name="messages_snackbar_deleted">已删除</string>
     <string name="messages_cooldown_cd">%1$d 秒后可发送</string>
     <string name="messages_error_cooldown">发送太快，请等 %1$d 秒后再试</string>
-    <string name="messages_action_emoji">表情</string>
-    <string name="messages_action_keyboard">键盘</string>
-    <string name="messages_action_profile">资料</string>
 
     <!-- 无障碍状态描述 -->
     <string name="messages_state_unread">未读</string>

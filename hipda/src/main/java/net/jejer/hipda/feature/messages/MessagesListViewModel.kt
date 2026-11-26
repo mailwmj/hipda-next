@@ -18,41 +18,24 @@ import net.jejer.hipda.parser.message.SmsConversationItem
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 
-internal const val NOTIFY_PAGE_SIZE: Int = 20
-
 @Immutable
 data class SmsTabUiState(
     val items: List<SmsConversationItem> = emptyList(),
-    val hasLoadedOnce: Boolean = false,
-    val isLoading: Boolean = false,
-    val isRefreshing: Boolean = false,
-    val clearingUid: String? = null,
-    val error: UiError? = null,
-    val challengeFailure: ChallengeFailureKind? = null,
+    val hasLoadedOnce: Boolean = false, val isLoading: Boolean = false, val isRefreshing: Boolean = false,
+    val clearingUid: String? = null, val error: UiError? = null, val challengeFailure: ChallengeFailureKind? = null,
 )
 
 @Immutable
 data class NotifyTabUiState(
     val entries: List<NotifyEntry> = emptyList(),
-    val visibleCount: Int = NOTIFY_PAGE_SIZE,
-    val hasLoadedOnce: Boolean = false,
-    val isLoading: Boolean = false,
-    val isRefreshing: Boolean = false,
-    val isMarkingAllRead: Boolean = false,
-    val error: UiError? = null,
-    val challengeFailure: ChallengeFailureKind? = null,
-) {
-    val displayedEntries: List<NotifyEntry> get() = if (entries.size <= visibleCount) entries else entries.take(visibleCount)
-    val hasMore: Boolean get() = visibleCount < entries.size
-}
+    val hasLoadedOnce: Boolean = false, val isLoading: Boolean = false, val isRefreshing: Boolean = false,
+    val isMarkingAllRead: Boolean = false, val error: UiError? = null, val challengeFailure: ChallengeFailureKind? = null,
+)
 
 @Immutable
 data class MessagesListUiState(
-    val isLoggedIn: Boolean = false,
-    val smsUnreadCount: Int = 0,
-    val notifyUnreadCount: Int = 0,
-    val sms: SmsTabUiState = SmsTabUiState(),
-    val notify: NotifyTabUiState = NotifyTabUiState(),
+    val isLoggedIn: Boolean = false, val smsUnreadCount: Int = 0, val notifyUnreadCount: Int = 0,
+    val sms: SmsTabUiState = SmsTabUiState(), val notify: NotifyTabUiState = NotifyTabUiState(),
     val challengeState: ChallengeState = ChallengeState.Idle,
 )
 
@@ -92,8 +75,8 @@ class MessagesListViewModel @Inject constructor(
         @Suppress("UNCHECKED_CAST")
         val repoEntries = v[3] as List<NotifyEntry>
         val notify = v[5] as NotifyTabUiState
-        val merged = if (account == null) emptyList() else if (repoEntries.isNotEmpty() || notify.entries.isEmpty()) repoEntries else notify.entries
-        MessagesListUiState(account != null, v[1] as Int, v[2] as Int, v[4] as SmsTabUiState, notify.copy(entries = merged), v[6] as ChallengeState)
+        val visible = if (account == null || notify.error?.action == UiErrorAction.Login) emptyList() else repoEntries
+        MessagesListUiState(account != null, v[1] as Int, v[2] as Int, v[4] as SmsTabUiState, notify.copy(entries = visible), v[6] as ChallengeState)
     }.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000L),
         MessagesListUiState(isSignedIn, notifyRepository.smsUnreadCount.value, notifyRepository.notifyUnreadCount.value, smsState.value, notifyState.value, siteAccessGateway.challengeState.value),
@@ -103,8 +86,7 @@ class MessagesListViewModel @Inject constructor(
         viewModelScope.observeMessageAuthChanges(
             authRepository, { smsState.value.error?.action == UiErrorAction.Login || notifyState.value.error?.action == UiErrorAction.Login },
         ) { _, signedIn ->
-            authGeneration++
-            smsLoadJob?.cancel(); notifyLoadJob?.cancel()
+            authGeneration++; smsLoadJob?.cancel(); notifyLoadJob?.cancel()
             smsRequestedInGen = false; notifyRequestedInGen = false
             if (signedIn) { smsState.value = SmsTabUiState(); notifyState.value = NotifyTabUiState(); loadTab(activeTab, false, AccessPriority.UserBlocking) }
             else applySignedOutState()
@@ -114,21 +96,14 @@ class MessagesListViewModel @Inject constructor(
     fun bindEntry(entry: ShellSidebarEntry) {
         activeTab = normalizeMessageEntry(entry)
         if (!isSignedIn) { applySignedOutState(); return }
-        val needLoad = if (activeTab == ShellSidebarEntry.Notify) !notifyRequestedInGen else !smsRequestedInGen
-        if (needLoad) loadTab(activeTab, false, AccessPriority.UserBlocking)
+        if (if (activeTab == ShellSidebarEntry.Notify) !notifyRequestedInGen else !smsRequestedInGen) loadTab(activeTab, false, AccessPriority.UserBlocking)
     }
 
-    fun refresh(entry: ShellSidebarEntry, priority: AccessPriority = AccessPriority.UserBlocking) {
+    fun refresh(entry: ShellSidebarEntry, priority: AccessPriority = AccessPriority.UserBlocking, forceFullLoad: Boolean = false) {
         activeTab = normalizeMessageEntry(entry)
         if (!isSignedIn) { applySignedOutState(); return }
-        val hasItems = if (activeTab == ShellSidebarEntry.Notify) uiState.value.notify.entries.isNotEmpty() else smsState.value.items.isNotEmpty()
+        val hasItems = !forceFullLoad && if (activeTab == ShellSidebarEntry.Notify) uiState.value.notify.entries.isNotEmpty() else smsState.value.items.isNotEmpty()
         loadTab(activeTab, hasItems, priority)
-    }
-
-    fun retry(entry: ShellSidebarEntry, priority: AccessPriority = AccessPriority.UserBlocking) {
-        activeTab = normalizeMessageEntry(entry)
-        if (!isSignedIn) { applySignedOutState(); return }
-        loadTab(activeTab, false, priority)
     }
 
     fun markConversationLocallyRead(uid: String) {
@@ -142,7 +117,7 @@ class MessagesListViewModel @Inject constructor(
         val gen = authGeneration
         smsState.update { it.copy(clearingUid = trimmed) }
         viewModelScope.launch {
-            val outcome = runCatchingExceptCancel { smsRepository.clearConversation(trimmed, AccessPriority.UserBlocking) }.getOrElse { SmsClearOutcome.Error(it.message.orEmpty(), it) }
+            val outcome = smsRepository.clearConversation(trimmed, AccessPriority.UserBlocking)
             if (authGeneration != gen) return@launch
             if (outcome == SmsClearOutcome.Cleared) smsState.update { it.copy(items = it.items.filterNot { item -> item.uid == trimmed }, clearingUid = null) }
             else { smsState.update { it.copy(clearingUid = null) }; mapClearFailure(outcome)?.let { _events.tryEmit(MessagesListEvent.ShowError(it)) } }
@@ -151,11 +126,7 @@ class MessagesListViewModel @Inject constructor(
 
     fun onNotificationOpened(entry: NotifyEntry) {
         val gen = authGeneration
-        viewModelScope.launch {
-            if (authGeneration != gen) return@launch
-            notifyRepository.markNotificationRead(entry.key)
-            notifyState.update { cur -> cur.copy(entries = cur.entries.map { if (it.key == entry.key) it.copy(isRead = true) else it }) }
-        }
+        viewModelScope.launch { if (authGeneration == gen) notifyRepository.markNotificationRead(entry.key) }
     }
 
     fun markAllNotificationsRead() {
@@ -163,69 +134,48 @@ class MessagesListViewModel @Inject constructor(
         val gen = authGeneration
         notifyState.update { it.copy(isMarkingAllRead = true) }
         viewModelScope.launch {
-            runCatchingExceptCancel { notifyRepository.markAllNotificationsRead() }.fold(
-                onSuccess = {
-                    if (authGeneration != gen) return@launch
-                    notifyState.update { cur -> cur.copy(isMarkingAllRead = false, entries = cur.entries.map { if (it.isRead) it else it.copy(isRead = true) }) }
-                    _events.tryEmit(MessagesListEvent.AllNotificationsMarkedRead)
-                },
-                onFailure = { err ->
-                    if (authGeneration != gen) return@launch
-                    notifyState.update { it.copy(isMarkingAllRead = false) }
-                    _events.tryEmit(MessagesListEvent.ShowError(UiErrorMapper.map(err)))
-                },
-            )
+            notifyRepository.markAllNotificationsRead()
+            if (authGeneration != gen) return@launch
+            notifyState.update { it.copy(isMarkingAllRead = false) }
+            _events.tryEmit(MessagesListEvent.AllNotificationsMarkedRead)
         }
-    }
-
-    fun loadMoreNotifications() {
-        val total = uiState.value.notify.entries.size
-        notifyState.update { cur -> if (cur.visibleCount >= total) cur else cur.copy(visibleCount = (cur.visibleCount + NOTIFY_PAGE_SIZE).coerceAtMost(total)) }
     }
 
     private fun loadTab(entry: ShellSidebarEntry, isRefresh: Boolean, priority: AccessPriority) {
         if (entry == ShellSidebarEntry.Sms) {
-            smsRequestedInGen = true
-            smsLoadJob?.cancel()
+            smsRequestedInGen = true; smsLoadJob?.cancel()
             val had = smsState.value.items.isNotEmpty()
             smsState.update { it.copy(isLoading = !isRefresh && !had, isRefreshing = isRefresh && had, error = if (had) it.error else null, challengeFailure = if (had) it.challengeFailure else null) }
-            smsLoadJob = launchTabFetch(
-                fetch = { smsRepository.getConversations(false, priority) },
-                hasItems = { smsState.value.items.isNotEmpty() },
-                onSuccess = { page -> smsState.update { it.copy(items = page.items, hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = null, challengeFailure = null) } },
-                onFailure = { mapped, existing, isAuth -> smsState.update { it.copy(hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = if (!existing || isAuth) mapped.uiError else null, challengeFailure = if (!existing) mapped.challengeFailure else null, items = if (isAuth) emptyList() else it.items) } },
+            smsLoadJob = launchTabFetch({ smsRepository.getConversations(false, priority) }, { smsState.value.items.isNotEmpty() },
+                { page -> smsState.update { it.copy(items = page.items, hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = null, challengeFailure = null) } },
+                { err, ch, ex, auth -> smsState.update { it.copy(hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = if (!ex || auth) err else null, challengeFailure = if (!ex) ch else null, items = if (auth) emptyList() else it.items) } },
             )
         } else {
-            notifyRequestedInGen = true
-            notifyLoadJob?.cancel()
+            notifyRequestedInGen = true; notifyLoadJob?.cancel()
             val had = uiState.value.notify.entries.isNotEmpty()
             notifyState.update { it.copy(isLoading = !isRefresh && !had, isRefreshing = isRefresh && had, error = if (had) it.error else null, challengeFailure = if (had) it.challengeFailure else null) }
-            notifyLoadJob = launchTabFetch(
-                fetch = { notifyRepository.getNotifications(priority) },
-                hasItems = { uiState.value.notify.entries.isNotEmpty() },
-                onSuccess = { page -> notifyState.update { cur -> cur.copy(entries = page.entries, visibleCount = if (isRefresh) maxOf(cur.visibleCount, NOTIFY_PAGE_SIZE) else NOTIFY_PAGE_SIZE, hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = null, challengeFailure = null) } },
-                onFailure = { mapped, existing, isAuth -> notifyState.update { it.copy(hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = if (!existing || isAuth) mapped.uiError else null, challengeFailure = if (!existing) mapped.challengeFailure else null, entries = if (isAuth) emptyList() else it.entries) } },
+            notifyLoadJob = launchTabFetch({ notifyRepository.getNotifications(priority) }, { uiState.value.notify.entries.isNotEmpty() },
+                { notifyState.update { it.copy(hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = null, challengeFailure = null) } },
+                { err, ch, ex, auth -> notifyState.update { it.copy(hasLoadedOnce = true, isLoading = false, isRefreshing = false, error = if (!ex || auth) err else null, challengeFailure = if (!ex) ch else null) } },
             )
         }
     }
 
     private fun <T> launchTabFetch(
-        fetch: suspend () -> MessageResult<T>,
-        hasItems: () -> Boolean,
-        onSuccess: (T) -> Unit,
-        onFailure: (MappedMessageFailure, existing: Boolean, isAuth: Boolean) -> Unit,
+        fetch: suspend () -> MessageResult<T>, hasItems: () -> Boolean,
+        onSuccess: (T) -> Unit, onFailure: (UiError, ChallengeFailureKind?, Boolean, Boolean) -> Unit,
     ): Job {
         val gen = authGeneration
         return viewModelScope.launch {
-            val res = runCatchingExceptCancel { fetch() }.getOrElse { MessageResult.Error(it.message.orEmpty(), it) }
+            val res = fetch()
             if (authGeneration != gen) return@launch
             if (res is MessageResult.Success) onSuccess(res.data)
             else {
-                val mapped = mapMessageResultFailure(res) ?: return@launch
+                val (uiError, challenge) = mapMessageResultFailure(res) ?: return@launch
                 val existing = hasItems()
                 val isAuth = res is MessageResult.AuthRequired
-                onFailure(mapped, existing, isAuth)
-                if (existing && !isAuth) _events.tryEmit(MessagesListEvent.ShowError(mapped.uiError))
+                onFailure(uiError, challenge, existing, isAuth)
+                if (existing && !isAuth) _events.tryEmit(MessagesListEvent.ShowError(uiError))
             }
         }
     }

@@ -714,6 +714,44 @@ class NotificationPollingWorkerTest {
         assertEquals("", empty.text)
     }
 
+    @Test
+    fun s2_notificationPoster_setsPrivateVisibilityPublicVersionAndTruncatesLongSummary() {
+        val longMultilineSummary = "第一行机密内容\n第二行   " + "超长摘要测试".repeat(25)
+        val snapshot = UnreadSnapshot(
+            smsUnreadCount = 1,
+            notifyUnreadCount = 0,
+            latestUnreadSms = SmsConversationItem(
+                uid = "20009",
+                author = "SecretSender",
+                avatarUrl = null,
+                time = "刚刚",
+                summary = longMultilineSummary,
+                isNew = true,
+            ),
+        )
+
+        val formatted = AndroidNotificationPoster.formatNotificationContent(context, snapshot)
+        assertEquals("SecretSender 的短消息", formatted.title)
+        assertFalse("通知摘要应折叠换行", formatted.text.contains('\n'))
+        assertFalse("通知摘要应折叠连续空白", formatted.text.contains("  "))
+        assertTrue(
+            "超长摘要必须截断至 ${AndroidNotificationPoster.MAX_SUMMARY_PREVIEW_CHARS} 字以内",
+            formatted.text.length <= AndroidNotificationPoster.MAX_SUMMARY_PREVIEW_CHARS,
+        )
+        assertTrue("截断摘要应以省略号结尾", formatted.text.endsWith("…"))
+
+        val poster = AndroidNotificationPoster(context)
+        poster.postUnread(snapshot)
+        val posted = shadowOf(notificationManager).allNotifications.single()
+        assertEquals(androidx.core.app.NotificationCompat.VISIBILITY_PRIVATE, posted.visibility)
+        val publicVersion = posted.publicVersion
+        assertNotNull("锁屏通知必须提供 publicVersion 隐藏发件人与正文摘要", publicVersion)
+        assertEquals("HiPDA 论坛通知", publicVersion!!.extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
+        assertEquals("您有 1 条新的短消息", publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString())
+        assertFalse(publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TITLE).toString().contains("SecretSender"))
+        assertFalse(publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TEXT).toString().contains("机密"))
+    }
+
     private fun singleSmsPollHtml(): String = """
         <!DOCTYPE html>
         <html>

@@ -200,15 +200,15 @@ class MessageUrlSanitizerTest {
         val lightBuilt = buildSmsAnnotatedText(textParts, Color.Blue, darkTheme = false, onLinkClick = {})
         val darkBuilt = buildSmsAnnotatedText(textParts, Color.Cyan, darkTheme = true, onLinkClick = {})
         assertTrue("补充平面 Emoji 应二次解码为 😀", lightBuilt.annotatedString.text.contains("你好😀"))
-        assertEquals(EmojiMap.drawableFor(":)", dark = false), lightBuilt.inlineDrawables["sms_emoji::)"]?.first)
-        assertEquals(EmojiMap.drawableFor("{:2_41:}", dark = false), lightBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.first)
-        assertEquals(EmojiMap.drawableFor("{:2_41:}", dark = true), darkBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.first)
+        assertEquals(EmojiMap.drawableFor(":)", dark = false), lightBuilt.inlineDrawables["sms_emoji::)"]?.drawableResId)
+        assertEquals(EmojiMap.drawableFor("{:2_41:}", dark = false), lightBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.drawableResId)
+        assertEquals(EmojiMap.drawableFor("{:2_41:}", dark = true), darkBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.drawableResId)
         assertNotEquals(
             "酷猴表情浅深色资源应区分",
-            lightBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.first,
-            darkBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.first,
+            lightBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.drawableResId,
+            darkBuilt.inlineDrawables["sms_emoji:{:2_41:}"]?.drawableResId,
         )
-        assertEquals(EmojiMap.drawableForImageSrc("grapeman_08", dark = true), darkBuilt.inlineDrawables["sms_emoji:grapeman_08"]?.first)
+        assertEquals(EmojiMap.drawableForImageSrc("grapeman_08", dark = true), darkBuilt.inlineDrawables["sms_emoji:grapeman_08"]?.drawableResId)
 
         try {
             composeRule.setContent {

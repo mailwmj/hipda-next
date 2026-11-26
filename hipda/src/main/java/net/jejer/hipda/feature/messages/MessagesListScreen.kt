@@ -14,7 +14,6 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.res.stringResource
@@ -25,11 +24,13 @@ import androidx.compose.ui.unit.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import net.jejer.hipda.R
 import net.jejer.hipda.data.message.NotifyEntry
 import net.jejer.hipda.data.network.access.*
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.feature.forum.FORUM_COMPACT_ROW_WIDTH_THRESHOLD
+import net.jejer.hipda.feature.forum.resolveThreadRowBackground
+import net.jejer.hipda.feature.forum.resolveThreadTitleColor
 import net.jejer.hipda.parser.message.*
 import net.jejer.hipda.ui.challenge.*
 import net.jejer.hipda.ui.designsystem.*
@@ -37,31 +38,18 @@ import net.jejer.hipda.ui.designsystem.feedback.*
 import net.jejer.hipda.ui.designsystem.motion.*
 import net.jejer.hipda.ui.designsystem.state.*
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
-import org.jsoup.Jsoup
 
 private val TOP_BAR_ROW_HEIGHT = 56.dp
-private val COMPACT_AVATAR_THRESHOLD = 300.dp
-private const val ROW_SELECTED_ALPHA = 0.36f
-private const val READ_TITLE_DARK_ALPHA = 0.74f
-private const val NOTIFY_PREFETCH_THRESHOLD = 4
 
 /** 消息列表主界面（纯色顶栏，零毛玻璃）：单栏含 `短消息 | 提醒` 分段标签与未读点，侧栏态隐藏标签行。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MessagesListScreen(
-    entry: ShellSidebarEntry,
-    isSidebar: Boolean,
-    showBack: Boolean,
-    onBack: (() -> Unit)?,
-    selectedConversationUid: String?,
-    onSelectMessageEntry: (ShellSidebarEntry) -> Unit,
-    onOpenConversation: (SmsConversationArgs) -> Unit,
-    onOpenThread: (ThreadNavArgs) -> Unit,
-    onOpenUserProfile: (uid: String, username: String) -> Unit,
-    onOpenLogin: () -> Unit,
-    contentPadding: PaddingValues,
-    listState: LazyListState,
-    viewModel: MessagesListViewModel,
+    entry: ShellSidebarEntry, isSidebar: Boolean, showBack: Boolean, onBack: (() -> Unit)?,
+    selectedConversationUid: String?, onSelectMessageEntry: (ShellSidebarEntry) -> Unit,
+    onOpenConversation: (SmsConversationArgs) -> Unit, onOpenThread: (ThreadNavArgs) -> Unit,
+    onOpenUserProfile: (uid: String, username: String) -> Unit, onOpenLogin: () -> Unit,
+    contentPadding: PaddingValues, listState: LazyListState, viewModel: MessagesListViewModel,
     modifier: Modifier = Modifier,
 ) {
     val activeEntry = normalizeMessageEntry(entry)
@@ -76,7 +64,7 @@ fun MessagesListScreen(
                 MessagesListEvent.AllNotificationsMarkedRead ->
                     snackbarController.show(resources.getString(R.string.messages_snackbar_all_read), PaneSnackbarTarget.ContentArea)
                 is MessagesListEvent.ShowError ->
-                    snackbarController.showMessageUiError(event.error, resources, PaneSnackbarTarget.ContentArea, { viewModel.retry(activeEntry, it) }, onOpenLogin)
+                    snackbarController.showMessageUiError(event.error, resources, PaneSnackbarTarget.ContentArea, { viewModel.refresh(activeEntry, it, forceFullLoad = true) }, onOpenLogin)
             }
         }
     }
@@ -99,52 +87,47 @@ fun MessagesListScreen(
     val canMarkAllRead = uiState.isLoggedIn && !uiState.notify.isMarkingAllRead && (uiState.notifyUnreadCount > 0 || uiState.notify.entries.any { !it.isRead })
 
     val renderTab: @Composable (ShellSidebarEntry) -> Unit = { target ->
-        if (target == ShellSidebarEntry.Notify) {
-            val st = uiState.notify
-            val latestHasMore by rememberUpdatedState(st.hasMore)
-            LaunchedEffect(effectiveNotifyListState) {
-                snapshotFlow {
-                    if (!latestHasMore) return@snapshotFlow false
-                    val info = effectiveNotifyListState.layoutInfo
-                    info.totalItemsCount > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - NOTIFY_PREFETCH_THRESHOLD
-                }.distinctUntilChanged().collect { if (it) viewModel.loadMoreNotifications() }
-            }
-            MessageListPaneFrame(
-                st.entries.isEmpty(), st.isLoading, st.isRefreshing, st.hasLoadedOnce, st.error, uiState.challengeState, st.challengeFailure,
-                stringResource(R.string.common_empty_notify), effectiveNotifyListState, listBottomPadding,
-                { viewModel.refresh(ShellSidebarEntry.Notify) }, { viewModel.retry(ShellSidebarEntry.Notify, it) }, onOpenLogin,
-            ) { compact ->
-                items(st.displayedEntries, key = { it.key }) { item ->
-                    Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
-                        NotifyEntryRow(item, compact) { viewModel.onNotificationOpened(item); dispatchNotificationTarget(item, onOpenThread, onOpenUserProfile) }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+        val isNotify = target == ShellSidebarEntry.Notify
+        val tabState = if (isNotify) effectiveNotifyListState else listState
+        val isEmpty = if (isNotify) uiState.notify.entries.isEmpty() else uiState.sms.items.isEmpty()
+        val isLoading = if (isNotify) uiState.notify.isLoading else uiState.sms.isLoading
+        val isRefreshing = if (isNotify) uiState.notify.isRefreshing else uiState.sms.isRefreshing
+        val hasLoadedOnce = if (isNotify) uiState.notify.hasLoadedOnce else uiState.sms.hasLoadedOnce
+        val error = if (isNotify) uiState.notify.error else uiState.sms.error
+        val chFailure = if (isNotify) uiState.notify.challengeFailure else uiState.sms.challengeFailure
+        val emptyMsg = stringResource(if (isNotify) R.string.common_empty_notify else R.string.common_empty_sms)
+        val uidCounts = remember(uiState.sms.items) { uiState.sms.items.groupingBy { it.uid }.eachCount() }
+
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val compact = maxWidth < FORUM_COMPACT_ROW_WIDTH_THRESHOLD
+            MessagePaneStateBox(
+                isEmpty, isLoading, hasLoadedOnce, error, uiState.challengeState, chFailure, emptyMsg, listBottomPadding,
+                { viewModel.refresh(target, it, forceFullLoad = true) }, onOpenLogin, skeleton = { MessagesListSkeleton(compact, listBottomPadding) },
+            ) {
+                PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { viewModel.refresh(target) }, modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(state = tabState, modifier = Modifier.fillMaxSize(), contentPadding = listBottomPadding) {
+                        if (isNotify) {
+                            items(uiState.notify.entries, key = { it.key }) { item ->
+                                Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
+                                    NotifyEntryRow(item, compact) { viewModel.onNotificationOpened(item); dispatchNotificationTarget(item, onOpenThread, onOpenUserProfile) }
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+                                }
+                            }
+                        } else {
+                            itemsIndexed(uiState.sms.items, key = { idx, item -> if (item.uid.isNotBlank() && uidCounts[item.uid] == 1) item.uid else "${item.uid}:${item.time}:$idx" }) { _, item ->
+                                Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
+                                    SmsConversationRow(
+                                        item, !selectedConversationUid.isNullOrBlank() && item.uid == selectedConversationUid, compact, uiState.sms.clearingUid == item.uid,
+                                        { viewModel.markConversationLocallyRead(item.uid); onOpenConversation(SmsConversationArgs(item.uid, item.author)) },
+                                        { clearDialogTarget = item },
+                                    )
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+                                }
+                            }
+                        }
+                        item(key = if (isNotify) "notify_list_footer" else "sms_list_footer") { HiListFooter(HiFooterState.End) }
                     }
                 }
-                item(key = "notify_list_footer") {
-                    if (st.hasMore) Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), Alignment.Center) {
-                        TextButton(onClick = viewModel::loadMoreNotifications, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text(stringResource(R.string.common_action_load_more)) }
-                    } else HiListFooter(HiFooterState.End)
-                }
-            }
-        } else {
-            val st = uiState.sms
-            val uidCounts = remember(st.items) { st.items.groupingBy { it.uid }.eachCount() }
-            MessageListPaneFrame(
-                st.items.isEmpty(), st.isLoading, st.isRefreshing, st.hasLoadedOnce, st.error, uiState.challengeState, st.challengeFailure,
-                stringResource(R.string.common_empty_sms), listState, listBottomPadding,
-                { viewModel.refresh(ShellSidebarEntry.Sms) }, { viewModel.retry(ShellSidebarEntry.Sms, it) }, onOpenLogin,
-            ) { compact ->
-                itemsIndexed(st.items, key = { idx, item -> if (item.uid.isNotBlank() && uidCounts[item.uid] == 1) item.uid else "${item.uid}:${item.time}:$idx" }) { _, item ->
-                    Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
-                        SmsConversationRow(
-                            item, !selectedConversationUid.isNullOrBlank() && item.uid == selectedConversationUid, compact, st.clearingUid == item.uid,
-                            { viewModel.markConversationLocallyRead(item.uid); onOpenConversation(SmsConversationArgs(item.uid, item.author)) },
-                            { clearDialogTarget = item },
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
-                    }
-                }
-                item(key = "sms_list_footer") { HiListFooter(HiFooterState.End) }
             }
         }
     }
@@ -163,15 +146,14 @@ fun MessagesListScreen(
             belowRow = {
                 if (!isSidebar) {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 10.dp)) {
-                        val tabs = listOf(
-                            Triple(ShellSidebarEntry.Sms, stringResource(R.string.shell_sidebar_sms), uiState.smsUnreadCount > 0),
-                            Triple(ShellSidebarEntry.Notify, stringResource(R.string.shell_sidebar_notify), uiState.notifyUnreadCount > 0),
-                        )
-                        tabs.forEachIndexed { idx, (tabEntry, label, hasUnread) ->
+                        listOf(ShellSidebarEntry.Sms, ShellSidebarEntry.Notify).forEachIndexed { idx, tabEntry ->
+                            val isNotify = tabEntry == ShellSidebarEntry.Notify
+                            val label = stringResource(if (isNotify) R.string.shell_sidebar_notify else R.string.shell_sidebar_sms)
+                            val hasUnread = if (isNotify) uiState.notifyUnreadCount > 0 else uiState.smsUnreadCount > 0
                             val interaction = remember { MutableInteractionSource() }
                             SegmentedButton(
                                 selected = activeEntry == tabEntry, onClick = { onSelectMessageEntry(tabEntry) },
-                                shape = SegmentedButtonDefaults.itemShape(idx, tabs.size), interactionSource = interaction, icon = {},
+                                shape = SegmentedButtonDefaults.itemShape(idx, 2), interactionSource = interaction, icon = {},
                                 modifier = Modifier.defaultMinSize(minHeight = 48.dp).hiPressScale(interaction),
                             ) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -204,13 +186,8 @@ fun MessagesListScreen(
 
 @Composable
 internal fun MessagesSolidTopBarFrame(
-    title: String,
-    showBack: Boolean,
-    onBack: (() -> Unit)?,
-    isScrolled: Boolean,
-    onTitleClick: (() -> Unit)? = null,
-    actions: @Composable RowScope.() -> Unit = {},
-    belowRow: @Composable ColumnScope.() -> Unit = {},
+    title: String, showBack: Boolean, onBack: (() -> Unit)?, isScrolled: Boolean,
+    onTitleClick: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}, belowRow: @Composable ColumnScope.() -> Unit = {},
 ) {
     val cs = MaterialTheme.colorScheme
     val bgColor by animateColorAsState(if (isScrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "MessagesTopBarBg")
@@ -236,6 +213,7 @@ internal fun MessagesSolidTopBarFrame(
     }
 }
 
+/** 复用设计系统 [HiContentState]（保留 150ms 防闪延迟）并统一接入安全验证状态视图。 */
 @Composable
 internal fun MessagePaneStateBox(
     isEmpty: Boolean, isLoading: Boolean, hasLoadedOnce: Boolean, error: UiError?,
@@ -243,38 +221,22 @@ internal fun MessagePaneStateBox(
     contentPadding: PaddingValues, onRetry: (AccessPriority) -> Unit, onOpenLogin: () -> Unit,
     skeleton: @Composable () -> Unit, content: @Composable () -> Unit,
 ) {
-    when {
-        isEmpty && (challengeState !is ChallengeState.Idle || challengeFailure != null) ->
-            Box(Modifier.fillMaxSize().padding(contentPadding), Alignment.Center) { ChallengeStatusView(challengeState, onRetry, failure = challengeFailure, errorDetails = error?.details) }
-        (isLoading || !hasLoadedOnce) && isEmpty && error == null -> skeleton()
-        error != null && isEmpty -> Box(Modifier.fillMaxSize().padding(contentPadding), Alignment.Center) {
-            HiErrorState(stringResource(error.messageRes), details = error.details, action = error.toStateAction(onRetry, onOpenLogin))
-        }
-        isEmpty -> Box(Modifier.fillMaxSize().padding(contentPadding), Alignment.Center) { HiEmptyState(emptyMessage) }
-        else -> content()
+    if (isEmpty && (challengeState !is ChallengeState.Idle || challengeFailure != null)) {
+        Box(Modifier.fillMaxSize().padding(contentPadding), Alignment.Center) { ChallengeStatusView(challengeState, onRetry, failure = challengeFailure, errorDetails = error?.details) }
+        return
     }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun MessageListPaneFrame(
-    isEmpty: Boolean, isLoading: Boolean, isRefreshing: Boolean, hasLoadedOnce: Boolean, error: UiError?,
-    challengeState: ChallengeState, challengeFailure: ChallengeFailureKind?, emptyMessage: String,
-    listState: LazyListState, contentPadding: PaddingValues,
-    onRefresh: () -> Unit, onRetry: (AccessPriority) -> Unit, onOpenLogin: () -> Unit,
-    itemsContent: LazyListScope.(compact: Boolean) -> Unit,
-) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val compact = maxWidth < COMPACT_AVATAR_THRESHOLD
-        MessagePaneStateBox(
-            isEmpty, isLoading, hasLoadedOnce, error, challengeState, challengeFailure, emptyMessage, contentPadding, onRetry, onOpenLogin,
-            skeleton = { MessagesListSkeleton(compact, contentPadding) },
-        ) {
-            PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
-                LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = contentPadding) { itemsContent(compact) }
-            }
-        }
+    val loadState: HiLoadState<Unit> = when {
+        !isEmpty -> HiLoadState.Content(Unit)
+        error != null -> HiLoadState.Error(stringResource(error.messageRes), error.details)
+        isLoading || !hasLoadedOnce -> HiLoadState.Loading
+        else -> HiLoadState.Empty
     }
+    HiContentState(
+        state = loadState, modifier = Modifier.fillMaxSize(), passive = true, skeleton = skeleton,
+        empty = { Box(Modifier.padding(contentPadding)) { HiEmptyState(emptyMessage) } },
+        error = { err -> Box(Modifier.padding(contentPadding)) { HiErrorState(err.message, details = err.details, action = error?.toStateAction(onRetry, onOpenLogin)) } },
+        content = { content() },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -284,36 +246,44 @@ private fun SmsConversationRow(item: SmsConversationItem, selected: Boolean, com
     val interaction = remember { MutableInteractionSource() }
     var menuExpanded by remember { mutableStateOf(false) }
     val stateLabel = stringResource(if (item.isNew) R.string.messages_state_unread else R.string.messages_state_read)
-    val titleColor = if (item.isNew) cs.onSurface else resolveReadTextColor(cs, HiTheme.state.darkTheme)
+    val titleColor = resolveThreadTitleColor(cs, isVisited = !item.isNew, darkTheme = HiTheme.state.darkTheme)
+    val clearMenu: @Composable () -> Unit = {
+        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }, modifier = Modifier.background(cs.surfaceContainerHigh)) {
+            DropdownMenuItem(text = { Text(stringResource(R.string.messages_action_clear), color = cs.error) }, onClick = { menuExpanded = false; onClearClick() })
+        }
+    }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(if (selected) cs.secondaryContainer.copy(alpha = ROW_SELECTED_ALPHA) else cs.surface)
-            .semantics { stateDescription = stateLabel }
-            .combinedClickable(interaction, hiListItemPressIndication(), onClick = onClick, onLongClick = { menuExpanded = true })
-            .padding(start = if (compact) 12.dp else 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
-    ) {
-        MessageAvatar(item.avatarUrl, item.author, if (compact) 36.dp else 40.dp)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (item.isNew) Box(Modifier.size(8.dp).clip(HiShapeTokens.Full).background(cs.primary))
-                Text(item.author, style = MaterialTheme.typography.titleMedium.copy(fontWeight = if (item.isNew) FontWeight.SemiBold else FontWeight.Normal), color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (item.time.isNotBlank()) Text(item.time, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(resolveThreadRowBackground(cs, selected))
+                .semantics { stateDescription = stateLabel }
+                .combinedClickable(interaction, hiListItemPressIndication(), onClick = onClick, onLongClick = { if (!isClearing) menuExpanded = true })
+                .padding(start = if (compact) 12.dp else 16.dp, top = 12.dp, bottom = 12.dp, end = if (compact) 12.dp else 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MessageAvatar(item.avatarUrl, item.author, if (compact) 36.dp else 40.dp)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (item.isNew) Box(Modifier.size(8.dp).clip(HiShapeTokens.Full).background(cs.primary))
+                    Text(item.author, style = MaterialTheme.typography.titleMedium.copy(fontWeight = if (item.isNew) FontWeight.SemiBold else FontWeight.Normal), color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    if (item.time.isNotBlank()) Text(item.time, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+                }
+                Text(item.summary, style = MaterialTheme.typography.bodyMedium, color = if (item.isNew) cs.onSurface else cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-            Text(item.summary, style = MaterialTheme.typography.bodyMedium, color = if (item.isNew) cs.onSurface else cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (!compact) {
+                Box {
+                    val moreInteraction = remember { MutableInteractionSource() }
+                    IconButton(onClick = { menuExpanded = true }, enabled = !isClearing, interactionSource = moreInteraction, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(moreInteraction)) {
+                        if (isClearing) HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Rounded.MoreVert, stringResource(R.string.messages_action_more), tint = cs.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    }
+                    clearMenu()
+                }
+            }
         }
-        Box {
-            val moreInteraction = remember { MutableInteractionSource() }
-            IconButton(onClick = { menuExpanded = true }, enabled = !isClearing, interactionSource = moreInteraction, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(moreInteraction)) {
-                if (isClearing) HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Icon(Icons.Rounded.MoreVert, stringResource(R.string.messages_action_more), tint = cs.onSurfaceVariant, modifier = Modifier.size(20.dp))
-            }
-            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }, modifier = Modifier.background(cs.surfaceContainerHigh)) {
-                DropdownMenuItem(text = { Text(stringResource(R.string.messages_action_clear), color = cs.error) }, onClick = { menuExpanded = false; onClearClick() })
-            }
-        }
+        if (compact) clearMenu()
     }
 }
 
@@ -325,8 +295,7 @@ private fun NotifyEntryRow(entry: NotifyEntry, compact: Boolean, onClick: () -> 
     val unread = !entry.isRead
     val interaction = remember { MutableInteractionSource() }
     val stateLabel = stringResource(if (unread) R.string.messages_state_unread else R.string.messages_state_read)
-    val titleColor = if (unread) cs.onSurface else resolveReadTextColor(cs, HiTheme.state.darkTheme)
-    val cleanInfo = remember(item.info) { if ('<' in item.info) Jsoup.parseBodyFragment(item.info).text().trim() else item.info.trim() }
+    val titleColor = resolveThreadTitleColor(cs, isVisited = !unread, darkTheme = HiTheme.state.darkTheme)
 
     Row(
         modifier = Modifier
@@ -355,8 +324,8 @@ private fun NotifyEntryRow(entry: NotifyEntry, compact: Boolean, onClick: () -> 
                     }
                 }
                 item.quoteReply?.trim()?.takeIf { it.isNotEmpty() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = if (unread) cs.onSurface else cs.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis) }
-            } else if (cleanInfo.isNotEmpty()) {
-                Text(cleanInfo, style = MaterialTheme.typography.bodyMedium, color = if (unread) cs.onSurface else cs.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            } else if (item.info.isNotBlank()) {
+                Text(item.info.trim(), style = MaterialTheme.typography.bodyMedium, color = if (unread) cs.onSurface else cs.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
             val authorText = item.author?.trim().orEmpty()
             val timeText = item.time?.trim().orEmpty()
@@ -390,33 +359,23 @@ internal fun MessageAvatar(avatarUrl: String?, name: String, size: Dp, modifier:
     val sizePx = with(LocalDensity.current) { size.roundToPx() }
     val context = LocalContext.current
     val imageLoader = currentHiImageLoader()
-
     Box(modifier.size(size).clip(HiShapeTokens.Full).background(cs.secondaryContainer), Alignment.Center) {
         Text(initial, style = if (size >= 32.dp) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelSmall, color = cs.onSecondaryContainer, maxLines = 1, softWrap = false)
-        if (safeUrl != null) {
-            val request = remember(context, safeUrl, sizePx) { ImageRequest.Builder(context).data(safeUrl).size(sizePx).build() }
-            AsyncImage(request, null, imageLoader, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        }
+        if (safeUrl != null) AsyncImage(remember(context, safeUrl, sizePx) { ImageRequest.Builder(context).data(safeUrl).size(sizePx).build() }, null, imageLoader, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
     }
 }
 
 @Composable
-private fun MessagesListSkeleton(compact: Boolean, contentPadding: PaddingValues) {
+internal fun MessagesListSkeleton(compact: Boolean, contentPadding: PaddingValues) {
     Column(Modifier.fillMaxSize().padding(contentPadding).padding(horizontal = if (compact) 12.dp else 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
         repeat(6) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 HiSkeletonBlock(if (compact) 36.dp else 40.dp, if (compact) 36.dp else 40.dp, HiShapeTokens.Full)
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HiSkeletonBlock(120.dp, 16.dp)
-                    HiSkeletonBlock(Dp.Unspecified, 14.dp, modifier = Modifier.fillMaxWidth(0.88f))
-                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { HiSkeletonBlock(120.dp, 16.dp); HiSkeletonBlock(Dp.Unspecified, 14.dp, modifier = Modifier.fillMaxWidth(0.88f)) }
             }
         }
     }
 }
-
-private fun resolveReadTextColor(cs: ColorScheme, darkTheme: Boolean): Color =
-    if (darkTheme) cs.onSurfaceVariant.copy(alpha = READ_TITLE_DARK_ALPHA) else cs.onSurfaceVariant
 
 private fun dispatchNotificationTarget(entry: NotifyEntry, onOpenThread: (ThreadNavArgs) -> Unit, onOpenUserProfile: (uid: String, username: String) -> Unit) {
     val item = entry.item
