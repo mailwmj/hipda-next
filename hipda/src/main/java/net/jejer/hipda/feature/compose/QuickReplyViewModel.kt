@@ -103,16 +103,7 @@ class QuickReplyViewModel internal constructor(
         viewModelScope.launch {
             postRepository.cooldownUntilMs.collectLatest { untilMs ->
                 localCooldownJob?.cancel(); localCooldownJob = null
-                if (untilMs <= 0L) {
-                    updateCooldown(0)
-                    return@collectLatest
-                }
-                while (true) {
-                    val remaining = postRepository.getRemainingCooldownSeconds().coerceAtLeast(0)
-                    updateCooldown(remaining)
-                    if (remaining <= 0) break
-                    delay(nextCooldownTickDelayMs(untilMs, clockMs()))
-                }
+                if (untilMs <= 0L) updateCooldown(0) else runCooldownTicker(untilMs) { postRepository.getRemainingCooldownSeconds() }
             }
         }
     }
@@ -326,14 +317,20 @@ class QuickReplyViewModel internal constructor(
             localCooldownJob?.cancel()
             val untilMs = clockMs() + safeSec * 1_000L
             localCooldownJob = viewModelScope.launch {
-                while (true) {
+                runCooldownTicker(untilMs) {
                     val deltaMs = untilMs - clockMs()
-                    val remaining = if (deltaMs <= 0L) 0 else ((deltaMs + 999L) / 1_000L).toInt()
-                    updateCooldown(remaining)
-                    if (remaining <= 0) break
-                    delay(nextCooldownTickDelayMs(untilMs, clockMs()))
+                    if (deltaMs <= 0L) 0 else ((deltaMs + 999L) / 1_000L).toInt()
                 }
             }
+        }
+    }
+
+    private suspend fun runCooldownTicker(untilMs: Long, remainingProvider: () -> Int) {
+        while (true) {
+            val remaining = remainingProvider().coerceAtLeast(0)
+            updateCooldown(remaining)
+            if (remaining <= 0) break
+            delay(nextCooldownTickDelayMs(untilMs, clockMs()))
         }
     }
 
