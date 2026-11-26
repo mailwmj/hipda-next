@@ -60,9 +60,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 覆盖 M7-G2 #14 冷启动通知调度与 #12 版本变化后首次启动弹更新记录（撤回即红）：
+ * 覆盖 M7-G2 #14 冷启动通知调度与 #12 升级后首次启动弹更新记录（撤回即红）：
  * - #14：冷启动实例化 [NextAppHostViewModel] 精确调用 1 次 `syncFromSettings()`，开关 true 入队周期任务、false 取消任务，旋转不重复触发；
- * - #12：首次启动（`lastSeen = 0`, `current = 5005`）在 [NextAppRoot] 弹出可滚动真实 `assets/release-notes.txt` 更新记录 → 关闭后持久化 `5005` → 同版本重启与旋转不再弹出 → 版本升至 `5006` 再弹一次；
+ * - #12（对齐旧版 `UpdateHelper.java:166-167`）：全新安装（`lastSeen = 0`, `current = 5005`）静默写入 `5005` 且不弹窗 → 同版本重启不弹 → 升级至 `5006` 在 [NextAppRoot] 弹出可滚动真实 `assets/release-notes.txt` 更新记录一次 → 关闭后持久化 `5006` → 旋转与同版本后续冷启动绝不再弹；
  * - 截图夹具默认无注入 [ReleaseNotesPromptStore] 时严格不弹出，保障既有 `multipane_*` 0 漂移。
  */
 @OptIn(ExperimentalCoroutinesApi::class, ExperimentalTestApi::class)
@@ -211,12 +211,12 @@ class StartupNotificationAndReleaseNotesTest {
     }
 
     @Test
-    fun nextAppRoot_showsReleaseNotesOncePerVersionCodeAndNeverReopensOnSameVersionOrRotation() = withAnimatorDurationScale(0f) {
+    fun nextAppRoot_freshInstallSilentUpgradeShowsOnceAndSameVersionNeverReopens() = withAnimatorDurationScale(0f) {
         val promptStore = InMemoryReleaseNotesPromptStore(initialVersionCode = 0)
         val harness = MultiPaneTestHarness()
         val scheduler = RecordingStartupNotificationScheduler(harness.settingsRepo)
 
-        // Launch 1: 首次启动 (lastSeen = 0, current = 5005) -> 弹出更新记录，通知同步 1 次
+        // Launch 1: 全新安装 (lastSeen = 0, current = 5005) -> 静默写入 5005，绝不弹窗，通知同步 1 次
         var hostVm by mutableStateOf(
             NextAppHostViewModel(
                 settingsRepository = harness.settingsRepo,
@@ -249,30 +249,14 @@ class StartupNotificationAndReleaseNotesTest {
             }
         }
 
-        waitUntil(timeoutMillis = 3_000L) {
-            onAllNodes(hasText("v5.0.05", substring = true)).fetchSemanticsNodes().isNotEmpty()
-        }
-        onNodeWithText("更新记录").assertIsDisplayed()
-        onNode(hasText("v5.0.05", substring = true) and hasScrollAction()).assertIsDisplayed()
+        waitUntil(timeoutMillis = 3_000L) { promptStore.lastSeenVersionCode == 5005 }
+        waitForIdle()
+        assertFalse("全新安装首启不得弹出更新记录", hostVm.showReleaseNotesPrompt.value)
+        onNodeWithText("更新记录").assertDoesNotExist()
+        assertEquals("全新安装冷启动应静默写入当前 versionCode", 5005, promptStore.lastSeenVersionCode)
         assertEquals("冷启动应同步通知调度 1 次", 1, scheduler.syncFromSettingsCalls)
 
-        // 点击关闭 -> 对话框消失并持久化 lastSeenVersionCode = 5005
-        onNodeWithText("关闭").performClick()
-        waitForIdle()
-        onNodeWithText("更新记录").assertDoesNotExist()
-        assertEquals(5005, promptStore.lastSeenVersionCode)
-
-        // 模拟配置变更旋转（同一 ViewModel 存活、组合树重建）：不重弹更新记录，也不重复调度通知
-        val saved = registry.performSave()
-        mounted = false
-        waitForIdle()
-        registry = SaveableStateRegistry(saved) { true }
-        mounted = true
-        waitForIdle()
-        onNodeWithText("更新记录").assertDoesNotExist()
-        assertEquals("旋转重建不得重复调用 syncFromSettings", 1, scheduler.syncFromSettingsCalls)
-
-        // Launch 2: 相同版本 5005 再次冷启动（全新 ViewModel）-> 绝不再弹
+        // Launch 2: 相同版本 5005 再次冷启动（全新 ViewModel）-> 绝不弹窗
         hostVm = NextAppHostViewModel(
             settingsRepository = harness.settingsRepo,
             threadDetailRepository = harness.threadDetailRepo,
@@ -285,7 +269,7 @@ class StartupNotificationAndReleaseNotesTest {
         assertFalse(hostVm.showReleaseNotesPrompt.value)
         assertEquals(2, scheduler.syncFromSettingsCalls)
 
-        // Launch 3: 版本升级至 5006 再次冷启动 -> 再次弹出更新记录一次
+        // Launch 3: 版本升级至 5006 首次冷启动 -> 弹出可滚动真实 assets/release-notes.txt 更新记录一次
         hostVm = NextAppHostViewModel(
             settingsRepository = harness.settingsRepo,
             threadDetailRepository = harness.threadDetailRepo,
@@ -297,14 +281,26 @@ class StartupNotificationAndReleaseNotesTest {
             onAllNodes(hasText("v5.0.05", substring = true)).fetchSemanticsNodes().isNotEmpty()
         }
         onNodeWithText("更新记录").assertIsDisplayed()
+        onNode(hasText("v5.0.05", substring = true) and hasScrollAction()).assertIsDisplayed()
+        assertEquals(3, scheduler.syncFromSettingsCalls)
 
-        // 通过 dismiss（等同点击关闭/系统返回 onDismissRequest）持久化 5006
-        hostVm.dismissReleaseNotesPrompt()
+        // 点击关闭 -> 对话框消失并持久化 lastSeenVersionCode = 5006
+        onNodeWithText("关闭").performClick()
         waitForIdle()
         onNodeWithText("更新记录").assertDoesNotExist()
         assertEquals(5006, promptStore.lastSeenVersionCode)
 
-        // Launch 4: 5006 再次冷启动 -> 不再弹出
+        // 模拟配置变更旋转（同一 ViewModel 存活、组合树重建）：不重弹更新记录，也不重复调度通知
+        val saved = registry.performSave()
+        mounted = false
+        waitForIdle()
+        registry = SaveableStateRegistry(saved) { true }
+        mounted = true
+        waitForIdle()
+        onNodeWithText("更新记录").assertDoesNotExist()
+        assertEquals("旋转重建不得重复调用 syncFromSettings", 3, scheduler.syncFromSettingsCalls)
+
+        // Launch 4: 相同版本 5006 再次冷启动 -> 绝不再弹
         hostVm = NextAppHostViewModel(
             settingsRepository = harness.settingsRepo,
             threadDetailRepository = harness.threadDetailRepo,
@@ -315,6 +311,23 @@ class StartupNotificationAndReleaseNotesTest {
         waitForIdle()
         onNodeWithText("更新记录").assertDoesNotExist()
         assertFalse(hostVm.showReleaseNotesPrompt.value)
+
+        // Launch 5: 再次升级至 5007 -> 再弹一次，经 dismissReleaseNotesPrompt() 关闭并持久化 5007
+        hostVm = NextAppHostViewModel(
+            settingsRepository = harness.settingsRepo,
+            threadDetailRepository = harness.threadDetailRepo,
+            notificationScheduler = scheduler,
+            releaseNotesPromptStore = promptStore,
+            currentVersionCode = 5007,
+        )
+        waitUntil(timeoutMillis = 3_000L) {
+            onAllNodes(hasText("v5.0.05", substring = true)).fetchSemanticsNodes().isNotEmpty()
+        }
+        onNodeWithText("更新记录").assertIsDisplayed()
+        hostVm.dismissReleaseNotesPrompt()
+        waitForIdle()
+        onNodeWithText("更新记录").assertDoesNotExist()
+        assertEquals(5007, promptStore.lastSeenVersionCode)
     }
 
     @Test

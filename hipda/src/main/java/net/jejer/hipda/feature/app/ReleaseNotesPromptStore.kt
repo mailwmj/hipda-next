@@ -12,12 +12,15 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** 按 `versionCode` 持久化记录最近已读更新记录版本，驱动版本变化后首次冷启动弹一次更新记录。 */
+/**
+ * 按 `versionCode` 持久化记录最近已确认版本，对齐旧版 `UpdateHelper.java:166-167`：
+ * 全新安装静默写入当前 `versionCode` 不弹窗；仅已记录过旧 `versionCode` 且与当前不同（升级）时弹一次更新记录。
+ */
 interface ReleaseNotesPromptStore {
-    /** 返回最近已确认阅读的 `versionCode`；首次安装未记录时返回 `0`。 */
+    /** 返回最近已记录的 `versionCode`；全新安装尚未记录时返回 `0`。 */
     suspend fun getLastSeenVersionCode(): Int
 
-    /** 持久化写入已确认阅读的 `versionCode`，保证同版本后续冷启动不再重复弹出。 */
+    /** 持久化写入当前 `versionCode`，保证全新安装静默落盘且同版本后续冷启动不再弹出。 */
     suspend fun setLastSeenVersionCode(versionCode: Int)
 }
 

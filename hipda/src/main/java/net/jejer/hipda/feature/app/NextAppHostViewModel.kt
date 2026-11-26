@@ -133,8 +133,18 @@ class NextAppHostViewModel internal constructor(
                     } catch (_: Exception) {
                         currentVersionCode
                     }
-                    if (!releaseNotesPromptDismissed && lastSeen != currentVersionCode) {
-                        _showReleaseNotesPrompt.value = true
+                    when {
+                        lastSeen <= 0 -> {
+                            try {
+                                store.setLastSeenVersionCode(currentVersionCode)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                            }
+                        }
+                        !releaseNotesPromptDismissed && lastSeen != currentVersionCode -> {
+                            _showReleaseNotesPrompt.value = true
+                        }
                     }
                 }
             }
