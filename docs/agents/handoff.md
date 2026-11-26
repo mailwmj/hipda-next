@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-26 11:28 +07）
+# 负责人交接说明（2026-11-26 12:18 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -6,8 +6,8 @@
 
 ## 1. 全局进度总览
 
-- 设计与流程文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4（已更新 M6 状态：`M6-polish` 合入，M6 仅剩 `E16`）；`docs/agents/decisions.md` 已记录 2026-11-25 用户拍板（`0895b83`）；`docs/agents/DISPATCH.md`、`lesson.md` 与 `docs/agents/cards/_common.md` 已落地站点 scheme 白名单阻断（`00cb3c4`）、**流程提速**（`e735e7a` + `5bae5ab`）、2 条通用新规（`1dc594e`）及“跨卡浮层/返回/玻璃卡必做合入后真实链路探针”经验（`3617fad`）。另外 **`team-lead` skill 已提交 `5a2fc95`，等待用户确认是否推送**。
-- **已合并进 `main`**（当前代码 `HEAD`：`0eebc8a`；**M5 仅剩 `E4` 修复中，M6 已合入 `E-slots`/`E8`/`E12`/`E10`/`E14`/`M6-polish`，M6 只剩 `E16`**）：
+- 设计与流程文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4；`docs/agents/decisions.md`（`0895b83`）；`docs/agents/DISPATCH.md`、`lesson.md` 与 `docs/agents/cards/_common.md` 已落地站点 scheme 白名单阻断（`00cb3c4`）、**流程提速**（`e735e7a` + `5bae5ab`）、2 条通用新规（`1dc594e`）、“跨卡浮层/返回/玻璃卡必做合入后真实链路探针”（`3617fad`）以及“常驻浮层/抽屉 `BackHandler` 须条件启用并按打开状态重挂至 LIFO 栈顶”经验。另外 **`team-lead` skill 已提交 `5a2fc95`，等待用户确认是否推送**。
+- **已合并进 `main`**（当前代码 `HEAD`：`92e1563`，main CI `45758541824` 绿；**M5 全部完成，M6 仅剩 `E16` 在途，`E5` 在途，`E6`/`E7` 待派**；M5 验收包已更新至 `docs/device-check.md`）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
   - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
@@ -59,20 +59,22 @@
     - E10 搜索 + 我的：收藏与关注、我的帖子、浏览历史（合并原 E10+E11，基于 D8a + D1；含 `ForumLinkResolver` 严格白名单、三类列表统一令牌+锚点撤销与在途防复活、Room 串行清空恢复；R-E10 两轮 APPROVE `@9ee39e9`，含 14 张截图目视复验）→ `eb1ace1`
     - E14 看图全屏浮层（实时缩略图共享边界进退与离屏 `0.85f` 淡出、缩放与下拉关闭、`Dismissing` 吞并返回、看图暂停底层液态玻璃采样、长图贴宽顶对齐、GIF 播放切换、`R-E2b S4` 原图字节级确定进度下载与限尺寸解码、`MediaStore`/API 28 权限保存与安全分享；R-E14 两轮 APPROVE `@76dc92e`；V-E14 首轮独立 13/13 PASS 但合入 `main` 链路 3 FAIL → 第 2 轮 PASS，CI `45747336019`）→ `1cffcd9`（main CI `45749346160` 绿）
     - M6-polish M6 跨卡与各页 6 项小修（`SmsConversationScreen` 冷却/错误顶替旧撤销条、`NextAppStateSaver` 短消息仅存 `uid`、`detail:$tid` 20 帖 LRU 淘汰、`BlacklistViewModel` 排在途移除项、`Search`/`Favorites` 无未决令牌刷新秩表、`ImageViewerOverlay` 多图远滑重返不重弹提示；R-M6-polish APPROVE `@0e186fb`）→ `0eebc8a`
+    - E4 阅读位置记忆（`NonCancellable` 串行落盘与首轮门闩）、`PositionStack`（返回优先级低于模态抽屉）、底部三段式液态玻璃工具条（支持 `suppressBottomGlass` 与 `LocalHiGlassSuspended` 暂停采样）、内联跳页条、`rawUserInfo` 链接安全加固、`E2d` 方案 B 移除旧分页栏与 `R-C5b` 收口（R-E4 两轮 APPROVE `@bed7fcc`；V-E4 首轮 FAIL `probeD2` 抽屉返回被位置栈抢占 → 第 2 轮 PASS，CI `45757086073`）→ `92e1563`（**main CI `45758541824` 绿，M5 全部完成**）
 - **阶段验收状态**：
   - **M1 / M2 / M3 / M4**：均已验收通过或全部合入（M4 待用户用真机包调参回写 §5）。
-  - **M5 阅读核心**：已合入 8/9 卡（含 `E2c @ 70da638`），**只剩 `E4`**（正在修复中，合入后达里程碑 B）。
-  - **M6 页面群**：`E-slots`（`4b6c1f0`）、`E8`（`0883c89`）、`E12`（`158ac9c`）、`E10`（`eb1ace1`）、`E14`（`1cffcd9`）、`M6-polish`（`0eebc8a`）全部已合入 `main`；**M6 只剩 `E16`**（安全相关高风险 R+V）。
-- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `M6-polish`/`R-M6-polish` 全套卡与报告；`E2c`/`E-slots` 卡报位于工作副本待补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`、`_review_common.md`、`_verify_common.md`。
+  - **M5 阅读核心全部完成**（9/9 卡全部合入，`main @ 92e1563`，CI `45758541824` 绿；M5 真机验收清单已更新至 `docs/device-check.md`）。
+  - **M6 页面群**：`E-slots`（`4b6c1f0`）、`E8`（`0883c89`）、`E12`（`158ac9c`）、`E10`（`eb1ace1`）、`E14`（`1cffcd9`）、`M6-polish`（`0eebc8a`）全部已合入；**M6 剩 `E16` 在途**。
+  - **发帖链路**：**`E5` 在途**，**`E6`/`E7` 待派**。
+- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `E4`/`R-E4`/`V-E4` 全套卡与报告；`E2c`/`E-slots` 卡报位于工作副本待补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`、`_review_common.md`、`_verify_common.md`。
 
 ## 2. 进行中与待派发
 
 | 卡号 | 分支 / worktree | 状态 |
 |---|---|---|
-| E4（BATCH-5 Wave 4）阅读位置记忆、位置栈、底部三段工具条、内联跳页 | `card/E4-*` | **修复中**（M5 剩余唯一卡） |
-| E16（M6 外链/快捷方式/站内链接/附件下载/剩余路由总收口 + `R-M6-polish S1`，高风险 R+V） | 待派（与 `E4`/`E5` 文件零重叠） | **卡已起草**（`_cards/E16.md`、`R-E16.md`、`V-E16.md`） |
-| E5（毛玻璃快速回复面板 + `R-D6 S2`，高风险 R+V） | 待派（**须等 `E4` 合入后开工**） | **卡已起草**（`_cards/E5.md`、`R-E5.md`、`V-E5.md`） |
-| E6 / E7 | 待规划/派发 | 依赖 `E5` |
+| E16（M6 外链/快捷方式/站内链接/附件下载/剩余路由总收口 + `R-M6-polish S1`，高风险 R+V） | `card/E16-routing-links-attachments` | **在途**（M6 剩余唯一卡） |
+| E5（毛玻璃快速回复面板 + `R-D6 S2`，高风险 R+V） | `card/E5-quick-reply-sheet` | **在途**（基于含 `E4` 的 `92e1563`） |
+| E6（完整编辑器与多图上传条 + `R-D1`/`R-D6 S1/S2`） | 待派（依赖 `E5`） | **待派** |
+| E7（表情选择面板与键盘等高互换 + `C1b#3`） | 待派（依赖 `E6`） | **待派** |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线；流程提速规则已生效（`5bae5ab`）。
@@ -81,39 +83,34 @@
 ## 3. BATCH-4 / BATCH-5 / M6 计划与后续主干路径
 
 - **BATCH-4 计划（已全部合入收官，归档至 `docs/agents/cards/BATCH-4.md`）**：12 张卡、5 波全部合入 `main`。
-- **BATCH-5 计划**（已归档至 `docs/agents/cards/BATCH-5.md`）：M5 阅读核心 **9 卡 4 波**，目前已合入 8 卡（`E0`、`E15`、`E2a`、`E1`、`E2b`、`E2d`、`E3`、`E2c`），**只剩 Wave 4 `E4`**（正在修，合入达里程碑 B 完整验收包）。
-- **M6 合并方案**：`E-slots`（`4b6c1f0`）、`E8`（`0883c89`）、`E12`（`158ac9c`）、`E10`（`eb1ace1`）、`E14`（`1cffcd9`）、`M6-polish`（`0eebc8a`）均已合入；**剩余 `E16`（安全相关 R+V，与 `E4`/`E5` 零重叠）**，以及发帖串行链 `E5（待 E4 合入）→ E6 → E7`。
+- **BATCH-5 计划（M5 全部完成，归档至 `docs/agents/cards/BATCH-5.md`）**：9 卡 4 波全部合入 `main`（`E0`、`E15`、`E2a`、`E1`、`E2b`、`E2d`、`E3`、`E2c`、`E4 @ 92e1563`，main CI `45758541824` 绿），已出 M5 真机验收包。
+- **M6 与发帖链路**：M6 已合入 `E-slots`/`E8`/`E12`/`E10`/`E14`/`M6-polish`，**仅剩 `E16` 在途**；发帖链路 **`E5` 在途**，**`E6`/`E7` 待派**；收官后进入 M7（切正式入口、清旧依赖与 targetSdk 36）。
 - **待观察风险**：
   - **Cloudflare 桌面 UA 下 WebView 过验证尚未在真机触发**：A5c 切换为桌面 Linux Chrome UA + Client Hints（`platform=Linux`、`mobile=false`）后，真机 M1 请求均直接 200 通过、未触发 Cloudflare 人机验证；该 UA 组合下的 WebView 自动/人工过盾与 `cf_clearance` 同步路径尚未经真机实测，列为待观察风险，后续真机首次触发验证时重点核实。
   - **安全提问报错文案格式（`R-E15 S5`）**：若真机 4d4y.com 对安全提问错返回不含 `"登录失败"` 前缀的原文，需记录原文以供 `LoginParser` 补配（已列入 `docs/device-check.md` 第 1 项）。
   - **快速惯性滑行途中上方图片加载完的顿停观察（`R-E2b S2`）**：`PostImageBlock` 补偿调用 `requestScrollToItem` 在 fling 途中可能抢占 `MutatorMutex` 打断惯性滑行，已列入 `docs/device-check.md` 第 6 项真机观察。
-  - **Kyant `backdrop` 同屏 3 块液态玻璃 120Hz 帧率**：用户决定将同屏实时玻璃上限由 `2` 放宽至 `3`（`0895b83`），须在真机 120Hz 实测帧率并验证无掉帧。
-- 第三批遗留优化（归入 `E4` 顺带处理）：R-C5b 复核建议 `HiPressFeedbackNode.onDetach` 复位 `anim`、`displayedCount`/`displayedChar` 改普通引用。
+  - **Kyant `backdrop` 同屏 3 块液态玻璃 120Hz 帧率**：用户决定将同屏实时玻璃上限由 `2` 放宽至 `3`（`0895b83`），须在真机 120Hz 实测帧率并验证无掉帧（已列入 `docs/device-check.md` 第 17 项）。
 
 ## 4. 派发后续卡时必须带入的审查遗留建议（尚待处理项）
 
-> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4、B9a/B9b/B8/B7/D2/D4/D5/D7/D8a/D8b/D9/G1/G2/C4c/C4d/A6/E0/E1/E2a/E2b/E2d/E2c/E3/E-slots/E8/E10/E12/E14/E15/D-cleanup/M6-polish 全部已闭合项）已移除，下面为**进行中或尚未落地**的条目：
+> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4、B9a/B9b/B8/B7/D2/D4/D5/D7/D8a/D8b/D9/G1/G2/C4c/C4d/C5b/A6/E0/E1/E2a/E2b/E2d/E2c/E3/E4/E-slots/E8/E10/E12/E14/E15/D-cleanup/M6-polish 全部已闭合项）已移除，下面为**进行中或尚未落地**的条目：
 
-- **→ E16（待派，安全相关高风险 R+V，已起草 `_cards/E16.md`）**：
+- **→ E16（在途，安全相关高风险 R+V）**：
   - `R-M6-polish S1`：`SearchPane.kt` / `FavoritesPane.kt` 的 `collectLatest` 中 `snackbar.show` 用 `try/finally` 在被打断时 `expire` 令牌（并确保刷新报错分支清理活跃令牌，附撤回即红单测）。
-- **→ “毛玻璃定稿”小卡（待用户用 `db52669`/`c0fc15d` debug 实时调参面板给出最终参数后派发）**：
+- **→ “毛玻璃定稿”小卡（待用户用 `92e1563` debug 实时调参面板给出最终参数后派发）**：
   - 将用户拍板的最终液态玻璃参数与同屏上限 `3` 回写 `docs/design/product-design.md` §5。
 - **→ 真机观察（见 `docs/device-check.md`）**：
   - R-E2b S2：快速惯性滑行（fling）途中首楼越顶图片解码完成触发 `requestScrollToItem` 是否打断惯性顿停；若真机可感知则评估不中断手势的偏移修正策略。
   - R-E15 S5：安全提问回答错误时记录真实站点返回原文，确认是否缺 `"登录失败"` 前缀。
-- **→ E4（Wave 4 修复中，M5 最后一卡：阅读位置记忆、底部三段式工具条与内联跳页条）**：
-  - R-Dkudo 实现提示：内联跳页条滑块使用 `Modifier.weight(1f)` 自适应填充，**勿写死最小宽（如 `widthIn(min = 140.dp)`）**，确保 `340dp` 分屏窄窗 + `1.25×` 字体缩放下零挤压通过。
-  - V-C4d 进度条配色提示：优先用 `primaryContainer`（浅 `≤ 0.50` / 深 `≤ 0.45`）配 `onSurface`；若选用 `primary @ 0.22f` 浅色分支，严禁直接放 `cs.primary` 文字。
-  - R-C5b：`HiPressFeedbackNode.onDetach` 复位 `anim`、`HiRollingNumber` `displayedCount`/`displayedChar` 改普通引用。
-- **→ E5（毛玻璃快速回复面板，高风险 R+V，已起草 `_cards/E5.md`，须等 `E4` 合入后开工）**：
+- **→ E5（在途，毛玻璃快速回复面板，高风险 R+V）**：
   - `R-D6 S2`：恢复已有草稿后若用户删空全部文字退出，显式调用 `deleteDraft(DraftKey.reply(tid))`，避免旧草稿下次进入复活。
-- **→ E6（完整编辑器）**：
+- **→ E6（待派，完整编辑器）**：
   - `R-D1`：在“今日新帖”里点“发新帖”时必须先选定版块（正整数 `fid`）再生成 `DraftKey.newThread(fid)`。
-  - `R-D6 S1`：`E6` 图片上传显式传 `original = false`（按规范压缩后上传；如负责人拍板也可在 `E5` 顺手将 `PostModels.kt` 默认改为 `false`）。
+  - `R-D6 S1`：`E6` 图片上传显式传 `original = false`（按规范压缩后上传）。
   - `R-D6 S2`：完整编辑器同样在恢复草稿被清空退出时显式调用 `deleteDraft`。
-- **→ E7**：C1b#3 — `EmojiGroup.name` 是 `:emoji` 里写死的中文，表情面板分类标签的无障碍 `contentDescription` 需走 `:hipda` 的 `strings_emoji.xml`。
+- **→ E7（待派）**：C1b#3 — `EmojiGroup.name` 是 `:emoji` 里写死的中文，表情面板分类标签的无障碍 `contentDescription` 需走 `:hipda` 的 `strings_emoji.xml`。
 - **→ 后续轻修备忘**：
-  - R-E2b S1：精简 `feature/threaddetail/media/` 约 60–65 行冗余包装与零生产调用重载；V-E14 观察：`ImageViewerPage.kt:178` 直开 HD 超长高图可考虑补 `4096` 上限。
+  - R-E2b S1：精简 `feature/threaddetail/media/` 约 60–65 行冗余包装与零生产调用重载；V-E14 观察：`ImageViewerPage.kt:178` 直开 HD 超长高图可考虑补 `4096` 上限；R-E4 N1：`DefaultThreadDetailRepository` 可选对 `readingPositionDao` 读写加轻量 `Mutex`。
 - **→ M5 / M7 性能验收**：R-M0-2 R4 — `tech-plan.md` §4 提到的 `Macrobenchmark` 尚未加入 `libs.versions.toml`；真机 120Hz 帧时间与卡顿率在 M5/M7 阶段核验。
 - **→ M7-2**：
   - C1b#1：删除旧 `EmojiHandler` 等类时，将 `EmojiMapTest` 固化为 `(code, imageSrc, lightRes, darkRes)` 四元组表驱动测试。
@@ -123,9 +120,9 @@
 
 ## 5. 用户要做的事
 
-1. **W2+W3a 真机验证 + 液态玻璃四组调参（最新包 `main` @ `db52669`，CI `45727798720`；如已在测旧包 `c0fc15d` 可继续用）**：按 `docs/device-check.md` 逐项验证登录/退登、Cloudflare、顶栏玻璃、读帖、图片（含快速甩动顿停观察）、连续自动翻页、Fold8 三栏分隔线拖拽记忆与返回栈、切入口保位、半开进历史、深色骨架，并用同一包在「HiPDA 预览 → 外壳 → 调参」给出四档最终参数回写 §5。
+1. **M5 验收包真机验证 + 液态玻璃四组调参（最新包 `main` @ `92e1563`，CI `45758541824`；保留旧包 `db52669`/`c0fc15d` 记录）**：按 `docs/device-check.md` 逐项验证阅读位置/位置栈/抽屉返回、三段玻璃工具条与内联跳页条、全屏看图、120Hz 三栏玻璃预算与极端可读性、折叠/铰链、M6 页面浏览与日志脱敏，并用同一包在「HiPDA 预览 → 外壳 → 调参」给出四档最终参数回写 §5（写操作项均已标为可选）。
 2. **确认 `team-lead` skill（`5a2fc95`）是否推送**。
-3. **阶段验收（M5 完整包、M7）**：在折叠屏真机核验 3 块液态玻璃 120Hz 帧率、三栏拖拽/半折铰链双栏连续性，以及真实 Android Keystore 下的 Tink 凭据/Cookie 加密读写与恢复。
+3. **阶段验收（M7）**：在折叠屏真机核验全新安装回归、3 块液态玻璃 120Hz 帧率与真实 Android Keystore 下的 Tink 凭据/Cookie 加密读写与恢复。
 
 ---
 
