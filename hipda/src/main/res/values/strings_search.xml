@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 搜索页文案（逐字取自 docs/design/copy.md，禁词 0 命中） -->
+    <string name="search_open_link">打开这个链接</string>
+    <string name="search_recent_title">最近搜索</string>
+    <string name="search_filter_title">标题</string>
+    <string name="search_filter_fulltext">全文</string>
+    <string name="search_filter_author">作者</string>
+    <string name="search_filter_all_forums">全部</string>
+    <string name="search_empty_results">没有找到相关内容</string>
+    <string name="search_action_clear_filters">清除筛选</string>
+    <string name="search_action_clear_input">清除</string>
+    <string name="search_action_delete_history">删除</string>
+    <string name="search_action_submit">搜索</string>
+    <string name="search_snackbar_deleted">已删除</string>
+</resources>
