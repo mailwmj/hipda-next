@@ -1,7 +1,7 @@
 package net.jejer.hipda.feature.threaddetail.body
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.text.appendInlineContent
@@ -14,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -23,6 +24,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
+import net.jejer.hipda.feature.threaddetail.interact.QuoteBlock
 import net.jejer.hipda.feature.threaddetail.media.PostImageBlock
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.parser.threaddetail.InlineSpan
@@ -147,7 +149,7 @@ private fun TextFormat.toSpanStyle(smallFontSize: TextUnit, backgroundColor: Col
     fontSize = if (smallFont) smallFontSize else TextUnit.Unspecified,
 )
 
-/** 帖子楼层正文 Compose 原生渲染器（tech-plan §5 `T6`；`Image` 路由至 `media/PostImageBlock` 接缝）。 */
+/** 帖子楼层正文 Compose 原生渲染器（tech-plan §5 `T6`；`Image` 路由至 `media/PostImageBlock`，`Quote`/`GoToFloor` 路由至 `interact/QuoteBlock` 与跳楼回调）。 */
 @Composable
 fun PostBodyRenderer(
     blocks: List<ContentBlock>,
@@ -156,6 +158,7 @@ fun PostBodyRenderer(
     onOpenImageViewer: (ImageViewerLaunchArgs) -> Unit,
     modifier: Modifier = Modifier,
     onLinkClick: ((String) -> Unit)? = null,
+    onJumpToFloor: ((targetPid: String, targetTid: String?) -> Unit)? = null,
 ) {
     if (blocks.isEmpty()) return
     val uriHandler = LocalUriHandler.current
@@ -171,8 +174,8 @@ fun PostBodyRenderer(
         for (block in blocks) {
             when (block) {
                 is ContentBlock.Text -> PostTextBlockView(block.spans, resolvedLinkHandler)
-                is ContentBlock.Quote -> PostQuoteBlockView(block)
-                is ContentBlock.GoToFloor -> PostGoToFloorBlockView(block)
+                is ContentBlock.Quote -> QuoteBlock(block, onJumpToFloor = onJumpToFloor, onLinkClick = resolvedLinkHandler)
+                is ContentBlock.GoToFloor -> PostGoToFloorBlockView(block, onJumpToFloor)
                 is ContentBlock.Image -> PostImageBlock(block, floorPostId, listState, onOpenImageViewer)
                 is ContentBlock.Attachment -> PostAttachmentBlockView(block, resolvedLinkHandler)
                 is ContentBlock.Notice -> PostNoticeBlockView(block)
@@ -195,29 +198,26 @@ private fun PostTextBlockView(spans: List<InlineSpan>, onLinkClick: (String) -> 
 }
 
 @Composable
-private fun PostQuoteBlockView(quote: ContentBlock.Quote) {
+private fun PostGoToFloorBlockView(
+    goTo: ContentBlock.GoToFloor,
+    onJumpToFloor: ((targetPid: String, targetTid: String?) -> Unit)?,
+) {
     val cs = MaterialTheme.colorScheme
-    Surface(modifier = Modifier.fillMaxWidth(), shape = HiShapeTokens.Medium, color = cs.surfaceContainerLow) {
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-            Box(Modifier.width(3.dp).fillMaxHeight().background(cs.primary.copy(alpha = 0.65f)))
-            Column(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (quote.authorAndTime.isNotBlank()) {
-                    Text(quote.authorAndTime, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                val content = quote.contentText.trim()
-                if (content.isNotEmpty()) {
-                    Text(content, style = MaterialTheme.typography.bodyMedium, color = cs.onSurface, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
+    val targetPid = goTo.targetPid?.takeIf { it.isNotBlank() }
+    val clickModifier = if (targetPid != null && onJumpToFloor != null) {
+        Modifier.clickable(role = Role.Button) { onJumpToFloor(targetPid, goTo.targetTid) }
+    } else {
+        Modifier
     }
-}
-
-@Composable
-private fun PostGoToFloorBlockView(goTo: ContentBlock.GoToFloor) {
-    val cs = MaterialTheme.colorScheme
     Surface(shape = HiShapeTokens.Small, color = cs.secondaryContainer, contentColor = cs.onSecondaryContainer) {
-        Text(goTo.label, style = MaterialTheme.typography.labelMedium, color = cs.onSecondaryContainer, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+        Text(
+            goTo.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = cs.onSecondaryContainer,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = clickModifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        )
     }
 }
 

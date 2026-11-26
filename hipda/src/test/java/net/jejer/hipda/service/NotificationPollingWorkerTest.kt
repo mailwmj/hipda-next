@@ -46,6 +46,7 @@ import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
+import net.jejer.hipda.R
 import net.jejer.hipda.data.account.CredentialsStore
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.DefaultAuthRepository
@@ -58,6 +59,7 @@ import net.jejer.hipda.data.message.NotifyEntry
 import net.jejer.hipda.data.message.NotifyFeed
 import net.jejer.hipda.data.message.NotifyReadStateStore
 import net.jejer.hipda.data.message.NotifyRepository
+import net.jejer.hipda.data.message.UnreadSnapshot
 import net.jejer.hipda.data.network.ChallengeDetector
 import net.jejer.hipda.data.network.HttpClientModule
 import net.jejer.hipda.data.network.InMemorySiteCookieStore
@@ -74,6 +76,7 @@ import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.parser.LegacyTestSupport
 import net.jejer.hipda.parser.common.PromptCounts
+import net.jejer.hipda.parser.message.SmsConversationItem
 import net.jejer.hipda.ui.IntentActivity
 import net.jejer.hipda.utils.Constants
 import okhttp3.OkHttp
@@ -404,7 +407,8 @@ class NotificationPollingWorkerTest {
         val shadowNm = shadowOf(notificationManager)
         val channel = notificationManager.getNotificationChannel(AndroidNotificationPoster.CHANNEL_ID)
         assertNotNull("Channel HIPDA_NOTI must be created", channel)
-        assertEquals(AndroidNotificationPoster.CHANNEL_NAME, channel.name)
+        assertEquals(context.getString(R.string.notification_channel_name), channel.name)
+        assertEquals("论坛通知", channel.name)
 
         val posted = shadowNm.getNotification(AndroidNotificationPoster.NOTIFICATION_ID)
         assertNotNull("Notification must be posted for single unread SMS", posted)
@@ -435,7 +439,8 @@ class NotificationPollingWorkerTest {
         val shadowNm = shadowOf(notificationManager)
         val firstNoti = shadowNm.getNotification(AndroidNotificationPoster.NOTIFICATION_ID)
         assertNotNull(firstNoti)
-        assertEquals(AndroidNotificationPoster.DEFAULT_SUMMARY_TITLE, firstNoti.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+        assertEquals(context.getString(R.string.notification_summary_title), firstNoti.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+        assertEquals("HiPDA 论坛通知", firstNoti.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
         assertEquals(
             "您有 2 条新的短消息，4 条新的提醒",
             firstNoti.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
@@ -656,6 +661,95 @@ class NotificationPollingWorkerTest {
         }
         assertTrue("CancellationException in hasActiveAccount must propagate", caughtCancellation)
         assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun rD9S2_notificationPoster_readsCopyFromStringsNotificationXmlAndCoversFallbacks() {
+        assertEquals("论坛通知", context.getString(R.string.notification_channel_name))
+        assertEquals("HiPDA 论坛通知", context.getString(R.string.notification_summary_title))
+
+        val singleFallback = AndroidNotificationPoster.formatNotificationContent(
+            context = context,
+            snapshot = UnreadSnapshot(
+                smsUnreadCount = 1,
+                notifyUnreadCount = 0,
+                latestUnreadSms = SmsConversationItem(
+                    uid = "20001",
+                    author = "   ",
+                    avatarUrl = null,
+                    time = "刚刚",
+                    summary = "   ",
+                    isNew = true,
+                ),
+            ),
+        )
+        assertEquals(context.getString(R.string.notification_single_sms_title_fallback), singleFallback.title)
+        assertEquals("新短消息", singleFallback.title)
+        assertEquals(context.getString(R.string.notification_single_sms_body_fallback), singleFallback.text)
+        assertEquals("您有 1 条新的短消息", singleFallback.text)
+
+        val singleNamed = AndroidNotificationPoster.formatNotificationContent(
+            context = context,
+            snapshot = UnreadSnapshot(
+                smsUnreadCount = 1,
+                notifyUnreadCount = 0,
+                latestUnreadSms = SmsConversationItem(
+                    uid = "20002",
+                    author = "Alice",
+                    avatarUrl = null,
+                    time = "刚刚",
+                    summary = "明天见",
+                    isNew = true,
+                ),
+            ),
+        )
+        assertEquals("Alice 的短消息", singleNamed.title)
+        assertEquals("明天见", singleNamed.text)
+
+        val empty = AndroidNotificationPoster.formatNotificationContent(
+            context = context,
+            snapshot = UnreadSnapshot(smsUnreadCount = 0, notifyUnreadCount = 0),
+        )
+        assertEquals("HiPDA 论坛通知", empty.title)
+        assertEquals("", empty.text)
+    }
+
+    @Test
+    fun s2_notificationPoster_setsPrivateVisibilityPublicVersionAndTruncatesLongSummary() {
+        val longMultilineSummary = "第一行机密内容\n第二行   " + "超长摘要测试".repeat(25)
+        val snapshot = UnreadSnapshot(
+            smsUnreadCount = 1,
+            notifyUnreadCount = 0,
+            latestUnreadSms = SmsConversationItem(
+                uid = "20009",
+                author = "SecretSender",
+                avatarUrl = null,
+                time = "刚刚",
+                summary = longMultilineSummary,
+                isNew = true,
+            ),
+        )
+
+        val formatted = AndroidNotificationPoster.formatNotificationContent(context, snapshot)
+        assertEquals("SecretSender 的短消息", formatted.title)
+        assertFalse("通知摘要应折叠换行", formatted.text.contains('\n'))
+        assertFalse("通知摘要应折叠连续空白", formatted.text.contains("  "))
+        assertTrue(
+            "超长摘要必须截断至 ${AndroidNotificationPoster.MAX_SUMMARY_PREVIEW_CHARS} 字以内",
+            formatted.text.length <= AndroidNotificationPoster.MAX_SUMMARY_PREVIEW_CHARS,
+        )
+        assertTrue("截断摘要应以省略号结尾", formatted.text.endsWith("…"))
+
+        val poster = AndroidNotificationPoster(context)
+        poster.postUnread(snapshot)
+        val posted = shadowOf(notificationManager).allNotifications.single()
+        assertEquals(androidx.core.app.NotificationCompat.VISIBILITY_PRIVATE, posted.visibility)
+        val publicVersion = posted.publicVersion
+        assertNotNull("锁屏通知必须提供 publicVersion 隐藏发件人与正文摘要", publicVersion)
+        assertEquals("HiPDA 论坛通知", publicVersion!!.extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
+        assertEquals("您有 1 条新的短消息", publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString())
+        assertFalse(publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TITLE).toString().contains("SecretSender"))
+        assertFalse(publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TEXT).toString().contains("机密"))
     }
 
     private fun singleSmsPollHtml(): String = """

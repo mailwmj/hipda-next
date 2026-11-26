@@ -80,3 +80,25 @@
    - 反之若 `PostImageBlock` 先于 `syncBeforeMeasure` 执行 `requestScrollToItem(1, 1768)`，由于尚未 remeasure，`syncBeforeMeasure` 仍从旧 `layoutInfo.visibleItemsInfo` 读到 `anchorItem.offset == -820` 并随后调用 `requestScrollToItem(15, 820)` 将 `+948px` 补偿覆盖归零。
 3. **现象**：两路路径均未发生过度补偿，但在同一帧窗口内会彻底丢失图片变高对应的 `+948px` 滚动补偿，导致首可见楼层尾部及后续 `p202` 当场下跳 **`473.5 dp`**。
 4. **给负责人的修复参考**（仅记录不越界修改）：合入 `E2b` + `E2d` 时，应在 `E2b` 补偿或协调层处理未重测窗口——例如在 `PostImageBlock` 读取 `listState.layoutInfo` 前检查或用 `floor:$floorPostId` 与 `firstVisibleItemScrollOffset` 并在必要时等待 `withFrameNanos` / 通过 `listState.dispatchRawDelta` 或统一单帧锚点协调，确保向上插页更新 `firstVisibleItemIndex` 时不致使同一楼层越顶图误入 `ABOVE_FIRST_VISIBLE_FLOOR_SNAP` 且不被 `syncBeforeMeasure` 覆盖。
+
+---
+
+## 五、合并复验（`E2d` 修复轮 `f8b5d2a` 含 `main @ c0fc15d` + 原样探针重跑）
+
+- **复验结论**：**`PASS`**（`E2bE2dMergeProbeTest` 5/5 + `E2bProbeTest` 4/4 零修改断言原样全部通过，全场景首可见楼层偏移均 `≤ 1dp`）
+- **复验分支与提交**：`verify/E2d-merge-probes` @ `990551f`（基于 `origin/card/E2d-thread-continuous-paging` @ `f8b5d2a`，worktree `/home/mir/Documents/hipda-next.wt/V-E2d-merge`），原样移植 `E2bE2dMergeProbeTest.kt`（SHA-256 `c5545e25895c4818327dc01992ffe982202277ce0a6ae77783d7d310ae522b52`）与 `E2bProbeTest.kt`（SHA-256 `415842bd0a0542c174fab7b8c751d5956094e5cf836a84b3136cc39dae1e179a`），未改动任何生产文件与断言。
+- **GitHub Actions CI 证据**：
+  - [Android CI #45711462467](https://github.com/mailwmj/hipda-next/actions/runs/45711462467) — `Build, Lint & Unit Tests`（Job `139546667296`）**SUCCESS**（11m27s）
+  - 汇总：**`TOTAL: 1128 tests, 1128 passed, 0 failed, 0 errors, 0 skipped`**（`:hipda:testDebugUnitTest` 1030 + `:core-parser:test` 98；含 `E2bE2dMergeProbeTest` 5/5、`E2bProbeTest` 4/4、`ContinuousPagingAnchorTest` 15/15、`CopyTerminologyScanTest` 3/3、`MotionTokenScanTest` 7/7、`-Proborazzi.test.verify=true`、`assembleDebug`、`assembleRelease`、`lintDebug`）。
+- **逐场景实测偏移（均以 `F1`–`F20` 逐帧及终态测量，`≤ 1dp`）**：
+
+| 场景 | 测试方法 | 首楼索引/偏移状态 | 实测最大偏移 | 结论 |
+|---|---|---|---|---|
+| **对照组（仅越顶图片变长）** | `baseline_imageAboveViewportGrowsWithoutPrepend_staysZeroJump` | `firstIdx=0, offset=1768` | `p202=0.5dp`, `p201Tail=0.5dp` | **PASS** |
+| **同帧先插页后图片（首楼越顶图）** | `mergeProbe1A_prependThenImageSameTick_aboveViewportImageInFirstVisibleFloor` | `firstIdx=15, offset=1768` | `p202=0.5dp`, `p201Tail=0.5dp` | **PASS** |
+| **同帧先图片后插页（首楼越顶图）** | `mergeProbe1B_imageThenPrependSameTick_aboveViewportImageInFirstVisibleFloor` | `firstIdx=15, offset=1768` | `p202=0.5dp`, `p201Tail=0.5dp` | **PASS** |
+| **隔帧（插页后 1 帧图片完成）** | `mergeProbe1C_imageOneFrameAfterPrepend_aboveViewportImageInFirstVisibleFloor` | `firstIdx=15, offset=1768` | `p202=0.5dp`, `p201Tail=0.5dp` | **PASS** |
+| **跨楼层（padding 内上楼图片变长 + 插页同帧）** | `mergeProbe2_upwardPrependSimultaneousWithAboveFloorInPaddingGrowing` | `firstIdx=16, offset=20` | `p202=0.0dp` | **PASS** |
+| **V-E2b 独立探针 a–c（三分支/白名单/省流）** | `E2bProbeTest`（4 项：`probeA`, `probeA2`, `probeB`, `probeC`） | — | `≤1dp` / `==0dp` | **PASS** (4/4) |
+
+- **修复核实要点**：`f8b5d2a` 在 `PostImageBlock.kt` 中改以同一帧已布局的 `layoutInfo.visibleItemsInfo` 判定首可见项，并通过 `LocalAboveViewportHeightCompensationAuthority` 将越顶高度增量接入 `ThreadDetailPane.kt` `PrependAnchorController`（以 `LazyListLayoutInfo` 引用作单帧纪元），使同帧两种先后顺序均能合成 `(targetIndex=15, targetOffset=1768)`，彻底消除了此前 `473.5dp` 跳变。
