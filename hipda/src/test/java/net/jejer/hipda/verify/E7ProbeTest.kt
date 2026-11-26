@@ -709,6 +709,186 @@ class E7ProbeTest {
         }
     }
 
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun probe1e_supplementG_e6bEditPostMode_phone411dp_frameByFrameSwap_wholeBackspaceAndSubmit() {
+        verifyE6bEditPostEmojiSwapAndBackspace(
+            windowLabel = "EditPost-411x891",
+            navBarDp = 24,
+            imeMaxDp = 280,
+            verifyWholeBackspaceAndSubmit = true,
+        )
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.EXPANDED_933_696)
+    fun probe1e_supplementG_e6bEditPostMode_centeredModal933dp_frameByFrameSwap() {
+        verifyE6bEditPostEmojiSwapAndBackspace(
+            windowLabel = "EditPost-CenteredModal-933x696",
+            navBarDp = 0,
+            imeMaxDp = 260,
+            verifyWholeBackspaceAndSubmit = false,
+        )
+    }
+
+    private fun verifyE6bEditPostEmojiSwapAndBackspace(
+        windowLabel: String,
+        navBarDp: Int,
+        imeMaxDp: Int,
+        verifyWholeBackspaceAndSubmit: Boolean,
+    ) {
+        val db = createInMemoryDb()
+        val clockMs = AtomicLong(1_000_000L)
+        val submitted = CopyOnWriteArrayList<PostSubmitRequest>()
+        val baseRepo = DbPostRepository(db.draftDao(), clockMs)
+        val editPostRepo = object : PostRepository by baseRepo {
+            override suspend fun fetchPrePost(request: PrePostRequest, priority: AccessPriority): PrePostResult =
+                if (request is PrePostRequest.EditPost) {
+                    PrePostResult.Success(
+                        PrePostInfo(
+                            "fh", "42", null, "原帖标题", "edit前{:2_41:}:)后", "", true,
+                            null, null, null, null, emptyList(), emptyList(), null, emptyMap(), probeMeta(),
+                        ),
+                    )
+                } else {
+                    baseRepo.fetchPrePost(request, priority)
+                }
+
+            override suspend fun submitPost(request: PostSubmitRequest, priority: AccessPriority): PostSubmitResult {
+                submitted.add(request)
+                return baseRepo.submitPost(request, priority)
+            }
+        }
+        val harness = ProbeHarness(
+            detailRepo = ProbeThreadDetailRepository(ownFloorUid = "42"),
+            customPostRepo = editPostRepo,
+            customDb = db,
+        )
+        try {
+            var hostView: View? = null
+            composeRule.setContent {
+                hostView = LocalView.current
+                harness.RenderAppRoot()
+            }
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+            advanceVirtualAndMainLooper(250L)
+
+            // 长按自己的 1 楼触发 E6b 编辑菜单
+            composeRule.onNode(
+                SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick) and
+                    hasAnyDescendant(hasText("帖子 1001 第 1 页 第 1 楼 (p101) 正文")),
+            ).performSemanticsAction(SemanticsActions.OnLongClick)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("编辑").assertIsDisplayed().performClick()
+
+            waitUntilRealCondition(4_000L, { "E6b 编辑原帖正文未加载" }) {
+                composeRule.onAllNodes(hasContentDescription("正文") and hasSetTextAction())
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            val bodyNode = composeRule.onNode(hasContentDescription("正文") and hasSetTextAction())
+            assertEquals("edit前{:2_41:}:)后", readEditableText(bodyNode))
+            bodyNode.performSemanticsAction(SemanticsActions.RequestFocus)
+            composeRule.waitForIdle()
+
+            val density = composeRule.density
+            val rootView = requireNotNull(hostView)
+            dispatchWindowInsets(rootView, imeDp = imeMaxDp, navBarDp = navBarDp)
+            composeRule.waitForIdle()
+            advanceVirtualAndMainLooper(250L)
+            composeRule.waitForIdle()
+
+            fun toolbarBottomDp(): Float {
+                val imgBtn = composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode()
+                val toolbarRowBounds = imgBtn.layoutInfo.parentInfo?.let { parentLayout ->
+                    val coords = parentLayout.coordinates
+                    val pos = coords.localToRoot(androidx.compose.ui.geometry.Offset.Zero)
+                    pos.y + coords.size.height
+                } ?: imgBtn.boundsInRoot.bottom
+                return with(density) { toolbarRowBounds.toDp().value }
+            }
+
+            fun iconBottomDp(): Float {
+                val bounds = composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode().boundsInRoot
+                return with(density) { bounds.bottom.toDp().value }
+            }
+
+            val baselineToolbarBottom = toolbarBottomDp()
+            val baselineIconBottom = iconBottomDp()
+
+            composeRule.mainClock.autoAdvance = false
+            try {
+                // IME -> 表情
+                composeRule.onNodeWithContentDescription("表情").performClick()
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertFrameEdgeStable(windowLabel, "EditPost tapEmoji frame0 toolbar", baselineToolbarBottom, toolbarBottomDp())
+                assertFrameEdgeStable(windowLabel, "EditPost tapEmoji frame0 icon", baselineIconBottom, iconBottomDp())
+                composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板")).assertIsDisplayed()
+
+                for (imeStep in listOf(imeMaxDp - 60, imeMaxDp - 130, 60, 0).map { it.coerceAtLeast(0) }) {
+                    dispatchWindowInsets(rootView, imeDp = imeStep, navBarDp = navBarDp)
+                    stepFrameAndCheck { stepLabel ->
+                        assertFrameEdgeStable(windowLabel, "EditPost hide($imeStep/$stepLabel) toolbar", baselineToolbarBottom, toolbarBottomDp())
+                        assertFrameEdgeStable(windowLabel, "EditPost hide($imeStep/$stepLabel) icon", baselineIconBottom, iconBottomDp())
+                    }
+                }
+
+                // 表情 -> 键盘
+                composeRule.onNodeWithContentDescription("键盘").performClick()
+                Snapshot.sendApplyNotifications()
+                composeRule.mainClock.advanceTimeByFrame()
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertFrameEdgeStable(windowLabel, "EditPost tapKbd frame0 toolbar", baselineToolbarBottom, toolbarBottomDp())
+                assertFrameEdgeStable(windowLabel, "EditPost tapKbd frame0 icon", baselineIconBottom, iconBottomDp())
+
+                for (imeStep in listOf(60, imeMaxDp / 2, imeMaxDp - 40, imeMaxDp)) {
+                    dispatchWindowInsets(rootView, imeDp = imeStep, navBarDp = navBarDp)
+                    stepFrameAndCheck { stepLabel ->
+                        assertFrameEdgeStable(windowLabel, "EditPost show($imeStep/$stepLabel) toolbar", baselineToolbarBottom, toolbarBottomDp())
+                        assertFrameEdgeStable(windowLabel, "EditPost show($imeStep/$stepLabel) icon", baselineIconBottom, iconBottomDp())
+                    }
+                }
+            } finally {
+                composeRule.mainClock.autoAdvance = true
+            }
+
+            if (verifyWholeBackspaceAndSubmit) {
+                composeRule.onNodeWithContentDescription("表情").performClick()
+                composeRule.waitForIdle()
+                // 光标停在 "edit前{:2_41:}:)" 之后（"后" 之前，偏移 15）
+                bodyNode.performTextInputSelection(TextRange(15, 15))
+                composeRule.waitForIdle()
+
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("edit前{:2_41:}后", readEditableText(bodyNode))
+                assertEquals(TextRange(13, 13), readSelection(bodyNode))
+
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("edit前后", readEditableText(bodyNode))
+                assertEquals(TextRange(5, 5), readSelection(bodyNode))
+
+                composeRule.onNodeWithContentDescription("呆呆表情").performClick()
+                composeRule.waitForIdle()
+                composeRule.onNodeWithContentDescription("表情 {:3_57:}").performClick()
+                composeRule.waitForIdle()
+                assertEquals("edit前{:3_57:}后", readEditableText(bodyNode))
+                composeRule.onNodeWithText("还原原文").assertIsDisplayed()
+
+                composeRule.onNodeWithContentDescription("发送").performClick()
+                advanceUntilVirtualCondition(3_000L) { submitted.isNotEmpty() && !harness.editorVm.uiState.value.isOpen }
+                val req = submitted.last() as PostSubmitRequest.EditPost
+                assertEquals("edit前{:3_57:}后", req.content)
+            }
+        } finally {
+            harness.close()
+        }
+    }
+
     // =========================================================================
     // 探针 2 + (b) + (d) + (e)：无键盘高度回退限高、三栏边界、玻璃预算与 749×559 矮屏可达性
     // =========================================================================
@@ -786,10 +966,7 @@ class E7ProbeTest {
 
             val editorPanelBounds = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板"))
                 .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-            val editorContainerBounds = composeRule.onNode(
-                SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "回复"),
-            ).fetchSemanticsNode().boundsInRoot
-            val editorSlotHeightDp = with(density) { (editorContainerBounds.bottom - editorPanelBounds.top).toDp().value }
+            val editorSlotHeightDp = with(density) { (rootBounds.bottom - editorPanelBounds.top).toDp().value }
             assertEquals("FullEditor 无键盘记忆高度应严格吻合 §7.4", expectedHeightDp, editorSlotHeightDp, 1.5f)
             assertNoOverflowInsideWindow(
                 rootBounds,
@@ -874,9 +1051,7 @@ class E7ProbeTest {
             composeRule.waitForIdle()
             val editorPanelTop = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板"))
                 .assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
-            val editorContainerBottom = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "回复"))
-                .fetchSemanticsNode().boundsInRoot.bottom
-            val editorSlotDp = with(density) { (editorContainerBottom - editorPanelTop).toDp().value }
+            val editorSlotDp = with(density) { (rootBounds.bottom - editorPanelTop).toDp().value }
             assertEquals("FullEditor 应跨宿主复用 240+24=264dp 键盘记忆", 264f, editorSlotDp, 1.5f)
 
             // 关闭 FullEditor 进入 SMS 对话（IME=0 下），应继续复用 240+24=264dp
@@ -895,6 +1070,134 @@ class E7ProbeTest {
                 .assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
             val smsSlotDp = with(density) { (rootBounds.bottom - smsPanelTop).toDp().value }
             assertEquals("SMS 对话应跨宿主复用 240+24=264dp 键盘记忆", 264f, smsSlotDp, 1.5f)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.SIDEBAR_SINGLE_640_1024)
+    fun probe2e_supplementF_baselineQuickReplyAfterIme_noCenteredModalOpened() {
+        val harness = ProbeHarness()
+        try {
+            var hostView: View? = null
+            composeRule.setContent {
+                hostView = LocalView.current
+                harness.RenderAppRoot()
+            }
+            composeRule.waitForIdle()
+            val density = composeRule.density
+            val rootView = requireNotNull(hostView)
+            val rootBounds = composeRule.onRoot().fetchSemanticsNode().boundsInRoot
+
+            composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+            advanceVirtualAndMainLooper(250L)
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            dispatchWindowInsets(rootView, imeDp = 264, navBarDp = 24)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            dispatchWindowInsets(rootView, imeDp = 0, navBarDp = 24)
+            advanceVirtualAndMainLooper(250L)
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithContentDescription("收起回复面板").performClick()
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().isEmpty()
+            }
+
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            val panelBounds = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板"))
+                .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val totalSlotDp = with(density) { (rootBounds.bottom - panelBounds.top).toDp().value }
+            val contentDp = with(density) { panelBounds.height.toDp().value }
+            assertEquals("基线 QuickReply 占位总高应为 240+24=264dp", 264f, totalSlotDp, 1.5f)
+            assertEquals("基线 QuickReply 内容高应为 240dp", 240f, contentDp, 1.5f)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.SIDEBAR_SINGLE_640_1024)
+    fun probe2e_supplementF_centeredModalOpenEmojiThenQuickReply_zeroNavBarCachePollution() {
+        val harness = ProbeHarness()
+        try {
+            var hostView: View? = null
+            composeRule.setContent {
+                hostView = LocalView.current
+                harness.RenderAppRoot()
+            }
+            composeRule.waitForIdle()
+            val density = composeRule.density
+            val rootView = requireNotNull(hostView)
+            val rootBounds = composeRule.onRoot().fetchSemanticsNode().boundsInRoot
+
+            // 1. 先在 CenteredModal（无键盘高度记忆、navBar=24dp）打开并关闭表情面板，确认 QuickReply 仍吻合 §7.4 回退高度 280dp
+            dispatchWindowInsets(rootView, imeDp = 0, navBarDp = 24)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+            advanceVirtualAndMainLooper(250L)
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("展开全屏").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板")).assertIsDisplayed()
+
+            composeRule.onAllNodesWithContentDescription("返回").onLast().performClick()
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            val qrFallbackBounds = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板"))
+                .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val qrFallbackTotalDp = with(density) { (rootBounds.bottom - qrFallbackBounds.top).toDp().value }
+            assertEquals("CenteredModal 无 IME 打开表情后再开 QuickReply，高度应仍为 280dp", 280f, qrFallbackTotalDp, 1.5f)
+            composeRule.onNodeWithContentDescription("收起回复面板").performClick()
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().isEmpty()
+            }
+
+            // 2. 在 CenteredModal 弹起 IME=264dp（含 24dp 导航栏 -> 净高 240dp）下打开表情面板并退掉 IME 后关闭模态
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("展开全屏").performClick()
+            composeRule.waitForIdle()
+            dispatchWindowInsets(rootView, imeDp = 264, navBarDp = 24)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            dispatchWindowInsets(rootView, imeDp = 0, navBarDp = 24)
+            advanceVirtualAndMainLooper(250L)
+            composeRule.waitForIdle()
+
+            val modalBounds = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板"))
+                .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val modalTotalDp = with(density) { (rootBounds.bottom - modalBounds.top).toDp().value }
+            assertEquals("CenteredModal 自身总占位应为 240+24=264dp", 264f, modalTotalDp, 1.5f)
+
+            composeRule.onAllNodesWithContentDescription("返回").onLast().performClick()
+            composeRule.waitForIdle()
+
+            // 3. 随后打开 QuickReply（IME=0, navBar=24），检查面板高度与未开过模态的基线（264dp total / 240dp content）严格一致，未被污染成 288dp
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            val qrAfterBounds = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "表情面板"))
+                .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val qrAfterTotalDp = with(density) { (rootBounds.bottom - qrAfterBounds.top).toDp().value }
+            val qrAfterContentDp = with(density) { qrAfterBounds.height.toDp().value }
+            assertEquals("CenteredModal 打开表情后再开 QuickReply 总高不得被导航栏污染（应=264dp，非288dp）", 264f, qrAfterTotalDp, 1.5f)
+            assertEquals("CenteredModal 打开表情后再开 QuickReply 内容高不得被污染（应=240dp，非264dp）", 240f, qrAfterContentDp, 1.5f)
         } finally {
             harness.close()
         }
@@ -1183,11 +1486,11 @@ class E7ProbeTest {
             assertEquals("前{:3_57:}后", readEditableText(qrInput))
             assertEquals(TextRange(9, 9), readSelection(qrInput))
 
-            // 表情面板退格删去 '}' -> "前{:3_57:后"
+            // 表情面板退格整枚删去 {:3_57:} -> "前后"
             composeRule.onNodeWithContentDescription("删除").performClick()
             composeRule.waitForIdle()
-            assertEquals("前{:3_57:后", readEditableText(qrInput))
-            assertEquals(TextRange(8, 8), readSelection(qrInput))
+            assertEquals("前后", readEditableText(qrInput))
+            assertEquals(TextRange(1, 1), readSelection(qrInput))
 
             // ---- Host 2: FullEditorScreen 光标中间插入、选区替换、回删 ----
             composeRule.onNodeWithContentDescription("展开全屏").performClick()
@@ -1223,8 +1526,8 @@ class E7ProbeTest {
 
             composeRule.onNodeWithContentDescription("删除").performClick()
             composeRule.waitForIdle()
-            assertEquals("甲{:3_57:乙", readEditableText(editorBody))
-            assertEquals(TextRange(8, 8), readSelection(editorBody))
+            assertEquals("甲乙", readEditableText(editorBody))
+            assertEquals(TextRange(1, 1), readSelection(editorBody))
 
             // 退出编辑器与帖子详情，进入 SMS 对话页
             composeRule.onAllNodesWithContentDescription("返回").onLast().performClick()
@@ -1270,8 +1573,8 @@ class E7ProbeTest {
 
             composeRule.onNodeWithContentDescription("删除").performClick()
             composeRule.waitForIdle()
-            assertEquals("左{:3_57:右", readEditableText(smsInput))
-            assertEquals(TextRange(8, 8), readSelection(smsInput))
+            assertEquals("左右", readEditableText(smsInput))
+            assertEquals(TextRange(1, 1), readSelection(smsInput))
         } finally {
             harness.close()
         }
@@ -1507,6 +1810,99 @@ class E7ProbeTest {
         composeRule.onNodeWithText("纯文本短消息").performTouchInput { longClick() }
         composeRule.waitForIdle()
         composeRule.onNodeWithText("复制").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun probe3d_supplementH_emojiPanelBackspaceDeletesWholeEmojiTokens_monkeyAndSmiley_allThreeHosts() {
+        val harness = ProbeHarness()
+        try {
+            composeRule.setContent { harness.RenderAppRoot() }
+            composeRule.waitForIdle()
+
+            fun verifyWholeEmojiDeletionOnActiveHost(inputNode: SemanticsNodeInteraction) {
+                // 顺序 1："A{:2_41:}:)B"，光标在第 11 位（":)" 末尾）-> 先整枚删 ":)"，再整枚删 "{:2_41:}"
+                inputNode.performTextReplacement("A{:2_41:}:)B")
+                inputNode.performTextInputSelection(TextRange(11, 11))
+                composeRule.waitForIdle()
+
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("A{:2_41:}B", readEditableText(inputNode))
+                assertEquals(TextRange(9, 9), readSelection(inputNode))
+
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("AB", readEditableText(inputNode))
+                assertEquals(TextRange(1, 1), readSelection(inputNode))
+
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("B", readEditableText(inputNode))
+                assertEquals(TextRange(0, 0), readSelection(inputNode))
+
+                // 顺序 2："A:){:2_41:}B"，光标在第 11 位 -> 先整枚删 "{:2_41:}"，再整枚删 ":)"
+                inputNode.performTextReplacement("A:){:2_41:}B")
+                inputNode.performTextInputSelection(TextRange(11, 11))
+                composeRule.waitForIdle()
+
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("A:)B", readEditableText(inputNode))
+                assertEquals(TextRange(3, 3), readSelection(inputNode))
+
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("AB", readEditableText(inputNode))
+                assertEquals(TextRange(1, 1), readSelection(inputNode))
+
+                // 普通右花括号非表情代码：只删 1 字符 '}'
+                inputNode.performTextReplacement("测}试")
+                inputNode.performTextInputSelection(TextRange(2, 2))
+                composeRule.waitForIdle()
+                composeRule.onNodeWithContentDescription("删除").performClick()
+                composeRule.waitForIdle()
+                assertEquals("测试", readEditableText(inputNode))
+                assertEquals(TextRange(1, 1), readSelection(inputNode))
+            }
+
+            // 1. QuickReplySheet
+            composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+            advanceVirtualAndMainLooper(250L)
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            verifyWholeEmojiDeletionOnActiveHost(composeRule.onNode(hasSetTextAction()))
+
+            // 2. FullEditorScreen
+            composeRule.onNodeWithContentDescription("展开全屏").performClick()
+            composeRule.waitForIdle()
+            val editorBody = composeRule.onNodeWithContentDescription("回复 楼主")
+            editorBody.performSemanticsAction(SemanticsActions.RequestFocus)
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            verifyWholeEmojiDeletionOnActiveHost(editorBody)
+
+            // 3. SmsConversationScreen
+            editorBody.performTextReplacement("")
+            composeRule.waitForIdle()
+            composeRule.onAllNodesWithContentDescription("返回").onLast().performClick()
+            composeRule.waitForIdle()
+            composeRule.mainClock.advanceTimeBy(11_000L)
+            composeRule.waitForIdle()
+            composeRule.onAllNodesWithContentDescription("返回").onLast().performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Messages)).performClick()
+            advanceVirtualAndMainLooper(250L)
+            composeRule.onNodeWithText("消息探针").performClick()
+            advanceVirtualAndMainLooper(250L)
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            verifyWholeEmojiDeletionOnActiveHost(composeRule.onNode(hasSetTextAction()))
+        } finally {
+            harness.close()
+        }
     }
 
     // =========================================================================
@@ -1936,6 +2332,7 @@ class E7ProbeTest {
     private class ProbeThreadDetailRepository(
         private val lastPage: Int = 10,
         private val imagePages: Map<Pair<String, Int>, ContentBlock.Image> = emptyMap(),
+        private val ownFloorUid: String? = null,
     ) : ThreadDetailRepository {
         override suspend fun loadPage(tid: String, page: Int, filter: ThreadDetailFilter, recordHistory: Boolean, forumName: String?, priority: AccessPriority): ThreadDetailLoadResult {
             val pageImage = imagePages[tid to page]
@@ -1946,7 +2343,18 @@ class E7ProbeTest {
                     if (idx == 1 && pageImage != null) add(pageImage)
                     add(ContentBlock.Text(listOf(InlineSpan.Plain("帖子 $tid 第 $page 页 第 $floorNo 楼 ($pid) 正文"))))
                 }
-                PostFloor(pid, floorNo, page, if (floorNo == 1) "100" else "$idx", if (floorNo == 1) "楼主" else "坛友$idx", null, "2026-11-26 10:00", false, null, null, null, blocks)
+                val isOwnFirst = floorNo == 1 && ownFloorUid != null
+                val uid = when {
+                    isOwnFirst -> ownFloorUid
+                    floorNo == 1 -> "100"
+                    else -> "$idx"
+                }
+                val author = when {
+                    isOwnFirst -> "HiProbeUser"
+                    floorNo == 1 -> "楼主"
+                    else -> "坛友$idx"
+                }
+                PostFloor(pid, floorNo, page, uid, author, null, "2026-11-26 10:00", false, null, null, null, blocks)
             }
             val filtered = when (filter) {
                 ThreadDetailFilter.All -> baseFloors
