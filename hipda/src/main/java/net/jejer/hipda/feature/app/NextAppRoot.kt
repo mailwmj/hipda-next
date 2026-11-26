@@ -39,11 +39,17 @@ import kotlinx.coroutines.flow.StateFlow
 import net.jejer.hipda.R
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.HiThemeSettingsAdapter
+import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
+import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LocalHiImageLoader
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.LoginOverlayRenderer
+import net.jejer.hipda.feature.common.MessagesPaneRenderer
+import net.jejer.hipda.feature.common.SearchMinePaneRenderer
+import net.jejer.hipda.feature.common.SettingsProfilePaneRenderer
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
@@ -56,7 +62,7 @@ import net.jejer.hipda.ui.shell.HiSidebarState
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import net.jejer.hipda.ui.shell.calculateShellPaneLayout
 
-/** M5 新版应用根容器：驱动实时主题、单源设置持久化、宿主级 `SaveableStateHolder`、多栏阅读引擎、分区 Snackbar 与登录覆盖层插槽。 */
+/** M5/M6 新版应用根容器：驱动实时主题、单源设置持久化、宿主级槽位缓存、多栏阅读引擎、分区 Snackbar 与 M6 可选功能插槽。 */
 @Composable
 fun NextAppRoot(
     settingsFlow: Flow<AppSettings>,
@@ -66,6 +72,10 @@ fun NextAppRoot(
     modifier: Modifier = Modifier,
     imageLoader: ImageLoader? = null,
     loginOverlayRenderer: LoginOverlayRenderer? = null,
+    messagesPaneRenderer: MessagesPaneRenderer? = null,
+    searchMinePaneRenderer: SearchMinePaneRenderer? = null,
+    settingsProfilePaneRenderer: SettingsProfilePaneRenderer? = null,
+    imageViewerRenderer: ImageViewerRenderer? = null,
     hostViewModel: NextAppHostViewModel = viewModel(),
     forumViewModel: ForumViewModel = viewModel(),
     onFallbackLoginClick: (() -> Unit)? = null,
@@ -119,6 +129,7 @@ fun NextAppRoot(
     var latestPaneLayout by remember { mutableStateOf(calculateShellPaneLayout(windowDpSize.width.value, windowDpSize.height.value)) }
     var latestMiddleWidthDp by remember { mutableStateOf(latestPaneLayout.middlePaneWidthDp.dp) }
     var latestBottomPaddingDp by remember { mutableStateOf(0.dp) }
+    var activeImageViewerArgs by remember { mutableStateOf<ImageViewerLaunchArgs?>(null) }
     val navBarsBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     HiTheme(themeConfig.themeMode, themeConfig.pureBlack, themeConfig.seed, themeConfig.fontSizeStep, themeConfig.lineHeightPreset) {
@@ -175,31 +186,97 @@ fun NextAppRoot(
                                 onOpenLogin = { openLoginOrAccount(LoginOverlayMode.Login) },
                                 listState = listState,
                                 contentPadding = padding,
+                                onOpenImageViewer = { launchArgs ->
+                                    if (imageViewerRenderer != null) activeImageViewerArgs = launchArgs
+                                },
                                 onOpenUserProfile = hostViewModel::pushUserProfile,
                             )
                         },
-                        secondaryListContent = { entry, showBack, onBack, padding, _ ->
-                            UnbuiltEntryPlaceholder(entryPlaceholderText(entry), showBack, onBack, padding)
+                        secondaryListContent = { entry, showBack, onBack, padding, listState ->
+                            val openLogin = { openLoginOrAccount(LoginOverlayMode.Login) }
+                            when {
+                                (entry == ShellSidebarEntry.Sms || entry == ShellSidebarEntry.Notify) && messagesPaneRenderer != null ->
+                                    messagesPaneRenderer.ListContent(
+                                        entry, paneLayout.isSidebar, showBack, onBack, appState.selectedSmsConversation?.uid,
+                                        hostViewModel::selectSidebarEntry, hostViewModel::openSmsConversation,
+                                        hostViewModel::openThread, hostViewModel::pushUserProfile, openLogin, padding, listState,
+                                    )
+                                entry == ShellSidebarEntry.Search && searchMinePaneRenderer != null ->
+                                    searchMinePaneRenderer.SearchContent(
+                                        showBack, onBack, hostViewModel::openThread,
+                                        { fid -> hostViewModel.selectForumSource(ForumListSource.Forum(fid)) },
+                                        hostViewModel::pushUserProfile, openLogin, padding, listState,
+                                    )
+                                entry.isMineGroupChild && searchMinePaneRenderer != null ->
+                                    searchMinePaneRenderer.MineSubPageContent(
+                                        entry, paneLayout.isSidebar, showBack, onBack,
+                                        hostViewModel::selectSidebarEntry, hostViewModel::openThread, openLogin, padding, listState,
+                                    )
+                                entry == ShellSidebarEntry.Settings && settingsProfilePaneRenderer != null ->
+                                    settingsProfilePaneRenderer.SettingsGroupsContent(
+                                        appState.selectedSettingsGroup, paneLayout.isSidebar, showBack, onBack,
+                                        { group -> hostViewModel.selectSettingsGroup(group, openDetailInSinglePane = !paneLayout.hasDetailPane) },
+                                        padding, listState,
+                                    )
+                                else -> UnbuiltEntryPlaceholder(entryPlaceholderText(entry), showBack, onBack, padding)
+                            }
                         },
                         mineMenuContent = { padding ->
-                            UnbuiltEntryPlaceholder(
-                                message = account?.username ?: stringResource(R.string.shell_sidebar_mine),
-                                showBack = false,
-                                onBack = null,
-                                contentPadding = padding,
-                                action = HiStateAction(
-                                    label = stringResource(if (account == null) R.string.common_action_login else R.string.shell_sidebar_account),
-                                    onClick = { openLoginOrAccount(if (account != null) LoginOverlayMode.AccountMenu else LoginOverlayMode.Login) },
-                                ),
-                            )
+                            val onAccountAction = { openLoginOrAccount(if (account != null) LoginOverlayMode.AccountMenu else LoginOverlayMode.Login) }
+                            if (searchMinePaneRenderer != null) {
+                                searchMinePaneRenderer.MineMenuContent(account, onAccountAction, hostViewModel::selectSidebarEntry, padding)
+                            } else {
+                                UnbuiltEntryPlaceholder(
+                                    message = account?.username ?: stringResource(R.string.shell_sidebar_mine),
+                                    showBack = false,
+                                    onBack = null,
+                                    contentPadding = padding,
+                                    action = HiStateAction(stringResource(if (account == null) R.string.common_action_login else R.string.shell_sidebar_account), onAccountAction),
+                                )
+                            }
                         },
                         settingsDetailContent = { padding ->
-                            UnbuiltEntryPlaceholder(stringResource(R.string.shell_sidebar_settings), false, null, padding)
+                            val showBack = !paneLayout.hasDetailPane
+                            val onBack = if (showBack) ({ hostViewModel.handleBack(paneLayout.layoutMode); Unit }) else null
+                            if (settingsProfilePaneRenderer != null) {
+                                settingsProfilePaneRenderer.SettingsDetailContent(
+                                    appState.selectedSettingsGroup, showBack, onBack,
+                                    hostViewModel::openThread, { openLoginOrAccount(LoginOverlayMode.Login) }, padding,
+                                )
+                            } else {
+                                UnbuiltEntryPlaceholder(stringResource(R.string.shell_sidebar_settings), showBack, onBack, padding)
+                            }
                         },
                         userProfileContent = { profile, showBack, onBack, padding ->
-                            UnbuiltEntryPlaceholder(profile.username.ifBlank { profile.uid }, showBack, onBack, padding)
+                            if (settingsProfilePaneRenderer != null) {
+                                settingsProfilePaneRenderer.UserProfileContent(
+                                    profile.uid, profile.username, showBack, onBack,
+                                    hostViewModel::openThread, hostViewModel::pushSmsConversation, { openLoginOrAccount(LoginOverlayMode.Login) }, padding,
+                                )
+                            } else {
+                                UnbuiltEntryPlaceholder(profile.username.ifBlank { profile.uid }, showBack, onBack, padding)
+                            }
+                        },
+                        smsConversationContent = { args, showBack, onBack, padding ->
+                            if (messagesPaneRenderer != null) {
+                                messagesPaneRenderer.ConversationContent(
+                                    args, showBack, onBack, hostViewModel::pushUserProfile, { openLoginOrAccount(LoginOverlayMode.Login) }, padding,
+                                )
+                            } else {
+                                UnbuiltEntryPlaceholder(args.username.ifBlank { args.uid }, showBack, onBack, padding)
+                            }
                         },
                     )
+                }
+
+                val imageViewerArgs = activeImageViewerArgs
+                if (imageViewerArgs != null && imageViewerRenderer != null) {
+                    imageViewerRenderer.Overlay(args = imageViewerArgs, onDismiss = { activeImageViewerArgs = null })
+                }
+
+                val overlayMode = appState.loginOverlayMode
+                if (overlayMode != null && loginOverlayRenderer != null) {
+                    loginOverlayRenderer.Content(overlayMode, hostViewModel::dismissLoginOverlay, hostViewModel::dismissLoginOverlay)
                 }
 
                 val bottomPillVisible = !latestPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || latestPaneLayout.hasDetailPane)
@@ -212,11 +289,6 @@ fun NextAppRoot(
                     bottomPillClearanceDp = latestBottomPaddingDp,
                     navBarsBottomDp = navBarsBottomDp,
                 )
-
-                val overlayMode = appState.loginOverlayMode
-                if (overlayMode != null && loginOverlayRenderer != null) {
-                    loginOverlayRenderer.Content(overlayMode, hostViewModel::dismissLoginOverlay, hostViewModel::dismissLoginOverlay)
-                }
             }
         }
     }

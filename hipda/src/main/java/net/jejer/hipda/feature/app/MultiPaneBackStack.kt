@@ -16,7 +16,7 @@ import net.jejer.hipda.ui.shell.ShellSidebarEntry
 enum class HingeLeftPaneRole { Forum, Messages, Search, MineMenu, PromotedMineSubList, SettingsGroups }
 
 /** 铰链双栏右栏角色。 */
-enum class HingeRightPaneRole { ThreadDetail, DetailDrilldown, MineSubList, SettingsDetail, EmptyPlaceholder }
+enum class HingeRightPaneRole { ThreadDetail, SmsConversation, DetailDrilldown, MineSubList, SettingsDetail, EmptyPlaceholder }
 
 @Immutable
 data class HingeTwoPaneRoles(
@@ -29,9 +29,11 @@ data class HingeTwoPaneRoles(
 fun resolveHingeTwoPaneRoles(state: NextAppState): HingeTwoPaneRoles {
     val hasDrilldown = state.detailDrilldownStack.isNotEmpty()
     val hasThread = state.selectedThread != null
+    val hasSms = state.selectedSmsConversation != null
     val detailOrEmpty = when {
         hasDrilldown -> HingeRightPaneRole.DetailDrilldown
         hasThread -> HingeRightPaneRole.ThreadDetail
+        hasSms -> HingeRightPaneRole.SmsConversation
         else -> HingeRightPaneRole.EmptyPlaceholder
     }
     return when (state.selectedDestination) {
@@ -70,6 +72,8 @@ sealed interface MultiPaneBackAction {
     data object DemoteHingeMineSubList : MultiPaneBackAction
     data object CloseHingeSettingsToMine : MultiPaneBackAction
     data object CloseDetailThread : MultiPaneBackAction
+    data object CloseSmsConversation : MultiPaneBackAction
+    data object CloseSinglePaneSettingsDetail : MultiPaneBackAction
     data object CloseMineSubPageToMenu : MultiPaneBackAction
     data object ReturnToDefaultForum : MultiPaneBackAction
     data object PassToSystem : MultiPaneBackAction
@@ -85,20 +89,20 @@ fun resolveMultiPaneBackAction(state: NextAppState, layoutMode: ShellPaneLayoutM
             if (state.selectedThread != null) {
                 return if (state.selectedSidebarEntry.isMineGroupChild) MultiPaneBackAction.DemoteHingeMineSubList else MultiPaneBackAction.CloseDetailThread
             }
-            if (state.selectedSidebarEntry == ShellSidebarEntry.Settings && !state.hingeShowingMineMenu) {
-                return MultiPaneBackAction.CloseHingeSettingsToMine
-            }
+            if (state.selectedSmsConversation != null) return MultiPaneBackAction.CloseSmsConversation
+            if (state.selectedSidebarEntry == ShellSidebarEntry.Settings && !state.hingeShowingMineMenu) return MultiPaneBackAction.CloseHingeSettingsToMine
         }
-        ShellPaneLayoutMode.CompactThreePane,
-        ShellPaneLayoutMode.ExpandedThreePane,
-        ShellPaneLayoutMode.SidebarSinglePane,
-        -> if (state.selectedThread != null) return MultiPaneBackAction.CloseDetailThread
-        ShellPaneLayoutMode.SinglePane,
-        ShellPaneLayoutMode.CompactSinglePane,
-        ShellPaneLayoutMode.HingeFallbackSinglePane,
+        ShellPaneLayoutMode.CompactThreePane, ShellPaneLayoutMode.ExpandedThreePane -> {
+            if (state.selectedThread != null) return MultiPaneBackAction.CloseDetailThread
+            if (state.selectedSmsConversation != null) return MultiPaneBackAction.CloseSmsConversation
+        }
+        ShellPaneLayoutMode.SidebarSinglePane, ShellPaneLayoutMode.SinglePane,
+        ShellPaneLayoutMode.CompactSinglePane, ShellPaneLayoutMode.HingeFallbackSinglePane,
         -> {
             if (state.selectedThread != null) return MultiPaneBackAction.CloseDetailThread
-            if (state.selectedDestination == ShellDestination.Mine && state.activeMineSubPage != null) {
+            if (state.selectedSmsConversation != null) return MultiPaneBackAction.CloseSmsConversation
+            if (state.selectedSidebarEntry == ShellSidebarEntry.Settings && state.isSettingsDetailOpen) return MultiPaneBackAction.CloseSinglePaneSettingsDetail
+            if (layoutMode != ShellPaneLayoutMode.SidebarSinglePane && state.selectedDestination == ShellDestination.Mine && state.activeMineSubPage != null) {
                 return MultiPaneBackAction.CloseMineSubPageToMenu
             }
         }
@@ -116,21 +120,31 @@ fun applyMultiPaneBackAction(state: NextAppState, action: MultiPaneBackAction): 
     MultiPaneBackAction.PopDetailDrilldown -> state.copy(detailDrilldownStack = state.detailDrilldownStack.dropLast(1))
     MultiPaneBackAction.DemoteHingeMineSubList -> state.copy(
         selectedThread = null,
+        selectedSmsConversation = null,
         detailDrilldownStack = emptyList(),
         isFullScreenReading = false,
         activeMineSubPage = state.selectedSidebarEntry,
         hingeShowingMineMenu = true,
     )
-    MultiPaneBackAction.CloseHingeSettingsToMine -> state.copy(hingeShowingMineMenu = true, activeMineSubPage = null, isFullScreenReading = false)
+    MultiPaneBackAction.CloseHingeSettingsToMine -> state.copy(
+        hingeShowingMineMenu = true,
+        activeMineSubPage = null,
+        isSettingsDetailOpen = false,
+        isFullScreenReading = false,
+    )
     MultiPaneBackAction.CloseDetailThread -> state.copy(selectedThread = null, detailDrilldownStack = emptyList(), isFullScreenReading = false)
-    MultiPaneBackAction.CloseMineSubPageToMenu -> state.copy(activeMineSubPage = null, hingeShowingMineMenu = true)
+    MultiPaneBackAction.CloseSmsConversation -> state.copy(selectedSmsConversation = null, detailDrilldownStack = emptyList(), isFullScreenReading = false)
+    MultiPaneBackAction.CloseSinglePaneSettingsDetail -> state.copy(isSettingsDetailOpen = false)
+    MultiPaneBackAction.CloseMineSubPageToMenu -> state.copy(activeMineSubPage = null, isSettingsDetailOpen = false, hingeShowingMineMenu = true)
     MultiPaneBackAction.ReturnToDefaultForum -> state.copy(
         selectedDestination = ShellDestination.Forum,
         selectedSidebarEntry = ShellSidebarEntry.Forum(state.defaultForumFid),
         activeForumSource = ForumListSource.Forum(state.defaultForumFid),
         activeMineSubPage = null,
+        isSettingsDetailOpen = false,
         hingeShowingMineMenu = false,
         selectedThread = null,
+        selectedSmsConversation = null,
         detailDrilldownStack = emptyList(),
         isFullScreenReading = false,
     )
