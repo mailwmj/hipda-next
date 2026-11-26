@@ -17,7 +17,11 @@ import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.debug.sampleexport.SampleExportActivity
 import net.jejer.hipda.feature.app.NextAppHostViewModel
 import net.jejer.hipda.feature.app.NextAppRoot
+import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LoginOverlayRenderer
+import net.jejer.hipda.feature.common.MessagesPaneRenderer
+import net.jejer.hipda.feature.common.SearchMinePaneRenderer
+import net.jejer.hipda.feature.common.SettingsProfilePaneRenderer
 import net.jejer.hipda.feature.forum.ForumViewModel
 
 /**
@@ -38,8 +42,11 @@ class NextAppActivity : ComponentActivity() {
     @Inject
     lateinit var imageLoader: ImageLoader
 
-    @Inject
-    lateinit var loginOverlayRenderer: Optional<LoginOverlayRenderer>
+    @Inject lateinit var loginOverlayRenderer: Optional<LoginOverlayRenderer>
+    @Inject lateinit var messagesPaneRenderer: Optional<MessagesPaneRenderer>
+    @Inject lateinit var searchMinePaneRenderer: Optional<SearchMinePaneRenderer>
+    @Inject lateinit var settingsProfilePaneRenderer: Optional<SettingsProfilePaneRenderer>
+    @Inject lateinit var imageViewerRenderer: Optional<ImageViewerRenderer>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +59,10 @@ class NextAppActivity : ComponentActivity() {
                 notifyUnreadCountFlow = notifyRepository.notifyUnreadCount,
                 imageLoader = imageLoader,
                 loginOverlayRenderer = loginOverlayRenderer.orElse(null),
+                messagesPaneRenderer = messagesPaneRenderer.orElse(null),
+                searchMinePaneRenderer = searchMinePaneRenderer.orElse(null),
+                settingsProfilePaneRenderer = settingsProfilePaneRenderer.orElse(null),
+                imageViewerRenderer = imageViewerRenderer.orElse(null),
                 hostViewModel = hiltViewModel<NextAppHostViewModel>(),
                 forumViewModel = hiltViewModel<ForumViewModel>(),
                 onFallbackLoginClick = {
