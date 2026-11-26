@@ -19,6 +19,7 @@ import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.HiEmptyState
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 
 /** 「浏览历史」页：纯离线 Room 记录、单条删除与一键清空，立即生效并可经 Snackbar 撤销恢复（零毛玻璃）。 */
 @Composable
@@ -51,11 +52,13 @@ internal fun BrowseHistoryScreenContent(
     val cs = MaterialTheme.colorScheme
     val title = stringResource(R.string.shell_sidebar_history)
     val isScrolled by rememberListScrolled(listState)
+    val scrollToTop = rememberHiScrollToTopAction(listState)
     val listBottomPadding = rememberListBottomPadding(contentPadding)
     val deleteDesc = stringResource(R.string.mine_action_delete)
+    val openLastPageLabel = stringResource(R.string.common_action_open_last_page)
 
     Column(modifier.fillMaxSize().background(cs.surface).semantics { paneTitle = title; isTraversalGroup = true }) {
-        MineSolidTopBar(title, isScrolled, showBack, onBack, trailingAction = if (uiState.items.isNotEmpty()) {
+        MineSolidTopBar(title, isScrolled, showBack, onBack, onScrollToTop = scrollToTop, trailingAction = if (uiState.items.isNotEmpty()) {
             {
                 val clearInt = remember { MutableInteractionSource() }
                 TextButton(onClick = { vm?.clearAll() }, interactionSource = clearInt, modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(clearInt)) {
@@ -70,9 +73,19 @@ internal fun BrowseHistoryScreenContent(
                 else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = listBottomPadding) {
                     items(items = uiState.items, key = { it.tid }) { item ->
                         val formattedTime = remember(item.lastVisitedAt) { formatHistoryTimestamp(item.lastVisitedAt) }
+                        val navArgs = ThreadNavArgs(item.tid, item.title, item.fid.toIntOrNull() ?: 0, item.forumName.takeIf(String::isNotBlank), item.author.takeIf(String::isNotBlank))
                         Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
-                            MineThreadRow(item.title, forumName = item.forumName, author = item.author, time = formattedTime, dismissDesc = deleteDesc, onDismiss = { vm?.deleteItem(item) }) {
-                                onOpenThread(ThreadNavArgs(item.tid, item.title, item.fid.toIntOrNull() ?: 0, item.forumName.takeIf(String::isNotBlank), item.author.takeIf(String::isNotBlank)))
+                            MineThreadRow(
+                                title = item.title,
+                                forumName = item.forumName,
+                                author = item.author,
+                                time = formattedTime,
+                                dismissDesc = deleteDesc,
+                                onDismiss = { vm?.deleteItem(item) },
+                                onLongClickLabel = openLastPageLabel,
+                                onLongClick = { onOpenThread(navArgs.copy(openLastPage = true)) },
+                            ) {
+                                onOpenThread(navArgs)
                             }
                             HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
                         }

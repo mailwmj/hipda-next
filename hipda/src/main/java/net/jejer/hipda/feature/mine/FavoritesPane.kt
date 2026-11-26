@@ -4,7 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
@@ -16,6 +19,7 @@ import kotlinx.coroutines.flow.collectLatest
 import net.jejer.hipda.R
 import net.jejer.hipda.data.favorite.FavoriteKind
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 
 /** 「收藏与关注」页面：纯色顶栏 + `收藏 | 关注` 双标签（各自保留滚动位）+ 即时移除与撤销恢复。 */
 @Composable
@@ -61,10 +65,14 @@ internal fun FavoritesScreenContent(
     val isFav = uiState.selectedKind == FavoriteKind.FAVORITE
     val activeListState = if (isFav) favoritesListState else attentionListState
     val isScrolled by rememberListScrolled(activeListState)
+    val scrollToTop = rememberHiScrollToTopAction(activeListState)
     val removeDesc = stringResource(if (isFav) R.string.mine_action_unfavorite else R.string.mine_action_unattention)
+    val openLastPageLabel = stringResource(R.string.common_action_open_last_page)
+    val moreLabel = stringResource(R.string.forum_action_more)
+    val cs = MaterialTheme.colorScheme
 
-    Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).semantics { paneTitle = title; isTraversalGroup = true }) {
-        MineSolidTopBar(title, isScrolled, showBack, onBack, bottomSlot = {
+    Column(modifier.fillMaxSize().background(cs.surface).semantics { paneTitle = title; isTraversalGroup = true }) {
+        MineSolidTopBar(title, isScrolled, showBack, onBack, onScrollToTop = scrollToTop, bottomSlot = {
             MineSegmentedTabs(listOf(stringResource(R.string.mine_tab_favorites), stringResource(R.string.mine_tab_attention)), if (isFav) 0 else 1, onSelect = {
                 vm?.selectKind(if (it == 0) FavoriteKind.FAVORITE else FavoriteKind.ATTENTION)
             })
@@ -76,8 +84,40 @@ internal fun FavoritesScreenContent(
             { vm?.refresh(uiState.selectedKind) }, { vm?.loadMore(uiState.selectedKind) },
             { vm?.retry(uiState.selectedKind, it) }, onOpenLogin, Modifier.weight(1f), uiState.isSignedIn,
         ) { item ->
-            MineThreadRow(item.title, forumName = item.forumName, time = item.time, dismissDesc = removeDesc, onDismiss = { vm?.removeItem(uiState.selectedKind, item) }) {
-                onOpenThread(ThreadNavArgs(item.tid, item.title, forumName = item.forumName))
+            var menuExpanded by remember(uiState.selectedKind, item.tid) { mutableStateOf(false) }
+            val navArgs = ThreadNavArgs(item.tid, item.title, forumName = item.forumName)
+            Box(Modifier.fillMaxWidth()) {
+                MineThreadRow(
+                    title = item.title,
+                    forumName = item.forumName,
+                    time = item.time,
+                    dismissDesc = removeDesc,
+                    onDismiss = { vm?.removeItem(uiState.selectedKind, item) },
+                    onLongClickLabel = moreLabel,
+                    onLongClick = { menuExpanded = true },
+                ) {
+                    onOpenThread(navArgs)
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    modifier = Modifier.background(cs.surfaceContainerHigh),
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(openLastPageLabel) },
+                        onClick = {
+                            menuExpanded = false
+                            onOpenThread(navArgs.copy(openLastPage = true))
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(removeDesc) },
+                        onClick = {
+                            menuExpanded = false
+                            vm?.removeItem(uiState.selectedKind, item)
+                        },
+                    )
+                }
             }
         }
     }

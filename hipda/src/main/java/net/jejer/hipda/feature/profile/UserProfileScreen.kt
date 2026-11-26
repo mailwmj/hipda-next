@@ -11,22 +11,31 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil3.Extras
+import coil3.ImageLoader
 import coil3.compose.AsyncImage
+import coil3.memory.MemoryCache
+import coil3.request.CachePolicy
 import coil3.request.ImageRequest
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.jejer.hipda.R
 import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.feature.common.*
-import net.jejer.hipda.feature.settings.SettingsSolidTopBar
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.feedback.hiListItemPressIndication
@@ -34,6 +43,8 @@ import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 import net.jejer.hipda.ui.designsystem.state.*
+import net.jejer.hipda.ui.designsystem.topbar.HiSolidTopBar
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 
 /** 用户资料页（纯色顶栏零毛玻璃；固定资料头 + `资料 | TA 的帖子` 双标签同级交叉淡入淡出）。 */
 @Composable
@@ -78,7 +89,21 @@ fun UserProfileScreen(
             )
         },
         onOpenThread, onOpenLogin, contentPadding, onOpenExternalLink, modifier,
+        onShowMessage = { msg -> showDetailSnackbar(msg) },
     )
+}
+
+private val AvatarReloadNonceKey = Extras.Key(default = 0)
+
+internal suspend fun evictProfileAvatarCache(imageLoader: ImageLoader, avatarUrl: String) {
+    imageLoader.memoryCache?.let { memCache ->
+        val matchingKeys = memCache.keys.filter { it.key == avatarUrl }
+        matchingKeys.forEach { memCache.remove(it) }
+        memCache.remove(MemoryCache.Key(avatarUrl))
+    }
+    withContext(Dispatchers.IO) {
+        imageLoader.diskCache?.remove(avatarUrl)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -98,21 +123,38 @@ fun UserProfileScreenContent(
     contentPadding: PaddingValues,
     onOpenExternalLink: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier,
+    infoListState: LazyListState = rememberLazyListState(),
+    threadsListState: LazyListState = rememberLazyListState(),
+    onShowMessage: ((String) -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val uriHandler = LocalUriHandler.current
+    val snackbar = LocalPaneSnackbarController.current
+    val scope = rememberCoroutineScope()
+    var localSnackbarJob by remember { mutableStateOf<Job?>(null) }
+    val showMessage: (String) -> Unit = onShowMessage ?: { msg ->
+        localSnackbarJob?.cancel()
+        localSnackbarJob = scope.launch { snackbar.show(msg, PaneSnackbarTarget.DetailPane) }
+    }
     val safeLinkOpener: (String) -> Unit = remember(onOpenExternalLink, uriHandler) {
         { rawUrl -> ProfileUrlSanitizer.sanitizeProfileLinkUrl(rawUrl)?.let { safe -> if (onOpenExternalLink != null) onOpenExternalLink(safe) else runCatching { uriHandler.openUri(safe) } } }
     }
-    val infoListState = rememberLazyListState()
-    val threadsListState = rememberLazyListState()
     val activeListState = if (uiState.selectedTab == UserProfileTab.Info) infoListState else threadsListState
     val scrolled by remember(activeListState) { derivedStateOf { activeListState.firstVisibleItemIndex > 0 || activeListState.firstVisibleItemScrollOffset > 0 } }
+    val scrollToTop = rememberHiScrollToTopAction(activeListState)
     val title = uiState.displayUsername.ifBlank { stringResource(R.string.profile_uid_format, uiState.uid) }
 
     Column(modifier.fillMaxSize().background(cs.surface)) {
-        SettingsSolidTopBar(title, scrolled, showBack, if (showBack) onBack else null)
-        ProfileFixedHeader(uiState, onOpenSms, onToggleBlacklist)
+        HiSolidTopBar(
+            title = title,
+            isScrolled = scrolled,
+            showBack = showBack,
+            onBack = if (showBack) onBack else null,
+            onScrollToTop = scrollToTop,
+            titleHorizontalPadding = if (showBack) 4.dp else 0.dp,
+            endPadding = if (showBack) 4.dp else 16.dp,
+        )
+        ProfileFixedHeader(uiState, onOpenSms, onToggleBlacklist, showMessage)
         PrimaryTabRow(if (uiState.selectedTab == UserProfileTab.Info) 0 else 1, containerColor = cs.surface, contentColor = cs.primary) {
             Tab(uiState.selectedTab == UserProfileTab.Info, { onSelectTab(UserProfileTab.Info) }, Modifier.defaultMinSize(minHeight = 48.dp), text = { Text(stringResource(R.string.profile_tab_info)) })
             Tab(uiState.selectedTab == UserProfileTab.Threads, { onSelectTab(UserProfileTab.Threads) }, Modifier.defaultMinSize(minHeight = 48.dp), text = { Text(stringResource(R.string.profile_tab_threads)) })
@@ -127,19 +169,83 @@ fun UserProfileScreenContent(
 }
 
 @Composable
-private fun ProfileFixedHeader(uiState: UserProfileUiState, onOpenSms: () -> Unit, onToggleBlacklist: () -> Unit) {
+private fun ProfileFixedHeader(
+    uiState: UserProfileUiState,
+    onOpenSms: () -> Unit,
+    onToggleBlacklist: () -> Unit,
+    onShowMessage: (String) -> Unit,
+) {
     val cs = MaterialTheme.colorScheme
     val displayName = uiState.displayUsername.ifBlank { stringResource(R.string.profile_uid_format, uiState.uid) }
     val safeAvatar = remember(uiState.avatarUrl) { ProfileUrlSanitizer.sanitizeProfileImageUrl(uiState.avatarUrl) }
     val sizePx = with(LocalDensity.current) { 64.dp.roundToPx() }
     val context = LocalContext.current
     val imageLoader = currentHiImageLoader()
+    val scope = rememberCoroutineScope()
+    val refreshedMsg = stringResource(R.string.profile_avatar_refreshed)
+    val notSetMsg = stringResource(R.string.profile_avatar_not_set)
+    val avatarDesc = stringResource(R.string.profile_avatar_content_desc)
+    val refreshAvatarLabel = stringResource(R.string.profile_action_refresh_avatar)
+    var avatarReloadNonce by remember(safeAvatar) { mutableIntStateOf(0) }
+    var lastAvatarPainter by remember(safeAvatar) { mutableStateOf<Painter?>(null) }
+    val avatarInt = remember { MutableInteractionSource() }
 
     Column(Modifier.fillMaxWidth().background(cs.surface).padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(64.dp).clip(HiShapeTokens.Full).background(cs.primaryContainer), Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .hiPressScale(avatarInt)
+                    .clip(HiShapeTokens.Full)
+                    .background(cs.primaryContainer)
+                    .semantics { contentDescription = avatarDesc }
+                    .clickable(
+                        interactionSource = avatarInt,
+                        indication = null,
+                        role = Role.Button,
+                        onClickLabel = refreshAvatarLabel,
+                    ) {
+                        if (safeAvatar == null) {
+                            onShowMessage(notSetMsg)
+                        } else {
+                            scope.launch {
+                                evictProfileAvatarCache(imageLoader, safeAvatar)
+                                avatarReloadNonce += 1
+                                onShowMessage(refreshedMsg)
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
                 Text(displayName.trim().firstOrNull()?.uppercase() ?: "?", style = MaterialTheme.typography.headlineSmall, color = cs.onPrimaryContainer)
-                if (safeAvatar != null) AsyncImage(remember(context, safeAvatar, sizePx) { ImageRequest.Builder(context).data(safeAvatar).size(sizePx).build() }, null, imageLoader, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                if (safeAvatar != null) {
+                    val avatarRequest = remember(context, safeAvatar, sizePx, avatarReloadNonce) {
+                        ImageRequest.Builder(context)
+                            .data(safeAvatar)
+                            .size(sizePx)
+                            .memoryCacheKey(safeAvatar)
+                            .diskCacheKey(safeAvatar)
+                            .apply {
+                                if (avatarReloadNonce > 0) {
+                                    memoryCachePolicy(CachePolicy.WRITE_ONLY)
+                                    diskCachePolicy(CachePolicy.WRITE_ONLY)
+                                    extras[AvatarReloadNonceKey] = avatarReloadNonce
+                                }
+                            }
+                            .build()
+                    }
+                    key(avatarReloadNonce) {
+                        AsyncImage(
+                            model = avatarRequest,
+                            contentDescription = null,
+                            imageLoader = imageLoader,
+                            modifier = Modifier.fillMaxSize(),
+                            placeholder = lastAvatarPainter,
+                            onSuccess = { lastAvatarPainter = it.painter },
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
+                }
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -209,14 +315,25 @@ private fun ProfileThreadsTab(uiState: UserProfileUiState, listState: LazyListSt
         }
         LaunchedEffect(shouldLoadMore) { if (shouldLoadMore) onLoadMore() }
 
+        val haptics = LocalHapticFeedback.current
+        val openLastPageLabel = stringResource(R.string.common_action_open_last_page)
         LazyColumn(state = listState, contentPadding = PaddingValues(top = 4.dp, bottom = contentPadding.calculateBottomPadding() + 24.dp), modifier = Modifier.fillMaxSize()) {
             itemsIndexed(items, key = { idx, it -> "${idx}:${it.tid.orEmpty()}:${it.pid.orEmpty()}" }) { _, item ->
                 val tid = item.tid?.trim().orEmpty()
+                val navArgs = ThreadNavArgs(tid, item.title, forumName = item.forumName, author = item.author ?: uiState.displayUsername.ifBlank { null }, targetPid = item.pid)
                 Column(
                     modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 64.dp)
-                        .clickable(remember { MutableInteractionSource() }, hiListItemPressIndication(), enabled = tid.isNotEmpty()) {
-                            onOpenThread(ThreadNavArgs(tid, item.title, forumName = item.forumName, author = item.author ?: uiState.displayUsername.ifBlank { null }, targetPid = item.pid))
-                        }
+                        .combinedClickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = hiListItemPressIndication(),
+                            enabled = tid.isNotEmpty(),
+                            onClick = { onOpenThread(navArgs) },
+                            onLongClickLabel = openLastPageLabel,
+                            onLongClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onOpenThread(navArgs.copy(openLastPage = true))
+                            },
+                        )
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {

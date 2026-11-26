@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -18,6 +17,8 @@ import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
@@ -39,6 +40,7 @@ import net.jejer.hipda.ui.designsystem.*
 import net.jejer.hipda.ui.designsystem.feedback.*
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.*
+import net.jejer.hipda.ui.designsystem.topbar.HiSolidTopBar
 
 private const val MINE_PREFETCH_THRESHOLD: Int = 4
 private val FAVORITE_PERMISSION_KEYWORDS = listOf("无权", "权限", "不允许访问", "等级不够")
@@ -131,24 +133,25 @@ internal fun MineIconButton(icon: ImageVector, contentDescription: String, onCli
     }
 }
 
-/** 「我的」及其子页共用的纯色顶栏（零毛玻璃，`surface → surfaceContainer` 随滚动渐变）。 */
+/** 「我的」及其子页共用的纯色顶栏（委托设计系统统一 [HiSolidTopBar]，零毛玻璃，支持点空白滚顶）。 */
 @Composable
-internal fun MineSolidTopBar(title: String, isScrolled: Boolean, showBack: Boolean = false, onBack: (() -> Unit)? = null, trailingAction: (@Composable RowScope.() -> Unit)? = null, bottomSlot: (@Composable ColumnScope.() -> Unit)? = null) {
-    val cs = MaterialTheme.colorScheme
-    val barColor by animateColorAsState(if (isScrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "MineSolidTopBarColor")
-    Column(Modifier.fillMaxWidth().background(barColor)) {
-        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
-        HiCappedFontScale {
-            Row(Modifier.fillMaxWidth().height(56.dp).padding(start = if (showBack && onBack != null) 4.dp else 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (showBack && onBack != null) MineIconButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back), onBack, cs.onSurface, 24.dp)
-                Text(title, style = MaterialTheme.typography.titleLarge, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { heading() })
-                trailingAction?.invoke(this)
-            }
-        }
-        bottomSlot?.invoke(this)
-        HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
-    }
-}
+internal fun MineSolidTopBar(
+    title: String,
+    isScrolled: Boolean,
+    showBack: Boolean = false,
+    onBack: (() -> Unit)? = null,
+    onScrollToTop: (() -> Unit)? = null,
+    trailingAction: (@Composable RowScope.() -> Unit)? = null,
+    bottomSlot: (@Composable ColumnScope.() -> Unit)? = null,
+) = HiSolidTopBar(
+    title = title,
+    isScrolled = isScrolled,
+    showBack = showBack,
+    onBack = onBack,
+    onScrollToTop = onScrollToTop,
+    trailingAction = trailingAction,
+    bottomSlot = bottomSlot,
+)
 
 /** 顶部双分段标签（`spatialFast` 滑动指示器，`≥ 48dp` 触控区 + `hiPressScale`）。 */
 @Composable
@@ -226,9 +229,39 @@ internal fun <T> MinePaginatedList(
 }
 
 @Composable
-internal fun MineThreadRow(title: String, preview: String? = null, forumName: String? = null, author: String? = null, time: String? = null, dismissDesc: String? = null, onDismiss: (() -> Unit)? = null, onClick: () -> Unit) {
+internal fun MineThreadRow(
+    title: String,
+    preview: String? = null,
+    forumName: String? = null,
+    author: String? = null,
+    time: String? = null,
+    dismissDesc: String? = null,
+    onDismiss: (() -> Unit)? = null,
+    onLongClickLabel: String? = null,
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     val cs = MaterialTheme.colorScheme; val rowInt = remember { MutableInteractionSource() }; val hasDismiss = dismissDesc != null && onDismiss != null
-    Row(Modifier.fillMaxWidth().clickable(rowInt, hiListItemPressIndication(), onClick = onClick).padding(start = 16.dp, end = if (hasDismiss) 4.dp else 16.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    val haptics = LocalHapticFeedback.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                interactionSource = rowInt,
+                indication = hiListItemPressIndication(),
+                onClick = onClick,
+                onLongClickLabel = if (onLongClick != null) onLongClickLabel else null,
+                onLongClick = onLongClick?.let { cb ->
+                    {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        cb()
+                    }
+                },
+            )
+            .padding(start = 16.dp, end = if (hasDismiss) 4.dp else 16.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(title, style = HiTheme.typography.threadTitle, color = cs.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
             preview?.trim()?.takeIf(String::isNotEmpty)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }

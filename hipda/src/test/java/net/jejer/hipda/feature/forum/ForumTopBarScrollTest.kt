@@ -521,6 +521,57 @@ class ForumTopBarScrollTest {
         }
     }
 
+    /** #3：论坛顶栏单击标题/空白区滚回顶部（含减动效 0ms 单帧到位），点击发新帖/更多动作按钮不误触发滚顶。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun forumTopBar_tapTitleScrollsToTopInNormalAndReducedMotion_actionsDoNotScroll() = withAnimatorDurationScale(0f) {
+        val vm = createForumViewModel(itemCount = 40)
+        var listState: LazyListState? = null
+        var newThreadClicks = 0
+
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                val state = rememberLazyListState()
+                listState = state
+                ForumPane(
+                    source = ForumListSource.Forum(2),
+                    chromeSpec = ForumChromeSpec(showForumTabs = false, useGlassTopBar = true),
+                    selectedTid = null,
+                    onSelectSource = {},
+                    onOpenThread = {},
+                    onOpenLogin = {},
+                    listState = state,
+                    onNewThreadClick = { newThreadClicks++ },
+                    viewModel = vm,
+                )
+            }
+        }
+        waitForIdle()
+
+        val state = requireNotNull(listState)
+        runOnIdle { state.requestScrollToItem(14, 40) }
+        waitForIdle()
+        assertTrue(state.firstVisibleItemIndex >= 14)
+
+        // 点击右侧「发新帖」按钮不得误触发滚顶
+        onNodeWithContentDescription("发新帖").performClick()
+        waitForIdle()
+        assertEquals(1, newThreadClicks)
+        assertTrue("点击发新帖按钮不得触发滚顶", state.firstVisibleItemIndex >= 14)
+
+        // 单击顶栏标题（减动效 0ms）：一帧滚回 (0, 0)
+        mainClock.autoAdvance = false
+        try {
+            onNodeWithText("Discovery").performClick()
+            mainClock.advanceTimeByFrame()
+            assertEquals(0, state.firstVisibleItemIndex)
+            assertEquals(0, state.firstVisibleItemScrollOffset)
+            assertEquals("单击顶栏标题不得误触发发新帖", 1, newThreadClicks)
+        } finally {
+            mainClock.autoAdvance = true
+        }
+    }
+
     private fun verticalScrollMatcher(): SemanticsMatcher =
         SemanticsMatcher("hasVerticalScrollAxisRange") { SemanticsProperties.VerticalScrollAxisRange in it.config }
 

@@ -20,6 +20,7 @@ import net.jejer.hipda.R
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.feedback.*
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 
 private val MINE_MENU_ITEMS = listOf(
@@ -37,10 +38,11 @@ fun MineMenuScreen(
 ) {
     val cs = MaterialTheme.colorScheme; val title = stringResource(R.string.shell_nav_mine)
     val scrollState = rememberScrollState(); val isScrolled by remember(scrollState) { derivedStateOf { scrollState.value > 0 } }
+    val scrollToTop = rememberHiScrollToTopAction(scrollState)
     val dir = LocalLayoutDirection.current; val displayName = account?.username?.trim()?.takeIf(String::isNotEmpty)
 
     Column(modifier.fillMaxSize().background(cs.surface).semantics { paneTitle = title; isTraversalGroup = true }) {
-        MineSolidTopBar(title, isScrolled)
+        MineSolidTopBar(title, isScrolled, onScrollToTop = scrollToTop)
         Column(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState).padding(contentPadding.calculateStartPadding(dir) + 16.dp, 16.dp, contentPadding.calculateEndPadding(dir) + 16.dp, contentPadding.calculateBottomPadding() + 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),

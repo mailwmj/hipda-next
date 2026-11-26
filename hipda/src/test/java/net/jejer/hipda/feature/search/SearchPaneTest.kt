@@ -529,12 +529,71 @@ class SearchPaneTest {
         composeRule.onNodeWithText("最近搜索").assertIsDisplayed()
     }
 
+    /** #3 & #4：搜索结果项单击 openLastPage=false、长按 openLastPage=true；点顶栏非输入框空白区滚回顶部。 */
+    @Test
+    fun searchResults_longPressOpensLastPage_andTapTopBarBlankAreaScrollsToTop() {
+        val harness = SearchTestHarness(initialHistory = emptyList())
+        val items = (1..25).map { idx ->
+            SearchItem("${6000 + idx}", "${90000 + idx}", "搜索长按与滚顶帖 $idx", "摘要 $idx", "alice", "1", null, "刚刚", "Discovery")
+        }
+        harness.nextSearchResult = SearchResult.Success(1, true, SearchPage("sid-long", 1, items, emptyMeta()))
+        val opened = mutableListOf<ThreadNavArgs>()
+        var listState: androidx.compose.foundation.lazy.LazyListState? = null
+
+        composeRule.setContent {
+            val state = androidx.compose.foundation.lazy.rememberLazyListState()
+            listState = state
+            SearchTestHost(harness.viewModel, onOpenThread = opened::add, listState = state)
+        }
+        composeRule.waitForIdle()
+
+        val inputNode = composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsProperties.EditableText))
+        inputNode.performTextInput("滚顶")
+        inputNode.performImeAction()
+        composeRule.waitForIdle()
+
+        // 单击 vs 长按
+        val firstRow = composeRule.onNodeWithText("搜索长按与滚顶帖 1").assertIsDisplayed()
+        firstRow.performClick()
+        assertEquals(false, opened.last().openLastPage)
+        assertEquals("6001", opened.last().tid)
+
+        firstRow.performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        assertEquals(true, opened.last().openLastPage)
+        assertEquals("6001", opened.last().tid)
+
+        // 先滚至第 14 条，点筛选胶囊「版块」不得触发滚顶
+        val lazyState = requireNotNull(listState)
+        composeRule.runOnIdle { lazyState.requestScrollToItem(14, 20) }
+        composeRule.waitForIdle()
+        assertTrue(lazyState.firstVisibleItemIndex >= 14)
+
+        composeRule.onNodeWithText("版块").performClick()
+        composeRule.waitForIdle()
+        assertTrue("点击筛选胶囊不得误触发滚顶", lazyState.firstVisibleItemIndex >= 14)
+        // 收起筛选面板
+        composeRule.onNodeWithText("版块").performClick()
+        composeRule.waitForIdle()
+
+        // 点击顶栏筛选行右侧空白区域（非输入框/非芯片）滚回顶部 (0, 0)
+        val authorChipBounds = composeRule.onNodeWithText("作者").fetchSemanticsNode().boundsInRoot
+        val rootWidthPx = composeRule.onRoot().fetchSemanticsNode().size.width.toFloat()
+        composeRule.onRoot().performTouchInput {
+            click(androidx.compose.ui.geometry.Offset(rootWidthPx - 16f, authorChipBounds.center.y))
+        }
+        composeRule.waitForIdle()
+        assertEquals("点搜索顶栏非输入框空白区应滚回首项", 0, lazyState.firstVisibleItemIndex)
+        assertEquals(0, lazyState.firstVisibleItemScrollOffset)
+    }
+
     @androidx.compose.runtime.Composable
     private fun SearchTestHost(
         viewModel: SearchViewModel,
         onOpenThread: (ThreadNavArgs) -> Unit = {},
         onOpenForum: (Int) -> Unit = {},
         onOpenUserProfile: (String, String) -> Unit = { _, _ -> },
+        listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     ) {
         val snackbarHostState = remember { SnackbarHostState() }
         val controller = remember(snackbarHostState) { SingleHostPaneSnackbarController(snackbarHostState) }
@@ -549,6 +608,7 @@ class SearchPaneTest {
                         onOpenForum = onOpenForum,
                         onOpenUserProfile = onOpenUserProfile,
                         onOpenLogin = {},
+                        listState = listState,
                     )
                     HiSnackbarHost(hostState = snackbarHostState, bottomClearance = 16.dp)
                 }

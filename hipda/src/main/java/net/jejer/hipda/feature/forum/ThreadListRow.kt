@@ -1,7 +1,7 @@
 package net.jejer.hipda.feature.forum
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.ColorScheme
@@ -13,9 +13,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -54,10 +56,13 @@ fun ThreadListRow(
     compactLayout: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val darkTheme = HiTheme.state.darkTheme
     val interaction = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
+    val longClickLabel = if (onLongClick != null) stringResource(R.string.common_action_open_last_page) else null
     val summary = item.summary
     val titleColor = resolveThreadTitleColor(cs, item.isVisited, darkTheme)
     val countText = remember(summary.replyCountText, summary.viewCountText) {
@@ -69,7 +74,18 @@ fun ThreadListRow(
         modifier = modifier
             .fillMaxWidth()
             .background(resolveThreadRowBackground(cs, selected))
-            .clickable(interactionSource = interaction, indication = hiListItemPressIndication(), onClick = onClick)
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = hiListItemPressIndication(),
+                onClick = onClick,
+                onLongClickLabel = longClickLabel,
+                onLongClick = onLongClick?.let { cb ->
+                    {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        cb()
+                    }
+                },
+            )
             .padding(horizontal = if (compactLayout) 12.dp else 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.Top,

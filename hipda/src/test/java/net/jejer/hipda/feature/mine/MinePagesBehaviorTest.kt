@@ -776,6 +776,223 @@ class MinePagesBehaviorTest {
         assertEquals(listOf(e1, e2, e3), runBlocking { dao.observeRecent(10).first() })
     }
 
+    /** #3：收藏与关注 / 浏览历史点顶栏标题滚回顶部（含减动效 0ms 单帧校验），返回箭头与清空按钮不误触发滚顶。 */
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun mineTopBar_tapTitleScrollsToTop_andButtonsDoNotTriggerScroll() = net.jejer.hipda.testing.withAnimatorDurationScale(0f) {
+        val dao = database.browseHistoryDao()
+        runBlocking {
+            for (i in 1..30) {
+                dao.upsert(BrowseHistoryEntity("${200 + i}", "历史滚顶条目 $i", "2", "Discovery", "user$i", 1_764_200_000_000L - i * 1000L))
+            }
+        }
+        val historyVm = BrowseHistoryViewModel(dao)
+        var historyListState: androidx.compose.foundation.lazy.LazyListState? = null
+        var backClicks = 0
+
+        setContent {
+            MineTestHost {
+                val state = rememberLazyListState()
+                historyListState = state
+                BrowseHistoryPane(historyVm, showBack = true, onBack = { backClicks++ }, onOpenThread = {}, listState = state)
+            }
+        }
+        waitUntil(timeoutMillis = 5_000L) {
+            onAllNodesWithText("历史滚顶条目 1").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val hState = requireNotNull(historyListState)
+        runOnIdle { hState.requestScrollToItem(15, 32) }
+        waitForIdle()
+        assertTrue(hState.firstVisibleItemIndex >= 15)
+
+        // 点击返回按钮不误触发滚顶
+        onNodeWithContentDescription("返回").performClick()
+        waitForIdle()
+        assertEquals(1, backClicks)
+        assertTrue(hState.firstVisibleItemIndex >= 15)
+
+        // 减动效 0ms 单帧校验：单击「浏览历史」顶栏标题一帧滚回 (0, 0)
+        mainClock.autoAdvance = false
+        try {
+            onNodeWithText("浏览历史").performClick()
+            mainClock.advanceTimeByFrame()
+            assertEquals(0, hState.firstVisibleItemIndex)
+            assertEquals(0, hState.firstVisibleItemScrollOffset)
+            assertEquals(1, backClicks)
+        } finally {
+            mainClock.autoAdvance = true
+        }
+    }
+
+    /** #3：收藏与关注页点顶栏空白滚回当前活跃标签顶部，点击返回按钮不误触发滚顶。 */
+    @Test
+    fun favoritesTopBar_tapTitleScrollsActiveTabToTop() {
+        val favItems = (1..25).map { idx -> "${7100 + idx}" to "收藏滚顶帖 $idx" }
+        server.dispatcher = standardFavoritesDispatcher(favItems)
+        val authRepo = MutableAuthRepo(testAccount)
+        val (favRepo, gateway) = createMockWebFavoriteRepo(authRepo)
+        val viewModel = FavoritesViewModel(favRepo, authRepo, gateway)
+        var favListState: androidx.compose.foundation.lazy.LazyListState? = null
+        var backClicks = 0
+
+        composeRule.setContent {
+            MineTestHost {
+                val state = rememberLazyListState()
+                favListState = state
+                FavoritesPane(viewModel, showBack = true, onBack = { backClicks++ }, onOpenThread = {}, onOpenLogin = {}, listState = state)
+            }
+        }
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("收藏滚顶帖 1").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val state = requireNotNull(favListState)
+        composeRule.runOnIdle { state.requestScrollToItem(12, 24) }
+        composeRule.waitForIdle()
+        assertTrue(state.firstVisibleItemIndex >= 12)
+
+        composeRule.onNodeWithContentDescription("返回").performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, backClicks)
+        assertTrue(state.firstVisibleItemIndex >= 12)
+
+        composeRule.onNodeWithText("收藏与关注").performClick()
+        composeRule.waitForIdle()
+        assertEquals(0, state.firstVisibleItemIndex)
+        assertEquals(0, state.firstVisibleItemScrollOffset)
+    }
+
+    /** #4：收藏/关注长按弹出「转到最新回复」与「取消收藏/取消关注」（走统一撤销令牌）；我的帖子（主题/回复）与浏览历史长按直达末页。 */
+    @Test
+    fun mineLists_longPress_favoritesShowsActionMenuWithUndo_andMyPostsAndHistoryOpenLastPageDirectly() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.target.contains("item=favorites&type=thread") -> gbkHtmlResponse(
+                    favoriteListHtml(testAccount.uid, testAccount.username, FavoriteKind.FAVORITE, listOf("7201" to "长按收藏帖一", "7202" to "长按收藏帖二")),
+                )
+                request.target.contains("item=attention&type=thread") -> gbkHtmlResponse(
+                    favoriteListHtml(testAccount.uid, testAccount.username, FavoriteKind.ATTENTION, listOf("8201" to "长按关注帖一")),
+                )
+                request.target.contains("item=favorites&action=remove") -> gbkXmlResponse("此主题已成功从您的收藏夹中移除。")
+                request.target.contains("item=favorites&action=add") -> gbkXmlResponse("此主题已成功添加到您的收藏夹中。")
+                request.target.contains("item=attention&action=remove") -> gbkXmlResponse("已取消对此主题的关注。")
+                request.target.contains("item=attention&action=add") -> gbkXmlResponse("指定主题已成功加入到关注列表中。")
+                else -> MockResponse(code = 404)
+            }
+        }
+        val authRepo = MutableAuthRepo(testAccount)
+        val (favRepo, gateway) = createMockWebFavoriteRepo(authRepo)
+        val favVm = FavoritesViewModel(favRepo, authRepo, gateway)
+
+        val myPostsRepo = FakeMyPostsSearchRepo(
+            threads = listOf(MyThreadItem("9301", "长按我的主题", "2026-11-26", "Discovery")),
+            replies = listOf(MyReplyItem("9302", "889900", "长按我的回复", "回复预览", "2026-11-26", "Geek Talks")),
+        )
+        val myPostsVm = MyPostsViewModel(myPostsRepo, authRepo, gateway)
+
+        val dao = database.browseHistoryDao()
+        runBlocking { dao.upsert(BrowseHistoryEntity("9401", "长按浏览历史帖", "2", "Discovery", "alice", 1_764_100_000_000L)) }
+        val historyVm = BrowseHistoryViewModel(dao)
+
+        val opened = mutableListOf<ThreadNavArgs>()
+        var screenMode by mutableStateOf(0)
+
+        composeRule.setContent {
+            MineTestHost {
+                when (screenMode) {
+                    0 -> FavoritesPane(favVm, showBack = true, onBack = {}, onOpenThread = opened::add, onOpenLogin = {})
+                    1 -> MyPostsPane(myPostsVm, ShellSidebarEntry.MyThreads, false, true, {}, {}, opened::add, {})
+                    else -> BrowseHistoryPane(historyVm, showBack = true, onBack = {}, onOpenThread = opened::add)
+                }
+            }
+        }
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("长按收藏帖一").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 1. 收藏：单击 openLastPage=false；长按弹窗点「转到最新回复」-> openLastPage=true
+        composeRule.onNodeWithText("长按收藏帖一").performClick()
+        assertFalse(opened.last().openLastPage)
+
+        composeRule.onNodeWithText("长按收藏帖一").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("转到最新回复").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        assertEquals("7201", opened.last().tid)
+        assertTrue("收藏长按菜单「转到最新回复」必须触发 openLastPage=true", opened.last().openLastPage)
+
+        // 收藏长按菜单点「取消收藏」走既有可撤销路径
+        composeRule.onNodeWithText("长按收藏帖一").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("取消收藏").assertIsDisplayed().performClick()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("已取消收藏").fetchSemanticsNodes().isNotEmpty() && !favRepo.isFavorite("7201")
+        }
+        composeRule.onNodeWithText("撤销").performClick()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("长按收藏帖一").fetchSemanticsNodes().isNotEmpty() && favRepo.isFavorite("7201")
+        }
+
+        // 2. 关注：长按弹窗点「转到最新回复」-> openLastPage=true，点「取消关注」走既有可撤销路径
+        composeRule.onNodeWithText("关注").performClick()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("长按关注帖一").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("长按关注帖一").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("转到最新回复").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        assertEquals("8201", opened.last().tid)
+        assertTrue("关注长按菜单「转到最新回复」必须触发 openLastPage=true", opened.last().openLastPage)
+
+        composeRule.onNodeWithText("长按关注帖一").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("取消关注").assertIsDisplayed().performClick()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("已取消关注").fetchSemanticsNodes().isNotEmpty() && !favRepo.isAttention("8201")
+        }
+        composeRule.onNodeWithText("撤销").performClick()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("长按关注帖一").fetchSemanticsNodes().isNotEmpty() && favRepo.isAttention("8201")
+        }
+
+        // 3. 我的帖子（主题 & 回复）：单击 openLastPage=false，长按 openLastPage=true
+        screenMode = 1
+        composeRule.waitUntil(5_000L) {
+            composeRule.onAllNodesWithText("长按我的主题").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("长按我的主题").performClick()
+        assertFalse(opened.last().openLastPage)
+        composeRule.onNodeWithText("长按我的主题").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        assertEquals("9301", opened.last().tid)
+        assertTrue("我的主题长按必须触发 openLastPage=true", opened.last().openLastPage)
+
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitUntil(5_000L) {
+            composeRule.onAllNodesWithText("长按我的回复").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("长按我的回复").performClick()
+        assertFalse(opened.last().openLastPage)
+        composeRule.onNodeWithText("长按我的回复").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        assertEquals("9302", opened.last().tid)
+        assertTrue("我的回复长按必须触发 openLastPage=true", opened.last().openLastPage)
+
+        // 4. 浏览历史：单击 openLastPage=false，长按 openLastPage=true
+        screenMode = 2
+        composeRule.waitUntil(5_000L) {
+            composeRule.onAllNodesWithText("长按浏览历史帖").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("长按浏览历史帖").performClick()
+        assertFalse(opened.last().openLastPage)
+        composeRule.onNodeWithText("长按浏览历史帖").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        assertEquals("9401", opened.last().tid)
+        assertTrue("浏览历史长按必须触发 openLastPage=true", opened.last().openLastPage)
+    }
+
     @Test
     fun browseHistory_singleDeleteThenClearAllThenUndo_restoresAllPreClearRecordsWithTimestampsAndOrder() {
         val dao = database.browseHistoryDao()
