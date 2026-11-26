@@ -1,6 +1,7 @@
 package net.jejer.hipda.feature.threaddetail
 
 import android.os.SystemClock
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -10,8 +11,6 @@ import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,11 +26,21 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.math.abs
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
+import net.jejer.hipda.data.favorite.FavoriteKind
 import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.feature.threaddetail.chrome.ReadingPositionAnchor
+import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbar
+import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarClearance
+import net.jejer.hipda.feature.threaddetail.chrome.buildSafeThreadUrl
+import net.jejer.hipda.feature.threaddetail.chrome.copyThreadLinkPlainText
+import net.jejer.hipda.feature.threaddetail.chrome.openExternalHttpUrl
+import net.jejer.hipda.feature.threaddetail.chrome.shareExternalHttpUrl
 import net.jejer.hipda.feature.threaddetail.interact.FloorContextMenuOverlay
 import net.jejer.hipda.feature.threaddetail.interact.ThreadPollCard
 import net.jejer.hipda.feature.threaddetail.interact.copyFloorPlainTextToClipboard
@@ -397,6 +406,17 @@ fun ThreadDetailPane(
     val detailGlassState = rememberHiGlassState()
     val activeMenuFloorState = remember(args.tid, uiState.tid) { mutableStateOf<PostFloor?>(null) }
     var activeMenuFloor by activeMenuFloorState
+    var isJumpBarExpanded by remember(args.tid) { mutableStateOf(false) }
+
+    // 返回优先级（Addendum #3）：PositionStack 仅在非空时拦截，且优先于 E3 多栏返回栈，
+    // 晚于内联跳页条收起与楼层长按菜单关闭（Compose BackHandler 后进先出）。
+    BackHandler(enabled = uiState.canPopPositionStack) {
+        viewModel.popPosition()
+    }
+
+    DisposableEffect(args.tid, viewModel) {
+        onDispose { viewModel.flushReadingPosition() }
+    }
 
     val isScrolledState = remember(listState) {
         derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
@@ -492,6 +512,49 @@ fun ThreadDetailPane(
         )
     }
 
+    val activeSnackbarEvent = uiState.snackbarEvent
+    val undoActionLabel = stringResource(R.string.thread_detail_action_undo)
+    val favoritedMsg = stringResource(R.string.thread_detail_snackbar_favorited)
+    val unfavoritedMsg = stringResource(R.string.thread_detail_snackbar_unfavorited)
+    val attentionAddedMsg = stringResource(R.string.thread_detail_snackbar_attention_added)
+    val attentionRemovedMsg = stringResource(R.string.thread_detail_snackbar_attention_removed)
+    val activeUndoSnackbarJob = remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(uiState.snackbarResetSeq) {
+        activeUndoSnackbarJob.value?.cancel()
+        activeUndoSnackbarJob.value = null
+    }
+    LaunchedEffect(activeSnackbarEvent?.id) {
+        val event = activeSnackbarEvent ?: return@LaunchedEffect
+        viewModel.consumeSnackbarEvent(event.id)
+        activeUndoSnackbarJob.value?.cancel()
+        activeUndoSnackbarJob.value = coroutineScope.launch {
+            when (event) {
+                is ThreadDetailSnackbarEvent.FavoriteUndoable -> {
+                    val message = when (event.kind) {
+                        FavoriteKind.FAVORITE -> if (event.added) favoritedMsg else unfavoritedMsg
+                        FavoriteKind.ATTENTION -> if (event.added) attentionAddedMsg else attentionRemovedMsg
+                    }
+                    snackbarController.show(
+                        message = message,
+                        target = PaneSnackbarTarget.DetailPane,
+                        actionLabel = undoActionLabel,
+                        onAction = { viewModel.undoFavoriteMutation(event.tokenId) },
+                    )
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(listState, viewModel) {
+        snapshotFlow {
+            val s = latestUiState
+            if (s.isLoading || s.pendingScroll != null || s.floors.isEmpty()) return@snapshotFlow null
+            resolveViewportAnchor(s, listState, fallbackToFirst = false)
+        }.distinctUntilChanged().collect { anchor ->
+            anchor?.postId?.let { pid -> viewModel.onReadingPositionChanged(anchor.page, pid, anchor.scrollOffsetPx) }
+        }
+    }
+
     LaunchedEffect(listState) {
         var prevEpoch = -1L; var prevPrependGen = -1L; var prevHadPending = false; var prevPos: Pair<Int, Int>? = null
         snapshotFlow {
@@ -538,156 +601,198 @@ fun ThreadDetailPane(
     }
     val copiedLabel = stringResource(R.string.thread_detail_menu_copy)
     val copiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_copied)
+    val copyLinkLabel = stringResource(R.string.thread_detail_more_copy_link)
+    val linkCopiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_link_copied)
+    val shareChooserTitle = stringResource(R.string.thread_detail_more_share)
+    val bottomInset = contentPadding.calculateBottomPadding()
+    val fixedBottomClearance = bottomInset + ThreadBottomToolbarClearance
+
+    LaunchedEffect(bodySlot, chromeSpec.suppressBottomGlass) {
+        if (bodySlot != DetailBodySlot.CONTENT || chromeSpec.suppressBottomGlass) isJumpBarExpanded = false
+    }
 
     Surface(modifier = modifier.fillMaxSize(), color = cs.background, contentColor = cs.onBackground) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                // 严格兄弟节点 1：正文内容区（仅 LazyColumn 挂载 detailGlassState，内含不透明底色防止未模糊文字穿透）
-                AnimatedContent(
-                    targetState = bodySlot,
-                    modifier = Modifier.fillMaxSize(),
-                    transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) },
-                    contentAlignment = Alignment.TopCenter,
-                    label = "ThreadDetailBodySlot",
-                ) { slot ->
-                    when (slot) {
-                        DetailBodySlot.CHALLENGE -> Box(Modifier.fillMaxSize().padding(top = topClearance), Alignment.Center) {
-                            ChallengeStatusView(uiState.challengeState, viewModel::retry, failure = uiState.challengeFailure, errorDetails = uiState.error?.details)
+        Box(modifier = Modifier.fillMaxSize()) {
+            // 严格兄弟节点 1：正文内容区（仅 LazyColumn 挂载 detailGlassState，底部固定预留工具条高度不随展开/IME 跳动）
+            AnimatedContent(
+                targetState = bodySlot,
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = { (hiFadeIn() togetherWith hiFadeOut()).using(null) },
+                contentAlignment = Alignment.TopCenter,
+                label = "ThreadDetailBodySlot",
+            ) { slot ->
+                when (slot) {
+                    DetailBodySlot.CHALLENGE -> Box(Modifier.fillMaxSize().padding(top = topClearance), Alignment.Center) {
+                        ChallengeStatusView(uiState.challengeState, viewModel::retry, failure = uiState.challengeFailure, errorDetails = uiState.error?.details)
+                    }
+                    DetailBodySlot.SKELETON -> ThreadDetailSkeleton(topClearance)
+                    DetailBodySlot.ERROR -> Box(Modifier.fillMaxSize().padding(top = topClearance), Alignment.Center) {
+                        uiState.error?.let { err ->
+                            HiErrorState(stringResource(err.messageRes), details = err.details, action = err.toStateAction(viewModel::retry, onOpenLogin))
                         }
-                        DetailBodySlot.SKELETON -> ThreadDetailSkeleton(topClearance)
-                        DetailBodySlot.ERROR -> Box(Modifier.fillMaxSize().padding(top = topClearance), Alignment.Center) {
-                            uiState.error?.let { err ->
-                                HiErrorState(stringResource(err.messageRes), details = err.details, action = err.toStateAction(viewModel::retry, onOpenLogin))
-                            }
+                    }
+                    DetailBodySlot.EMPTY -> Box(Modifier.fillMaxSize().padding(top = topClearance), Alignment.Center) {
+                        val action = if (hasActiveFilter) {
+                            HiStateAction(stringResource(R.string.thread_detail_action_view_all), viewModel::clearFilter)
+                        } else {
+                            HiStateAction(stringResource(R.string.common_action_refresh)) { viewModel.retry() }
                         }
-                        DetailBodySlot.EMPTY -> Box(Modifier.fillMaxSize().padding(top = topClearance), Alignment.Center) {
-                            val action = if (hasActiveFilter) {
-                                HiStateAction(stringResource(R.string.thread_detail_action_view_all), viewModel::clearFilter)
-                            } else {
-                                HiStateAction(stringResource(R.string.common_action_refresh)) { viewModel.retry() }
-                            }
-                            HiEmptyState(stringResource(R.string.common_empty_floors), action = action)
-                        }
-                        DetailBodySlot.CONTENT -> {
-                            SideEffect { anchorController.syncBeforeMeasure(uiState, listState, viewModel::consumePendingScroll) }
-                            CompositionLocalProvider(LocalAboveViewportHeightCompensationAuthority provides scrollCompensationAuthority) {
-                                LazyColumn(
-                                    state = listState,
-                                    modifier = Modifier.fillMaxSize().nestedScroll(pagingNestedScroll).hiGlassSource(detailGlassState).background(cs.background),
-                                    contentPadding = PaddingValues(top = topClearance, bottom = if (uiState.lastPage > 1) 8.dp else contentPadding.calculateBottomPadding() + 8.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                ) {
-                                    if (uiState.showPrependHeader) {
-                                        item(key = KEY_PREPEND_HEADER) {
-                                            val headState = if (uiState.isPrepending) HiFooterState.Loading else HiFooterState.Failed { viewModel.retryPrepend() }
-                                            HiListFooter(headState, modifier = Modifier.widthIn(max = PostMaxContentWidth))
-                                        }
+                        HiEmptyState(stringResource(R.string.common_empty_floors), action = action)
+                    }
+                    DetailBodySlot.CONTENT -> {
+                        SideEffect { anchorController.syncBeforeMeasure(uiState, listState, viewModel::consumePendingScroll) }
+                        CompositionLocalProvider(LocalAboveViewportHeightCompensationAuthority provides scrollCompensationAuthority) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize().nestedScroll(pagingNestedScroll).hiGlassSource(detailGlassState).background(cs.background),
+                                contentPadding = PaddingValues(top = topClearance, bottom = fixedBottomClearance),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                if (uiState.showPrependHeader) {
+                                    item(key = KEY_PREPEND_HEADER) {
+                                        val headState = if (uiState.isPrepending) HiFooterState.Loading else HiFooterState.Failed { viewModel.retryPrepend() }
+                                        HiListFooter(headState, modifier = Modifier.widthIn(max = PostMaxContentWidth))
                                     }
-                                    items(items = uiState.floors, key = { "$FLOOR_KEY_PREFIX${it.postId}" }) { item ->
-                                        val isOp = item.floor.floor == 1 || (uiState.threadAuthorId != null && item.floor.uid == uiState.threadAuthorId)
-                                        val highlightToken = uiState.highlightedFloor?.takeIf { it.postId == item.postId }?.tokenId
-                                        val floorPollSlot: (@Composable (net.jejer.hipda.parser.threaddetail.ThreadPoll) -> Unit)? =
-                                            if (item.floor.floor == 1 && item.floor.poll != null) {
-                                                { poll ->
-                                                    ThreadPollCard(
-                                                        poll = poll,
-                                                        isLoggedIn = uiState.isLoggedIn,
-                                                        isSubmitting = uiState.isPollSubmitting,
-                                                        error = uiState.pollError,
-                                                        onSubmitVote = { ids -> viewModel.submitPollVote(poll, ids) },
-                                                        onOpenLogin = onOpenLogin,
-                                                        onClearError = viewModel::clearPollError,
-                                                    )
-                                                }
-                                            } else {
-                                                null
+                                }
+                                items(items = uiState.floors, key = { "$FLOOR_KEY_PREFIX${it.postId}" }) { item ->
+                                    val isOp = item.floor.floor == 1 || (uiState.threadAuthorId != null && item.floor.uid == uiState.threadAuthorId)
+                                    val highlightToken = uiState.highlightedFloor?.takeIf { it.postId == item.postId }?.tokenId
+                                    val floorPollSlot: (@Composable (net.jejer.hipda.parser.threaddetail.ThreadPoll) -> Unit)? =
+                                        if (item.floor.floor == 1 && item.floor.poll != null) {
+                                            { poll ->
+                                                ThreadPollCard(
+                                                    poll = poll,
+                                                    isLoggedIn = uiState.isLoggedIn,
+                                                    isSubmitting = uiState.isPollSubmitting,
+                                                    error = uiState.pollError,
+                                                    onSubmitVote = { ids -> viewModel.submitPollVote(poll, ids) },
+                                                    onOpenLogin = onOpenLogin,
+                                                    onClearError = viewModel::clearPollError,
+                                                )
                                             }
-                                        PostFloorCard(
-                                            item = item,
-                                            isOp = isOp,
-                                            listState = listState,
-                                            onOpenImageViewer = onOpenImageViewer,
-                                            onAuthorClick = onOpenUserProfile,
-                                            modifier = floorPositionedModifier,
-                                            onJumpToFloor = viewModel::jumpToFloor,
-                                            onLongPress = onOpenFloorMenu,
-                                            highlightToken = highlightToken,
-                                            onHighlightFinished = viewModel::onHighlightFinished,
-                                            pollSlot = floorPollSlot,
-                                        )
-                                        HorizontalDivider(Modifier.widthIn(max = PostMaxContentWidth).fillMaxWidth(), color = cs.outlineVariant.copy(alpha = 0.5f))
-                                    }
-                                    val tailFooter = when {
-                                        uiState.isAppending -> HiFooterState.Loading
-                                        uiState.appendError != null -> HiFooterState.Failed { viewModel.retryAppend() }
-                                        !uiState.hasNextPage -> HiFooterState.End
-                                        else -> null
-                                    }
-                                    if (tailFooter != null) {
-                                        item(key = KEY_APPEND_FOOTER) { HiListFooter(tailFooter, modifier = Modifier.widthIn(max = PostMaxContentWidth)) }
-                                    }
+                                        } else {
+                                            null
+                                        }
+                                    PostFloorCard(
+                                        item = item,
+                                        isOp = isOp,
+                                        listState = listState,
+                                        onOpenImageViewer = onOpenImageViewer,
+                                        onAuthorClick = onOpenUserProfile,
+                                        modifier = floorPositionedModifier,
+                                        onJumpToFloor = { targetPid, targetTid ->
+                                            viewModel.jumpToFloor(targetPid, targetTid, resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true))
+                                        },
+                                        onLongPress = onOpenFloorMenu,
+                                        highlightToken = highlightToken,
+                                        onHighlightFinished = viewModel::onHighlightFinished,
+                                        pollSlot = floorPollSlot,
+                                    )
+                                    HorizontalDivider(Modifier.widthIn(max = PostMaxContentWidth).fillMaxWidth(), color = cs.outlineVariant.copy(alpha = 0.5f))
+                                }
+                                val tailFooter = when {
+                                    uiState.isAppending -> HiFooterState.Loading
+                                    uiState.appendError != null -> HiFooterState.Failed { viewModel.retryAppend() }
+                                    !uiState.hasNextPage -> HiFooterState.End
+                                    else -> null
+                                }
+                                if (tailFooter != null) {
+                                    item(key = KEY_APPEND_FOOTER) { HiListFooter(tailFooter, modifier = Modifier.widthIn(max = PostMaxContentWidth)) }
                                 }
                             }
                         }
                     }
                 }
+            }
 
-                // 严格兄弟节点 2：透明液态玻璃顶栏（HiGlassMarker == 1）+ 过滤胶囊
-                Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
-                    ThreadDetailTopBar(
-                        title = uiState.title.ifBlank { args.title },
-                        authorName = uiState.threadAuthorName ?: args.author,
-                        chromeSpec = chromeSpec,
-                        isAuthorOnly = uiState.filter is ThreadDetailFilterUi.AuthorOnly,
-                        isScrolledState = isScrolledState,
-                        glassState = detailGlassState,
-                        onBack = onBack,
-                        onToggleAuthorOnly = {
-                            val anchorItem = firstVisibleFloor(listState)
-                            val anchorPid = (anchorItem?.key as? String)?.removePrefix(FLOOR_KEY_PREFIX) ?: uiState.floors.getOrNull(listState.firstVisibleItemIndex)?.postId
-                            viewModel.toggleAuthorOnly(anchorPid, anchorItem?.let { (-it.offset).coerceAtLeast(0) } ?: listState.firstVisibleItemScrollOffset)
-                        },
-                    )
-                    FilterCapsuleBar(uiState.filter, viewModel::clearFilter)
-                }
+            // 严格兄弟节点 2：透明液态玻璃顶栏（HiGlassMarker == 1）+ 过滤胶囊
+            Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
+                ThreadDetailTopBar(
+                    title = uiState.title.ifBlank { args.title },
+                    authorName = uiState.threadAuthorName ?: args.author,
+                    chromeSpec = chromeSpec,
+                    isAuthorOnly = uiState.filter is ThreadDetailFilterUi.AuthorOnly,
+                    isScrolledState = isScrolledState,
+                    glassState = detailGlassState,
+                    onBack = onBack,
+                    onToggleAuthorOnly = {
+                        val anchor = resolveViewportAnchor(uiState, listState, fallbackToFirst = true)
+                        viewModel.toggleAuthorOnly(anchor?.postId, anchor?.scrollOffsetPx ?: listState.firstVisibleItemScrollOffset)
+                    },
+                )
+                FilterCapsuleBar(uiState.filter, viewModel::clearFilter)
+            }
 
-                // 严格兄弟节点 3：楼层长按菜单（纯色表面，零玻璃标记开销）
-                FloorContextMenuOverlay(
-                    floor = activeMenuFloor,
-                    isLoggedIn = uiState.isLoggedIn,
-                    currentUserUid = uiState.currentUserUid,
-                    onQuoteReply = { floor ->
-                        onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = floor.postId, quoteAuthor = floor.author, quoteFloor = floor.floor))
-                    },
-                    onReply = { floor ->
-                        onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = null, quoteAuthor = floor.author, quoteFloor = floor.floor))
-                    },
-                    onFilterByUser = { floor ->
-                        val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "$FLOOR_KEY_PREFIX${floor.postId}" }
-                        val anchorOffset = itemInfo?.let { (-it.offset).coerceAtLeast(0) } ?: 0
-                        viewModel.filterByUser(floor.uid, floor.author, anchorPostId = floor.postId, anchorScrollOffset = anchorOffset)
-                    },
-                    onCopy = { floor ->
-                        if (copyFloorPlainTextToClipboard(context, copiedLabel, floor)) {
-                            coroutineScope.launch {
-                                snackbarController.show(copiedSnackbarMessage, target = PaneSnackbarTarget.DetailPane)
-                            }
+            // 严格兄弟节点 3：底部三段式液态玻璃工具条与内联跳页条（suppressBottomGlass == true 时整块卸载 HiGlassRegion）
+            if (!chromeSpec.suppressBottomGlass && bodySlot == DetailBodySlot.CONTENT) {
+                ThreadBottomToolbar(
+                    page = visiblePage, lastPage = uiState.lastPage, isFavorited = uiState.isFavorited, isAttention = uiState.isAttention,
+                    glassState = detailGlassState, suppressBottomGlass = chromeSpec.suppressBottomGlass,
+                    isJumpBarExpanded = isJumpBarExpanded, onExpandedChange = { isJumpBarExpanded = it },
+                    onReplyClick = { onOpenReply(ReplyRequest(tid = uiState.tid)) },
+                    onJumpToPage = { targetPage -> viewModel.jumpToPage(targetPage, resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)) },
+                    onToggleFavorite = viewModel::toggleFavorite, onRefreshClick = viewModel::refreshCurrentPage,
+                    onToggleAttention = viewModel::toggleAttention,
+                    onCopyLinkClick = {
+                        val url = buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)
+                        if (copyThreadLinkPlainText(context, copyLinkLabel, url)) {
+                            coroutineScope.launch { snackbarController.show(linkCopiedSnackbarMessage, target = PaneSnackbarTarget.DetailPane) }
                         }
                     },
-                    onOpenLogin = onOpenLogin,
-                    onDismiss = { activeMenuFloor = null },
+                    onOpenInBrowserClick = { openExternalHttpUrl(context, buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)) },
+                    onShareClick = {
+                        shareExternalHttpUrl(context, uiState.title.ifBlank { args.title }, buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage), shareChooserTitle)
+                    },
+                    bottomInset = bottomInset,
                 )
             }
 
-            if (uiState.lastPage > 1) {
-                ThreadDetailPaginationBar(
-                    page = visiblePage, lastPage = uiState.lastPage, isLoading = uiState.isLoading,
-                    bottomPadding = contentPadding.calculateBottomPadding(),
-                    onPreviousPage = { viewModel.onVisiblePageChanged(visiblePage); viewModel.previousPage() },
-                    onNextPage = { viewModel.onVisiblePageChanged(visiblePage); viewModel.nextPage() },
-                )
-            }
+            // 严格兄弟节点 4：楼层长按菜单（纯色表面，零玻璃标记开销）
+            FloorContextMenuOverlay(
+                floor = activeMenuFloor,
+                isLoggedIn = uiState.isLoggedIn,
+                currentUserUid = uiState.currentUserUid,
+                onQuoteReply = { floor ->
+                    onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = floor.postId, quoteAuthor = floor.author, quoteFloor = floor.floor))
+                },
+                onReply = { floor ->
+                    onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = null, quoteAuthor = floor.author, quoteFloor = floor.floor))
+                },
+                onFilterByUser = { floor ->
+                    val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "$FLOOR_KEY_PREFIX${floor.postId}" }
+                    val anchorOffset = itemInfo?.let { (-it.offset).coerceAtLeast(0) } ?: 0
+                    viewModel.filterByUser(floor.uid, floor.author, anchorPostId = floor.postId, anchorScrollOffset = anchorOffset)
+                },
+                onCopy = { floor ->
+                    if (copyFloorPlainTextToClipboard(context, copiedLabel, floor)) {
+                        coroutineScope.launch {
+                            snackbarController.show(copiedSnackbarMessage, target = PaneSnackbarTarget.DetailPane)
+                        }
+                    }
+                },
+                onOpenLogin = onOpenLogin,
+                onDismiss = { activeMenuFloor = null },
+            )
         }
+    }
+}
+
+private fun resolveViewportAnchor(
+    s: ThreadDetailUiState,
+    listState: LazyListState,
+    fallbackToFirst: Boolean,
+): ReadingPositionAnchor? {
+    val header = if (s.showPrependHeader) 1 else 0
+    val firstFloor = firstVisibleFloor(listState)
+    val floorIdx = resolveFloorIndex(firstFloor, s.floors, header)
+    val item = s.floors.getOrNull(floorIdx) ?: if (fallbackToFirst) s.floors.firstOrNull() else null
+    return item?.let {
+        ReadingPositionAnchor(
+            page = it.floor.page.takeIf { p -> p > 0 } ?: s.page,
+            postId = it.postId,
+            scrollOffsetPx = firstFloor?.let { f -> (-f.offset).coerceAtLeast(0) } ?: 0,
+            filter = s.filter,
+        )
     }
 }
 
@@ -707,27 +812,5 @@ private fun ThreadDetailSkeleton(topPadding: Dp) {
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun ThreadDetailPaginationBar(
-    page: Int,
-    lastPage: Int,
-    isLoading: Boolean,
-    bottomPadding: Dp,
-    onPreviousPage: () -> Unit,
-    onNextPage: () -> Unit,
-) {
-    val cs = MaterialTheme.colorScheme
-    HorizontalDivider(color = cs.outlineVariant)
-    Row(
-        modifier = Modifier.fillMaxWidth().background(cs.surface).padding(horizontal = 12.dp, vertical = 4.dp).padding(bottom = bottomPadding),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextButton(onClick = onPreviousPage, enabled = page > 1 && !isLoading, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text(stringResource(R.string.common_page_prev)) }
-        Text(stringResource(R.string.common_page_indicator, page, lastPage), style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
-        TextButton(onClick = onNextPage, enabled = page < lastPage && !isLoading, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text(stringResource(R.string.common_page_next)) }
     }
 }

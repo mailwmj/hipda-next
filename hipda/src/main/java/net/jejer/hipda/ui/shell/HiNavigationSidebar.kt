@@ -85,6 +85,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -280,7 +281,12 @@ internal fun HiNavigationSidebarModalOverlay(
     onManageForumsClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    BackHandler(enabled = visible, onBack = onDismiss)
+    // 仅在抽屉打开时挂载并以 visible 为 key 重新注册，确保每次展开均位于 OnBackPressedDispatcher LIFO 栈顶（浮层 > 位置栈 > 宿主返回）
+    if (visible) {
+        key(visible) {
+            BackHandler(enabled = true, onBack = onDismiss)
+        }
+    }
 
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current

@@ -90,6 +90,7 @@ private abstract class HiPressFeedbackNode(
     override fun onDetach() {
         collectJob?.cancel(); collectJob = null
         animJob?.cancel(); animJob = null
+        anim = null
     }
 
     fun updateInteractionSource(newSource: InteractionSource) {

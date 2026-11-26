@@ -732,52 +732,61 @@ class ContinuousPagingAnchorTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
-        composeRule.onNodeWithText("上一页").assertIsNotEnabled()
-        composeRule.onNodeWithText("下一页").assertIsEnabled()
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("首页").assertIsNotEnabled()
+        composeRule.onNodeWithText("末页").assertIsEnabled()
+        composeRule.onNodeWithContentDescription("关闭").performClick()
+        composeRule.waitForIdle()
 
-        // 向下滚动预取第 2 页：首可见楼层仍在第 1 页时，底栏保持“第 1 / 3 页”
+        // 向下滚动预取第 2 页：首可见楼层仍在第 1 页时，进度胶囊保持第 1 页
         composeRule.runOnIdle { listState.requestScrollToItem(index = 10, scrollOffset = 0) }
         composeRule.waitForIdle()
         assertEquals(2, vm.uiState.value.lastLoadedPage)
-        composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
 
-        // 继续滚入第 2 页楼层（index=22 为第 2 页第 3 楼）：底栏实时切换为“第 2 / 3 页”且“上一页”可用
+        // 继续滚入第 2 页楼层（index=22 为第 2 页第 3 楼）：进度胶囊实时切换为第 2 页且“首页”“末页”均可用
         composeRule.runOnIdle { listState.requestScrollToItem(index = 22, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 2 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
         assertEquals(2, vm.uiState.value.page)
-        composeRule.onNodeWithText("上一页").assertIsEnabled()
-        composeRule.onNodeWithText("下一页").assertIsEnabled()
+        composeRule.onNodeWithText("首页").assertIsEnabled()
+        composeRule.onNodeWithText("末页").assertIsEnabled()
+        composeRule.onNodeWithContentDescription("关闭").performClick()
+        composeRule.waitForIdle()
 
-        // 滚至第 2 页末尾预取第 3 页并滚入第 3 页楼层：底栏切换为“第 3 / 3 页”且“下一页”禁用
+        // 滚至第 2 页末尾预取第 3 页并滚入第 3 页楼层：进度胶囊切换为第 3 页且“末页”禁用
         composeRule.runOnIdle { listState.requestScrollToItem(index = 31, scrollOffset = 0) }
         composeRule.waitForIdle()
         composeRule.runOnIdle { listState.requestScrollToItem(index = 42, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 3 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 3 页，共 3 页，点按展开跳页").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
         assertEquals(3, vm.uiState.value.page)
-        composeRule.onNodeWithText("上一页").assertIsEnabled()
-        composeRule.onNodeWithText("下一页").assertIsNotEnabled()
+        composeRule.onNodeWithText("首页").assertIsEnabled()
+        composeRule.onNodeWithText("末页").assertIsNotEnabled()
+        composeRule.onNodeWithContentDescription("关闭").performClick()
+        composeRule.waitForIdle()
 
-        // 向上滚回第 1 页楼层：底栏切回“第 1 / 3 页”
+        // 向上滚回第 1 页楼层：进度胶囊切回第 1 页
         composeRule.runOnIdle { listState.requestScrollToItem(index = 1, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
         assertEquals(1, vm.uiState.value.page)
 
-        // 从第 2 页向上预取第 1 页后：停留在第 2 页楼层时底栏仍显示“第 2 / 3 页”，滚入第 1 页后切为“第 1 / 3 页”
+        // 从第 2 页向上预取第 1 页后：停留在第 2 页楼层时进度胶囊仍显示第 2 页，滚入第 1 页后切为第 1 页
         composeRule.runOnIdle { vm.loadPage(2) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 2 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
         composeRule.runOnIdle { vm.loadPreviousPage() }
         composeRule.waitForIdle()
         assertEquals(1, vm.uiState.value.firstLoadedPage)
-        composeRule.onNodeWithText("第 2 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
 
         composeRule.runOnIdle { listState.requestScrollToItem(index = 2, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
         assertEquals(1, vm.uiState.value.page)
     }
 
@@ -1022,7 +1031,7 @@ class ContinuousPagingAnchorTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithText("下一页").performClick()
+        composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
 
         repo.firstPageGateArmed = true
@@ -1140,9 +1149,9 @@ class ContinuousPagingAnchorTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithText("下一页").performClick()
+        composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 2 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
 
         // 滚过 p201 顶部 4:3 图片，使图片底缘越过视口顶边且 p201 尾段与 p202 可见
         val scrollPx = (410f * density).toInt()
