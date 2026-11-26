@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "hipda-next"
-include(":hipda", ":emoji", ":core-parser")
+include(":hipda", ":emoji", ":core-parser", ":baselineprofile")

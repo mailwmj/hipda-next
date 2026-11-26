@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Resource shrinker keep rules (isShrinkResources = true).
+  - :emoji forum drawables (101 assets: 21 default_*, 32 coolmonkey_* light/dark, 48 grapeman_* light/dark)
+    are looked up dynamically by smilie key / code via EmojiMap and must never be stripped or stubbed out
+    in release builds.
+  - @drawable/win is the built-in small image badge resolved by key in InlineEmojiContent.
+  - @drawable/ic_stat_hi is the system notification small icon.
+  - @drawable/ic_shortcut_* are referenced from res/xml/shortcuts.xml for launcher shortcuts.
+  Guarded by ReleaseResourceAndProfileGuardTest and CI release APK verification.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/default_*,@drawable/coolmonkey_*,@drawable/grapeman_*,@drawable/win,@drawable/ic_stat_hi,@drawable/ic_shortcut_*" />
