@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
@@ -44,6 +45,9 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -52,6 +56,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
@@ -352,18 +357,32 @@ internal fun ShellNavItem(
     onSelect: (ShellDestination) -> Unit,
     modifier: Modifier = Modifier,
     highlighted: Boolean = selected,
+    unreadCount: Int = 0,
 ) {
     val cs = MaterialTheme.colorScheme
     val label = stringResource(destination.labelRes)
+    val unreadDesc = if (unreadCount > 0) stringResource(R.string.shell_sidebar_unread_cd, label, unreadCount) else null
     val tint = if (highlighted) cs.primary else cs.onSurfaceVariant
     val onClick = remember(destination, onSelect) { { onSelect(destination) } }
     val content: @Composable () -> Unit = {
-        Icon(
-            imageVector = if (highlighted) destination.selectedIcon else destination.unselectedIcon,
-            contentDescription = if (showLabel) null else label,
-            tint = tint,
-            modifier = Modifier.size(24.dp),
-        )
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (highlighted) destination.selectedIcon else destination.unselectedIcon,
+                contentDescription = if (showLabel || unreadDesc != null) null else label,
+                tint = tint,
+                modifier = Modifier.size(24.dp),
+            )
+            if (unreadCount > 0) {
+                SidebarUnreadBadge(
+                    count = unreadCount,
+                    compact = true,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 8.dp, y = (-4).dp)
+                        .clearAndSetSemantics {},
+                )
+            }
+        }
         if (showLabel) {
             Text(
                 text = label,
@@ -383,6 +402,9 @@ internal fun ShellNavItem(
         modifier = modifier
             .hiPressScale(interactionSource)
             .testTag(HiShellTestTags.navItem(destination))
+            .then(
+                if (unreadDesc != null) Modifier.semantics(mergeDescendants = true) { contentDescription = unreadDesc } else Modifier,
+            )
             .clip(HiShapeTokens.Full)
             .selectable(
                 selected = selected,

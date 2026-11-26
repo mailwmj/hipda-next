@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -46,6 +48,8 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.StateRestorationTester
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -54,6 +58,7 @@ import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -1400,10 +1405,14 @@ class HiAdaptiveShellTest {
             var selected by mutableStateOf(ShellDestination.Forum)
             var selectCallCount = 0
             var touchSlop = 0f
+            var primaryColor = Color.Unspecified
+            var onSurfaceVariantColor = Color.Unspecified
 
             setContent {
                 touchSlop = LocalViewConfiguration.current.touchSlop
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    primaryColor = MaterialTheme.colorScheme.primary
+                    onSurfaceVariantColor = MaterialTheme.colorScheme.onSurfaceVariant
                     HiAdaptiveShell(
                         selected = selected,
                         onSelect = {
@@ -1439,6 +1448,12 @@ class HiAdaptiveShellTest {
             waitForIdle()
             assertEquals("拖动过程中绝不得提前触发 onSelect", 0, selectCallCount)
             assertEquals(ShellDestination.Forum, selected)
+
+            // R-C4d S3：拖动悬停未松手时，经过项 Search 必须切为预选高亮色（primary），原选中项 Forum 退回非高亮色（onSurfaceVariant）
+            val searchHoverColor = navItemLabelColor("搜索")
+            val forumHoverColor = navItemLabelColor("论坛")
+            assertEquals("R-C4d S3：拖拽悬停 Search 时标签必须呈预选高亮色 primary", primaryColor, searchHoverColor)
+            assertEquals("R-C4d S3：拖拽离开 Forum 时原项标签必须退回非高亮色 onSurfaceVariant", onSurfaceVariantColor, forumHoverColor)
 
             val draggedIndicatorCenterX = onNodeWithTag(HiShellTestTags.SelectionIndicator, useUnmergedTree = true)
                 .fetchSemanticsNode().boundsInRoot.center.x
@@ -1879,13 +1894,13 @@ class HiAdaptiveShellTest {
         }
         waitForIdle()
 
-        // 向下滚动侧栏列表后，在 AnimatedContent 交叉淡入淡出期间逐帧验证双挂载 LazyColumn 互不冲突
-        onNodeWithTag(HiShellTestTags.SidebarList).performTouchInput {
-            down(center)
-            moveBy(Offset(0f, -240f), delayMillis = 80L)
-            up()
-        }
+        // 向下滚动侧栏列表后，在 AnimatedContent 交叉淡入淡出期间逐帧验证双挂载 LazyColumn 互不冲突且滚动偏移被同步保留（R-C4d S2）
+        onNodeWithTag(HiShellTestTags.SidebarList)
+            .performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 500f) }
         waitForIdle()
+        val scrollBeforeCollapse = onNodeWithTag(HiShellTestTags.SidebarList)
+            .fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        assertTrue("侧栏列表应已滚离顶部，实际 scroll=$scrollBeforeCollapse", scrollBeforeCollapse > 0f)
 
         mainClock.autoAdvance = false
         try {
@@ -1903,8 +1918,14 @@ class HiAdaptiveShellTest {
             with(density) { onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot.width.toDp().value },
             1.5f,
         )
+        val scrollCollapsed = onNodeWithTag(HiShellTestTags.SidebarList)
+            .fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        assertTrue(
+            "R-C4d S2：收起侧栏后应同步保留非零滚动偏移，before=$scrollBeforeCollapse after=$scrollCollapsed",
+            scrollCollapsed > 0f,
+        )
 
-        // 再次展开过渡同样稳定无冲突
+        // 再次展开过渡同样稳定无冲突并保留滚动偏移
         mainClock.autoAdvance = false
         try {
             onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
@@ -1921,9 +1942,169 @@ class HiAdaptiveShellTest {
             with(density) { onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot.width.toDp().value },
             1.5f,
         )
+        val scrollExpanded = onNodeWithTag(HiShellTestTags.SidebarList)
+            .fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        assertTrue(
+            "R-C4d S2：重新展开侧栏后应继续保留滚动偏移，before=$scrollCollapsed after=$scrollExpanded",
+            scrollExpanded > 0f,
+        )
+    }
+
+    // ---- (j) E3 收口 R-C4d S1/S2 与 R-E0 S4（单栏二级页退场胶囊 & 合并未读角标） ----
+
+    @Test
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun navigationSidebar_initialMountPreservesExternalScrolledListState() = withAnimatorDurationScale(1f) {
+        val preScrolled = LazyListState(firstVisibleItemIndex = 6, firstVisibleItemScrollOffset = 24)
+        val manyForums = ForumMetadataRegistry.BuiltInForums.map { it.fid }
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiNavigationSidebar(
+                    state = HiSidebarState(
+                        selectedEntry = ShellSidebarEntry.Forum(2),
+                        followedForumIds = manyForums,
+                    ),
+                    expanded = true,
+                    mineGroupExpanded = true,
+                    onToggleSidebar = {},
+                    onToggleMineGroup = {},
+                    onCollapsedMineClick = {},
+                    onSelectEntry = {},
+                    onAccountClick = {},
+                    onManageForumsClick = {},
+                    modifier = Modifier.width(187.dp),
+                    listState = preScrolled,
+                )
+            }
+        }
+        waitForIdle()
+        assertEquals("R-C4d S2：首次挂载不得归零外部传入或已恢复的 firstVisibleItemIndex", 6, preScrolled.firstVisibleItemIndex)
+        assertEquals("R-C4d S2：首次挂载不得归零外部传入或已恢复的 scrollOffset", 24, preScrolled.firstVisibleItemScrollOffset)
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun glassSourceDelegation_omittedManagesGlassSource_avoidsFirstFrameParentChildCycle() = withAnimatorDurationScale(1f) {
+        var selected by mutableStateOf(ShellDestination.Search)
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    // 故意不传 managesGlassSource（保持默认 false），验证 R-C4d S1 首帧门控不挂载外层回退 LayerBackdrop
+                    HiAdaptiveShell(
+                        selected = selected,
+                        onSelect = { selected = it },
+                    ) { destination, contentPadding ->
+                        if (destination == ShellDestination.Forum) {
+                            Box(Modifier.fillMaxSize()) {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("unmanaged_self_claim_list")
+                                        .shellGlassSource(),
+                                    contentPadding = contentPadding,
+                                ) {
+                                    items(8) { idx -> Text("行 $idx") }
+                                }
+                                shellGlassState?.let { st ->
+                                    HiGlassSurface(
+                                        state = st,
+                                        modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(56.dp),
+                                        shape = RectangleShape,
+                                        floating = false,
+                                        style = HiGlassStyle.TopBar,
+                                    ) { Text("未声明自管顶栏") }
+                                }
+                            }
+                        } else {
+                            Box(Modifier.fillMaxSize().background(Color.Yellow)) { Text("搜索") }
+                        }
+                    }
+                }
+            }
+        }
+        waitForIdle()
+
+        mainClock.autoAdvance = false
+        try {
+            selected = ShellDestination.Forum
+            Snapshot.sendApplyNotifications()
+            mainClock.advanceTimeByFrame()
+            // 首帧提交前外层 ShellDestinationHost 不得挂回退 LayerBackdrop，杜绝父子同源采样
+            val contentRoot = onNodeWithTag(HiShellTestTags.ContentContainer).fetchSemanticsNode()
+            val outerHasBackdrop = contentRoot.layoutInfo.getModifierInfo()
+                .any { it.modifier.javaClass.name.contains("LayerBackdrop") }
+            assertFalse("R-C4d S1：漏传 managesGlassSource 时外层严禁挂回退 LayerBackdrop", outerHasBackdrop)
+        } finally {
+            mainClock.autoAdvance = true
+        }
+        waitForIdle()
+        val listHasBackdrop = onNodeWithTag("unmanaged_self_claim_list")
+            .fetchSemanticsNode()
+            .layoutInfo
+            .getModifierInfo()
+            .any { it.modifier.javaClass.name.contains("LayerBackdrop") }
+        assertTrue("R-C4d S1：首帧认领后纯列表体应挂接唯一 LayerBackdrop", listHasBackdrop)
+        assertGlassSurfaceCountAtMost(2)
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun bottomPill_hidesOnSinglePaneSecondaryPage_andShowsMergedUnreadBadge() = withAnimatorDurationScale(1f) {
+        var isSecondary by mutableStateOf(false)
+        var unreadCount by mutableIntStateOf(7)
+
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                    hideBottomNavigation = isSecondary,
+                    messagesUnreadCount = unreadCount,
+                ) { _, _ ->
+                    Box(Modifier.fillMaxSize())
+                }
+            }
+        }
+        waitForIdle()
+
+        // 1) 一级页显示底部胶囊与合并未读角标（7 -> “消息，7 条未读”）
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+        onAllNodesWithText("7", useUnmergedTree = true).onFirst().assertIsDisplayed()
+        val msgDesc = onNodeWithTag(HiShellTestTags.navItem(ShellDestination.Messages))
+            .fetchSemanticsNode().config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+        assertTrue("消息项无障碍描述应合并未读数，实际 $msgDesc", "消息，7 条未读" in msgDesc)
+
+        // > 99 显示 99+；归零时隐藏角标
+        unreadCount = 128
+        waitForIdle()
+        onAllNodesWithText("99+", useUnmergedTree = true).onFirst().assertIsDisplayed()
+
+        unreadCount = 0
+        waitForIdle()
+        assertTrue("归零后不得再显示 99+", onAllNodesWithText("99+", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+        assertTrue("归零后不得显示 0 角标", onAllNodesWithText("0", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+
+        // 2) 进入单栏二级页：底部导航胶囊退场（§3.1 L38）
+        isSecondary = true
+        waitForIdle()
+        onNodeWithTag(HiShellTestTags.BottomPill).assertDoesNotExist()
+        assertGlassSurfaceCountAtMost(0)
+
+        // 3) 返回一级页：底部导航胶囊恢复
+        isSecondary = false
+        waitForIdle()
+        onNodeWithTag(HiShellTestTags.BottomPill).assertIsDisplayed()
+        assertGlassSurfaceCountAtMost(1)
     }
 
     // ---- 局部辅助 ----
+
+    private fun ComposeUiTest.navItemLabelColor(label: String): Color {
+        val node = onNodeWithText(label, useUnmergedTree = true).fetchSemanticsNode()
+        val results = mutableListOf<TextLayoutResult>()
+        node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(results)
+        return results.first().layoutInput.style.color
+    }
 
     private fun ComposeUiTest.sampleIndicatorWidths(
         nodeProvider: () -> SemanticsNodeInteraction,

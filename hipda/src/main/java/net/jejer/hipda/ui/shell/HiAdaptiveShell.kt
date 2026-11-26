@@ -1,6 +1,7 @@
 package net.jejer.hipda.ui.shell
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -59,15 +60,17 @@ import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
+import net.jejer.hipda.ui.designsystem.motion.hiSlideInVertically
+import net.jejer.hipda.ui.designsystem.motion.hiSlideOutVertically
 
 /**
  * 内容槽位可读取的当前自适应分栏布局与玻璃采样上下文（供多栏容器与业务页 `E1`/`E3`/`E8–E12` 消费）。
  *
- * - [shellGlassState] 在底部胶囊态（`!paneLayout.isSidebar`）且当前目的地为活跃选中页时非空，
- *   侧栏态与切页退场过渡期内恒为 `null`（避免双页同时向同一 `LayerBackdrop` 写入）；
- * - 带透明顶栏的页面应通过 `managesGlassSource` 或 [Modifier.shellGlassSource] 将采样源仅挂在纯滚动
- *   `LazyColumn` 上，使透明顶栏与底部胶囊同为该列表体的严格兄弟节点（0 循环采样）；未声明接管的纯色顶栏页
- *   由外壳自动按活跃页回退挂源。
+ * - [shellGlassState] 在底部胶囊态（`!paneLayout.isSidebar` 且底部导航胶囊未退场）且当前目的地为活跃选中页时非空，
+ *   侧栏态、单栏二级页退场态与切页退场过渡期内恒为 `null`（避免双页同时向同一 `LayerBackdrop` 写入）；
+ * - 带透明顶栏的页面须通过 `managesGlassSource` 声明自管并配合 [Modifier.shellGlassSource] 将采样源仅挂在纯滚动
+ *   `LazyColumn` 上，使透明顶栏与底部胶囊同为该列表体的严格兄弟节点（0 循环采样）；未声明自管的纯色顶栏页
+ *   由外壳在首帧提交确认未被接管后自动回退挂源，从根源消除漏传 `managesGlassSource` 时的首帧父子同源竞态。
  */
 @Immutable
 interface ShellContentScope {
@@ -138,6 +141,8 @@ fun HiAdaptiveShell(
     onAccountClick: () -> Unit = {},
     onManageForumsClick: () -> Unit = {},
     hasDetailContent: Boolean = false,
+    hideBottomNavigation: Boolean = false,
+    messagesUnreadCount: Int = 0,
     managesGlassSource: (ShellDestination) -> Boolean = { false },
     content: @Composable ShellContentScope.(ShellDestination, PaddingValues) -> Unit,
 ) {
@@ -176,6 +181,9 @@ fun HiAdaptiveShell(
     val mode = paneLayout.navigationMode
     val isSidebar = paneLayout.isSidebar
     val isFullScreen = sidebarState?.isFullScreen == true
+    val bottomPillSuppressed = !isSidebar && (
+        isFullScreen || (hideBottomNavigation && !paneLayout.hasDetailPane)
+        )
     val showUnselectedLabels = showLabelForUnselected(widthDp)
     val glassState = rememberHiGlassState()
     val currentSelected by rememberUpdatedState(selected)
@@ -239,7 +247,7 @@ fun HiAdaptiveShell(
         minHeight.roundToPx()
     }
     val effectivePillHeightPx = if (measuredPillHeightPx > 0) measuredPillHeightPx else minPillHeightPx
-    val maxHiddenOffsetPx = if (isSidebar) {
+    val maxHiddenOffsetPx = if (isSidebar || bottomPillSuppressed) {
         0f
     } else {
         (effectivePillHeightPx + bottomGapPx + navBarsBottomPx + shadowClearancePx).toFloat()
@@ -249,8 +257,10 @@ fun HiAdaptiveShell(
     SideEffect {
         barState.syncLayout(newMaxHiddenOffsetPx = maxHiddenOffsetPx, imeVisible = imeVisible)
     }
-    LaunchedEffect(selected) {
-        barState.show()
+    LaunchedEffect(selected, bottomPillSuppressed) {
+        if (!bottomPillSuppressed) {
+            barState.show()
+        }
     }
 
     val targetSidebarWidthDp = if (isSidebar && !isFullScreen) paneLayout.sidebarWidthDp.dp else 0.dp
@@ -266,7 +276,11 @@ fun HiAdaptiveShell(
     val effectiveSidebarWidthDp = animatedSidebarWidthDp.coerceAtLeast(0.dp)
 
     val bottomPaddingDp = with(density) {
-        if (isSidebar) navBarsBottomPx.toDp() else (effectivePillHeightPx + bottomGapPx + navBarsBottomPx).toDp()
+        if (isSidebar || bottomPillSuppressed) {
+            navBarsBottomPx.toDp()
+        } else {
+            (effectivePillHeightPx + bottomGapPx + navBarsBottomPx).toDp()
+        }
     }
     val contentPadding = remember(bottomPaddingDp) { PaddingValues(bottom = bottomPaddingDp) }
     val contentPaneTitle = stringResource(R.string.shell_pane_content_title)
@@ -317,7 +331,7 @@ fun HiAdaptiveShell(
                     label = "HiAdaptiveShellContent",
                 ) { destination ->
                     val isActiveDestination = currentSelected == destination
-                    val gatedGlassState = if (!isSidebar && isActiveDestination) glassState else null
+                    val gatedGlassState = if (!isSidebar && !bottomPillSuppressed && isActiveDestination) glassState else null
                     val sourceClaim = remember(destination) { ShellGlassSourceClaim() }
                     val explicitlyManaged = managesGlassSource(destination)
                     val destinationScope = remember(paneLayout, gatedGlassState, sourceClaim, explicitlyManaged) {
@@ -337,7 +351,7 @@ fun HiAdaptiveShell(
                         fallbackGlassState = gatedGlassState,
                         explicitlyManaged = explicitlyManaged,
                         sourceClaim = sourceClaim,
-                        nestedScrollConnection = if (isSidebar) null else destinationScrollConnection,
+                        nestedScrollConnection = if (isSidebar || bottomPillSuppressed) null else destinationScrollConnection,
                     ) {
                         ShellDestinationContent(
                             scope = destinationScope,
@@ -385,26 +399,36 @@ fun HiAdaptiveShell(
                     modifier = anchorModifier,
                     contentAlignment = Alignment.BottomCenter,
                 ) {
-                    HiNavigationPill(
-                        selected = selected,
-                        onSelect = onSelect,
-                        glassState = glassState,
-                        compact = mode == ShellNavigationMode.CompactPill,
-                        showUnselectedLabels = showUnselectedLabels,
-                        modifier = Modifier
-                            .graphicsLayer {
-                                translationY = if (imeVisible) maxHiddenOffsetPx else barState.hiddenOffsetPx
-                            }
-                            .windowInsetsPadding(WindowInsets.navigationBars)
-                            .padding(
-                                start = HiNavigationPillHorizontalMargin,
-                                end = HiNavigationPillHorizontalMargin,
-                                bottom = HiNavigationPillBottomGap,
-                            )
-                            .onSizeChanged {
-                                if (it.height != effectivePillHeightPx) measuredPillHeightPx = it.height
-                            },
-                    )
+                    AnimatedVisibility(
+                        visible = !bottomPillSuppressed,
+                        enter = hiSlideInVertically(HiMotion.spatialDefault()) { it } +
+                            hiFadeIn(HiMotion.effectsDefault()),
+                        exit = hiSlideOutVertically(HiMotion.exit(HiMotion.spatialDefault())) { it } +
+                            hiFadeOut(HiMotion.exit(HiMotion.effectsDefault())),
+                        label = "HiAdaptiveShellBottomPillVisibility",
+                    ) {
+                        HiNavigationPill(
+                            selected = selected,
+                            onSelect = onSelect,
+                            glassState = glassState,
+                            compact = mode == ShellNavigationMode.CompactPill,
+                            showUnselectedLabels = showUnselectedLabels,
+                            unreadMessagesCount = messagesUnreadCount,
+                            modifier = Modifier
+                                .graphicsLayer {
+                                    translationY = if (imeVisible) maxHiddenOffsetPx else barState.hiddenOffsetPx
+                                }
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                                .padding(
+                                    start = HiNavigationPillHorizontalMargin,
+                                    end = HiNavigationPillHorizontalMargin,
+                                    bottom = HiNavigationPillBottomGap,
+                                )
+                                .onSizeChanged {
+                                    if (it.height != effectivePillHeightPx) measuredPillHeightPx = it.height
+                                },
+                        )
+                    }
                 }
             }
         }
@@ -432,7 +456,15 @@ private fun ShellDestinationHost(
     nestedScrollConnection: NestedScrollConnection?,
     content: @Composable () -> Unit,
 ) {
-    val useFallback = fallbackGlassState != null && !explicitlyManaged && !sourceClaim.isClaimed
+    // R-C4d S1：未显式声明 managesGlassSource 时，等首帧 commit 确认子页面未通过 shellGlassSource 认领后再启回退源，
+    // 消除漏传 managesGlassSource 时切页首帧的父子同源循环采样风险。
+    var fallbackArmed by remember(sourceClaim, explicitlyManaged) { mutableStateOf(false) }
+    LaunchedEffect(sourceClaim, explicitlyManaged) {
+        if (!explicitlyManaged && !sourceClaim.isClaimed) {
+            fallbackArmed = true
+        }
+    }
+    val useFallback = fallbackGlassState != null && !explicitlyManaged && !sourceClaim.isClaimed && fallbackArmed
     Box(
         modifier = Modifier
             .fillMaxSize()
