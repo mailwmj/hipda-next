@@ -437,6 +437,8 @@ class ThreadBottomToolbarTest {
             "https://example.com/line\nbreak",
             "https://example.com/ctrl\u0000char",
             "https:///missing-host",
+            "https://user@www.4d4y.com/forum/viewthread.php?tid=1",
+            "https://user:pass@www.4d4y.com/forum/viewthread.php?tid=1",
             "",
             "   ",
         )

@@ -16,6 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
@@ -60,6 +61,7 @@ import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.threaddetail.ThreadDetailFilterUi
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
+import net.jejer.hipda.ui.shell.HiShellTestTags
 import net.jejer.hipda.ui.shell.calculateShellPaneLayout
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
@@ -424,6 +426,60 @@ class ReadingPositionAndStackTest {
         composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
         composeRule.waitForIdle()
         assertNull("PositionStack 栈空后应按 E3 顺序关闭右栏", harness.hostViewModel.state.value.selectedThread)
+    }
+
+    /**
+     * V-E4 probeD2 移植回归（`w600dp` 模态导航抽屉与 `PositionStack` 返回优先级）：
+     * 进帖入栈后展开 `SidebarModalDrawer`，按系统返回必须仅关闭抽屉、保持位置栈与当前页不变；
+     * 抽屉关闭后再按返回依次回退位置栈、退出帖子（浮层/模态抽屉 > 位置栈 > 宿主返回）。
+     */
+    @Test
+    @Config(qualifiers = "w600dp-h800dp-xhdpi")
+    fun modalDrawerOverlay_w600dp_backClosesDrawerWithoutPoppingPositionStack_thenPopsStack() {
+        val harness = MultiPaneTestHarness()
+        var hostBackDispatcher: OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            hostBackDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            harness.RenderRoot()
+        }
+        composeRule.waitForIdle()
+
+        // 1. 打开帖子 1001 并经内联跳页条跳至第 3 页建立非空 PositionStack（栈底第 1 页）
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("末页").performClick()
+        composeRule.waitForIdle()
+        val detailVm = harness.createdDetailVms.single()
+        assertEquals(3, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+
+        // 2. 展开 600dp 模态导航抽屉（SidebarModalDrawer）覆盖在正文之上
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+
+        // 3. 第一次系统返回：仅关闭抽屉，绝不得消费 PositionStack
+        composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertDoesNotExist()
+        assertEquals("关闭模态抽屉不得出栈 PositionStack", 3, detailVm.uiState.value.page)
+        assertTrue("关闭模态抽屉后 PositionStack 仍应保持非空", detailVm.uiState.value.canPopPositionStack)
+        assertEquals("1001", harness.hostViewModel.state.value.selectedThread?.tid)
+
+        // 4. 第二次系统返回：抽屉已关闭，此时由 PositionStack 出栈回第 1 页
+        composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertEquals(1, detailVm.uiState.value.page)
+        assertFalse(detailVm.uiState.value.canPopPositionStack)
+        assertEquals("1001", harness.hostViewModel.state.value.selectedThread?.tid)
+
+        // 5. 第三次系统返回：PositionStack 已空，交由宿主离开帖子
+        composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertNull("PositionStack 栈空后应交由宿主退出帖子", harness.hostViewModel.state.value.selectedThread)
     }
 
     /**

@@ -96,7 +96,7 @@ fun sanitizeExternalHttpUrl(rawUrl: String?): String? {
     val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: return null
     if (scheme != "http" && scheme != "https") return null
     val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
-    if (uri.rawAuthority.isNullOrBlank() || host.contains('@')) return null
+    if (!uri.rawUserInfo.isNullOrEmpty() || uri.rawAuthority.isNullOrBlank() || host.contains('@')) return null
     return uri.toASCIIString()
 }
 

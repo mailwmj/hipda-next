@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Rect as AndroidRect
 import android.view.View
 import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -2187,6 +2188,50 @@ class HiAdaptiveShellTest {
                 assertTrue("${destination.name} 无文字时应有内容描述 '$expectedLabel'", expectedLabel in contentDescs)
             }
         }
+    }
+
+    /** V-E4 probeD2 回归：w600dp 模态抽屉展开时重新注册于 LIFO 栈顶，返回优先关闭抽屉而不被后挂载子页 BackHandler 抢占。 */
+    @Test
+    @Config(qualifiers = "w600dp-h800dp-xhdpi")
+    fun modalDrawer_backTakesPrecedenceOverLaterMountedChildBackHandler() = androidx.compose.ui.test.v2.runComposeUiTest {
+        var mountChild by mutableStateOf(false)
+        var childBackCount = 0
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                ) { _, _ ->
+                    if (mountChild) {
+                        BackHandler(enabled = true) { childBackCount++ }
+                    }
+                    Box(Modifier.fillMaxSize())
+                }
+            }
+        }
+        waitForIdle()
+
+        // 在 HiAdaptiveShell 常驻挂载之后再挂载子页 BackHandler（模拟进帖后挂载 PositionStack）
+        mountChild = true
+        waitForIdle()
+
+        // 展开模态侧栏抽屉并按系统返回：必须只关抽屉，绝不触发子页 BackHandler
+        onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        waitForIdle()
+        onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+
+        runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        waitForIdle()
+        assertEquals("抽屉打开时按返回不得触发底层子页 BackHandler", 0, childBackCount)
+        onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertDoesNotExist()
+
+        // 抽屉关闭后再次按系统返回：此时才交由子页 BackHandler 消费
+        runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        waitForIdle()
+        assertEquals("抽屉关闭后按返回应交由子页 BackHandler 消费", 1, childBackCount)
     }
 
     @Suppress("RestrictedApi")
