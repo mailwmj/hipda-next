@@ -14,6 +14,7 @@ import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.zip.ZipFile
 import org.junit.After
@@ -269,14 +270,14 @@ class ReleaseSmokeAndStartupProbeTest {
 
         // QuickReplySheet -> open from ThreadBottomToolbar -> verify & expand to FullEditor
         clickSafely(By.text("回复"))
-        waitObj(By.desc("收起回复面板"), 10_000)
+        waitObj(By.desc("展开全屏"), 10_000)
         val quickEmojiToggle = device.findObject(By.desc("表情"))
         snap("11-quick-reply-sheet.png")
         report += "Smoke[quick-reply]: opened cleanly (emojiTogglePresent=${quickEmojiToggle != null})"
 
         clickSafely(By.desc("展开全屏"))
-        waitObj(By.text("发送"), 10_000)
-        waitObj(By.text("正文"), 10_000)
+        waitObj(By.desc("发送"), 10_000)
+        waitObj(By.desc("插入图片"), 10_000)
         val fullEmojiToggle = device.findObject(By.desc("表情"))
         snap("12-full-editor.png")
         report += "Smoke[full-editor]: opened cleanly (emojiTogglePresent=${fullEmojiToggle != null})"
@@ -315,12 +316,18 @@ class ReleaseSmokeAndStartupProbeTest {
     private fun waitForPostImage(timeoutMs: Long): UiObject2 {
         val deadline = SystemClock.uptimeMillis() + timeoutMs
         while (SystemClock.uptimeMillis() < deadline) {
-            val match = device.findObjects(By.clazz("android.widget.ImageView").clickable(true))
-                .firstOrNull { it.visibleBounds.width() > 200 && it.visibleBounds.height() > 100 }
+            val match = device.findObjects(By.clickable(true))
+                .firstOrNull { obj ->
+                    obj.text.isNullOrEmpty() &&
+                        obj.contentDescription.isNullOrEmpty() &&
+                        obj.visibleBounds.width() > 400 &&
+                        obj.visibleBounds.height() > 200
+                }
             if (match != null) return match
             SystemClock.sleep(250)
         }
-        error("Timed out waiting for clickable PostImageBlock (>200x100) in ThreadDetailPane")
+        val dumpOut = ByteArrayOutputStream().also { device.dumpWindowHierarchy(it) }.toString(Charsets.UTF_8.name())
+        error("Timed out waiting for clickable PostImageBlock (>400x200) in ThreadDetailPane. Hierarchy: ${dumpOut.take(3000)}")
     }
 
     private fun runColdStartProfileComparison(report: MutableList<String>) {
