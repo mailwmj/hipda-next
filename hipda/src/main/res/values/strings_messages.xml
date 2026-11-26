@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 消息页（短消息与提醒）文案（逐字取自 docs/design/copy.md，0 豁免） -->
+    <string name="messages_action_mark_all_read">全部已读</string>
+    <string name="messages_snackbar_all_read">已全部标为已读</string>
+    <string name="messages_action_more">更多</string>
+    <string name="messages_action_cancel">取消</string>
+    <string name="messages_action_clear">清空</string>
+    <string name="messages_clear_confirm_title">清空与 %1$s 的全部短消息？</string>
+    <string name="messages_clear_confirm_message">清空后无法恢复。</string>
+
+    <!-- 短消息对话输入、乐观发送、失败菜单与 15 秒冷却（docs/design/copy.md） -->
+    <string name="messages_input_hint">发短消息</string>
+    <string name="messages_action_send">发送</string>
+    <string name="messages_status_sending">正在发送…</string>
+    <string name="messages_status_send_failed">发送失败</string>
+    <string name="messages_action_resend">重发</string>
+    <string name="messages_action_delete">删除</string>
+    <string name="messages_snackbar_deleted">已删除</string>
+    <string name="messages_cooldown_cd">%1$d 秒后可发送</string>
+    <string name="messages_error_cooldown">发送太快，请等 %1$d 秒后再试</string>
+    <string name="messages_action_emoji">表情</string>
+    <string name="messages_action_keyboard">键盘</string>
+    <string name="messages_action_profile">资料</string>
+
+    <!-- 无障碍状态描述 -->
+    <string name="messages_state_unread">未读</string>
+    <string name="messages_state_read">已读</string>
+</resources>

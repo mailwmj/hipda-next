@@ -46,6 +46,7 @@ import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
+import net.jejer.hipda.R
 import net.jejer.hipda.data.account.CredentialsStore
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.DefaultAuthRepository
@@ -58,6 +59,7 @@ import net.jejer.hipda.data.message.NotifyEntry
 import net.jejer.hipda.data.message.NotifyFeed
 import net.jejer.hipda.data.message.NotifyReadStateStore
 import net.jejer.hipda.data.message.NotifyRepository
+import net.jejer.hipda.data.message.UnreadSnapshot
 import net.jejer.hipda.data.network.ChallengeDetector
 import net.jejer.hipda.data.network.HttpClientModule
 import net.jejer.hipda.data.network.InMemorySiteCookieStore
@@ -74,6 +76,7 @@ import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.parser.LegacyTestSupport
 import net.jejer.hipda.parser.common.PromptCounts
+import net.jejer.hipda.parser.message.SmsConversationItem
 import net.jejer.hipda.ui.IntentActivity
 import net.jejer.hipda.utils.Constants
 import okhttp3.OkHttp
@@ -404,7 +407,8 @@ class NotificationPollingWorkerTest {
         val shadowNm = shadowOf(notificationManager)
         val channel = notificationManager.getNotificationChannel(AndroidNotificationPoster.CHANNEL_ID)
         assertNotNull("Channel HIPDA_NOTI must be created", channel)
-        assertEquals(AndroidNotificationPoster.CHANNEL_NAME, channel.name)
+        assertEquals(context.getString(R.string.notification_channel_name), channel.name)
+        assertEquals("论坛通知", channel.name)
 
         val posted = shadowNm.getNotification(AndroidNotificationPoster.NOTIFICATION_ID)
         assertNotNull("Notification must be posted for single unread SMS", posted)
@@ -435,7 +439,8 @@ class NotificationPollingWorkerTest {
         val shadowNm = shadowOf(notificationManager)
         val firstNoti = shadowNm.getNotification(AndroidNotificationPoster.NOTIFICATION_ID)
         assertNotNull(firstNoti)
-        assertEquals(AndroidNotificationPoster.DEFAULT_SUMMARY_TITLE, firstNoti.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+        assertEquals(context.getString(R.string.notification_summary_title), firstNoti.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+        assertEquals("HiPDA 论坛通知", firstNoti.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
         assertEquals(
             "您有 2 条新的短消息，4 条新的提醒",
             firstNoti.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
@@ -656,6 +661,57 @@ class NotificationPollingWorkerTest {
         }
         assertTrue("CancellationException in hasActiveAccount must propagate", caughtCancellation)
         assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun rD9S2_notificationPoster_readsCopyFromStringsNotificationXmlAndCoversFallbacks() {
+        assertEquals("论坛通知", context.getString(R.string.notification_channel_name))
+        assertEquals("HiPDA 论坛通知", context.getString(R.string.notification_summary_title))
+
+        val singleFallback = AndroidNotificationPoster.formatNotificationContent(
+            context = context,
+            snapshot = UnreadSnapshot(
+                smsUnreadCount = 1,
+                notifyUnreadCount = 0,
+                latestUnreadSms = SmsConversationItem(
+                    uid = "20001",
+                    author = "   ",
+                    avatarUrl = null,
+                    time = "刚刚",
+                    summary = "   ",
+                    isNew = true,
+                ),
+            ),
+        )
+        assertEquals(context.getString(R.string.notification_single_sms_title_fallback), singleFallback.title)
+        assertEquals("新短消息", singleFallback.title)
+        assertEquals(context.getString(R.string.notification_single_sms_body_fallback), singleFallback.text)
+        assertEquals("您有 1 条新的短消息", singleFallback.text)
+
+        val singleNamed = AndroidNotificationPoster.formatNotificationContent(
+            context = context,
+            snapshot = UnreadSnapshot(
+                smsUnreadCount = 1,
+                notifyUnreadCount = 0,
+                latestUnreadSms = SmsConversationItem(
+                    uid = "20002",
+                    author = "Alice",
+                    avatarUrl = null,
+                    time = "刚刚",
+                    summary = "明天见",
+                    isNew = true,
+                ),
+            ),
+        )
+        assertEquals("Alice 的短消息", singleNamed.title)
+        assertEquals("明天见", singleNamed.text)
+
+        val empty = AndroidNotificationPoster.formatNotificationContent(
+            context = context,
+            snapshot = UnreadSnapshot(smsUnreadCount = 0, notifyUnreadCount = 0),
+        )
+        assertEquals("HiPDA 论坛通知", empty.title)
+        assertEquals("", empty.text)
     }
 
     private fun singleSmsPollHtml(): String = """
