@@ -86,6 +86,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -171,7 +172,11 @@ data class HiSidebarState(
     val account: HiSidebarAccount = HiSidebarAccount(),
     val isCollapsedPref: Boolean? = null,
     val isFullScreen: Boolean = false,
-)
+) {
+    /** 合并短消息与提醒未读总数（供窄屏/铰链底部胶囊“消息”角标同步展示）。 */
+    val totalUnreadCount: Int
+        get() = unreadSmsCount.coerceAtLeast(0) + unreadNotifyCount.coerceAtLeast(0)
+}
 
 /**
  * ≥ 600dp 常驻左侧栏（取代旧版 80dp 毛玻璃导航轨，product-design.md §3.2、§5）。
@@ -195,12 +200,16 @@ fun HiNavigationSidebar(
 ) {
     val cs = MaterialTheme.colorScheme
     val sidebarPaneTitle = stringResource(R.string.shell_pane_sidebar_title)
-    // 展开态与收起态各自持有独立 LazyListState，防止 AnimatedContent 过渡帧双 LazyColumn 共用同一 state
+    // 展开态与收起态各自持有独立 LazyListState，防止 AnimatedContent 过渡帧双 LazyColumn 共用同一 state；
+    // R-C4d S2：仅在 expanded 实际翻转时同步滚动位，跳过首次挂载避免重置已恢复或外部传入的偏移。
     val initialExpanded = remember { expanded }
     val alternateListState = rememberLazyListState()
     val expandedListState = if (initialExpanded) listState else alternateListState
     val collapsedListState = if (initialExpanded) alternateListState else listState
+    var previousExpanded by remember { mutableStateOf(expanded) }
     LaunchedEffect(expanded) {
+        if (expanded == previousExpanded) return@LaunchedEffect
+        previousExpanded = expanded
         if (expanded) {
             expandedListState.scrollToItem(
                 collapsedListState.firstVisibleItemIndex,
@@ -1143,7 +1152,7 @@ private fun SidebarAvatarCircle(account: HiSidebarAccount, size: Dp) {
 }
 
 @Composable
-private fun SidebarUnreadBadge(
+internal fun SidebarUnreadBadge(
     count: Int,
     compact: Boolean,
     modifier: Modifier = Modifier,

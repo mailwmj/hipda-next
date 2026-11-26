@@ -43,6 +43,7 @@ fun HiNavigationPill(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
     showUnselectedLabels: Boolean = true,
+    unreadMessagesCount: Int = 0,
 ) {
     val mode = if (compact) ShellNavigationMode.CompactPill else ShellNavigationMode.BottomPill
     val windowWidthDp = LocalWindowInfo.current.containerDpSize.width.value
@@ -78,6 +79,7 @@ fun HiNavigationPill(
                         showLabel = if (compact) isSelected else (showUnselectedLabels || isSelected),
                         mode = mode,
                         onSelect = onSelect,
+                        unreadCount = if (destination == ShellDestination.Messages) unreadMessagesCount else 0,
                     )
                 }
             }
