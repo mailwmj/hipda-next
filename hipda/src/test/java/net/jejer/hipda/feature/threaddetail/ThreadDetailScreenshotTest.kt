@@ -290,7 +290,8 @@ class ThreadDetailScreenshotTest {
             assertEquals(emptyList<String>(), offlineImageLoader.requestedUrls)
         }
         assertEquals(0, offlineImageLoader.enqueueCount.get())
-        composeRule.assertGlassSurfaceCountAtMost(1)
+        // E4 接入底部三段式工具条后，帖子详情同屏最多 2 个玻璃区域（透明顶栏 1 + 底部工具条 HiGlassRegion 1）
+        composeRule.assertGlassSurfaceCountAtMost(2)
         composeRule.onRoot().captureHiSnapshot(name)
         ImageAspectRatioCache.Default.clear()
     }

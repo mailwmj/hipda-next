@@ -164,7 +164,8 @@ class ThreadInteractScreenshotTest {
         try {
             composeRule.runOnIdle { vm.jumpToFloor("qh_1", "96001") }
             repeat(4) { composeRule.mainClock.advanceTimeByFrame() }
-            composeRule.assertGlassSurfaceCountAtMost(1)
+            // E4 接入底部三段式工具条后，详情页为顶栏 + 底部工具条共 2 个玻璃区域
+            composeRule.assertGlassSurfaceCountAtMost(2)
             composeRule.onRoot().captureHiSnapshot(name)
         } finally {
             composeRule.mainClock.autoAdvance = true
@@ -191,7 +192,8 @@ class ThreadInteractScreenshotTest {
             composeRule.onNodeWithText("其他坛友的 2 楼回复内容", substring = true).performTouchInput { longClick() }
         }
         composeRule.waitForIdle()
-        composeRule.assertGlassSurfaceCountAtMost(1)
+        // E4 接入底部三段式工具条后，详情页为顶栏 + 底部工具条共 2 个玻璃区域
+        composeRule.assertGlassSurfaceCountAtMost(2)
         composeRule.onRoot().captureHiSnapshot(name)
     }
 
@@ -240,7 +242,8 @@ class ThreadInteractScreenshotTest {
             composeRule.onNodeWithText("折叠屏三栏自适应阅读").performClick()
             composeRule.waitForIdle()
         }
-        composeRule.assertGlassSurfaceCountAtMost(1)
+        // E4 接入底部三段式工具条后，详情页为顶栏 + 底部工具条共 2 个玻璃区域
+        composeRule.assertGlassSurfaceCountAtMost(2)
         composeRule.onRoot().captureHiSnapshot(name)
     }
 

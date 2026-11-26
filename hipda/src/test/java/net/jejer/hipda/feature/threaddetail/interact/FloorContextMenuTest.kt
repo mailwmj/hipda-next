@@ -11,9 +11,12 @@ import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertWidthIsAtLeast
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
@@ -122,18 +125,19 @@ class FloorContextMenuTest {
         }
         composeRule.waitForIdle()
 
-        // 1. 长按本人 1 楼：触发 LongPress 触感，展示全部 6 项且绝无“举报”
+        // 1. 长按本人 1 楼：触发 LongPress 触感，展示全部 6 项且绝无“举报”（限定在菜单 Pane 内查找，避免与底部工具条“回复”胶囊重名）
         composeRule.onNodeWithText("本人 1 楼正文内容", substring = true).performTouchInput { longClick() }
         composeRule.waitForIdle()
         assertEquals(listOf(HapticFeedbackType.LongPress), haptics)
         composeRule.onNodeWithText("第 1 楼 · 本人账号").assertIsDisplayed()
+        val floor1Menu = hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "第 1 楼 · 本人账号"))
         for (label in listOf("引用回复", "回复", "只看此人", "复制", "编辑", "删除")) {
-            composeRule.onNodeWithText(label).assertIsDisplayed().assertHeightIsAtLeast(48.dp)
+            composeRule.onNode(hasText(label) and floor1Menu).assertIsDisplayed().assertHeightIsAtLeast(48.dp)
         }
         assertEquals("绝不得出现“举报”菜单项", 0, composeRule.onAllNodesWithText("举报", substring = true).fetchSemanticsNodes().size)
 
         // 点击引用回复透传完整 ReplyRequest
-        composeRule.onNodeWithText("引用回复").performClick()
+        composeRule.onNode(hasText("引用回复") and floor1Menu).performClick()
         composeRule.waitForIdle()
         assertEquals(
             listOf(ReplyRequest(tid = "77001", quotePid = "m_p1_1", quoteAuthor = "本人账号", quoteFloor = 1)),
@@ -145,15 +149,16 @@ class FloorContextMenuTest {
         composeRule.waitForIdle()
         assertEquals(2, haptics.size)
         composeRule.onNodeWithText("第 2 楼 · 路人坛友").assertIsDisplayed()
+        val floor2Menu = hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "第 2 楼 · 路人坛友"))
         for (label in listOf("引用回复", "回复", "只看此人", "复制")) {
-            composeRule.onNodeWithText(label).assertIsDisplayed()
+            composeRule.onNode(hasText(label) and floor2Menu).assertIsDisplayed()
         }
         assertEquals(0, composeRule.onAllNodesWithText("编辑").fetchSemanticsNodes().size)
         assertEquals(0, composeRule.onAllNodesWithText("删除").fetchSemanticsNodes().size)
         assertEquals(0, composeRule.onAllNodesWithText("举报", substring = true).fetchSemanticsNodes().size)
 
         // 点击普通回复透传无 quotePid 的 ReplyRequest
-        composeRule.onNodeWithText("回复").performClick()
+        composeRule.onNode(hasText("回复") and floor2Menu).performClick()
         composeRule.waitForIdle()
         assertEquals(
             ReplyRequest(tid = "77001", quotePid = null, quoteAuthor = "路人坛友", quoteFloor = 2),
@@ -228,7 +233,7 @@ class FloorContextMenuTest {
         composeRule.waitForIdle()
 
         // 翻至第 2 页并滚到第 8 楼（index = 7）
-        composeRule.onNodeWithText("下一页").performClick()
+        composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
         composeRule.runOnIdle { listState.requestScrollToItem(index = 7, scrollOffset = 20) }
         composeRule.waitForIdle()

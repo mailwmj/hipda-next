@@ -118,8 +118,9 @@ fun HiCountBadge(
     val visible = count > 0
     val visibleState = remember { MutableTransitionState(visible) }
     visibleState.targetState = visible
-    var displayedCount by remember { mutableIntStateOf(count.coerceAtLeast(1)) }
-    if (visible) displayedCount = count
+    val lastPositiveCount = remember { IntArray(1).apply { this[0] = count.coerceAtLeast(1) } }
+    if (visible) lastPositiveCount[0] = count
+    val displayedCount = if (visible) count else lastPositiveCount[0]
     if (!visibleState.currentState && !visibleState.targetState) return
 
     AnimatedVisibility(
@@ -144,6 +145,8 @@ fun HiCountBadge(
     }
 }
 
+private class RollingCharRef(var value: Char?)
+
 @Composable
 private fun RollingDigitCell(
     char: Char?,
@@ -155,8 +158,9 @@ private fun RollingDigitCell(
 ) {
     val visibleState = remember { MutableTransitionState(!startEmpty && char != null) }
     visibleState.targetState = char != null
-    var displayedChar by remember { mutableStateOf(char) }
-    if (char != null) displayedChar = char
+    val lastNonNullChar = remember { RollingCharRef(char) }
+    if (char != null) lastNonNullChar.value = char
+    val displayedChar = char ?: lastNonNullChar.value
 
     val lastDirection = remember { IntArray(1).apply { this[0] = 1 } }
     if (direction != 0) lastDirection[0] = direction

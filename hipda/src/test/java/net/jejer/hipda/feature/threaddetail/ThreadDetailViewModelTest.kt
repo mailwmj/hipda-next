@@ -145,7 +145,7 @@ class ThreadDetailViewModelTest {
 
         // 3. 会话过期后翻到第 2 页命中 AuthRequired，再以同一账号重新登录（sessionEpoch 递增）自动重载第 2 页
         authRepo.emitSessionExpired(userA)
-        composeRule.onNodeWithText("下一页").performClick()
+        composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
         assertEquals(3, detailRepo.loadCalls.size)
         composeRule.onNodeWithText("登录已失效").assertIsDisplayed()
@@ -234,35 +234,39 @@ class ThreadDetailViewModelTest {
         }
         composeRule.waitForIdle()
 
-        // 1. 全屏仅 1 个 HiGlassMarker（TopBar）与 1 个 HiGlassBlurActive（零嵌套玻璃）
-        composeRule.assertGlassSurfaceCountAtMost(1)
+        // 1. E4 接入底部三段式工具条后，全屏共 2 个 HiGlassMarker（TopBar 1 + BottomToolbar HiGlassRegion 1）与 4 个 HiGlassBlurActive（TopBar 1 + 底部 3 胶囊，顶栏圆钮零嵌套）
+        composeRule.assertGlassSurfaceCountAtMost(2)
         val glassMarkers = composeRule.onAllNodes(
             matcher = SemanticsMatcher.expectValue(HiGlassMarker, true),
             useUnmergedTree = true,
         ).fetchSemanticsNodes()
-        assertEquals("帖子详情仅应存在 1 个 TopBar 玻璃区域", 1, glassMarkers.size)
+        assertEquals("帖子详情应恰有 2 个玻璃区域（TopBar + 底部三段工具条 HiGlassRegion）", 2, glassMarkers.size)
 
         val blurNodes = composeRule.onAllNodes(
             matcher = SemanticsMatcher.keyIsDefined(HiGlassBlurActive),
             useUnmergedTree = true,
         ).fetchSemanticsNodes()
-        assertEquals("顶栏圆钮严禁嵌套 HiGlassSurface，全树仅允许 1 个 HiGlassBlurActive", 1, blurNodes.size)
+        assertEquals("顶栏圆钮严禁嵌套 HiGlassSurface，全树应恰有 4 个 HiGlassBlurActive（TopBar 1 + 底部三段 3）", 4, blurNodes.size)
 
-        // 2. detailGlassState 的 LayerBackdrop 严格位于 LazyColumn，且与 DrawBackdropElement TopBar 互不为祖先/后代
+        // 2. detailGlassState 的 LayerBackdrop 严格位于 LazyColumn，且与全部玻璃区域（TopBar & BottomToolbar）互不为祖先/后代
         val scrollNode = composeRule.onAllNodes(
             matcher = SemanticsMatcher("hasVerticalScroll") { SemanticsProperties.VerticalScrollAxisRange in it.config },
             useUnmergedTree = true,
         ).fetchSemanticsNodes().single()
-        val glassNode = glassMarkers.single()
 
         assertTrue("LazyColumn 必须挂载 LayerBackdrop", hasModifierNamed(scrollNode.layoutInfo, "LayerBackdrop"))
-        assertFalse("TopBar 玻璃节点不得挂载 LayerBackdrop", hasModifierNamed(glassNode.layoutInfo, "LayerBackdrop"))
-        assertTrue("TopBar 玻璃节点必须挂载 DrawBackdropElement", hasModifierNamed(glassNode.layoutInfo, "DrawBackdrop"))
-        assertFalse("LazyColumn 不得为 TopBar 的祖先", isAncestor(scrollNode, glassNode))
-        assertFalse("TopBar 不得为 LazyColumn 的祖先", isAncestor(glassNode, scrollNode))
+        glassMarkers.forEach { glassNode ->
+            assertFalse("玻璃区域节点不得挂载 LayerBackdrop", hasModifierNamed(glassNode.layoutInfo, "LayerBackdrop"))
+            assertFalse("LazyColumn 不得为玻璃区域的祖先", isAncestor(scrollNode, glassNode))
+            assertFalse("玻璃区域不得为 LazyColumn 的祖先", isAncestor(glassNode, scrollNode))
+        }
+        assertTrue(
+            "TopBar 玻璃节点必须挂载 DrawBackdropElement",
+            glassMarkers.any { hasModifierNamed(it.layoutInfo, "DrawBackdrop") },
+        )
 
         val rootLayout = composeRule.onRoot().fetchSemanticsNode().layoutInfo
-        assertEquals("全树仅允许 1 处 DrawBackdrop（圆钮零嵌套）", 1, countModifiersNamed(rootLayout, "DrawBackdrop"))
+        assertEquals("全树应恰有 4 处 DrawBackdrop（TopBar 1 + 底部三段胶囊 3，圆钮零嵌套）", 4, countModifiersNamed(rootLayout, "DrawBackdrop"))
         assertEquals("全树仅允许 1 处 LayerBackdrop（仅楼层 LazyColumn）", 1, countModifiersNamed(rootLayout, "LayerBackdrop"))
 
         // 3. 所有顶栏圆形按钮触控区均 ≥ 48×48dp
@@ -303,11 +307,11 @@ class ThreadDetailViewModelTest {
         }
         composeRule.waitForIdle()
 
-        // 1. 沿用 E0 下一页按钮翻到第 2 页，再滚至第 8 楼（index=7, offset=36）
-        composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
-        composeRule.onNodeWithText("下一页").performClick()
+        // 1. 经底部进度胶囊确认第 1 页并翻到第 2 页，再滚至第 8 楼（index=7, offset=36）
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
+        composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 2 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
 
         composeRule.runOnIdle { listState.requestScrollToItem(index = 7, scrollOffset = 36) }
         composeRule.waitForIdle()
@@ -336,10 +340,12 @@ class ThreadDetailViewModelTest {
         assertEquals("退出只看应保留原像素偏移", 36, listState.firstVisibleItemScrollOffset)
         composeRule.onNodeWithContentDescription("退出只看").assertDoesNotExist()
 
-        // 4. 沿用 E0 上一页按钮回到第 1 页
-        composeRule.onNodeWithText("上一页").performClick()
+        // 4. 展开内联跳页条并点击“首页”回到第 1 页
+        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
+        composeRule.onNodeWithText("首页").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
 
         // 5. 过滤结果为空展示“没有符合条件的楼层”+“看全部”，点击后恢复全帖
         detailRepo.returnEmptyForFilter = true

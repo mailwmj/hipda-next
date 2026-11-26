@@ -5,21 +5,36 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.AuthState
+import net.jejer.hipda.data.favorite.FavoriteError
+import net.jejer.hipda.data.favorite.FavoriteKind
+import net.jejer.hipda.data.favorite.FavoriteMutationResult
+import net.jejer.hipda.data.favorite.FavoriteRepository
 import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.network.access.SiteAccessGateway
+import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.data.threaddetail.*
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.common.UiError
 import net.jejer.hipda.feature.common.UiErrorAction
 import net.jejer.hipda.feature.common.UiErrorMapper
+import net.jejer.hipda.feature.threaddetail.chrome.PositionStack
+import net.jejer.hipda.feature.threaddetail.chrome.ReadingPositionAnchor
+import net.jejer.hipda.feature.threaddetail.chrome.ReadingPositionController
+import net.jejer.hipda.feature.threaddetail.chrome.ReadingPositionSnapshot
+import net.jejer.hipda.feature.threaddetail.chrome.toReadingFilterTriple
+import net.jejer.hipda.feature.threaddetail.chrome.toSnapshot
+import net.jejer.hipda.feature.threaddetail.chrome.toThreadDetailFilterUi
 import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.parser.threaddetail.ThreadPoll
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
@@ -53,6 +68,28 @@ data class HighlightedFloor(val postId: String, val tokenId: Long)
 data class ThreadDetailNotice(val id: Long, val error: UiError)
 
 @Immutable
+sealed interface ThreadDetailSnackbarEvent {
+    val id: Long
+
+    @Immutable
+    data class FavoriteUndoable(
+        override val id: Long,
+        val tokenId: Long,
+        val kind: FavoriteKind,
+        val tid: String,
+        val added: Boolean,
+    ) : ThreadDetailSnackbarEvent
+}
+
+private data class FavoriteUndoToken(
+    val id: Long,
+    val kind: FavoriteKind,
+    val tid: String,
+    val previousActive: Boolean,
+    val targetActive: Boolean,
+)
+
+@Immutable
 data class ThreadDetailUiState(
     val tid: String = "",
     val title: String = "",
@@ -81,6 +118,12 @@ data class ThreadDetailUiState(
     val isPollSubmitting: Boolean = false,
     val pollError: UiError? = null,
     val notice: ThreadDetailNotice? = null,
+    val isFavorited: Boolean = false,
+    val isAttention: Boolean = false,
+    val canPopPositionStack: Boolean = false,
+    val forumServer: String = AppSettings.DEFAULT_FORUM_SERVER,
+    val snackbarEvent: ThreadDetailSnackbarEvent? = null,
+    val snackbarResetSeq: Long = 0L,
 ) {
     val hasPreviousPage: Boolean get() = floors.isNotEmpty() && firstLoadedPage > 1
     val hasNextPage: Boolean get() = floors.isNotEmpty() && lastLoadedPage < lastPage
@@ -120,11 +163,18 @@ private data class DetailMetaState(
     val isPollSubmitting: Boolean = false,
     val pollError: UiError? = null,
     val notice: ThreadDetailNotice? = null,
+    val isFavorited: Boolean = false,
+    val isAttention: Boolean = false,
+    val canPopPositionStack: Boolean = false,
+    val forumServer: String = AppSettings.DEFAULT_FORUM_SERVER,
+    val snackbarEvent: ThreadDetailSnackbarEvent? = null,
+    val snackbarResetSeq: Long = 0L,
 )
 
 /**
  * 帖子详情 ViewModel（按 `tid` 托管保活；支持双向连续加载、单飞防重、头尾独立错误重试、
- * 本页/跨页精确跳楼与高亮、`只看楼主`/`只看此人` 过滤、1 楼投票提交刷新与登录自动重载，并保留 2 参主构造）。
+ * 本页/跨页精确跳楼与高亮、`只看楼主`/`只看此人` 过滤、1 楼投票提交刷新、带首轮恢复门闩的阅读位置记忆、
+ * 返回位置栈、收藏/关注可撤销切换与登录自动重载，并保留 2/3 参兼容构造）。
  */
 @HiltViewModel
 class ThreadDetailViewModel(
@@ -133,8 +183,9 @@ class ThreadDetailViewModel(
 ) : ViewModel() {
 
     private var authRepository: AuthRepository? = null
+    private var favoriteRepository: FavoriteRepository? = null
+    private var settingsRepository: SettingsRepository? = null
 
-    @Inject
     constructor(
         threadDetailRepository: ThreadDetailRepository,
         siteAccessGateway: SiteAccessGateway,
@@ -145,14 +196,58 @@ class ThreadDetailViewModel(
         observeAuthRecovery(authRepository)
     }
 
+    constructor(
+        threadDetailRepository: ThreadDetailRepository,
+        siteAccessGateway: SiteAccessGateway,
+        authRepository: AuthRepository,
+        favoriteRepository: FavoriteRepository,
+    ) : this(threadDetailRepository, siteAccessGateway, authRepository) {
+        attachFavoriteRepository(favoriteRepository)
+    }
+
+    @Inject
+    constructor(
+        threadDetailRepository: ThreadDetailRepository,
+        siteAccessGateway: SiteAccessGateway,
+        authRepository: AuthRepository,
+        favoriteRepository: FavoriteRepository,
+        settingsRepository: SettingsRepository,
+    ) : this(threadDetailRepository, siteAccessGateway, authRepository, favoriteRepository) {
+        attachSettingsRepository(settingsRepository)
+    }
+
     private var boundTid: String? = null
+    private var bindJob: Job? = null
     private var loadJob: Job? = null
     private var prependJob: Job? = null
     private var appendJob: Job? = null
     private var pollJob: Job? = null
+    private var favoriteJob: Job? = null
+    private var attentionJob: Job? = null
     private var preFilterAnchor: FilterReturnAnchor? = null
+    private var latestObservedAnchor: ReadingPositionAnchor? = null
+    private var pendingHydrationSnapshot: ReadingPositionSnapshot? = null
+    private val positionStack = PositionStack()
+    private val readingPositionController = ReadingPositionController(
+        scope = viewModelScope,
+        savePosition = { snapshot ->
+            threadDetailRepository.saveReadingPosition(
+                tid = snapshot.tid,
+                page = snapshot.page,
+                pid = snapshot.postId,
+                offsetPx = snapshot.offsetPx,
+                filterMode = snapshot.filterMode,
+                filterUid = snapshot.filterUid,
+                filterUserName = snapshot.filterUserName,
+            )
+        },
+    )
     private var scrollTokenSeq: Long = 0L
     private var noticeSeq: Long = 0L
+    private var snackbarSeq: Long = 0L
+    private var snackbarResetSeq: Long = 0L
+    private var undoTokenSeq: Long = 0L
+    private var activeUndoToken: FavoriteUndoToken? = null
     private var authVersion: Long = 0L
     private var sessionGeneration: Long = 0L
     private val inFlightPages = HashSet<Pair<Long, Int>>()
@@ -175,31 +270,77 @@ class ThreadDetailViewModel(
             appendError = m.appendError, prependGeneration = m.prependGeneration, resetEpoch = m.resetEpoch,
             fid = m.fid, currentUserUid = m.currentUserUid, highlightedFloor = m.highlightedFloor,
             isPollSubmitting = m.isPollSubmitting, pollError = m.pollError, notice = m.notice,
+            isFavorited = m.isFavorited, isAttention = m.isAttention,
+            canPopPositionStack = m.canPopPositionStack, forumServer = m.forumServer,
+            snackbarEvent = m.snackbarEvent, snackbarResetSeq = m.snackbarResetSeq,
         )
     }.filterNotNull().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), ThreadDetailUiState())
 
     fun bindArgs(args: ThreadNavArgs) {
         if (boundTid == args.tid) return
         val isRebind = boundTid != null
+        // 切换帖子前仅在旧会话已完成首轮恢复时补写未落盘进度（B4-E4 ①）
+        readingPositionController.flushIfHydrated()
         boundTid = args.tid
         preFilterAnchor = null
+        latestObservedAnchor = null
+        pendingHydrationSnapshot = null
+        positionStack.clear()
+        bindJob?.cancel(); bindJob = null
         cancelPagingJobs()
         pollJob?.cancel(); pollJob = null
+        favoriteJob?.cancel(); favoriteJob = null
+        attentionJob?.cancel(); attentionJob = null
+        activeUndoToken = null
+        readingPositionController.beginSession(args.tid)
         val nextEpoch = ++sessionGeneration
         val activeUid = authRepository?.let { resolveAuthUid(it.currentAccount.value, it.authState.value) }
+        val initialFavorited = favoriteRepository?.isFavorite(args.tid) == true
+        val initialAttention = favoriteRepository?.isAttention(args.tid) == true
         metaState.update { prev ->
             DetailMetaState(
                 tid = args.tid, fid = args.fid, title = args.title, forumName = args.forumName,
                 threadAuthorName = args.author?.takeIf { it.isNotBlank() },
                 isLoading = true, prependGeneration = prev.prependGeneration, resetEpoch = nextEpoch,
                 currentUserUid = activeUid,
+                isFavorited = initialFavorited,
+                isAttention = initialAttention,
+                canPopPositionStack = false,
+                forumServer = prev.forumServer,
             )
         }
         val initialPid = args.targetPid?.takeIf { it.isNotBlank() }
         if (initialPid != null) {
             loadByPostIdInternal(initialPid, highlight = true)
         } else {
-            loadInternal(page = 1, filter = ThreadDetailFilterUi.All, priority = AccessPriority.UserBlocking, scrollToTop = isRebind)
+            bindJob = viewModelScope.launch {
+                val saved = threadDetailRepository.getReadingPosition(args.tid)
+                if (nextEpoch != sessionGeneration) return@launch
+                if (saved != null) {
+                    val savedSnapshot = saved.toSnapshot()
+                    pendingHydrationSnapshot = savedSnapshot
+                    val restoredFilter = saved.toThreadDetailFilterUi()
+                    val restoreAnchor = FilterReturnAnchor(
+                        page = saved.page.coerceAtLeast(1),
+                        postId = saved.pid.takeIf { it.isNotBlank() },
+                        scrollOffset = saved.offsetPx.coerceAtLeast(0),
+                    )
+                    loadInternal(
+                        page = restoreAnchor.page,
+                        filter = restoredFilter,
+                        priority = AccessPriority.UserBlocking,
+                        scrollToTop = false,
+                        restoreAnchor = restoreAnchor,
+                    )
+                } else {
+                    loadInternal(
+                        page = 1,
+                        filter = ThreadDetailFilterUi.All,
+                        priority = AccessPriority.UserBlocking,
+                        scrollToTop = isRebind,
+                    )
+                }
+            }
         }
     }
 
@@ -238,6 +379,125 @@ class ThreadDetailViewModel(
         }
     }
 
+    /** 仅在首轮恢复完成且无待落地滚动时登记当前阅读锚点并驱动去抖保存（闭合 B4-E4 ①）。 */
+    fun onReadingPositionChanged(page: Int, postId: String, scrollOffsetPx: Int) {
+        val cur = metaState.value
+        if (cur.tid.isBlank() || cur.isLoading || cur.pendingScroll != null || cur.rawFloors.isEmpty()) return
+        val cleanPid = postId.trim()
+        if (cleanPid.isEmpty()) return
+        val clampedPage = page.coerceIn(1, cur.lastPage.coerceAtLeast(1))
+        val clampedOffset = scrollOffsetPx.coerceAtLeast(0)
+        latestObservedAnchor = ReadingPositionAnchor(
+            page = clampedPage,
+            postId = cleanPid,
+            scrollOffsetPx = clampedOffset,
+            filter = cur.filter,
+        )
+        val (filterMode, filterUid, filterUserName) = cur.filter.toReadingFilterTriple()
+        readingPositionController.onPositionObserved(
+            ReadingPositionSnapshot(
+                tid = cur.tid,
+                page = clampedPage,
+                postId = cleanPid,
+                offsetPx = clampedOffset,
+                filterMode = filterMode,
+                filterUid = filterUid,
+                filterUserName = filterUserName,
+            ),
+        )
+    }
+
+    /** 离开帖子时立即刷盘未落盘的阅读进度（首轮恢复未完成时为安全空操作）。 */
+    fun flushReadingPosition() {
+        readingPositionController.flushIfHydrated()
+    }
+
+    /** 刷新当前页（保留当前页码与过滤态）。 */
+    fun refreshCurrentPage() {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
+        loadInternal(cur.page, cur.filter, AccessPriority.UserExplicit, scrollToTop = false)
+    }
+
+    /** 经内联跳页条/页码输入跳至目标页，跳前压入 [PositionStack]。 */
+    fun jumpToPage(page: Int, fromAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
+        val targetPage = page.coerceIn(1, cur.lastPage.coerceAtLeast(1))
+        pushCurrentAnchorForJump(fromAnchor)
+        loadInternal(targetPage, cur.filter, AccessPriority.UserBlocking, scrollToTop = true)
+    }
+
+    /** 跳至首页，跳前压入 [PositionStack]。 */
+    fun jumpToFirstPage(fromAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank() || (cur.page <= 1 && cur.firstLoadedPage <= 1)) return
+        jumpToPage(1, fromAnchor)
+    }
+
+    /** 跳至末页，跳前压入 [PositionStack]。 */
+    fun jumpToLastPage(fromAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank() || cur.page >= cur.lastPage) return
+        jumpToPage(cur.lastPage, fromAnchor)
+    }
+
+    /** 查看新回复（按目标 `pid` 或末页定位），跳前压入 [PositionStack]。 */
+    fun jumpToNewReply(targetPid: String? = null, fromAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
+        pushCurrentAnchorForJump(fromAnchor)
+        val cleanPid = targetPid?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanPid != null) {
+            loadByPostIdInternal(cleanPid, highlight = true)
+        } else {
+            loadLastPageInternal()
+        }
+    }
+
+    /**
+     * 系统返回优先从 [PositionStack] 出栈并经单一滚动权威恢复跳前锚点：
+     * - 若目标页已在当前连续区间且过滤态一致，原地零网络定位回位；
+     * - 否则重新加载目标页并在首帧测量前精确落位；
+     * - 栈空时返回 `false`，交由外层（`E3` 多栏返回栈或单栏返回）继续处理。
+     */
+    fun popPosition(): Boolean {
+        val anchor = positionStack.pop() ?: return false
+        val cur = metaState.value
+        val hasRemaining = positionStack.isNotEmpty
+        val canRestoreInPlace = anchor.filter == cur.filter &&
+            anchor.page in cur.firstLoadedPage..cur.lastLoadedPage &&
+            (anchor.postId == null || cur.rawFloors.any { it.postId == anchor.postId })
+        if (canRestoreInPlace) {
+            cancelPagingJobs()
+            val token = ++scrollTokenSeq
+            val nextEpoch = ++sessionGeneration
+            metaState.update {
+                it.copy(
+                    page = anchor.page.coerceIn(1, it.lastPage.coerceAtLeast(1)),
+                    resetEpoch = nextEpoch,
+                    isPrepending = false,
+                    isAppending = false,
+                    prependError = null,
+                    appendError = null,
+                    highlightedFloor = null,
+                    pendingScroll = PendingScrollTarget(token, anchor.postId, anchor.scrollOffsetPx),
+                    canPopPositionStack = hasRemaining,
+                )
+            }
+        } else {
+            metaState.update { it.copy(canPopPositionStack = hasRemaining) }
+            loadInternal(
+                page = anchor.page,
+                filter = anchor.filter,
+                priority = AccessPriority.UserBlocking,
+                scrollToTop = anchor.postId == null && anchor.scrollOffsetPx == 0,
+                restoreAnchor = FilterReturnAnchor(anchor.page, anchor.postId, anchor.scrollOffsetPx),
+            )
+        }
+        return true
+    }
+
     fun toggleAuthorOnly(anchorPostId: String? = null, anchorScrollOffset: Int = 0) {
         val cur = metaState.value
         if (cur.tid.isBlank()) return
@@ -266,29 +526,65 @@ class ThreadDetailViewModel(
     }
 
     /**
-     * 本页或跨页精确跳楼（闭合 `R-BATCH5 B4-E2c`）：
-     * - 若 [targetPid] 已在当前已加载楼层区间中，直接发布 `PendingScrollTarget` 经单一滚动权威落位并高亮（0 网络请求）；
-     * - 否则调用 `D5.loadByPostId` 加载目标页、更新连续区间，并按稳定键 `floor:$targetPid` 滚入视口后高亮。
+     * 本页或跨页精确跳楼（闭合 `R-BATCH5 B4-E2c` 与 `R-E2c S1-R2`）：
+     * - 跳楼前将当前锚点压入 [PositionStack]；
+     * - 本页分支在递增 `sessionGeneration` 时同步 [cancelPagingJobs] 并复位 `isPrepending`/`isAppending`，
+     *   避免在途预取被世代抛弃后把连续加载永久锁死；
+     * - 跨页分支调用 `D5.loadByPostId` 加载目标页并按稳定键 `floor:$targetPid` 滚入视口后高亮。
      */
     fun jumpToFloor(targetPid: String, targetTid: String? = null) {
         val cur = metaState.value
         val cleanPid = targetPid.trim()
         if (cur.tid.isBlank() || cleanPid.isBlank()) return
         if (cur.rawFloors.any { it.postId == cleanPid }) {
+            val currentAnchor = resolveCurrentAnchor(cur)
+            if (currentAnchor != null && !(currentAnchor.postId == cleanPid && currentAnchor.scrollOffsetPx == 0)) {
+                pushCurrentAnchorForJump(currentAnchor)
+            }
+            cancelPagingJobs()
             val token = ++scrollTokenSeq
             val nextEpoch = ++sessionGeneration
             metaState.update {
                 it.copy(
                     resetEpoch = nextEpoch,
+                    isPrepending = false,
+                    isAppending = false,
+                    prependError = null,
+                    appendError = null,
                     pendingScroll = PendingScrollTarget(token, cleanPid, 0, highlightPostId = cleanPid),
                     highlightedFloor = HighlightedFloor(cleanPid, token),
+                    canPopPositionStack = positionStack.isNotEmpty,
                 )
             }
             return
         }
         val cleanTid = targetTid?.trim()?.takeIf { it.isNotEmpty() }
         if (cleanTid != null && cleanTid != cur.tid) return
+        pushCurrentAnchorForJump()
         loadByPostIdInternal(cleanPid, highlight = true)
+    }
+
+    fun toggleFavorite() = toggleFavoriteKind(FavoriteKind.FAVORITE)
+
+    fun toggleAttention() = toggleFavoriteKind(FavoriteKind.ATTENTION)
+
+    /** 按独立撤销令牌恢复对应那一次收藏/关注操作；已确认或失效的旧令牌直接忽略。 */
+    fun undoFavoriteMutation(tokenId: Long) {
+        val token = activeUndoToken?.takeIf { it.id == tokenId } ?: return
+        val cur = metaState.value
+        if (cur.tid != token.tid || token.tid.isBlank()) return
+        if (cur.currentUserUid.isNullOrBlank()) {
+            activeUndoToken = null
+            emitLoginNotice()
+            return
+        }
+        enqueueFavoriteMutation(kind = token.kind, tid = token.tid, targetActive = token.previousActive, undoToken = null)
+    }
+
+    fun consumeSnackbarEvent(eventId: Long) {
+        metaState.update { cur ->
+            if (cur.snackbarEvent?.id == eventId) cur.copy(snackbarEvent = null) else cur
+        }
     }
 
     fun consumePendingScroll(tokenId: Long) {
@@ -540,6 +836,7 @@ class ThreadDetailViewModel(
                     val token = ++scrollTokenSeq
                     val immediateHighlight = if (highlight && resolvedPid != null) HighlightedFloor(resolvedPid, token) else null
                     preFilterAnchor = null
+                    markHydratedIfNeeded(cur.tid)
                     metaState.update {
                         it.copy(
                             fid = res.fid.takeIf { f -> f > 0 } ?: it.fid,
@@ -615,6 +912,7 @@ class ThreadDetailViewModel(
                     }
                     val resolvedPage = res.pageNumber.coerceAtLeast(1)
                     val resolvedLastPage = res.lastPage.coerceAtLeast(resolvedPage)
+                    markHydratedIfNeeded(cur.tid)
                     metaState.update {
                         it.copy(
                             fid = res.fid.takeIf { f -> f > 0 } ?: it.fid,
@@ -644,6 +942,215 @@ class ThreadDetailViewModel(
                 }
             }
         }
+    }
+
+    private fun attachFavoriteRepository(repo: FavoriteRepository) {
+        this.favoriteRepository = repo
+        viewModelScope.launch {
+            combine(repo.favoriteTids, repo.attentionTids) { favs, atts -> favs to atts }
+                .collect { (favs, atts) ->
+                    metaState.update { cur ->
+                        val nextFav = if (favoriteJob?.isActive == true) cur.isFavorited else (cur.tid.isNotBlank() && cur.tid in favs)
+                        val nextAtt = if (attentionJob?.isActive == true) cur.isAttention else (cur.tid.isNotBlank() && cur.tid in atts)
+                        if (cur.isFavorited == nextFav && cur.isAttention == nextAtt) cur
+                        else cur.copy(isFavorited = nextFav, isAttention = nextAtt)
+                    }
+                }
+        }
+    }
+
+    private fun attachSettingsRepository(repo: SettingsRepository) {
+        this.settingsRepository = repo
+        viewModelScope.launch {
+            repo.settings
+                .map { it.forumServer.ifBlank { AppSettings.DEFAULT_FORUM_SERVER } }
+                .distinctUntilChanged()
+                .collect { server ->
+                    metaState.update { cur ->
+                        if (cur.forumServer == server) cur else cur.copy(forumServer = server)
+                    }
+                }
+        }
+    }
+
+    private fun markHydratedIfNeeded(tid: String) {
+        if (!readingPositionController.isHydrated) {
+            readingPositionController.markHydrated(tid, pendingHydrationSnapshot)
+            pendingHydrationSnapshot = null
+        }
+    }
+
+    private fun resolveCurrentAnchor(cur: DetailMetaState): ReadingPositionAnchor? {
+        if (cur.tid.isBlank() || cur.rawFloors.isEmpty()) return null
+        return latestObservedAnchor?.takeIf { it.filter == cur.filter }
+            ?: ReadingPositionAnchor(
+                page = cur.page,
+                postId = cur.rawFloors.firstOrNull()?.postId,
+                scrollOffsetPx = 0,
+                filter = cur.filter,
+            )
+    }
+
+    private fun pushCurrentAnchorForJump(explicitAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        val anchor = explicitAnchor ?: resolveCurrentAnchor(cur) ?: return
+        positionStack.push(anchor)
+        metaState.update { it.copy(canPopPositionStack = positionStack.isNotEmpty) }
+    }
+
+    private fun loadLastPageInternal() {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
+        cancelPagingJobs()
+        loadJob?.cancel()
+        val generation = ++sessionGeneration
+        metaState.update {
+            it.copy(
+                isLoading = true, isPrepending = false, isAppending = false, isAuthRequired = false,
+                error = if (it.rawFloors.isEmpty()) null else it.error,
+                prependError = null, appendError = null, challengeFailure = null,
+                pendingScroll = null, highlightedFloor = null, resetEpoch = generation,
+            )
+        }
+        loadJob = viewModelScope.launch {
+            when (val res = threadDetailRepository.loadLastPage(cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking)) {
+                is ThreadDetailLoadResult.Success -> {
+                    if (generation != sessionGeneration) return@launch
+                    val floors = res.page.floors
+                    val firstFloor = floors.firstOrNull { it.floor == 1 }
+                    val opUid = res.threadAuthorId ?: firstFloor?.uid?.takeIf { it.isNotBlank() }
+                    val opName = firstFloor?.author?.takeIf { it.isNotBlank() }
+                    val resolvedPage = res.pageNumber.coerceAtLeast(1)
+                    val resolvedLastPage = res.lastPage.coerceAtLeast(resolvedPage)
+                    val lastFloorPid = floors.lastOrNull()?.postId
+                    val token = ++scrollTokenSeq
+                    markHydratedIfNeeded(cur.tid)
+                    metaState.update {
+                        it.copy(
+                            fid = res.fid.takeIf { f -> f > 0 } ?: it.fid,
+                            title = res.title.ifBlank { it.title },
+                            threadAuthorId = opUid ?: it.threadAuthorId,
+                            threadAuthorName = opName ?: it.threadAuthorName,
+                            page = resolvedPage, requestedPage = resolvedPage,
+                            firstLoadedPage = resolvedPage, lastLoadedPage = resolvedPage, lastPage = resolvedLastPage,
+                            filter = ThreadDetailFilterUi.All, rawFloors = floors,
+                            isLoading = false, isPrepending = false, isAppending = false, isAuthRequired = false,
+                            error = null, prependError = null, appendError = null, challengeFailure = null,
+                            pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(token, lastFloorPid, 0) else null,
+                            currentUserUid = resolvePageUserUid(res),
+                        )
+                    }
+                }
+                is ThreadDetailError -> {
+                    if (generation != sessionGeneration) return@launch
+                    val mapped = UiErrorMapper.map(res)
+                    metaState.update { state ->
+                        if (state.rawFloors.isEmpty()) {
+                            state.copy(isLoading = false, isAuthRequired = res is ThreadDetailError.AuthRequired, error = mapped)
+                        } else {
+                            state.copy(isLoading = false, notice = ThreadDetailNotice(++noticeSeq, mapped))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun toggleFavoriteKind(kind: FavoriteKind) {
+        val cur = metaState.value
+        val tid = cur.tid
+        if (tid.isBlank()) return
+        if (cur.currentUserUid.isNullOrBlank()) {
+            emitLoginNotice()
+            return
+        }
+        val previousActive = if (kind == FavoriteKind.FAVORITE) cur.isFavorited else cur.isAttention
+        val targetActive = !previousActive
+        val token = FavoriteUndoToken(++undoTokenSeq, kind, tid, previousActive, targetActive)
+        enqueueFavoriteMutation(kind = kind, tid = tid, targetActive = targetActive, undoToken = token)
+    }
+
+    private fun enqueueFavoriteMutation(
+        kind: FavoriteKind,
+        tid: String,
+        targetActive: Boolean,
+        undoToken: FavoriteUndoToken?,
+    ) {
+        val repo = favoriteRepository ?: return
+        // 发起新可撤销操作或执行撤销：替换当前有效令牌，旧操作即刻确认并立即关闭上一条 Snackbar
+        activeUndoToken = undoToken
+        val nextReset = ++snackbarResetSeq
+        metaState.update { state ->
+            state.copy(
+                isFavorited = if (kind == FavoriteKind.FAVORITE) targetActive else state.isFavorited,
+                isAttention = if (kind == FavoriteKind.ATTENTION) targetActive else state.isAttention,
+                snackbarEvent = null,
+                snackbarResetSeq = nextReset,
+            )
+        }
+        val prevJob = if (kind == FavoriteKind.FAVORITE) favoriteJob else attentionJob
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            prevJob?.join()
+            val res = if (targetActive) repo.add(kind, tid) else repo.remove(kind, tid)
+            val thisJob = coroutineContext.job
+            val isLatestForKind = if (kind == FavoriteKind.FAVORITE) favoriteJob === thisJob else attentionJob === thisJob
+            val isCurrentToken = undoToken != null && activeUndoToken?.id == undoToken.id
+            when (res) {
+                is FavoriteMutationResult.Success -> {
+                    if (isLatestForKind) syncFavoriteKindFromRepository(kind, tid)
+                    if (isCurrentToken) {
+                        metaState.update {
+                            it.copy(
+                                snackbarEvent = ThreadDetailSnackbarEvent.FavoriteUndoable(
+                                    id = ++snackbarSeq, tokenId = undoToken.id, kind = kind, tid = tid, added = targetActive,
+                                ),
+                            )
+                        }
+                    }
+                }
+                is FavoriteError -> {
+                    if (isCurrentToken) activeUndoToken = null
+                    if (isLatestForKind) {
+                        syncFavoriteKindFromRepository(kind, tid)
+                        emitFavoriteError(res)
+                    }
+                }
+            }
+        }
+        if (kind == FavoriteKind.FAVORITE) favoriteJob = job else attentionJob = job
+        job.start()
+    }
+
+    private fun syncFavoriteKindFromRepository(kind: FavoriteKind, tid: String) {
+        val repo = favoriteRepository ?: return
+        metaState.update { cur ->
+            if (cur.tid != tid) cur
+            else when (kind) {
+                FavoriteKind.FAVORITE -> cur.copy(isFavorited = repo.isFavorite(tid))
+                FavoriteKind.ATTENTION -> cur.copy(isAttention = repo.isAttention(tid))
+            }
+        }
+    }
+
+    private fun emitLoginNotice() {
+        metaState.update {
+            it.copy(notice = ThreadDetailNotice(++noticeSeq, UiError(R.string.thread_detail_login_to_operate, action = UiErrorAction.Login)))
+        }
+    }
+
+    private fun emitFavoriteError(error: FavoriteError) {
+        val uiError = when (error) {
+            is FavoriteError.AuthRequired -> UiError(R.string.thread_detail_login_to_operate, action = UiErrorAction.Login)
+            is FavoriteError.NetworkError -> UiError(R.string.common_error_network, details = error.message.takeIf { it.isNotBlank() })
+            is FavoriteError.ChallengeRequired -> UiError(
+                if (error.rejected) R.string.challenge_status_rejected else R.string.challenge_status_incomplete,
+            )
+            is FavoriteError.SiteError -> UiError(R.string.common_error_load_failed, details = error.message.takeIf { it.isNotBlank() })
+            is FavoriteError.InvalidPage -> UiError(R.string.common_error_load_failed, details = error.message.takeIf { it.isNotBlank() })
+            is FavoriteError.InvalidInput -> UiError(R.string.common_error_load_failed, details = error.message.takeIf { it.isNotBlank() })
+            is FavoriteError.StorageError -> UiError(R.string.common_error_load_failed, details = error.message.takeIf { it.isNotBlank() })
+        }
+        metaState.update { it.copy(notice = ThreadDetailNotice(++noticeSeq, uiError)) }
     }
 
     private fun resolvePageUserUid(res: ThreadDetailLoadResult.Success): String? {

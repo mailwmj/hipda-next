@@ -76,9 +76,9 @@ class MultiPaneGlassBudgetTest {
         composeRule.onNodeWithText("测试帖子标题 1001").performClick()
         composeRule.waitForIdle()
 
-        // 真实 E1 + E2a 协同：中栏 ForumTopBar (1) + 右栏 ThreadDetailTopBar (1) = 2 HiGlassMarker，2 LayerBackdrop，0 嵌套
+        // 真实 E1 + E3 + E4 协同：中栏 ForumTopBar (1) + 右栏 ThreadDetailTopBar (1) + 右栏底部三段工具条 HiGlassRegion (1) = 3 HiGlassMarker，2 LayerBackdrop，0 嵌套，静止 drawBackdrop ≤ 5
         val markers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
-        assertEquals("真实 E1+E2a 三栏应恰有 2 个玻璃区域（中栏顶栏 + 右栏顶栏）", 2, markers.size)
+        assertEquals("真实 E1+E3+E4 三栏应恰有 3 个玻璃区域（中栏顶栏 + 右栏顶栏 + 右栏底部工具条）", 3, markers.size)
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
 
         val audit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
@@ -121,29 +121,15 @@ class MultiPaneGlassBudgetTest {
                                 )
                             },
                             detailContent = { args, chromeSpec, padding, listState, onBack ->
-                                Box(Modifier.fillMaxSize()) {
-                                    ThreadDetailPane(
-                                        args = args,
-                                        chromeSpec = chromeSpec,
-                                        onBack = onBack,
-                                        onOpenLogin = {},
-                                        listState = listState,
-                                        contentPadding = padding,
-                                    )
-                                    // 模拟 E4 底部三段式胶囊工具条（外层 1 个 HiGlassRegion，内部 3 枚胶囊共享 detailGlassState 语义）
-                                    val toolbarGlass = rememberHiGlassState()
-                                    HiGlassRegion(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            repeat(3) { idx ->
-                                                HiGlassSurface(
-                                                    state = toolbarGlass,
-                                                    style = HiGlassStyle.Toolbar,
-                                                    modifier = Modifier.height(48.dp),
-                                                ) { Text("段$idx", Modifier.padding(horizontal = 12.dp)) }
-                                            }
-                                        }
-                                    }
-                                }
+                                // 真实 E4 ThreadDetailPane（含顶栏 1 + 底部三段工具条 HiGlassRegion 1，共享同一 detailGlassState）
+                                ThreadDetailPane(
+                                    args = args,
+                                    chromeSpec = chromeSpec,
+                                    onBack = onBack,
+                                    onOpenLogin = {},
+                                    listState = listState,
+                                    contentPadding = padding,
+                                )
                             },
                         )
                     }
@@ -153,7 +139,7 @@ class MultiPaneGlassBudgetTest {
         composeRule.waitForIdle()
 
         val markers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
-        assertEquals("满编三栏（中顶栏 + 右顶栏 + 右三段工具条）必须为 3 个 HiGlassMarker", 3, markers.size)
+        assertEquals("满编三栏（中顶栏 + 右顶栏 + 右真实三段工具条）必须为 3 个 HiGlassMarker", 3, markers.size)
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
 
         val audit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
@@ -181,7 +167,7 @@ class MultiPaneGlassBudgetTest {
         val fullScreenAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
         assertEquals("全屏阅读必须释放中栏 LayerBackdrop，仅剩右栏 1 个采样源", 1, fullScreenAudit.layerBackdropCount)
         val markers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
-        assertEquals("全屏阅读仅剩右栏详情顶栏 1 个玻璃区域", 1, markers.size)
+        assertEquals("全屏阅读仅剩右栏详情顶栏与底部三段工具条共 2 个玻璃区域", 2, markers.size)
     }
 
     @Test
@@ -204,14 +190,15 @@ class MultiPaneGlassBudgetTest {
             ).fetchSemanticsNodes()
             assertEquals("铰链双栏左列表顶栏必须退纯色（0 玻璃区域）", 0, leftGlassNodes.size)
 
-            // 全局玻璃区域：左紧凑胶囊 (1) + 右详情顶栏 (1) = 2 ≤ 3
+            // 全局玻璃区域：左紧凑胶囊 (1) + 右详情顶栏 (1) + 右底部三段工具条 (1) = 3 ≤ 3
             val allMarkers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
-            assertEquals("铰链双栏应为紧凑胶囊 + 右详情顶栏共 2 块玻璃", 2, allMarkers.size)
+            assertEquals("铰链双栏应为左紧凑胶囊 + 右详情顶栏 + 右底部工具条共 3 块玻璃", 3, allMarkers.size)
             composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
 
             val forumAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
             assertEquals("铰链双栏独立采样源为 2（左 shellGlassState + 右 detailGlassState）", 2, forumAudit.layerBackdropCount)
             assertEquals("铰链双栏严禁父子嵌套 LayerBackdrop", 0, forumAudit.nestedLayerBackdropCount)
+            assertTrue("铰链双栏静止 drawBackdrop pass 必须 ≤ 5，实际=${forumAudit.drawBackdropCount}", forumAudit.drawBackdropCount <= 5)
 
             // 切至非论坛入口（History + 帖子详情）仍保持 0 嵌套 LayerBackdrop
             composeRule.runOnIdle {
