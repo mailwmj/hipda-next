@@ -229,7 +229,8 @@ class QuickReplyViewModel internal constructor(
         openJob?.cancel()
         val target = _uiState.value.target
         val isQuote = target.mode == QuickReplyMode.QuotePost
-        val hasFloorCtx = isQuote || target.mode == QuickReplyMode.ReplyPost
+        val isReplyPost = target.mode == QuickReplyMode.ReplyPost
+        val hasFloorCtx = isQuote || isReplyPost
         _uiState.update { it.copy(text = "", textSyncVersion = it.textSyncVersion + 1L, showDraftRestoredBanner = false, inlineError = null) }
         return FullEditorHandoff(
             tid = target.tid,
@@ -241,6 +242,8 @@ class QuickReplyViewModel internal constructor(
             quoteAuthor = target.targetAuthor?.takeIf { hasFloorCtx },
             quoteFloor = target.targetFloor?.takeIf { hasFloorCtx },
             openImagePickerImmediately = openImagePickerImmediately,
+            replyPid = target.targetPid?.takeIf { isReplyPost },
+            threadAuthor = target.threadAuthor,
         )
     }
 

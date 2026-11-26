@@ -159,13 +159,18 @@ class QuickReplySheetTest {
         composeRule.onNodeWithContentDescription("插入图片").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
         composeRule.onNodeWithContentDescription("表情").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
 
-        // 点击「表情」原地展开表情槽并切换为「键盘」图标，插入表情并切回
+        // 点击「表情」原地展开表情槽并切换为「键盘」图标，插入含代理对字符与 Emoji 并校验安全整字符回删（R-E5 S1）
         composeRule.onNodeWithContentDescription("表情").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("E7 表情槽已挂载").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("键盘").assertIsDisplayed()
-        composeRule.runOnIdle { emojiHostSeen?.onInsertEmoji(":)") }
+        composeRule.runOnIdle {
+            emojiHostSeen?.onInsertEmoji(":)😀𠮷")
+            emojiHostSeen?.onBackspace()
+            emojiHostSeen?.onBackspace()
+        }
         composeRule.waitForIdle()
+        assertEquals("代理对回删不得残留孤立高代理项", ":)", qrVm.uiState.value.text)
         composeRule.onNodeWithContentDescription("键盘").performClick()
         composeRule.waitForIdle()
 
@@ -183,7 +188,7 @@ class QuickReplySheetTest {
             FullEditorHandoff(
                 tid = "2606001", fid = 2, text = ":)测试展开内容",
                 selectionStart = 2, selectionEnd = 5, quotePid = "102", quoteAuthor = "geek_reader_2", quoteFloor = 2,
-                openImagePickerImmediately = false,
+                openImagePickerImmediately = false, replyPid = null, threadAuthor = "linus_hi",
             ),
             handoffs.single(),
         )
@@ -616,5 +621,75 @@ class QuickReplySheetTest {
         composeRule.onNodeWithContentDescription("回复 linus_hi").performTextInput("冷却期间提前打字")
         composeRule.waitForIdle()
         assertEquals("冷却期间提前打字", qrVm.uiState.value.text)
+    }
+
+    /** R-E5 B1 路径 ① & ② 实机尺寸回归：主力折叠屏 `749×559dp`（状态栏 `24dp`）弹 `250dp`/`265dp` 键盘 + 恢复草稿 + 报错 + 绑定插槽，零裁切且三按钮可达。 */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun fold8Landscape749x559_ime250And265WithDraftErrorAndBoundSlots_zeroClipAndAllActionsReachable() {
+        val tid = "2606008"
+        val draftKey = DraftKey.reply(tid)
+        val postRepo = FakePostRepository(
+            initialDrafts = mapOf(draftKey.value to DraftEntity(draftKey.value, content = "折叠屏草稿", updatedAt = 1_000L)),
+        ).apply { submitHandler = { PostSubmitResult.NetworkError("timeout") } }
+        val authRepo = FakeQuickReplyAuthRepository()
+        val qrVm = QuickReplyViewModel(postRepo, authRepo, clockMs = { 10_000L })
+        val detailVm = ThreadDetailViewModel(FakeComposeThreadDetailRepository(totalPages = 1), createIdleComposeGateway(), authRepo)
+        val snackbars = RecordingPaneSnackbarController()
+        var hostView: View? = null
+
+        composeRule.setContent {
+            hostView = LocalView.current
+            CompositionLocalProvider(LocalPaneSnackbarController provides snackbars) {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        ThreadDetailPane(
+                            args = ThreadNavArgs(tid = tid, title = "Fold8 弹键盘回归", fid = 2, author = "linus_hi"),
+                            chromeSpec = DetailChromeSpec(showBack = true),
+                            onBack = {},
+                            onOpenLogin = {},
+                            viewModel = detailVm,
+                            quickReplyViewModel = qrVm,
+                            onExpandToFullEditor = {},
+                            emojiPanelSlot = { Box(Modifier.fillMaxSize(), Alignment.Center) { Text("E7") } },
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        composeRule.waitForIdle()
+
+        val density = composeRule.density
+        val statusPx = with(density) { 24.dp.roundToPx() }
+        for (imeDp in listOf(250, 265)) {
+            val imePx = with(density) { imeDp.dp.roundToPx() }
+            composeRule.runOnUiThread {
+                ViewCompat.dispatchApplyWindowInsets(
+                    requireNotNull(hostView),
+                    WindowInsetsCompat.Builder()
+                        .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.of(0, statusPx, 0, 0))
+                        .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, imePx))
+                        .build(),
+                )
+            }
+            composeRule.waitForIdle()
+
+            val sheetNode = composeRule.onAllNodes(SemanticsMatcher.keyIsDefined(HiGlassBlurActive), useUnmergedTree = true)
+                .fetchSemanticsNodes().last()
+            val sheetTop = sheetNode.positionInRoot.y
+            val sheetBottom = sheetTop + sheetNode.size.height
+            val inputNode = composeRule.onNodeWithContentDescription("回复 linus_hi").assertIsDisplayed().fetchSemanticsNode()
+            val sendNode = composeRule.onNodeWithContentDescription("发送").assertIsDisplayed().assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
+            assertTrue("Fold8 IME=${imeDp}dp 输入框不得挤成 0px：visible=${inputNode.boundsInRoot.height}", inputNode.boundsInRoot.height >= with(density) { 16.dp.toPx() })
+            assertTrue("Fold8 IME=${imeDp}dp 发送不得裁切：sendBottom=${sendNode.positionInRoot.y + sendNode.size.height} vs $sheetBottom", sendNode.positionInRoot.y + sendNode.size.height <= sheetBottom + 1.5f)
+            for (cd in listOf("展开全屏", "插入图片", "表情")) {
+                val n = composeRule.onNodeWithContentDescription(cd).assertIsDisplayed().assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
+                assertTrue("Fold8 IME=${imeDp}dp '$cd' 必须完整落在面板内", n.positionInRoot.y >= sheetTop - 1.5f && n.positionInRoot.y + n.size.height <= sheetBottom + 1.5f)
+            }
+        }
     }
 }

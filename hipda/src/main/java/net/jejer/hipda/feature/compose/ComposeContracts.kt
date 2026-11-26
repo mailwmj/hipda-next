@@ -63,6 +63,8 @@ data class FullEditorHandoff(
     val quoteAuthor: String? = null,
     val quoteFloor: Int? = null,
     val openImagePickerImmediately: Boolean = false,
+    val replyPid: String? = null,
+    val threadAuthor: String? = null,
 )
 
 /** 零耦合完整编辑器交接插槽：由 [ComposeSlotBindingModule] `@BindsOptionalOf` 暴露，`E6` 绑定后启用「展开全屏」与「插入图片」。 */
