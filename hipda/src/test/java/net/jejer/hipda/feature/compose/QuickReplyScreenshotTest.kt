@@ -4,6 +4,7 @@ import android.app.Application
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -33,6 +34,7 @@ import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.compose.emoji.EmojiPanelRendererImpl
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
 import net.jejer.hipda.ui.designsystem.HiColorPresets
@@ -50,7 +52,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * E5 毛玻璃快速回复面板 9 张 Roborazzi 截图基线（前缀 `quick_reply_`，E6 绑定后已启用「展开全屏」与「插入图片」，E7 表情槽尚未绑定）：
+ * E5 毛玻璃快速回复面板 9 张 Roborazzi 截图基线（前缀 `quick_reply_`，E6+E7 绑定后已启用「展开全屏」「插入图片」「表情」）：
  * 1. 单栏 `411dp` 浅/深（常规回复态）；
  * 2. 单栏 `411dp` 引用楼层 + 草稿恢复横条态（浅色）；
  * 3. 单栏 `411dp` 30 秒冷却倒计时态（深色）；
@@ -179,6 +181,7 @@ class QuickReplyScreenshotTest {
                         viewModel = detailVm,
                         quickReplyViewModel = qrVm,
                         onExpandToFullEditor = {},
+                        emojiPanelSlot = { host -> EmojiPanelRendererImpl().Content(host, Modifier) },
                     )
                 }
             }
@@ -245,6 +248,7 @@ class QuickReplyScreenshotTest {
                         notifyUnreadCountFlow = harness.notifyUnread,
                         hostViewModel = harness.hostViewModel,
                         forumViewModel = harness.forumViewModel,
+                        emojiPanelSlot = { host -> EmojiPanelRendererImpl().Content(host, Modifier) },
                     )
                 }
             }
