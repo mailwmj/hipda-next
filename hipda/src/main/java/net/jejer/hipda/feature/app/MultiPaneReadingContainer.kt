@@ -69,6 +69,7 @@ import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.feature.common.ForumChromeSpec
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.FullScreenToggle
+import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
@@ -93,11 +94,13 @@ private sealed interface RightPaneSlot {
     val slotKey: Any
     data object Empty : RightPaneSlot { override val depth = 0; override val slotKey = "empty" }
     data class Thread(val args: ThreadNavArgs) : RightPaneSlot { override val depth = 0; override val slotKey = "thread:${args.tid}" }
+    data class SmsConversation(val args: SmsConversationArgs) : RightPaneSlot { override val depth = 0; override val slotKey = "sms:${args.uid}" }
     data object Settings : RightPaneSlot { override val depth = 0; override val slotKey = "settings" }
     data class MineSubList(val entry: ShellSidebarEntry) : RightPaneSlot { override val depth = 0; override val slotKey = "mine:${sidebarSaveableKey(entry)}" }
     data class Drilldown(val entry: DetailDrilldownEntry, override val depth: Int) : RightPaneSlot {
         override val slotKey: Any = when (entry) {
             is DetailDrilldownEntry.UserProfile -> "drill:$depth:u:${entry.uid}"
+            is DetailDrilldownEntry.SmsConversation -> "drill:$depth:s:${entry.args.uid}"
         }
     }
 }
@@ -180,6 +183,7 @@ fun MultiPaneReadingContainer(
     mineMenuContent: @Composable (PaddingValues) -> Unit = {},
     settingsDetailContent: @Composable (PaddingValues) -> Unit = {},
     userProfileContent: @Composable (DetailDrilldownEntry.UserProfile, Boolean, () -> Unit, PaddingValues) -> Unit = { _, _, _, _ -> },
+    smsConversationContent: @Composable (SmsConversationArgs, Boolean, () -> Unit, PaddingValues) -> Unit = { _, _, _, _ -> },
 ) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
@@ -193,6 +197,7 @@ fun MultiPaneReadingContainer(
     val currentMineMenu by rememberUpdatedState(mineMenuContent)
     val currentSettingsDetail by rememberUpdatedState(settingsDetailContent)
     val currentUserProfile by rememberUpdatedState(userProfileContent)
+    val currentSmsConversation by rememberUpdatedState(smsConversationContent)
     val latestOnSplitChange by rememberUpdatedState(onPaneSplitChange)
     if (isActiveDestination) {
         slotHolder.detailRenderer = detailContent
@@ -251,6 +256,8 @@ fun MultiPaneReadingContainer(
             selectedDestination = destination,
             selectedSidebarEntry = branchSidebarEntry,
             selectedThread = null,
+            selectedSmsConversation = null,
+            isSettingsDetailOpen = false,
             detailDrilldownStack = emptyList(),
             isFullScreenReading = false,
         )
@@ -306,6 +313,7 @@ fun MultiPaneReadingContainer(
             when (target) {
                 RightPaneSlot.Empty -> Box(Modifier.fillMaxSize(), Alignment.Center) { HiEmptyState(emptyText) }
                 is RightPaneSlot.Thread -> detailMovableFor(target.args.tid)(target.args, rootDetailChrome, padding) { hostViewModel.handleBack(paneLayout.layoutMode) }
+                is RightPaneSlot.SmsConversation -> currentSmsConversation(target.args, !paneLayout.hasDetailPane, { hostViewModel.handleBack(paneLayout.layoutMode) }, padding)
                 RightPaneSlot.Settings -> currentSettingsDetail(padding)
                 is RightPaneSlot.MineSubList -> {
                     // 铰链双栏右栏副列表晋升至左栏时，退场槽即时让出 secondaryMovableFor 唯一持有权，避免同帧双占 SaveableStateProvider key（V-E3 F1）
@@ -317,6 +325,7 @@ fun MultiPaneReadingContainer(
                 }
                 is RightPaneSlot.Drilldown -> when (val e = target.entry) {
                     is DetailDrilldownEntry.UserProfile -> currentUserProfile(e, true, hostViewModel::popDetailDrilldown, padding)
+                    is DetailDrilldownEntry.SmsConversation -> currentSmsConversation(e.args, true, hostViewModel::popDetailDrilldown, padding)
                 }
             }
         }
@@ -372,6 +381,7 @@ fun MultiPaneReadingContainer(
         val rightSlot: RightPaneSlot = when {
             branchAppState.detailDrilldownStack.isNotEmpty() -> RightPaneSlot.Drilldown(branchAppState.detailDrilldownStack.last(), branchAppState.detailDrilldownStack.size)
             branchAppState.selectedThread != null -> RightPaneSlot.Thread(branchAppState.selectedThread)
+            branchAppState.selectedSmsConversation != null -> RightPaneSlot.SmsConversation(branchAppState.selectedSmsConversation)
             branchSidebarEntry == ShellSidebarEntry.Settings -> RightPaneSlot.Settings
             else -> RightPaneSlot.Empty
         }
@@ -444,6 +454,7 @@ fun MultiPaneReadingContainer(
         val rightSlot: RightPaneSlot = when (roles.right) {
             HingeRightPaneRole.DetailDrilldown -> RightPaneSlot.Drilldown(branchAppState.detailDrilldownStack.last(), branchAppState.detailDrilldownStack.size)
             HingeRightPaneRole.ThreadDetail -> branchAppState.selectedThread?.let(RightPaneSlot::Thread) ?: RightPaneSlot.Empty
+            HingeRightPaneRole.SmsConversation -> branchAppState.selectedSmsConversation?.let(RightPaneSlot::SmsConversation) ?: RightPaneSlot.Empty
             HingeRightPaneRole.MineSubList -> roles.mineSubEntry?.let(RightPaneSlot::MineSubList) ?: RightPaneSlot.Empty
             HingeRightPaneRole.SettingsDetail -> RightPaneSlot.Settings
             HingeRightPaneRole.EmptyPlaceholder -> RightPaneSlot.Empty
@@ -496,16 +507,25 @@ fun MultiPaneReadingContainer(
 
     // 单栏（< 600dp、矮屏、铰链退单栏）与 2 栏图标轨单栏（600–679dp）
     if (isActiveDestination) SideEffect { onMiddlePaneWidthChanged(paneLayout.middlePaneWidthDp.dp) }
-    val showDetail = branchAppState.detailDrilldownStack.isNotEmpty() || branchAppState.selectedThread != null
+    val isSingleSettingsDetail = branchSidebarEntry == ShellSidebarEntry.Settings && branchAppState.isSettingsDetailOpen
+    val showDetail = branchAppState.detailDrilldownStack.isNotEmpty() ||
+        branchAppState.selectedThread != null ||
+        branchAppState.selectedSmsConversation != null ||
+        isSingleSettingsDetail
     val nonForumSingleGlass = if (!showDetail && destination != ShellDestination.Forum) listGlassModifier else Modifier
     Box(modifier = modifier.fillMaxSize().then(nonForumSingleGlass)) {
         when {
             branchAppState.detailDrilldownStack.isNotEmpty() -> when (val e = branchAppState.detailDrilldownStack.last()) {
                 is DetailDrilldownEntry.UserProfile -> currentUserProfile(e, true, hostViewModel::popDetailDrilldown, detailPanePadding)
+                is DetailDrilldownEntry.SmsConversation -> currentSmsConversation(e.args, true, hostViewModel::popDetailDrilldown, detailPanePadding)
             }
             branchAppState.selectedThread != null -> detailMovableFor(branchAppState.selectedThread.tid)(branchAppState.selectedThread, rootDetailChrome, detailPanePadding) {
                 hostViewModel.handleBack(paneLayout.layoutMode)
             }
+            branchAppState.selectedSmsConversation != null -> currentSmsConversation(
+                branchAppState.selectedSmsConversation, true, { hostViewModel.handleBack(paneLayout.layoutMode) }, detailPanePadding,
+            )
+            isSingleSettingsDetail -> currentSettingsDetail(detailPanePadding)
             destination == ShellDestination.Forum -> forumMovable(branchAppState.activeForumSource, forumChromeSpec, contentPadding)
             destination == ShellDestination.Messages -> secondaryMovableFor(branchAppState.activeMessageEntry)(branchAppState.activeMessageEntry, false, null, contentPadding)
             destination == ShellDestination.Search -> secondaryMovableFor(ShellSidebarEntry.Search)(ShellSidebarEntry.Search, false, null, contentPadding)
