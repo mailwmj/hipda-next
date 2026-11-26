@@ -22,6 +22,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.LayoutInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -74,12 +75,14 @@ import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
+import net.jejer.hipda.ui.designsystem.glass.HiGlassBlurActive
 import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
 import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -442,6 +445,123 @@ class ImageViewerShellMergeProbeTest {
 
         // 2) 验证看图打开时全屏同屏玻璃数为 0
         composeRule.assertGlassSurfaceCountAtMost(0)
+    }
+
+    @Test
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun probeM4b_threePane933dp_openViewerSuspendsGlassSamplingAndStopsBackdrop_thenRestoresOnDismiss() {
+        val imageUrl = "https://img.example.invalid/m4b_933.jpg"
+        val loader = ProbeImageLoader { req ->
+            SuccessResult(ColorImage(0xFF336699.toInt(), 800, 600), req, DataSource.MEMORY)
+        }
+        val repo = SingleImageRepo(imageUrl)
+        val harness = MultiPaneTestHarness()
+        val parentOwner = ownerWithThreadDetailRepo(harness, repo)
+        val renderer = ImageViewerRendererImpl(IdleProbeDownloader(), RecordingMediaActions())
+        harness.hostViewModel.openThread(ThreadNavArgs("1001", "933dp真停采样探针帖", 2))
+
+        composeRule.setContent {
+            ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides parentOwner) {
+                    NextAppRoot(
+                        settingsFlow = harness.settingsRepo.settings,
+                        currentAccountFlow = harness.authRepo.currentAccount,
+                        smsUnreadCountFlow = harness.smsUnread.asStateFlow(),
+                        notifyUnreadCountFlow = harness.notifyUnread.asStateFlow(),
+                        imageLoader = loader,
+                        imageViewerRenderer = renderer,
+                        hostViewModel = harness.hostViewModel,
+                        forumViewModel = harness.forumViewModel,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        fun collectAllLayoutInfos(): List<LayoutInfo> {
+            val seen = java.util.IdentityHashMap<LayoutInfo, Unit>()
+            val out = ArrayList<LayoutInfo>()
+            fun walkUp(info: LayoutInfo?) {
+                var cur = info
+                while (cur != null && !seen.containsKey(cur)) {
+                    seen[cur] = Unit
+                    out.add(cur)
+                    cur = cur.parentInfo
+                }
+            }
+            composeRule.onAllNodes(SemanticsMatcher("all") { true }, useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .forEach { walkUp(it.layoutInfo) }
+            return out
+        }
+
+        fun countModifiersByClassName(className: String): List<Modifier> =
+            collectAllLayoutInfos()
+                .flatMap { it.getModifierInfo() }
+                .map { it.modifier }
+                .filter { it.javaClass.name == className }
+
+        fun countBlurActive(expected: Boolean): Int =
+            composeRule.onAllNodes(SemanticsMatcher.keyIsDefined(HiGlassBlurActive), useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .count { it.config[HiGlassBlurActive] == expected }
+
+        // 1) 看图前：底层双玻璃顶栏不仅有 HiGlassMarker，且模糊激活、DrawBackdrop 与 LayerBackdrop 录制源均真实在跑
+        val preDrawBackdrops = countModifiersByClassName("com.kyant.backdrop.DrawBackdropElement")
+        val preLayerBackdropEls = countModifiersByClassName("com.kyant.backdrop.backdrops.LayerBackdropElement")
+        assertTrue("看图前应至少存在 2 个活跃 DrawBackdropElement，实际 ${preDrawBackdrops.size}", preDrawBackdrops.size >= 2)
+        assertTrue("看图前应至少存在 2 个活跃 LayerBackdropElement 采样源，实际 ${preLayerBackdropEls.size}", preLayerBackdropEls.size >= 2)
+        assertTrue("看图前应至少存在 2 个 HiGlassBlurActive=true 表面，实际 ${countBlurActive(true)}", countBlurActive(true) >= 2)
+
+        fun readLayerCoordinates(backdrop: Any): Any? =
+            backdrop.javaClass.methods.first { it.name.startsWith("getLayerCoordinates") }
+                .apply { isAccessible = true }
+                .invoke(backdrop)
+
+        val capturedLayerBackdrops = preLayerBackdropEls.map { el ->
+            val getter = el.javaClass.getDeclaredMethod("getBackdrop").apply { isAccessible = true }
+            requireNotNull(getter.invoke(el))
+        }.distinctBy { System.identityHashCode(it) }
+        assertTrue("应捕获到底层真实 LayerBackdrop 实例", capturedLayerBackdrops.size >= 2)
+        capturedLayerBackdrops.forEach { backdrop ->
+            assertNotNull("看图前底层 LayerBackdrop 必须挂载坐标处于采样状态", readLayerCoordinates(backdrop))
+        }
+
+        // 2) 打开全屏看图：绝非仅隐藏 HiGlassMarker，必须同步停用着色/模糊与离屏 GPU 录制采样
+        openThreadImageViewer()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("1 / 1").assertIsDisplayed()
+
+        composeRule.assertGlassSurfaceCountAtMost(0)
+        assertEquals(
+            "看图打开期间底层 HiGlassBlurActive=true 必须归零（真实降级而非仅隐藏 HiGlassMarker）",
+            0,
+            countBlurActive(true),
+        )
+        assertEquals(
+            "看图打开期间全树 DrawBackdropElement 消费端修饰符必须归零",
+            0,
+            countModifiersByClassName("com.kyant.backdrop.DrawBackdropElement").size,
+        )
+        assertEquals(
+            "看图打开期间全树 LayerBackdropElement 离屏录制修饰符必须全部卸载",
+            0,
+            countModifiersByClassName("com.kyant.backdrop.backdrops.LayerBackdropElement").size,
+        )
+        capturedLayerBackdrops.forEach { backdrop ->
+            assertNull("看图打开期间底层 LayerBackdrop 坐标必须已清空停止采样", readLayerCoordinates(backdrop))
+        }
+
+        // 3) 关闭看图后：底层玻璃与采样源自动恢复正常
+        composeRule.onNodeWithContentDescription("关闭").performClick()
+        composeRule.waitForIdle()
+        assertEquals("关闭看图后应恢复到 2 个玻璃标记", preDrawBackdrops.size, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals("关闭看图后应恢复全部 HiGlassBlurActive=true", preDrawBackdrops.size, countBlurActive(true))
+        assertEquals("关闭看图后应恢复 DrawBackdropElement", preDrawBackdrops.size, countModifiersByClassName("com.kyant.backdrop.DrawBackdropElement").size)
+        assertTrue("关闭看图后应重新挂载 LayerBackdropElement", countModifiersByClassName("com.kyant.backdrop.backdrops.LayerBackdropElement").size >= capturedLayerBackdrops.size)
+        capturedLayerBackdrops.forEach { backdrop ->
+            assertNotNull("关闭看图后底层 LayerBackdrop 必须重新挂载恢复采样", readLayerCoordinates(backdrop))
+        }
     }
 
     // ==================== 辅助函数 ====================

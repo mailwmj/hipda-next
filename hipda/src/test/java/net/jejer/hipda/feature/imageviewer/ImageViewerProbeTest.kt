@@ -3,6 +3,7 @@ package net.jejer.hipda.feature.imageviewer
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.drawable.Animatable
@@ -58,17 +59,24 @@ import coil3.asImage
 import coil3.decode.DataSource
 import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.Disposable
 import coil3.request.ErrorResult
 import coil3.request.ImageRequest
 import coil3.request.ImageResult
 import coil3.request.SuccessResult
+import coil3.size.Dimension
+import coil3.size.Size as CoilSize
 import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.CRC32
+import java.util.zip.Deflater
+import java.util.zip.DeflaterOutputStream
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CompletableDeferred
@@ -1071,6 +1079,110 @@ class ImageViewerProbeTest {
         }
     }
 
+    @Test
+    fun probe3d_oversized12000x12000Image_opensWithoutCrashAndDecodesWithinScreenBounds() {
+        val hugePng = buildOversizedSolidPng(12_000, 12_000)
+        val rawBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }.also {
+            BitmapFactory.decodeByteArray(hugePng, 0, hugePng.size, it)
+        }
+        assertEquals("构造测试图原始宽度必须为 12000", 12_000, rawBounds.outWidth)
+        assertEquals("构造测试图原始高度必须为 12000", 12_000, rawBounds.outHeight)
+
+        val server = MockWebServer()
+        server.start()
+        val appContext = ApplicationProvider.getApplicationContext<Context>()
+        val realCoil = ImageLoader.Builder(appContext)
+            .components {
+                add(OkHttpNetworkFetcherFactory(callFactory = { OkHttpClient() }))
+            }
+            .build()
+        val recordedRequests = CopyOnWriteArrayList<RecordedCoilExecution>()
+        val spyCoil = SpyRealImageLoader(realCoil, recordedRequests)
+        try {
+            // 1) HD 直开 12000x12000 大图；2) 查看原图下载同一 12000x12000 PNG 经真实 Coil 解码
+            repeat(2) {
+                server.enqueue(
+                    MockResponse.Builder()
+                        .code(200)
+                        .addHeader("Content-Type", "image/png")
+                        .addHeader("Content-Length", hugePng.size.toString())
+                        .body(Buffer().write(hugePng))
+                        .build(),
+                )
+            }
+            val cacheDir = File(appContext.cacheDir, "probe_12000").apply { deleteRecursively() }
+            val downloader = OkHttpOriginalImageDownloader(OkHttpClient(), cacheDir, Dispatchers.IO)
+            val url12k = server.url("/huge_12000x12000.png").toString()
+
+            composeRule.setContent {
+                CompositionLocalProvider(LocalHiImageLoader provides spyCoil) {
+                    HiTheme(themeMode = HiThemeMode.DARK, seed = HiColorPresets.Brand.toSeed()) {
+                        ImageViewerOverlay(
+                            args = ImageViewerLaunchArgs(listOf(url12k)),
+                            onDismiss = {},
+                            originalDownloader = downloader,
+                            mediaActions = RecordingMediaActions(),
+                        )
+                    }
+                }
+            }
+
+            // 等待真实 Coil 完成 12000x12000 HD 解码且画面稳定无崩溃
+            composeRule.waitUntil(10_000L) {
+                recordedRequests.any { it.data == url12k && it.decodedWidth > 0 }
+            }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("1 / 1").assertIsDisplayed()
+
+            val density = composeRule.density.density
+            val viewportW = (411f * density).roundToInt() // 822px
+            val viewportH = (891f * density).roundToInt() // 1782px
+            val maxOrigBounds = computeOriginalDecodeBounds(viewportW, viewportH) // 1644 x 3564
+
+            val hdExec = recordedRequests.last { it.data == url12k }
+            assertFalse("直开 12000×12000 绝不能使用 Size.ORIGINAL", hdExec.resolvedSize == CoilSize.ORIGINAL)
+            assertTrue(
+                "直开请求的宽度上限必须受屏幕限制(${viewportW}px)，实际=${hdExec.resolvedSize}",
+                (hdExec.resolvedSize.width as? Dimension.Pixels)?.px?.let { it <= viewportW } == true,
+            )
+            assertTrue(
+                "真实 Coil 解码后的 HD 位图必须大幅低于 12000px 并受屏幕宽度约束，实际=${hdExec.decodedWidth}x${hdExec.decodedHeight}",
+                hdExec.decodedWidth in 1..maxOrigBounds.width && hdExec.decodedHeight in 1..maxOrigBounds.height &&
+                    hdExec.decodedWidth < 12_000 && hdExec.decodedHeight < 12_000,
+            )
+
+            // 点击「查看原图」，从 MockWebServer 下载 12000x12000 原图并通过真实 Coil 解码
+            composeRule.onNodeWithText("查看原图").performClick()
+            composeRule.waitUntil(10_000L) {
+                composeRule.onAllNodesWithText("已加载原图").fetchSemanticsNodes().isNotEmpty() &&
+                    recordedRequests.any { it.data is File && it.decodedWidth > 0 }
+            }
+            composeRule.waitForIdle()
+
+            val origExec = recordedRequests.last { it.data is File }
+            assertFalse("原图解码请求绝不能使用 Size.ORIGINAL", origExec.resolvedSize == CoilSize.ORIGINAL)
+            val reqW = (origExec.resolvedSize.width as? Dimension.Pixels)?.px ?: error("原图宽度非像素上限: ${origExec.resolvedSize}")
+            val reqH = (origExec.resolvedSize.height as? Dimension.Pixels)?.px ?: error("原图高度非像素上限: ${origExec.resolvedSize}")
+            assertTrue("原图请求尺寸必须受屏幕 2× 与 4096 上限约束：$reqW x $reqH vs $maxOrigBounds", reqW <= maxOrigBounds.width && reqH <= maxOrigBounds.height)
+            assertTrue(
+                "真实解码原图位图尺寸必须受屏幕尺寸限制（预期 <= ${maxOrigBounds.width}x${maxOrigBounds.height}，且远小于 12000）：实际 ${origExec.decodedWidth}x${origExec.decodedHeight}",
+                origExec.decodedWidth in 1..maxOrigBounds.width &&
+                    origExec.decodedHeight in 1..maxOrigBounds.height &&
+                    origExec.decodedWidth < 12_000 && origExec.decodedHeight < 12_000,
+            )
+
+            // 真实渲染采样与双击放大确认 Canvas 不崩溃
+            composeRule.onRoot().captureToImage()
+            composeRule.onRoot().performTouchInput { doubleClick(center) }
+            composeRule.waitForIdle()
+            composeRule.onRoot().captureToImage()
+            composeRule.onNodeWithText("已加载原图").assertIsDisplayed()
+        } finally {
+            realCoil.shutdown()
+            server.close()
+        }
+    }
+
     // ==================== 辅助函数 ====================
 
     private fun viewerImageMatcher(desc: String): SemanticsMatcher =
@@ -1198,4 +1310,88 @@ internal fun buildLargeValidPng(width: Int, height: Int, minBytes: Int): ByteArr
     }
     bytes = ByteArrayOutputStream().use { out -> bmp2.compress(Bitmap.CompressFormat.PNG, 100, out); out.toByteArray() }
     return bytes
+}
+
+private data class RecordedCoilExecution(
+    val data: Any,
+    val resolvedSize: CoilSize,
+    val decodedWidth: Int,
+    val decodedHeight: Int,
+)
+
+private class SpyRealImageLoader(
+    private val delegate: ImageLoader,
+    private val recorded: CopyOnWriteArrayList<RecordedCoilExecution>,
+) : ImageLoader {
+    override val defaults: ImageRequest.Defaults get() = delegate.defaults
+    override val components: ComponentRegistry get() = delegate.components
+    override val memoryCache: MemoryCache? get() = delegate.memoryCache
+    override val diskCache: DiskCache? get() = delegate.diskCache
+    override fun enqueue(request: ImageRequest): Disposable = delegate.enqueue(request)
+    override suspend fun execute(request: ImageRequest): ImageResult {
+        val reqSize = request.sizeResolver.size()
+        val result = delegate.execute(request)
+        val success = result as? SuccessResult
+        recorded.add(
+            RecordedCoilExecution(
+                data = request.data,
+                resolvedSize = reqSize,
+                decodedWidth = success?.image?.width ?: -1,
+                decodedHeight = success?.image?.height ?: -1,
+            ),
+        )
+        return result
+    }
+    override fun shutdown() = delegate.shutdown()
+    override fun newBuilder(): ImageLoader.Builder = delegate.newBuilder()
+}
+
+/** 流式生成合法的 1-bit Grayscale 超大 PNG（占用极低堆内存），用于真实测试 12000×12000 解码与降采样。 */
+internal fun buildOversizedSolidPng(width: Int, height: Int): ByteArray {
+    fun writeChunk(dos: DataOutputStream, type: String, payload: ByteArray) {
+        val typeBytes = type.toByteArray(Charsets.US_ASCII)
+        dos.writeInt(payload.size)
+        dos.write(typeBytes)
+        dos.write(payload)
+        val crc = CRC32().apply {
+            update(typeBytes)
+            update(payload)
+        }.value.toInt()
+        dos.writeInt(crc)
+    }
+
+    val ihdr = ByteArrayOutputStream(13).apply {
+        DataOutputStream(this).use { d ->
+            d.writeInt(width)
+            d.writeInt(height)
+            d.writeByte(1) // bitDepth = 1
+            d.writeByte(0) // colorType = 0 (Grayscale)
+            d.writeByte(0) // compression = 0
+            d.writeByte(0) // filter = 0
+            d.writeByte(0) // interlace = 0
+        }
+    }.toByteArray()
+
+    val bytesPerRow = (width + 7) / 8
+    val blackRow = ByteArray(1 + bytesPerRow) // filter=0 + all 0s
+    val whiteRow = ByteArray(1 + bytesPerRow) { idx -> if (idx == 0) 0 else 0xFF.toByte() }
+    val idatBytes = ByteArrayOutputStream().use { rawOut ->
+        DeflaterOutputStream(rawOut, Deflater(Deflater.BEST_SPEED)).use { def ->
+            val half = height / 2
+            for (y in 0 until height) {
+                def.write(if (y < half) whiteRow else blackRow)
+            }
+        }
+        rawOut.toByteArray()
+    }
+
+    return ByteArrayOutputStream().use { out ->
+        DataOutputStream(out).use { dos ->
+            dos.write(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+            writeChunk(dos, "IHDR", ihdr)
+            writeChunk(dos, "IDAT", idatBytes)
+            writeChunk(dos, "IEND", ByteArray(0))
+        }
+        out.toByteArray()
+    }
 }
