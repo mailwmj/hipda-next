@@ -691,7 +691,7 @@ private fun QuickReplyToolIconButton(icon: ImageVector, contentDescription: Stri
     }
 }
 
-private object ComposeVectorIcons {
+internal object ComposeVectorIcons {
     private val strokeBrush = SolidColor(Color.Black)
     private fun stroked(name: String, draw: PathBuilder.() -> Unit): ImageVector =
         ImageVector.Builder("Compose.$name", 24.dp, 24.dp, 24f, 24f).apply {

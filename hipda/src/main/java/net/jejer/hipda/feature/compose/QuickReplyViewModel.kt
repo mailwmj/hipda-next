@@ -6,25 +6,18 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import net.jejer.hipda.R
-import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRepository
-import net.jejer.hipda.data.auth.AuthState
 import net.jejer.hipda.data.local.DraftKey
 import net.jejer.hipda.data.post.PostRepository
 import net.jejer.hipda.data.post.PostSubmitRequest
 import net.jejer.hipda.data.post.PostSubmitResult
 import net.jejer.hipda.feature.common.UiError
 import net.jejer.hipda.feature.common.UiErrorAction
-import net.jejer.hipda.feature.common.UiErrorMapper
 import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 
 /** 快速回复内联错误状态（遵循 `copy.md` §错误与校验：有按钮仅写原因，冷却提示写原因与等待秒数）。 */
@@ -73,7 +66,7 @@ class QuickReplyViewModel internal constructor(
 
     private val _uiState = MutableStateFlow(
         QuickReplyUiState(
-            isLoggedIn = resolveIsLoggedIn(authRepository.currentAccount.value, authRepository.authState.value),
+            isLoggedIn = resolveComposeLoggedIn(authRepository.currentAccount.value, authRepository.authState.value),
             cooldownSeconds = postRepository.getRemainingCooldownSeconds().coerceAtLeast(0),
         ),
     )
@@ -92,7 +85,7 @@ class QuickReplyViewModel internal constructor(
 
     init {
         viewModelScope.launch {
-            combine(authRepository.currentAccount, authRepository.authState) { account, state -> resolveIsLoggedIn(account, state) }
+            combine(authRepository.currentAccount, authRepository.authState, ::resolveComposeLoggedIn)
                 .collect { loggedIn ->
                     _uiState.update { cur ->
                         val nextErr = if (loggedIn && cur.inlineError?.uiError?.action == UiErrorAction.Login) null else cur.inlineError
@@ -103,7 +96,7 @@ class QuickReplyViewModel internal constructor(
         viewModelScope.launch {
             postRepository.cooldownUntilMs.collectLatest { untilMs ->
                 localCooldownJob?.cancel(); localCooldownJob = null
-                if (untilMs <= 0L) updateCooldown(0) else runCooldownTicker(untilMs) { postRepository.getRemainingCooldownSeconds() }
+                if (untilMs <= 0L) updateCooldown(0) else runCooldownTickerLoop(untilMs, clockMs, postRepository::getRemainingCooldownSeconds, ::updateCooldown)
             }
         }
     }
@@ -211,7 +204,7 @@ class QuickReplyViewModel internal constructor(
         }
     }
 
-    /** 交接至 `E6` 完整编辑器：静默收尾当前会话，不重复保存草稿、不弹 `已保存草稿` 提示。 */
+    /** 交接至 `E6` 完整编辑器：静默收尾当前会话，透传 `hadPersistedDraft` 与横条态，不重复保存草稿、不弹 `已保存草稿` 提示。 */
     fun onHandoffToFullEditor(
         text: String,
         selectionStart: Int,
@@ -220,23 +213,19 @@ class QuickReplyViewModel internal constructor(
     ): FullEditorHandoff {
         isSessionActive = false
         openJob?.cancel()
-        val target = _uiState.value.target
+        val snap = _uiState.value
+        val target = snap.target
         val isQuote = target.mode == QuickReplyMode.QuotePost
         val isReplyPost = target.mode == QuickReplyMode.ReplyPost
         val hasFloorCtx = isQuote || isReplyPost
-        _uiState.update { it.copy(text = "", textSyncVersion = it.textSyncVersion + 1L, showDraftRestoredBanner = false, inlineError = null) }
+        _uiState.update { it.copy(text = "", textSyncVersion = it.textSyncVersion + 1L, hadPersistedDraft = false, showDraftRestoredBanner = false, inlineError = null) }
         return FullEditorHandoff(
-            tid = target.tid,
-            fid = target.fid,
-            text = text,
-            selectionStart = selectionStart.coerceIn(0, text.length),
-            selectionEnd = selectionEnd.coerceIn(0, text.length),
-            quotePid = target.targetPid?.takeIf { isQuote },
-            quoteAuthor = target.targetAuthor?.takeIf { hasFloorCtx },
-            quoteFloor = target.targetFloor?.takeIf { hasFloorCtx },
-            openImagePickerImmediately = openImagePickerImmediately,
-            replyPid = target.targetPid?.takeIf { isReplyPost },
-            threadAuthor = target.threadAuthor,
+            tid = target.tid, fid = target.fid, text = text,
+            selectionStart = selectionStart.coerceIn(0, text.length), selectionEnd = selectionEnd.coerceIn(0, text.length),
+            quotePid = target.targetPid?.takeIf { isQuote }, quoteAuthor = target.targetAuthor?.takeIf { hasFloorCtx },
+            quoteFloor = target.targetFloor?.takeIf { hasFloorCtx }, openImagePickerImmediately = openImagePickerImmediately,
+            replyPid = target.targetPid?.takeIf { isReplyPost }, threadAuthor = target.threadAuthor,
+            hadPersistedDraft = snap.hadPersistedDraft, showDraftRestoredBanner = snap.showDraftRestoredBanner && text.isNotBlank(),
         )
     }
 
@@ -317,34 +306,17 @@ class QuickReplyViewModel internal constructor(
             localCooldownJob?.cancel()
             val untilMs = clockMs() + safeSec * 1_000L
             localCooldownJob = viewModelScope.launch {
-                runCooldownTicker(untilMs) {
-                    val deltaMs = untilMs - clockMs()
-                    if (deltaMs <= 0L) 0 else ((deltaMs + 999L) / 1_000L).toInt()
-                }
+                runCooldownTickerLoop(untilMs, clockMs, { ((untilMs - clockMs()).takeIf { it > 0L }?.let { (it + 999L) / 1_000L } ?: 0L).toInt() }, ::updateCooldown)
             }
-        }
-    }
-
-    private suspend fun runCooldownTicker(untilMs: Long, remainingProvider: () -> Int) {
-        while (true) {
-            val remaining = remainingProvider().coerceAtLeast(0)
-            updateCooldown(remaining)
-            if (remaining <= 0) break
-            delay(nextCooldownTickDelayMs(untilMs, clockMs()))
         }
     }
 
     private fun enqueueDraftMutation(action: suspend () -> Unit) {
-        val prev = draftMutationJob
-        draftMutationJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            withContext(NonCancellable) {
-                runCatching { prev?.join(); action() }.onFailure { if (it is CancellationException) throw it }
-            }
-        }
+        draftMutationJob = viewModelScope.enqueueSerialDraftMutation(draftMutationJob, action)
     }
 
     companion object {
-        internal fun safeReplyDraftKey(tid: String): DraftKey? = runCatching { DraftKey.reply(tid.trim()) }.getOrNull()
+        internal fun safeReplyDraftKey(tid: String): DraftKey? = net.jejer.hipda.feature.compose.safeReplyDraftKey(tid)
 
         internal fun buildSubmitRequest(target: QuickReplyTarget, content: String, draftKey: DraftKey?): PostSubmitRequest {
             val pid = target.targetPid?.trim()?.takeIf { it.isNotEmpty() }
@@ -355,23 +327,6 @@ class QuickReplyViewModel internal constructor(
             }
         }
 
-        internal fun mapSubmitFailure(result: PostSubmitResult): UiError = when (result) {
-            is PostSubmitResult.AuthRequired -> UiErrorMapper.mapAuthRequired(result.reason)
-            is PostSubmitResult.ChallengeRequired -> UiError(
-                if (result.rejected) R.string.challenge_status_rejected else R.string.challenge_status_incomplete,
-                result.cooldownUntilMs?.let { "cooldownUntilMs=$it" },
-                UiErrorAction.Reverify,
-            )
-            is PostSubmitResult.SiteError -> UiError(R.string.compose_error_send_failed, result.message.trim().ifEmpty { null }, UiErrorAction.Retry)
-            is PostSubmitResult.NetworkError -> UiError(R.string.compose_error_send_failed, result.message.trim().ifEmpty { null }, UiErrorAction.Retry)
-            is PostSubmitResult.InvalidInput -> UiError(R.string.compose_error_send_failed, result.message.trim().ifEmpty { null }, UiErrorAction.Retry)
-            else -> UiError(R.string.compose_error_send_failed, action = UiErrorAction.Retry)
-        }
-
-        private fun resolveIsLoggedIn(account: SavedAccount?, state: AuthState): Boolean =
-            account != null && state !is AuthState.SignedOut && state !is AuthState.SessionExpired
-
-        private fun nextCooldownTickDelayMs(untilMs: Long, nowMs: Long): Long =
-            (untilMs - nowMs).let { raw -> if (raw !in 1L..35_000L) 250L else (raw % 1_000L).let { if (it == 0L) 1_000L else it } }
+        internal fun mapSubmitFailure(result: PostSubmitResult): UiError = mapPostSubmitFailureUiError(result)
     }
 }

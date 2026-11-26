@@ -71,6 +71,13 @@ import net.jejer.hipda.feature.common.SafeLinkPolicy
 import net.jejer.hipda.feature.common.SearchMinePaneRenderer
 import net.jejer.hipda.feature.common.SettingsGroup
 import net.jejer.hipda.feature.common.SettingsProfilePaneRenderer
+import net.jejer.hipda.feature.compose.FullEditorPlacement
+import net.jejer.hipda.feature.compose.FullEditorRequest
+import net.jejer.hipda.feature.compose.FullEditorRequestBus
+import net.jejer.hipda.feature.compose.FullEditorViewModel
+import net.jejer.hipda.feature.compose.LocalFullEditorReplyResults
+import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
+import net.jejer.hipda.feature.compose.rememberFullEditorHostController
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
 import net.jejer.hipda.feature.routing.AndroidExternalLinkOpener
@@ -83,6 +90,8 @@ import net.jejer.hipda.feature.routing.requiresLegacyDownloadPermission
 import net.jejer.hipda.feature.settings.AboutAssetDocument
 import net.jejer.hipda.feature.settings.AboutAssetDocumentDialog
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
+import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarBottomGap
+import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarHeight
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.SyncHiEdgeToEdge
 import net.jejer.hipda.ui.designsystem.hiTopSafeBar
@@ -115,6 +124,9 @@ fun NextAppRoot(
     hostViewModel: NextAppHostViewModel = viewModel(),
     forumViewModel: ForumViewModel = viewModel(),
     onFallbackLoginClick: (() -> Unit)? = null,
+    fullEditorViewModel: FullEditorViewModel? = null,
+    fullEditorRequestBus: FullEditorRequestBus? = null,
+    emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
 ) {
     // 同步读取 StateFlow 当前值；冷流（如 DataStore 进程重启首帧读盘）在首个真实值到达前不渲染默认分栏，杜绝首帧回跳闪烁（R-E3 B3）
     val initialSettings = remember(settingsFlow) { (settingsFlow as? StateFlow<AppSettings>)?.value }
@@ -286,8 +298,27 @@ fun NextAppRoot(
         )
     }
 
-    var latestPaneLayout by remember { mutableStateOf(calculateShellPaneLayout(windowDpSize.width.value, windowDpSize.height.value)) }
-    var latestMiddleWidthDp by remember { mutableStateOf(latestPaneLayout.middlePaneWidthDp.dp) }
+    val initialPaneLayout = remember(windowDpSize, sidebarCollapsedPref, appState.hasDetailContent) {
+        calculateShellPaneLayout(
+            widthDp = windowDpSize.width.value,
+            heightDp = windowDpSize.height.value,
+            leftCollapsedPref = sidebarCollapsedPref,
+            hasDetailContent = appState.hasDetailContent,
+        )
+    }
+    var latestPaneLayout by remember { mutableStateOf(initialPaneLayout) }
+    var latestMiddleWidthDp by remember {
+        mutableStateOf(
+            when {
+                appState.isFullScreenReading -> 0.dp
+                initialPaneLayout.isThreePane -> {
+                    val anchors = resolvePaneSplitAnchors(initialPaneLayout, appState.hasDetailContent)
+                    (anchors[resolveEffectivePaneSplit(persistedSplit, anchors)] ?: initialPaneLayout.middlePaneWidthDp).dp
+                }
+                else -> initialPaneLayout.middlePaneWidthDp.dp
+            },
+        )
+    }
     var latestBottomPaddingDp by remember { mutableStateOf(0.dp) }
     var activeImageViewerArgs by remember { mutableStateOf<ImageViewerLaunchArgs?>(null) }
     val imageViewerBoundsRegistry = remember { ImageViewerBoundsRegistry() }
@@ -301,6 +332,21 @@ fun NextAppRoot(
         )
     }
 
+    val editorHost = rememberFullEditorHostController(
+        paneLayout = latestPaneLayout,
+        windowHeightDp = windowDpSize.height.value,
+        effectiveMiddleWidthDp = latestMiddleWidthDp,
+        selectedThreadTid = appState.selectedThread?.tid,
+        snackbarController = snackbarController,
+        coroutineScope = coroutineScope,
+        onRefreshForum = { forumViewModel.refresh() },
+        onOpenThread = hostViewModel::openThread,
+        onOpenLogin = openLogin,
+        injectedViewModel = fullEditorViewModel,
+        injectedRequestBus = fullEditorRequestBus,
+        emojiPanelSlot = emojiPanelSlot,
+    )
+
     HiTheme(themeConfig.themeMode, themeConfig.pureBlack, themeConfig.seed, themeConfig.fontSizeStep, themeConfig.lineHeightPreset) {
         SyncHiEdgeToEdge(darkTheme = HiTheme.state.darkTheme || isImageViewerOpen)
         CompositionLocalProvider(
@@ -309,10 +355,11 @@ fun NextAppRoot(
             LocalImageViewerBoundsRegistry provides imageViewerBoundsRegistry,
             LocalPostLinkDispatcher provides postLinkDispatcher,
             LocalAttachmentDownloadHandler provides attachmentDownloadHandler,
+            LocalFullEditorReplyResults provides editorHost.replyResults,
         ) {
             Box(modifier = modifier.fillMaxSize()) {
-                // 全屏看图覆盖期间暂停底层液态玻璃与 GPU 离屏采样，守住同屏 0 玻璃预算（V-E14 probeM4）
-                CompositionLocalProvider(LocalHiGlassSuspended provides isImageViewerOpen) {
+                // 全屏看图或单栏全屏编辑器覆盖期间暂停底层液态玻璃与 GPU 离屏采样（V-E14 probeM4 / E6 §4.2）
+                CompositionLocalProvider(LocalHiGlassSuspended provides (isImageViewerOpen || editorHost.isFullScreen)) {
                 HiAdaptiveShell(
                     selected = appState.selectedDestination,
                     onSelect = hostViewModel::selectDestination,
@@ -343,6 +390,10 @@ fun NextAppRoot(
                         slotHolder = slotHolder,
                         shellGlassState = shellGlassState,
                         onMiddlePaneWidthChanged = { latestMiddleWidthDp = it },
+                        suppressDetailBottomGlass = editorHost.isInRightPane,
+                        rightPaneOverlay = if (editorHost.isInRightPane) {
+                            { editorHost.renderInPlacement(FullEditorPlacement.RightPane, windowDpSize.width.value) }
+                        } else null,
                         forumContent = { chromeSpec, padding, listState ->
                             ForumPane(
                                 source = appState.activeForumSource,
@@ -354,6 +405,9 @@ fun NextAppRoot(
                                 listState = listState,
                                 contentPadding = padding,
                                 shellContentScope = this,
+                                onNewThreadClick = {
+                                    editorHost.open(FullEditorRequest.NewThread((appState.activeForumSource as? ForumListSource.Forum)?.fid))
+                                },
                                 onManageForumsClick = {
                                     hostViewModel.openSettingsGroup(
                                         group = SettingsGroup.ForumAndPost,
@@ -375,6 +429,8 @@ fun NextAppRoot(
                                     if (imageViewerRenderer != null) activeImageViewerArgs = launchArgs
                                 },
                                 onOpenUserProfile = hostViewModel::pushUserProfile,
+                                onExpandToFullEditor = { handoff -> editorHost.open(FullEditorRequest.fromHandoff(handoff)) },
+                                emojiPanelSlot = emojiPanelSlot,
                             )
                         },
                         secondaryListContent = { entry, showBack, onBack, padding, listState ->
@@ -453,13 +509,18 @@ fun NextAppRoot(
                 }
                 }
 
+                // 全屏/居中模态完整编辑器承载（BackHandler 随投放形态挂载：右栏态在壳层内低于抽屉，全屏/模态态高于壳层且低于看图与登录浮层）
+                if (editorHost.isVisible && !editorHost.isInRightPane) {
+                    editorHost.renderInPlacement(editorHost.placement, windowDpSize.width.value)
+                }
+
                 // 看图全屏覆盖期间暂缓挂起登录浮层（保留 loginOverlayMode 待退出看图后恢复），确保任何触发顺序下均严格满足「看图 > 登录」
                 val overlayMode = appState.loginOverlayMode
                 if (overlayMode != null && loginOverlayRenderer != null && !isImageViewerOpen) {
                     loginOverlayRenderer.Content(overlayMode, hostViewModel::dismissLoginOverlay, hostViewModel::dismissLoginOverlay)
                 }
 
-                // 兜底拦截：位于登录浮层之后确保 LIFO 返回优先级严格满足「看图 > 登录 > 抽屉 > 表情 > 快速回复 > 位置栈 > 多栏返回栈」；
+                // 兜底拦截：位于登录浮层之后确保 LIFO 返回优先级严格满足「看图 > 登录 > 完整编辑器(全屏/模态) > 抽屉 > 表情 > 快速回复 > 位置栈 > 多栏返回栈」；
                 // 在看图浮层自持 BackHandler 之前注册，退场动画结束前全程吞掉重复返回（V-E14 probeM3b / R-E-slots S3）。
                 BackHandler(enabled = isImageViewerOpen) { activeImageViewerArgs = null }
                 if (imageViewerArgs != null && imageViewerRenderer != null) {
@@ -482,6 +543,9 @@ fun NextAppRoot(
 
                 val bottomPillVisible = !latestPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || latestPaneLayout.hasDetailPane)
                 val snackbarFullScreen = appState.isFullScreenReading || (isImageViewerOpen && latestPaneLayout.layoutMode != ShellPaneLayoutMode.HingeTwoPane)
+                val detailToolbarClearanceDp = if (appState.selectedThread != null && !isImageViewerOpen && !(editorHost.isVisible && (editorHost.isInRightPane || editorHost.isFullScreen))) {
+                    navBarsBottomDp + ThreadBottomToolbarHeight + ThreadBottomToolbarBottomGap
+                } else 0.dp
                 MultiPaneSnackbarHost(
                     hostState = snackbarHostState,
                     paneLayout = latestPaneLayout,
@@ -490,6 +554,7 @@ fun NextAppRoot(
                     bottomPillVisible = bottomPillVisible,
                     bottomPillClearanceDp = latestBottomPaddingDp,
                     navBarsBottomDp = navBarsBottomDp,
+                    detailBottomClearanceDp = detailToolbarClearanceDp,
                 )
             }
         }

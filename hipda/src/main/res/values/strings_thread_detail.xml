@@ -72,4 +72,10 @@
     <string name="thread_detail_snackbar_attention_added">已关注</string>
     <string name="thread_detail_snackbar_attention_removed">已取消关注</string>
     <string name="thread_detail_snackbar_link_copied">链接已复制</string>
+
+    <!-- 删除楼层确认框与进行中文案（逐字取自 docs/design/copy.md） -->
+    <string name="thread_detail_delete_confirm_title">删除这条回复？</string>
+    <string name="thread_detail_delete_confirm_message">删除后无法恢复。</string>
+    <string name="thread_detail_delete_action_cancel">取消</string>
+    <string name="thread_detail_status_deleting">正在删除…</string>
 </resources>

@@ -47,6 +47,7 @@ import net.jejer.hipda.feature.threaddetail.chrome.copyThreadLinkPlainText
 import net.jejer.hipda.feature.threaddetail.chrome.openExternalHttpUrl
 import net.jejer.hipda.feature.threaddetail.chrome.shareExternalHttpUrl
 import net.jejer.hipda.feature.threaddetail.interact.FloorContextMenuOverlay
+import net.jejer.hipda.feature.threaddetail.interact.FloorDeleteConfirmDialog
 import net.jejer.hipda.feature.threaddetail.interact.FloorTextSelectionDialog
 import net.jejer.hipda.feature.threaddetail.interact.FloorWarningDialog
 import net.jejer.hipda.feature.threaddetail.interact.ThreadPollCard
@@ -467,6 +468,7 @@ fun ThreadDetailPane(
     quickReplyViewModel: QuickReplyViewModel? = null,
     onExpandToFullEditor: ((FullEditorHandoff) -> Unit)? = null,
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
+    onThreadDeleted: (() -> Unit)? = null,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val latestUiState by rememberUpdatedState(uiState)
@@ -728,6 +730,26 @@ fun ThreadDetailPane(
         }
     }
 
+    val handleReplySubmitted: (net.jejer.hipda.parser.threaddetail.ThreadDetailPage?) -> Unit = { redirectedPage ->
+        val snap = latestUiState
+        if (isNearLastPageTail(snap, listState)) {
+            viewModel.onReplySuccessAtTail(redirectedPage)
+        } else {
+            val targetPid = redirectedPage?.floors?.lastOrNull()?.postId
+            coroutineScope.launch {
+                snackbarController.show(
+                    message = replySentMsg,
+                    target = PaneSnackbarTarget.DetailPane,
+                    actionLabel = viewReplyLabel,
+                    onAction = {
+                        val anchor = resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)
+                        viewModel.jumpToNewReply(targetPid = targetPid, fromAnchor = anchor, redirectedPage = redirectedPage)
+                    },
+                )
+            }
+        }
+    }
+
     LaunchedEffect(boundQuickReplyVm) {
         val qrVm = boundQuickReplyVm ?: return@LaunchedEffect
         qrVm.events.collect { event ->
@@ -744,24 +766,37 @@ fun ThreadDetailPane(
                 }
                 is QuickReplyEvent.Submitted -> {
                     activeReplyTarget = null
-                    val snap = latestUiState
-                    if (isNearLastPageTail(snap, listState)) {
-                        viewModel.onReplySuccessAtTail(event.redirectedPage)
-                    } else {
-                        val targetPid = event.redirectedPage?.floors?.lastOrNull()?.postId
-                        coroutineScope.launch {
-                            snackbarController.show(
-                                message = replySentMsg,
-                                target = PaneSnackbarTarget.DetailPane,
-                                actionLabel = viewReplyLabel,
-                                onAction = {
-                                    val anchor = resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)
-                                    viewModel.jumpToNewReply(targetPid = targetPid, fromAnchor = anchor, redirectedPage = event.redirectedPage)
-                                },
-                            )
-                        }
-                    }
+                    handleReplySubmitted(event.redirectedPage)
                 }
+            }
+        }
+    }
+
+    val fullEditorReplyResults = LocalFullEditorReplyResults.current
+    val resolvedComposeSlots = rememberResolvedComposeSlots(onExpandToFullEditor, emojiPanelSlot)
+    val latestOnBack by rememberUpdatedState(onBack)
+    val latestOnThreadDeleted by rememberUpdatedState(onThreadDeleted)
+    val latestFullScreenState by rememberUpdatedState(chromeSpec.fullScreenState)
+    LaunchedEffect(fullEditorReplyResults, args.tid) {
+        fullEditorReplyResults?.collect { submitted ->
+            if (submitted.tid == latestUiState.tid || submitted.tid == args.tid) {
+                if (!submitted.editedPid.isNullOrBlank()) {
+                    viewModel.onPostEdited(submitted.editedPid, submitted.editedPage, submitted.redirectedPage)
+                } else {
+                    handleReplySubmitted(submitted.redirectedPage)
+                }
+            }
+        }
+    }
+    LaunchedEffect(uiState.tid, uiState.isThreadDeleted) {
+        if (uiState.isThreadDeleted && uiState.tid.isNotBlank()) {
+            val customHandler = latestOnThreadDeleted
+            if (customHandler != null) {
+                customHandler()
+            } else {
+                (fullEditorReplyResults as? FullEditorHostChannel)?.notifyThreadDeleted()
+                if (latestFullScreenState?.isFullScreen == true) latestFullScreenState?.onToggle()
+                latestOnBack()
             }
         }
     }
@@ -987,6 +1022,27 @@ fun ThreadDetailPane(
                         chooserTitle = shareChooserTitle,
                     )
                 },
+                onEdit = { floor ->
+                    isJumpBarExpanded = false
+                    resolvedComposeSlots.onExpandToFullEditor?.invoke(
+                        FullEditorHandoff(
+                            tid = latestUiState.tid.ifBlank { args.tid },
+                            fid = latestUiState.fid.takeIf { it > 0 } ?: args.fid,
+                            text = "",
+                            selectionStart = 0,
+                            selectionEnd = 0,
+                            quoteAuthor = floor.author,
+                            quoteFloor = floor.floor,
+                            editPid = floor.postId,
+                            editPage = floor.page.takeIf { it > 0 } ?: latestUiState.page,
+                            isFirstFloor = floor.floor == 1,
+                        ),
+                    )
+                },
+                onDelete = { floor ->
+                    isJumpBarExpanded = false
+                    viewModel.requestDeleteFloor(floor)
+                },
                 onOpenLogin = onOpenLogin,
                 onDismiss = { activeMenuFloor = null },
             )
@@ -1016,7 +1072,7 @@ fun ThreadDetailPane(
                 )
             }
 
-            // 严格兄弟节点 6/7：单楼文字选择与警告记录弹窗（仅打开时挂载，纯色零玻璃，BackHandler 置顶于 LIFO 栈顶）
+            // 严格兄弟节点 6/7/8：单楼文字选择、警告记录与删除确认弹窗（仅打开时挂载，纯色零玻璃，BackHandler 置顶于 LIFO 栈顶）
             FloorTextSelectionDialog(
                 floor = activeSelectionFloor,
                 onDismiss = { activeSelectionFloor = null },
@@ -1025,6 +1081,15 @@ fun ThreadDetailPane(
                 floor = activeWarningFloor,
                 onLoadWarning = viewModel::loadFloorWarning,
                 onDismiss = { activeWarningFloor = null },
+            )
+            FloorDeleteConfirmDialog(
+                state = uiState.deleteDialog,
+                onConfirm = viewModel::confirmDeleteFloor,
+                onDismiss = viewModel::dismissDeleteFloorDialog,
+                onOpenLogin = {
+                    viewModel.dismissDeleteFloorDialog()
+                    onOpenLogin()
+                },
             )
         }
     }
