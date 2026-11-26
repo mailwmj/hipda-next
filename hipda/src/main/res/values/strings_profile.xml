@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 用户资料页文案（逐字取自 docs/design/copy.md） -->
+    <string name="profile_tab_info">资料</string>
+    <string name="profile_tab_threads">TA 的帖子</string>
+    <string name="profile_action_sms">发短消息</string>
+    <string name="profile_action_add_blacklist">加入黑名单</string>
+    <string name="profile_action_remove_blacklist">移出黑名单</string>
+    <string name="profile_empty_threads">TA 还没有发过帖子</string>
+    <string name="profile_empty_info">暂无资料</string>
+    <string name="profile_status_online">在线</string>
+    <string name="profile_uid_format">UID %1$s</string>
+    <string name="profile_blacklist_added">已将 %1$s 加入黑名单</string>
+    <string name="profile_blacklist_removed">已将 %1$s 移出黑名单</string>
+</resources>
