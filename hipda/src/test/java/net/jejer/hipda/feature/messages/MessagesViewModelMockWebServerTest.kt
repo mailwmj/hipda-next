@@ -306,6 +306,103 @@ class MessagesViewModelMockWebServerTest {
         stateCollector.cancel()
     }
 
+    @Test
+    fun messagesList_mockWebServer_newSmsComposeToArbitraryUsername_refreshesListAndEnforcesCooldown() = runTest(mainDispatcher) {
+        val stack = createStack(loggedIn = true)
+        val vm = MessagesListViewModel(stack.smsRepo, stack.notifyRepo, stack.authRepo, stack.gateway) { virtualClockMs.get() }
+        val stateCollector = backgroundScope.launch { vm.uiState.collect {} }
+
+        // 1. 首屏加载旧会话列表
+        server.enqueue(
+            gbkHtmlResponse(
+                """
+                <html><head><meta http-equiv="Content-Type" content="text/html; charset=gbk"></head><body>
+                  <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+                  <ul class="pm_list">
+                    <li><p class="cite"><cite><a href="space.php?uid=20001">Alice</a></cite> 2026-11-25 10:00</p><div class="summary">旧消息</div></li>
+                  </ul>
+                </body></html>
+                """.trimIndent(),
+            ),
+        )
+        vm.bindEntry(ShellSidebarEntry.Sms)
+        waitUntil { vm.uiState.value.sms.items.size == 1 }
+        assertEquals("/forum/pm.php?filter=privatepm", server.takeRequest().target)
+
+        // 2. 打开新建短消息弹窗并向任意用户名发送（先校验空输入 0 网络请求）
+        vm.onNewSmsClick()
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(vm.uiState.value.compose.isVisible)
+        vm.sendNewSms()
+        mainDispatcher.scheduler.runCurrent()
+        assertEquals(R.string.messages_new_sms_recipient_empty, vm.uiState.value.compose.recipientErrorRes)
+        assertEquals(R.string.messages_new_sms_content_empty, vm.uiState.value.compose.bodyErrorRes)
+        assertEquals(1, server.requestCount)
+
+        // 3. 首次提交返回服务端拒绝 XML -> 留窗保输入并显示错误原因
+        vm.onNewSmsRecipientChange("新收件人")
+        vm.onNewSmsBodyChange("通过用户名发送正文")
+        server.enqueue(gbkHtmlResponse(smsPrefetchHtml("fh_new_1")))
+        server.enqueue(gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[抱歉，找不到该用户]]></root>"""))
+        vm.sendNewSms()
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(vm.uiState.value.compose.isSending)
+        waitUntil { !vm.uiState.value.compose.isSending }
+        assertTrue("失败必须留在本对话框", vm.uiState.value.compose.isVisible)
+        assertEquals("新收件人", vm.uiState.value.compose.recipient)
+        assertEquals("通过用户名发送正文", vm.uiState.value.compose.body)
+        assertEquals("抱歉，找不到该用户", vm.uiState.value.compose.sendError?.serverMessage)
+        assertEquals("/forum/pm.php?daterange=1&uid=", server.takeRequest().target)
+        val failPost = server.takeRequest()
+        assertEquals("/forum/pm.php?action=send&pmsubmit=yes&infloat=yes&inajax=1", failPost.target)
+        assertTrue(failPost.body!!.utf8().contains("msgto="))
+
+        // 4. 修正收件人重试成功 -> 关闭对话框、自动刷新列表并进入 15 秒冷却
+        vm.onNewSmsRecipientChange("BobNew")
+        server.enqueue(gbkHtmlResponse(smsPrefetchHtml("fh_new_2")))
+        server.enqueue(gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[<li class="s_clear self"><div class="summary">通过用户名发送正文</div></li>]]></root>"""))
+        server.enqueue(
+            gbkHtmlResponse(
+                """
+                <html><head><meta http-equiv="Content-Type" content="text/html; charset=gbk"></head><body>
+                  <div id="umenu"><cite><a href="space.php?uid=10000" class="noborder">HiUser</a></cite></div>
+                  <ul class="pm_list">
+                    <li><p class="cite"><cite><a href="space.php?uid=20099">BobNew</a></cite> 刚刚</p><div class="summary">通过用户名发送正文</div></li>
+                    <li><p class="cite"><cite><a href="space.php?uid=20001">Alice</a></cite> 2026-11-25 10:00</p><div class="summary">旧消息</div></li>
+                  </ul>
+                </body></html>
+                """.trimIndent(),
+            ),
+        )
+        vm.sendNewSms()
+        waitUntil { !vm.uiState.value.compose.isVisible && vm.uiState.value.sms.items.size == 2 }
+        assertEquals("BobNew", vm.uiState.value.sms.items.first().author)
+        assertEquals(15, vm.uiState.value.compose.cooldownSeconds)
+
+        assertEquals("/forum/pm.php?daterange=1&uid=", server.takeRequest().target)
+        val okPost = server.takeRequest()
+        assertEquals("/forum/pm.php?action=send&pmsubmit=yes&infloat=yes&inajax=1", okPost.target)
+        assertTrue(okPost.body!!.utf8().contains("msgto=BobNew"))
+        assertEquals("/forum/pm.php?filter=privatepm", server.takeRequest().target)
+
+        // 5. 冷却期内再次打开尝试发送 -> 前置拦截 0 次网络请求；推进 15 秒后归零
+        vm.onNewSmsClick()
+        vm.onNewSmsRecipientChange("Charlie")
+        vm.onNewSmsBodyChange("冷却拦截测试")
+        val reqBefore = server.requestCount
+        vm.sendNewSms()
+        mainDispatcher.scheduler.runCurrent()
+        assertEquals(reqBefore, server.requestCount)
+        assertEquals(15, vm.uiState.value.compose.sendError?.cooldownSeconds)
+
+        virtualClockMs.addAndGet(15_001L)
+        advanceTimeBy(15_001L)
+        mainDispatcher.scheduler.runCurrent()
+        assertEquals(0, vm.uiState.value.compose.cooldownSeconds)
+
+        stateCollector.cancel()
+    }
+
     private suspend fun waitUntil(timeoutMs: Long = 3_000L, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (!condition()) {
