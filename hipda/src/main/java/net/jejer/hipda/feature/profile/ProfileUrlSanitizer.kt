@@ -4,25 +4,18 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextDecoration
-import net.jejer.hipda.feature.settings.SettingsUrlValidator
-import net.jejer.hipda.feature.threaddetail.body.sanitizePostUrl
+import net.jejer.hipda.feature.common.SafeLinkPolicy
 
-/** 用户资料页链接、签名与头像/图片 URL 严格 scheme 白名单（复用 `sanitizePostUrl` 与 `SettingsUrlValidator`）。 */
+/** 用户资料页链接、签名与头像/图片 URL 严格 scheme 白名单（委托统一 [SafeLinkPolicy]）。 */
 object ProfileUrlSanitizer {
     private val BBCODE_URL_REGEX = Regex("""(?i)\[url=([^\]]+)](.*?)\[/url]""")
     private val SCHEME_TOKEN_REGEX = Regex("""([A-Za-z][A-Za-z0-9+.-]*:[^\s\u3000<>\]\)"']+)""")
     private val IMG_TAG_REGEX = Regex("""(?i)\[img]([^\[\]]+)\[/img]""")
     private val TRAILING_PUNCT = setOf('.', ',', ';', '!', '?', ')', ']', '，', '。', '；', '！', '？', '）', '】')
 
-    fun sanitizeProfileLinkUrl(rawUrl: String?): String? {
-        if (rawUrl.isNullOrEmpty() || rawUrl.any { it.isWhitespace() || it.isISOControl() }) return null
-        return if (rawUrl.startsWith("mailto:", ignoreCase = true)) sanitizePostUrl(rawUrl) else sanitizeProfileImageUrl(rawUrl)
-    }
+    fun sanitizeProfileLinkUrl(rawUrl: String?): String? = SafeLinkPolicy.sanitizeLinkUrl(rawUrl)
 
-    fun sanitizeProfileImageUrl(rawUrl: String?): String? {
-        if (rawUrl.isNullOrEmpty() || rawUrl.first().isWhitespace() || rawUrl.last().isWhitespace()) return null
-        return SettingsUrlValidator.validateHttpUrl(rawUrl)
-    }
+    fun sanitizeProfileImageUrl(rawUrl: String?): String? = SafeLinkPolicy.sanitizeHttpUrl(rawUrl)
 
     fun extractSafeSignatureImageUrls(text: String): List<String> =
         IMG_TAG_REGEX.findAll(text).mapNotNull { sanitizeProfileImageUrl(it.groupValues[1].trim()) }.distinct().toList()
