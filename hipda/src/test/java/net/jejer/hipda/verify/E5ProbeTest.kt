@@ -64,6 +64,7 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.up
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.Insets
@@ -95,6 +96,7 @@ import java.util.Optional
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
@@ -112,6 +114,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
@@ -200,6 +203,7 @@ import net.jejer.hipda.feature.compose.FullEditorHandoff
 import net.jejer.hipda.feature.compose.FullEditorLauncher
 import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
 import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelRenderer
+import net.jejer.hipda.feature.compose.QuickReplyEvent
 import net.jejer.hipda.feature.compose.QuickReplyViewModel
 import net.jejer.hipda.feature.forum.ForumViewModel
 import net.jejer.hipda.feature.imageviewer.ImageViewerMediaActions
@@ -1654,6 +1658,369 @@ class E5ProbeTest {
         } finally {
             repoScope.cancel()
             runCatching { server.close() }
+            db.close()
+        }
+    }
+
+    // =========================================================================
+    // 第 2 轮新增 (7)：749×559dp 弹 250dp / 265dp 键盘、恢复草稿、错误、三插槽全绑定自适应预算
+    // =========================================================================
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun probe7_749x559_ime250And265_draftErrorAllSlotsBound_inputVisibleSendCompleteAndSlotsClickable() {
+        val db = createInMemoryDb()
+        val fakeClock = AtomicLong(1_000_000L)
+        runBlocking {
+            db.draftDao().upsert(
+                DraftEntity(
+                    key = DraftKey.reply("1001").value,
+                    content = "749x559已恢复草稿正文",
+                    updatedAt = fakeClock.get(),
+                ),
+            )
+        }
+        val detailRepo = ProbeThreadDetailRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val settingsRepo = ProbeSettingsRepository()
+        val basePostRepo = ProbePostRepository(db.draftDao(), fakeClock)
+        val failNextSubmit = AtomicBoolean(true)
+        val postRepo = object : PostRepository by basePostRepo {
+            override suspend fun submitPost(request: PostSubmitRequest, priority: AccessPriority): PostSubmitResult =
+                if (failNextSubmit.compareAndSet(true, false)) {
+                    PostSubmitResult.SiteError("服务端返回错误")
+                } else {
+                    basePostRepo.submitPost(request, priority)
+                }
+        }
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(ProbeThreadListRepository(), ProbeSearchRepository(), settingsRepo, authRepo, gateway)
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, ProbeFavoriteRepository(), settingsRepo) },
+            quickReplyVmFactory = { QuickReplyViewModel(postRepo, authRepo, fakeClock::get) },
+        )
+
+        var hostView: android.view.View? = null
+        val capturedHandoffs = mutableListOf<FullEditorHandoff>()
+        val fakeCtx = FakeSlotActivityContextWrapper(
+            base = ApplicationProvider.getApplicationContext(),
+            fullEditorLauncher = FullEditorLauncher { capturedHandoffs.add(it) },
+            emojiPanelRenderer = object : QuickReplyEmojiPanelRenderer {
+                @Composable
+                override fun Content(host: QuickReplyEmojiPanelHost, modifier: Modifier) {
+                    Column(modifier.fillMaxWidth().padding(8.dp)) {
+                        Text("假表情面板高度=${host.keyboardHeightDp.value.toInt()}")
+                        Button(onClick = { host.onInsertEmoji("[微笑]") }) { Text("插入假表情") }
+                        Button(onClick = host.onBackspace) { Text("假表情退格") }
+                    }
+                }
+            },
+        )
+
+        try {
+            composeRule.setContent {
+                hostView = LocalView.current
+                val activityCtx = LocalContext.current
+                val wrappedCtx = remember(activityCtx) {
+                    object : ContextWrapper(activityCtx) {
+                        override fun getApplicationContext(): Context = fakeCtx.applicationContext
+                    }
+                }
+                CompositionLocalProvider(LocalContext provides wrappedCtx) {
+                    ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                        CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                            NextAppRoot(
+                                settingsFlow = settingsRepo.settings,
+                                currentAccountFlow = authRepo.currentAccount,
+                                smsUnreadCountFlow = MutableStateFlow(0),
+                                notifyUnreadCountFlow = MutableStateFlow(0),
+                                imageLoader = createOfflineImageLoader(),
+                                hostViewModel = hostVm,
+                                forumViewModel = forumVm,
+                            )
+                        }
+                    }
+                }
+            }
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+            advanceVirtualAndMainLooper(250L)
+            composeRule.onNodeWithText("回复").performClick()
+            waitUntilRealCondition(3_000L, { "749x559 打开后未恢复草稿" }) {
+                composeRule.onAllNodesWithText("已恢复上次草稿").fetchSemanticsNodes().isNotEmpty()
+            }
+
+            // 触发内联错误状态，叠加「恢复草稿 + 错误 + 三插槽」极限预算场景
+            composeRule.onNodeWithText("发送").performClick()
+            waitUntilRealCondition(3_000L, { "提交失败未触发错误状态" }) {
+                composeRule.onAllNodesWithText("发送失败").fetchSemanticsNodes().isNotEmpty()
+            }
+
+            val density = composeRule.density
+            val rootBounds = composeRule.onRoot().fetchSemanticsNode().boundsInRoot
+
+            fun verify749x559ConstrainedState(imeDp: Int, statusTopDp: Int) {
+                val imePx = with(density) { imeDp.dp.roundToPx() }
+                val statusPx = with(density) { statusTopDp.dp.roundToPx() }
+                composeRule.runOnUiThread {
+                    ViewCompat.dispatchApplyWindowInsets(
+                        requireNotNull(hostView),
+                        WindowInsetsCompat.Builder()
+                            .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.of(0, statusPx, 0, 0))
+                            .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, imePx))
+                            .build(),
+                    )
+                }
+                composeRule.waitForIdle()
+                advanceVirtualAndMainLooper(200L)
+                composeRule.waitForIdle()
+
+                val sheetBounds = composeRule.onNode(
+                    SemanticsMatcher.expectValue(HiGlassMarker, true) and
+                        hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "回复 楼主")),
+                    useUnmergedTree = true,
+                ).fetchSemanticsNode().boundsInRoot
+                assertTrue("IME=${imeDp}dp/status=${statusTopDp}dp 面板应在三栏右栏内", sheetBounds.left >= rootBounds.width * 0.40f)
+                assertTrue("IME=${imeDp}dp/status=${statusTopDp}dp 面板不得超出右边界", sheetBounds.right <= rootBounds.right + 1f)
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 底边应贴合键盘上方",
+                    abs(sheetBounds.bottom - (rootBounds.bottom - imePx)) <= 2f,
+                )
+
+                val inputNode = composeRule.onNode(hasSetTextAction()).assertIsDisplayed()
+                val inputBounds = inputNode.fetchSemanticsNode().boundsInRoot
+                val textLayouts = mutableListOf<TextLayoutResult>()
+                inputNode.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action -> action(textLayouts) }
+                assertTrue("IME=${imeDp}dp/status=${statusTopDp}dp 输入框需有文本布局", textLayouts.isNotEmpty() && textLayouts.first().lineCount >= 1)
+                val firstLineHeightPx = textLayouts.first().getLineBottom(0) - textLayouts.first().getLineTop(0)
+                assertTrue("首行高度需大于 0", firstLineHeightPx > 0f)
+                val containerHeightPx = (inputNode.fetchSemanticsNode().layoutInfo.parentInfo?.height ?: 0).toFloat()
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 输入框高 ${inputBounds.height}px(外框=${containerHeightPx}px) 需完整容纳 >=1 行 ($firstLineHeightPx)",
+                    inputBounds.height >= firstLineHeightPx - 1f && containerHeightPx >= with(density) { 40.dp.toPx() } - 1f,
+                )
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 输入框宽度过窄 ${inputBounds.width}px",
+                    inputBounds.width >= with(density) { 72.dp.toPx() },
+                )
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 输入框不得裁切溢出面板",
+                    inputBounds.top >= sheetBounds.top - 1f && inputBounds.bottom <= sheetBounds.bottom + 1f,
+                )
+
+                val sendNode = composeRule.onNodeWithContentDescription("发送").assertIsDisplayed().assertIsEnabled()
+                sendNode.assertWidthIsAtLeast(72.dp).assertHeightIsAtLeast(48.dp)
+                val sendBounds = sendNode.fetchSemanticsNode().boundsInRoot
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 发送按钮不得裁切或越出面板: send=$sendBounds, sheet=$sheetBounds",
+                    sendBounds.left >= sheetBounds.left - 1f &&
+                        sendBounds.right <= sheetBounds.right + 1f &&
+                        sendBounds.top >= sheetBounds.top - 1f &&
+                        sendBounds.bottom <= sheetBounds.bottom + 1f,
+                )
+
+                val insertImageNode = composeRule.onNodeWithContentDescription("插入图片").assertIsDisplayed()
+                insertImageNode.assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+                val imgBounds = insertImageNode.fetchSemanticsNode().boundsInRoot
+                assertTrue("插入图片按钮须有点击动作", composeRule.onAllNodes(hasContentDescription("插入图片") and hasClickAction()).fetchSemanticsNodes().size == 1)
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 插入图片不得裁切越界",
+                    imgBounds.top >= sheetBounds.top - 1f && imgBounds.bottom <= sheetBounds.bottom + 1f && imgBounds.right <= sendBounds.left + 1f,
+                )
+
+                val emojiNode = composeRule.onNodeWithContentDescription("表情").assertIsDisplayed()
+                emojiNode.assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+                val emojiBounds = emojiNode.fetchSemanticsNode().boundsInRoot
+                assertTrue("表情按钮须有点击动作", composeRule.onAllNodes(hasContentDescription("表情") and hasClickAction()).fetchSemanticsNodes().size == 1)
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 表情按钮不得裁切越界",
+                    emojiBounds.top >= sheetBounds.top - 1f && emojiBounds.bottom <= sheetBounds.bottom + 1f && emojiBounds.right <= sendBounds.left + 1f,
+                )
+
+                assertTrue(
+                    "IME=${imeDp}dp/status=${statusTopDp}dp 错误提示应在面板内或退避到 Snackbar 可见",
+                    composeRule.onAllNodesWithText("发送失败").fetchSemanticsNodes().isNotEmpty(),
+                )
+            }
+
+            verify749x559ConstrainedState(imeDp = 250, statusTopDp = 0)
+            verify749x559ConstrainedState(imeDp = 265, statusTopDp = 0)
+            verify749x559ConstrainedState(imeDp = 265, statusTopDp = 24)
+
+            // 在 265dp 键盘实测点击「表情」可正常切换并插入表情，随后点击「插入图片」完成带正文交接
+            composeRule.onNodeWithContentDescription("表情").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("插入假表情").assertIsDisplayed().performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("键盘").assertIsDisplayed().performClick()
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithContentDescription("插入图片").assertIsDisplayed().performClick()
+            composeRule.waitForIdle()
+            assertEquals(1, capturedHandoffs.size)
+            assertEquals("749x559已恢复草稿正文[微笑]", capturedHandoffs.single().text)
+            assertTrue(capturedHandoffs.single().openImagePickerImmediately)
+        } finally {
+            db.close()
+        }
+    }
+
+    // =========================================================================
+    // 第 2 轮新增 (8)：快速上拉越阈值（插槽绑定）展开全屏且 FullEditorHandoff 正确、不重弹草稿提示
+    // =========================================================================
+
+    @Test
+    fun probe8_fastUpwardDragPastThreshold_withSlotsBound_expandsToFullEditorNoDraftSavedSnackbar() {
+        val db = createInMemoryDb()
+        val fakeClock = AtomicLong(1_000_000L)
+        val detailRepo = ProbeThreadDetailRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val settingsRepo = ProbeSettingsRepository()
+        val postRepo = ProbePostRepository(db.draftDao(), fakeClock)
+        val detailVm = ThreadDetailViewModel(detailRepo, createOfflineGateway(), authRepo, ProbeFavoriteRepository(), settingsRepo)
+        val qrVm = QuickReplyViewModel(postRepo, authRepo, fakeClock::get)
+
+        val capturedHandoffs = mutableListOf<FullEditorHandoff>()
+        val recordedEvents = CopyOnWriteArrayList<QuickReplyEvent>()
+        val fakeEntryContext = FakeSlotActivityContextWrapper(
+            base = ApplicationProvider.getApplicationContext(),
+            fullEditorLauncher = FullEditorLauncher { capturedHandoffs.add(it) },
+            emojiPanelRenderer = object : QuickReplyEmojiPanelRenderer {
+                @Composable
+                override fun Content(host: QuickReplyEmojiPanelHost, modifier: Modifier) {
+                    Text("假表情面板", modifier)
+                }
+            },
+        )
+        val eventScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        eventScope.launch { qrVm.events.collect { recordedEvents.add(it) } }
+
+        try {
+            composeRule.setContent {
+                val snackbarHost = remember { SnackbarHostState() }
+                val controller = remember(snackbarHost) { SingleHostPaneSnackbarController(snackbarHost) }
+                val baseCtx = LocalContext.current
+                val boundCtx = remember(baseCtx) {
+                    object : ContextWrapper(baseCtx) {
+                        override fun getApplicationContext(): Context = fakeEntryContext.applicationContext
+                    }
+                }
+                CompositionLocalProvider(
+                    LocalContext provides boundCtx,
+                    LocalPaneSnackbarController provides controller,
+                ) {
+                    HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                        ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                            Box(Modifier.fillMaxSize()) {
+                                ThreadDetailPane(
+                                    args = ThreadNavArgs("1001", fid = 2, title = "快速上拉展开探针"),
+                                    chromeSpec = DetailChromeSpec(showBack = true),
+                                    onBack = {},
+                                    onOpenLogin = {},
+                                    viewModel = detailVm,
+                                    quickReplyViewModel = qrVm,
+                                )
+                                SnackbarHost(snackbarHost, Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            composeRule.waitForIdle()
+
+            // A. 长按 2 楼引用打开面板，先校验未越阈值小幅慢拉（20dp < 56dp）不展开
+            composeRule.onNode(
+                SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick) and
+                    hasAnyDescendant(hasText("p102", substring = true)),
+            ).performSemanticsAction(SemanticsActions.OnLongClick)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("引用回复").performClick()
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                down(center)
+                moveBy(Offset(0f, -with(composeRule.density) { 20.dp.toPx() }), delayMillis = 220L)
+                up()
+            }
+            composeRule.waitForIdle()
+            assertEquals(0, capturedHandoffs.size)
+            composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed()
+
+            // B. 输入正文与选区 [2, 8)，通过顶部把手单批快速上拉越阈值（80dp >= 56dp）展开全屏
+            val handleText = "快速上拉展开正文ABCD"
+            val inputNode = composeRule.onNode(hasSetTextAction())
+            inputNode.performTextReplacement(handleText)
+            inputNode.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 8, true) }
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithContentDescription("收起回复面板").performTouchInput {
+                down(center)
+                moveBy(Offset(0f, -with(composeRule.density) { 80.dp.toPx() }), delayMillis = 25L)
+                up()
+            }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+
+            assertEquals("把手上拉越阈值必须触发 1 次全屏交接", 1, capturedHandoffs.size)
+            val handleHandoff = capturedHandoffs.single()
+            assertEquals("1001", handleHandoff.tid)
+            assertEquals(2, handleHandoff.fid)
+            assertEquals(handleText, handleHandoff.text)
+            assertEquals(2, handleHandoff.selectionStart)
+            assertEquals(8, handleHandoff.selectionEnd)
+            assertEquals("p102", handleHandoff.quotePid)
+            assertEquals("坛友2", handleHandoff.quoteAuthor)
+            assertEquals(2, handleHandoff.quoteFloor)
+            assertFalse(handleHandoff.openImagePickerImmediately)
+            composeRule.onNodeWithText("已保存草稿").assertDoesNotExist()
+            assertTrue("展开全屏不得发送 DraftSaved 事件: $recordedEvents", recordedEvents.none { it is QuickReplyEvent.DraftSaved })
+
+            // C. 再长按 3 楼引用，验证语境标题行单批快速上拉越阈值同样完整交接且不重弹草稿提示
+            composeRule.onNode(
+                SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick) and
+                    hasAnyDescendant(hasText("p103", substring = true)),
+            ).performSemanticsAction(SemanticsActions.OnLongClick)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("引用回复").performClick()
+            composeRule.waitForIdle()
+
+            val ctxRowText = "标题行上拉展开EFGH"
+            val ctxInput = composeRule.onNode(hasSetTextAction())
+            ctxInput.performTextReplacement(ctxRowText)
+            ctxInput.performSemanticsAction(SemanticsActions.SetSelection) { it(4, 4, true) }
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithText("引用第 3 楼 · 坛友3").performTouchInput {
+                down(center)
+                moveBy(Offset(0f, -with(composeRule.density) { 80.dp.toPx() }), delayMillis = 25L)
+                up()
+            }
+            advanceUntilVirtualCondition(2_000L) {
+                composeRule.onAllNodes(hasContentDescription("收起回复面板")).fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+
+            assertEquals("语境标题行上拉越阈值必须触发第 2 次全屏交接", 2, capturedHandoffs.size)
+            val ctxHandoff = capturedHandoffs.last()
+            assertEquals("1001", ctxHandoff.tid)
+            assertEquals(2, ctxHandoff.fid)
+            assertEquals(ctxRowText, ctxHandoff.text)
+            assertEquals(4, ctxHandoff.selectionStart)
+            assertEquals(4, ctxHandoff.selectionEnd)
+            assertEquals("p103", ctxHandoff.quotePid)
+            assertEquals("坛友3", ctxHandoff.quoteAuthor)
+            assertEquals(3, ctxHandoff.quoteFloor)
+            assertFalse(ctxHandoff.openImagePickerImmediately)
+            composeRule.onNodeWithText("已保存草稿").assertDoesNotExist()
+            assertTrue("语境标题行展开全屏不得发送 DraftSaved 事件: $recordedEvents", recordedEvents.none { it is QuickReplyEvent.DraftSaved })
+        } finally {
+            eventScope.cancel()
             db.close()
         }
     }
