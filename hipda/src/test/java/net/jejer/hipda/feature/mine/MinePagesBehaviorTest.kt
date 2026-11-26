@@ -195,14 +195,14 @@ class MinePagesBehaviorTest {
 
         // 取消收藏 -> 立即移除 + Snackbar “已取消收藏” + “撤销”恢复
         composeRule.onAllNodesWithContentDescription("取消收藏").onFirst().performClick()
-        composeRule.waitUntil(5_000L) {
-            composeRule.onAllNodesWithText("已取消收藏").fetchSemanticsNodes().isNotEmpty()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("已取消收藏").fetchSemanticsNodes().isNotEmpty() && !favRepo.isFavorite("7001")
         }
         composeRule.onNodeWithText("收藏主题一").assertDoesNotExist()
         assertFalse(favRepo.isFavorite("7001"))
 
         composeRule.onNodeWithText("撤销").performClick()
-        composeRule.waitUntil(5_000L) {
+        waitUntilIdleAnd {
             composeRule.onAllNodesWithText("收藏主题一").fetchSemanticsNodes().isNotEmpty() && favRepo.isFavorite("7001")
         }
         assertTrue(recordedTargets.any { it.contains("item=favorites&action=remove") && it.contains("tid=7001") })
@@ -210,18 +210,18 @@ class MinePagesBehaviorTest {
 
         // 切至“关注”标签 -> 取消关注 + “撤销”恢复
         composeRule.onNodeWithText("关注").performClick()
-        composeRule.waitUntil(5_000L) {
+        waitUntilIdleAnd {
             composeRule.onAllNodesWithText("关注主题一").fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithContentDescription("取消关注").performClick()
-        composeRule.waitUntil(5_000L) {
-            composeRule.onAllNodesWithText("已取消关注").fetchSemanticsNodes().isNotEmpty()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("已取消关注").fetchSemanticsNodes().isNotEmpty() && !favRepo.isAttention("8001")
         }
         composeRule.onNodeWithText("关注主题一").assertDoesNotExist()
         assertFalse(favRepo.isAttention("8001"))
 
         composeRule.onNodeWithText("撤销").performClick()
-        composeRule.waitUntil(5_000L) {
+        waitUntilIdleAnd {
             composeRule.onAllNodesWithText("关注主题一").fetchSemanticsNodes().isNotEmpty() && favRepo.isAttention("8001")
         }
         assertTrue(recordedTargets.any { it.contains("item=attention&action=remove") && it.contains("tid=8001") })
@@ -513,27 +513,29 @@ class MinePagesBehaviorTest {
 
         // 单条删除 + 撤销完整恢复 Room 记录
         composeRule.onAllNodesWithContentDescription("删除")[1].performClick()
-        composeRule.waitUntil(5_000L) {
-            composeRule.onAllNodesWithText("已删除").fetchSemanticsNodes().isNotEmpty()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("已删除").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("离线历史二").fetchSemanticsNodes().isEmpty()
         }
         composeRule.onNodeWithText("离线历史二").assertDoesNotExist()
         assertEquals(listOf("101", "103"), runBlocking { dao.observeRecent(10).first().map { it.tid } })
 
         composeRule.onNodeWithText("撤销").performClick()
-        composeRule.waitUntil(5_000L) {
+        waitUntilIdleAnd {
             composeRule.onAllNodesWithText("离线历史二").fetchSemanticsNodes().isNotEmpty()
         }
         assertEquals(listOf(e1, e2, e3), runBlocking { dao.observeRecent(10).first() })
 
         // 一键清空 -> 空态 “暂无浏览历史” -> 撤销完整恢复全部 Room 记录
         composeRule.onNodeWithText("清空").performClick()
-        composeRule.waitUntil(5_000L) {
-            composeRule.onAllNodesWithText("暂无浏览历史").fetchSemanticsNodes().isNotEmpty()
+        waitUntilIdleAnd {
+            composeRule.onAllNodesWithText("暂无浏览历史").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("撤销").fetchSemanticsNodes().isNotEmpty()
         }
         assertTrue(runBlocking { dao.observeRecent(10).first().isEmpty() })
 
         composeRule.onNodeWithText("撤销").performClick()
-        composeRule.waitUntil(5_000L) {
+        waitUntilIdleAnd {
             composeRule.onAllNodesWithText("离线历史一").fetchSemanticsNodes().isNotEmpty() &&
                 composeRule.onAllNodesWithText("离线历史三").fetchSemanticsNodes().isNotEmpty()
         }
