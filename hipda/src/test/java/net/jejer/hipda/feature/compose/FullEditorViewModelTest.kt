@@ -392,4 +392,129 @@ class FullEditorViewModelTest {
         assertEquals(1, postRepo.submitRequests.size)
         assertEquals(listOf("9001"), postRepo.submitRequests.single().newAttachments)
     }
+
+    /**
+     * B1 ① 撤回即红：
+     * - 已打开状态下收到同一草稿键的重复 `open()` 请求（如 1280dp 右栏编辑时误点中栏「发新帖」）：不重置标题/正文/已传图，仅递增聚焦信号；
+     * - 收到不同草稿键请求：先按退出规则保存旧会话草稿并发送「已保存草稿」事件（或空旧草稿调 `deleteDraft`），再切到新会话并加载其草稿。
+     */
+    @Test
+    fun b1_openWhileOpen_sameDraftKeyPreservesAndFocuses_differentDraftKeySavesAndSwitches() = runTest(testDispatcher) {
+        val keyFid2 = DraftKey.newThread("2")
+        val keyFid6 = DraftKey.newThread("6")
+        val postRepo = FakePostRepository(
+            initialDrafts = mapOf(
+                keyFid6.value to DraftEntity(keyFid6.value, subject = "交易区已有草稿标题", content = "交易区旧草稿正文内容", updatedAt = 1_000L),
+            ),
+        )
+        val uploadRepo = FakeImageUploadRepository()
+        val vm = FullEditorViewModel(postRepo, uploadRepo, FakeQuickReplyAuthRepository(), FakeComposeSettingsRepository()) { 10_000L }
+        val events = mutableListOf<FullEditorEvent>()
+        val job = launch { vm.events.collect { events += it } }
+
+        // 1. 打开 fid=2 发新帖，填写标题、正文并上传一张图片
+        vm.open(FullEditorRequest.NewThread(initialFid = 2))
+        advanceUntilIdle()
+        vm.onSubjectChanged("在编 Discovery 标题")
+        vm.onTextBlockChanged(vm.uiState.value.body.firstTextBlockId, "在编 Discovery 正文内容", 14, 14)
+        vm.onPickImages(listOf(Uri.parse("content://net.jejer.hipda.test/media/stay1.jpg")))
+        advanceUntilIdle()
+        val focusBefore = vm.uiState.value.focusRequestVersion
+        val sessionBefore = vm.uiState.value.sessionId
+        assertEquals(listOf("1721001"), vm.uiState.value.uploadedImageIds)
+
+        // 2. 同一草稿键再次请求 open(NewThread(2)) -> 不重置任何内容，仅触发重新聚焦
+        vm.open(FullEditorRequest.NewThread(initialFid = 2))
+        advanceUntilIdle()
+        assertEquals("同草稿键不得重建会话", sessionBefore, vm.uiState.value.sessionId)
+        assertTrue("同草稿键应触发重新聚焦现有编辑器", vm.uiState.value.focusRequestVersion > focusBefore)
+        assertEquals("在编 Discovery 标题", vm.uiState.value.subject)
+        assertEquals("在编 Discovery 正文内容", vm.uiState.value.body.serialize())
+        assertEquals(listOf("1721001"), vm.uiState.value.uploadedImageIds)
+        assertTrue("同草稿键幂等不得保存/弹草稿", events.isEmpty())
+
+        // 3. 切换到不同草稿键 NewThread(6) -> 先存 new:2 草稿并弹「已保存草稿」，再载入 new:6 既有草稿
+        vm.open(FullEditorRequest.NewThread(initialFid = 6))
+        advanceUntilIdle()
+        val savedFid2 = postRepo.draftFor(keyFid2)
+        assertNotNull("跨会话切换前必须先保存前序草稿 new:2", savedFid2)
+        assertEquals("在编 Discovery 标题", savedFid2?.subject)
+        assertEquals("在编 Discovery 正文内容", savedFid2?.content)
+        assertEquals(listOf("1721001"), savedFid2?.attachments)
+        assertTrue("跨会话保存前序非空草稿必须发出 DraftSaved 事件", events.any { it is FullEditorEvent.DraftSaved && it.draftKey == keyFid2 })
+        assertEquals(6, vm.uiState.value.selectedFid)
+        assertEquals("交易区已有草稿标题", vm.uiState.value.subject)
+        assertEquals("交易区旧草稿正文内容", vm.uiState.value.body.serialize())
+        assertTrue(vm.uiState.value.showDraftRestoredBanner)
+
+        // 4. 在 fid=6 删空已恢复草稿后切回 fid=2 -> 必须按 R-D6 S2 删除 new:6 且恢复刚保存的 new:2
+        vm.onSubjectChanged("")
+        vm.onTextBlockChanged(vm.uiState.value.body.firstTextBlockId, "", 0, 0)
+        vm.open(FullEditorRequest.NewThread(initialFid = 2))
+        advanceUntilIdle()
+        assertTrue("切离已删空的旧草稿会话必须调用 deleteDraft(new:6)", keyFid6 in postRepo.deleteDraftCalls)
+        assertNull(postRepo.draftFor(keyFid6))
+        assertEquals("在编 Discovery 标题", vm.uiState.value.subject)
+        assertEquals("在编 Discovery 正文内容", vm.uiState.value.body.serialize())
+        assertEquals(listOf("1721001"), vm.uiState.value.uploadedImageIds)
+
+        job.cancel()
+    }
+
+    /**
+     * B1 ② 撤回即红：
+     * 在 `QuickReplySheet` 恢复既有 `reply:<tid>` 草稿后手动删空为 `""`，再点「展开全屏 / 插入图片」交接完整编辑器：
+     * 1. `handoff.text == ""` 是权威内容，完整编辑器绝不得从数据库重新覆盖/复活旧草稿；
+     * 2. `hadPersistedDraft` 随 `handoff` 透传，随后退出空编辑器必须按 `R-D6 S2` 显式调用 `deleteDraft(reply:<tid>)`。
+     */
+    @Test
+    fun b1_quickReplyEmptyHandoff_neverResurrectsOldDraft_andDeletesOnClosePerRD6S2() = runTest(testDispatcher) {
+        val tid = "2608099"
+        val replyKey = DraftKey.reply(tid)
+        val postRepo = FakePostRepository(
+            initialDrafts = mapOf(
+                replyKey.value to DraftEntity(replyKey.value, content = "上次未发出的旧草稿", attachments = listOf("7011"), updatedAt = 1_000L),
+            ),
+        )
+        val authRepo = FakeQuickReplyAuthRepository()
+        val qrVm = QuickReplyViewModel(postRepo, authRepo) { 10_000L }
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+        val editorEvents = mutableListOf<FullEditorEvent>()
+        val collectJob = launch { editorVm.events.collect { editorEvents += it } }
+
+        // 1. 快速回复恢复旧草稿，用户手动删空为 "" 后点击「插入图片」交接
+        qrVm.open(QuickReplyTarget(tid = tid, fid = 2))
+        advanceUntilIdle()
+        assertEquals("上次未发出的旧草稿", qrVm.uiState.value.text)
+        assertTrue(qrVm.uiState.value.hadPersistedDraft)
+
+        qrVm.onTextChanged("")
+        val handoff = qrVm.onHandoffToFullEditor(text = "", selectionStart = 0, selectionEnd = 0, openImagePickerImmediately = true)
+        assertEquals("", handoff.text)
+        assertTrue("handoff 必须透传 hadPersistedDraft=true", handoff.hadPersistedDraft)
+        assertFalse("空正文交接不应展示已恢复草稿横条", handoff.showDraftRestoredBanner)
+
+        // 2. 完整编辑器承接：正文必须保持空串（绝不复活旧草稿），也不复活旧附件
+        editorVm.open(FullEditorRequest.fromHandoff(handoff))
+        advanceUntilIdle()
+        assertEquals("快速回复删空交接后绝不得复活旧草稿正文", "", editorVm.uiState.value.body.serialize())
+        assertTrue("空正文交接不得复活旧草稿附件", editorVm.uiState.value.uploads.isEmpty())
+        assertTrue("必须保留 hadPersistedDraft=true 以守住 R-D6 S2", editorVm.uiState.value.hadPersistedDraft)
+        assertFalse(editorVm.uiState.value.showDraftRestoredBanner)
+
+        // 3. 退出空编辑器 -> 按 R-D6 S2 显式 deleteDraft 且不弹「已保存草稿」
+        editorVm.requestClose()
+        advanceUntilIdle()
+        assertTrue("空退时必须显式删除被快速回复删空的旧草稿", replyKey in postRepo.deleteDraftCalls)
+        assertNull("旧草稿必须已从草稿表彻底清除", postRepo.draftFor(replyKey))
+        assertTrue(editorEvents.none { it is FullEditorEvent.DraftSaved })
+
+        // 4. 再次重开确认旧草稿彻底消失、绝不复活
+        qrVm.open(QuickReplyTarget(tid = tid, fid = 2))
+        advanceUntilIdle()
+        assertEquals("", qrVm.uiState.value.text)
+        assertFalse(qrVm.uiState.value.hadPersistedDraft)
+
+        collectJob.cancel()
+    }
 }

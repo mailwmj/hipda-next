@@ -73,6 +73,7 @@ import net.jejer.hipda.feature.common.SmsConversationArgs
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
+import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
@@ -453,7 +454,9 @@ fun MultiPaneReadingContainer(
                 }
                 Box(Modifier.weight(1f).fillMaxHeight().semantics { isTraversalGroup = true; paneTitle = detailPaneTitle }) {
                     if (isActiveDestination) {
-                        RenderRightSlot(rightSlot, detailPanePadding)
+                        CompositionLocalProvider(LocalHiGlassSuspended provides (LocalHiGlassSuspended.current || rightPaneOverlay != null)) {
+                            RenderRightSlot(rightSlot, detailPanePadding)
+                        }
                         rightPaneOverlay?.invoke()
                     }
                 }

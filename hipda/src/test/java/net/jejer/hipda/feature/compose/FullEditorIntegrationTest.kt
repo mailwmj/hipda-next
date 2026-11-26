@@ -281,6 +281,12 @@ class FullEditorIntegrationTest {
         composeRule.onNodeWithContentDescription("正文").performTextInput("这是一篇用于验证发新帖完整链路的正文内容。")
         composeRule.waitForIdle()
 
+        // B1 ①：1280dp 右栏展开态中栏「发新帖」仍可点击；同版块/未选版块再点不得清空在编标题与正文
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("全新三栏完整编辑器发新帖").assertIsDisplayed()
+        composeRule.onNodeWithText("这是一篇用于验证发新帖完整链路的正文内容。").assertIsDisplayed()
+
         val refreshBefore = harness.searchRepo.newPostsCalls.get()
         composeRule.onNodeWithContentDescription("发送").performClick()
         composeRule.waitForIdle()
@@ -430,18 +436,22 @@ class FullEditorIntegrationTest {
         }
         composeRule.waitForIdle()
 
-        // 动态缩窗 1280dp (RightPane) -> 749dp (CenteredModal) -> 411dp (FullScreen)：内容零丢失
+        // 动态缩窗 1280dp (RightPane) -> 749dp (CenteredModal) -> 411dp (FullScreen)：内容零丢失且 UI 实际可见
         currentSize = DpSize(749.dp, 559.dp)
         composeRule.waitForIdle()
         assertTrue(activeVm.uiState.value.isOpen)
-        assertEquals("跨形态保活标题测试", activeVm.uiState.value.subject)
+        composeRule.onNodeWithText("跨形态保活标题测试").assertIsDisplayed()
+        composeRule.onNodeWithText("旋转保活正文").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("已插入图片").assertIsDisplayed()
 
         currentSize = DpSize(411.dp, 891.dp)
         composeRule.waitForIdle()
         assertTrue(activeVm.uiState.value.isOpen)
-        assertEquals(setOf("1721001"), activeVm.uiState.value.insertedImageIds)
+        composeRule.onNodeWithText("跨形态保活标题测试").assertIsDisplayed()
+        composeRule.onNodeWithText("旋转保活正文").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("已插入图片").assertIsDisplayed()
 
-        // 模拟进程回收（全新空 FullEditorViewModel 实例）：由 rememberSaveable 无损恢复打开态、标题、正文与内联图片
+        // 模拟进程回收（全新空 FullEditorViewModel 实例）：由 rememberSaveable 无损恢复打开态、标题、正文与内联图片，且 UI 语义树全部可见（B2 防空心断言）
         activeVm = FullEditorViewModel(postRepo, uploadRepo, harness.authRepo, harness.settingsRepo) { 10_000L }
         restorationTester.emulateSavedInstanceStateRestore()
         composeRule.waitForIdle()
@@ -449,6 +459,9 @@ class FullEditorIntegrationTest {
         assertEquals("跨形态保活标题测试", activeVm.uiState.value.subject)
         assertEquals(setOf("1721001"), activeVm.uiState.value.insertedImageIds)
         assertTrue(activeVm.uiState.value.body.serialize().contains("旋转保活正文"))
+        composeRule.onNodeWithText("跨形态保活标题测试").assertIsDisplayed()
+        composeRule.onNodeWithText("旋转保活正文").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("已插入图片").assertIsDisplayed()
     }
 
     private fun ownerWithComposeVms(

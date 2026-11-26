@@ -1,26 +1,19 @@
 package net.jejer.hipda.feature.compose
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.listSaver
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import dagger.hilt.android.EntryPointAccessors
-import dagger.hilt.internal.GeneratedComponentManagerHolder
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,33 +22,21 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
-import net.jejer.hipda.feature.common.PaneSnackbarController
-import net.jejer.hipda.feature.common.PaneSnackbarTarget
-import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
-import net.jejer.hipda.ui.shell.ForumMetadataRegistry
-import net.jejer.hipda.ui.shell.ShellPaneLayout
-import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
+import net.jejer.hipda.ui.shell.*
 
 const val FULL_EDITOR_RIGHT_PANE_MIN_WIDTH_DP: Float = 560f
 const val FULL_EDITOR_MAX_WIDTH_DP: Float = 680f
 const val FULL_EDITOR_MODAL_HORIZONTAL_MARGIN_DP: Float = 48f
-private const val FULL_EDITOR_COMPACT_HEIGHT_DP: Float = 480f
-private const val FULL_EDITOR_SCRIM_ALPHA: Float = 0.40f
 
 /** 完整编辑器多栏投放形态（严格遵循 `product-design.md` §4.2）。 */
 enum class FullEditorPlacement { FullScreen, CenteredModal, RightPane }
 
-fun resolveFullEditorPlacement(
-    paneLayout: ShellPaneLayout,
-    windowHeightDp: Float,
-    effectiveRightPaneWidthDp: Float = paneLayout.rightPaneWidthDp.toFloat(),
-): FullEditorPlacement = when {
-    windowHeightDp < FULL_EDITOR_COMPACT_HEIGHT_DP -> FullEditorPlacement.FullScreen
-    paneLayout.layoutMode in setOf(ShellPaneLayoutMode.SinglePane, ShellPaneLayoutMode.CompactSinglePane, ShellPaneLayoutMode.HingeFallbackSinglePane) ->
-        FullEditorPlacement.FullScreen
-    paneLayout.layoutMode == ShellPaneLayoutMode.SidebarSinglePane || paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane ->
-        FullEditorPlacement.CenteredModal
+fun resolveFullEditorPlacement(paneLayout: ShellPaneLayout, windowHeightDp: Float, effectiveRightPaneWidthDp: Float = paneLayout.rightPaneWidthDp.toFloat()): FullEditorPlacement = when {
+    windowHeightDp < 480f -> FullEditorPlacement.FullScreen
+    paneLayout.layoutMode in setOf(ShellPaneLayoutMode.SinglePane, ShellPaneLayoutMode.CompactSinglePane, ShellPaneLayoutMode.HingeFallbackSinglePane) -> FullEditorPlacement.FullScreen
+    paneLayout.layoutMode == ShellPaneLayoutMode.SidebarSinglePane || paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane -> FullEditorPlacement.CenteredModal
     effectiveRightPaneWidthDp >= FULL_EDITOR_RIGHT_PANE_MIN_WIDTH_DP -> FullEditorPlacement.RightPane
     else -> FullEditorPlacement.CenteredModal
 }
@@ -80,14 +61,8 @@ class FullEditorRequestBus @Inject constructor() : FullEditorLauncher {
 }
 
 @Composable
-fun rememberHiltFullEditorRequestBus(): FullEditorRequestBus? {
-    val appContext = LocalContext.current.applicationContext
-    return remember(appContext) {
-        if (appContext is GeneratedComponentManagerHolder) {
-            runCatching { EntryPointAccessors.fromApplication(appContext, ComposeSlotsEntryPoint::class.java).fullEditorLauncher().orElse(null) as? FullEditorRequestBus }.getOrNull()
-        } else null
-    }
-}
+fun rememberHiltFullEditorRequestBus(): FullEditorRequestBus? =
+    rememberComposeSlotsEntryPoint()?.fullEditorLauncher()?.orElse(null) as? FullEditorRequestBus
 
 @Immutable
 data class FullEditorSavedState(
@@ -132,13 +107,9 @@ val FullEditorSavedStateSaver: Saver<FullEditorSavedState, Any> = listSaver(
 /** 宿主级完整编辑器连接控制器：封装 `rememberSaveable` 保活、单例总线消费、事件反馈与跨投放形态 `movableContentOf`。 */
 @Stable
 class FullEditorHostController internal constructor(
-    val isVisible: Boolean,
-    val sessionId: Long,
-    val placement: FullEditorPlacement,
-    val replyResults: SharedFlow<FullEditorReplySubmitted>,
-    val open: (FullEditorRequest) -> Unit,
-    val handleBack: () -> Unit,
-    val renderInPlacement: @Composable (FullEditorPlacement, Float) -> Unit,
+    val isVisible: Boolean, val sessionId: Long, val placement: FullEditorPlacement,
+    val replyResults: SharedFlow<FullEditorReplySubmitted>, val open: (FullEditorRequest) -> Unit,
+    val handleBack: () -> Unit, val renderInPlacement: @Composable (FullEditorPlacement, Float) -> Unit,
 ) {
     val isInRightPane: Boolean get() = isVisible && placement == FullEditorPlacement.RightPane
     val isFullScreen: Boolean get() = isVisible && placement == FullEditorPlacement.FullScreen
@@ -146,17 +117,10 @@ class FullEditorHostController internal constructor(
 
 @Composable
 fun rememberFullEditorHostController(
-    paneLayout: ShellPaneLayout,
-    windowHeightDp: Float,
-    effectiveMiddleWidthDp: Dp,
-    selectedThreadTid: String?,
-    snackbarController: PaneSnackbarController,
-    coroutineScope: CoroutineScope,
-    onRefreshForum: () -> Unit,
-    onOpenThread: (ThreadNavArgs) -> Unit,
-    onOpenLogin: () -> Unit,
-    injectedViewModel: FullEditorViewModel? = null,
-    injectedRequestBus: FullEditorRequestBus? = null,
+    paneLayout: ShellPaneLayout, windowHeightDp: Float, effectiveMiddleWidthDp: Dp, selectedThreadTid: String?,
+    snackbarController: PaneSnackbarController, coroutineScope: CoroutineScope,
+    onRefreshForum: () -> Unit, onOpenThread: (ThreadNavArgs) -> Unit, onOpenLogin: () -> Unit,
+    injectedViewModel: FullEditorViewModel? = null, injectedRequestBus: FullEditorRequestBus? = null,
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
 ): FullEditorHostController {
     val resources = LocalResources.current
@@ -170,32 +134,19 @@ fun rememberFullEditorHostController(
     val open: (FullEditorRequest) -> Unit = { req -> reqSeq += 1L; pendingReq = PendingFullEditorRequest(reqSeq, req) }
     val resolvedBus = injectedRequestBus ?: rememberHiltFullEditorRequestBus()
     val busPending = resolvedBus?.pendingRequest?.collectAsStateWithLifecycle()?.value
-    LaunchedEffect(busPending?.id) {
-        val item = busPending ?: return@LaunchedEffect
-        resolvedBus.consume(item.id)
-        open(item.request)
-    }
+    LaunchedEffect(busPending?.id) { val item = busPending ?: return@LaunchedEffect; resolvedBus.consume(item.id); open(item.request) }
 
-    val mountedUiState = mountedVm?.uiState?.collectAsStateWithLifecycle()?.value
-    val activeVm: FullEditorViewModel? = if (savedState.isOpen || pendingReq != null || mountedUiState?.isOpen == true) {
-        (injectedViewModel ?: mountedVm ?: viewModel<FullEditorViewModel>()).also { vm ->
-            SideEffect { if (mountedVm !== vm) mountedVm = vm }
-        }
+    val vm: FullEditorViewModel? = if (savedState.isOpen || pendingReq != null || mountedVm != null) {
+        (injectedViewModel ?: mountedVm ?: viewModel<FullEditorViewModel>()).also { resolved -> SideEffect { if (mountedVm !== resolved) mountedVm = resolved } }
     } else null
-    LaunchedEffect(activeVm, pendingReq?.id) {
-        val vm = activeVm ?: return@LaunchedEffect
+    val uiState = vm?.uiState?.collectAsStateWithLifecycle()?.value
+    LaunchedEffect(vm, pendingReq?.id) {
+        val targetVm = vm ?: return@LaunchedEffect
         val p = pendingReq
-        if (p != null) {
-            vm.open(p.request)
-            if (pendingReq?.id == p.id) pendingReq = null
-        } else if (savedState.isOpen) {
-            vm.restoreSavedStateIfFresh(savedState)
-        }
+        if (p != null) { targetVm.open(p.request); if (pendingReq?.id == p.id) pendingReq = null }
+        else if (savedState.isOpen) targetVm.restoreSavedStateIfFresh(savedState)
     }
-    val activeUiState = if (activeVm === mountedVm) mountedUiState else activeVm?.uiState?.collectAsStateWithLifecycle()?.value
-    if (activeVm != null && activeUiState?.isOpen == true) {
-        SideEffect { val exp = activeVm.exportSavedState(); if (savedState != exp) savedState = exp }
-    }
+    if (vm != null && uiState?.isOpen == true) SideEffect { val exp = vm.exportSavedState(); if (savedState != exp) savedState = exp }
 
     val latestSelectedTid by rememberUpdatedState(selectedThreadTid)
     val latestRefreshForum by rememberUpdatedState(onRefreshForum)
@@ -203,39 +154,23 @@ fun rememberFullEditorHostController(
     val latestOpenLogin by rememberUpdatedState(onOpenLogin)
     val latestEmojiSlot by rememberUpdatedState(emojiPanelSlot)
 
-    LaunchedEffect(mountedVm, snackbarController, resources) {
-        val vm = mountedVm ?: return@LaunchedEffect
-        vm.events.collect { ev ->
+    LaunchedEffect(vm, snackbarController, resources) {
+        val targetVm = vm ?: return@LaunchedEffect
+        fun showBar(msgRes: Int, target: PaneSnackbarTarget, actionRes: Int, onAction: () -> Unit) {
+            coroutineScope.launch { snackbarController.show(resources.getString(msgRes), target, resources.getString(actionRes), onAction) }
+        }
+        targetVm.events.collect { ev ->
             when (ev) {
-                is FullEditorEvent.DraftSaved -> {
-                    savedState = FullEditorSavedState()
-                    val target = if (ev.isReply) PaneSnackbarTarget.DetailPane else PaneSnackbarTarget.ContentArea
-                    coroutineScope.launch {
-                        snackbarController.show(resources.getString(R.string.compose_snackbar_draft_saved), target, resources.getString(R.string.compose_action_discard_draft)) { vm.discardSavedDraft(ev.draftKey) }
-                    }
-                }
+                is FullEditorEvent.DraftSaved -> showBar(R.string.compose_snackbar_draft_saved, if (ev.isReply) PaneSnackbarTarget.DetailPane else PaneSnackbarTarget.ContentArea, R.string.compose_action_discard_draft) { targetVm.discardSavedDraft(ev.draftKey) }
                 is FullEditorEvent.NewThreadSubmitted -> {
-                    savedState = FullEditorSavedState()
-                    latestRefreshForum()
+                    savedState = FullEditorSavedState(); latestRefreshForum()
                     val forumName = ForumMetadataRegistry.resolve(ev.fid).fullName
-                    coroutineScope.launch {
-                        snackbarController.show(resources.getString(R.string.compose_snackbar_thread_sent), PaneSnackbarTarget.ContentArea, resources.getString(R.string.compose_action_view)) {
-                            latestOpenThread(ThreadNavArgs(ev.tid, ev.title, ev.fid, forumName))
-                        }
-                    }
+                    showBar(R.string.compose_snackbar_thread_sent, PaneSnackbarTarget.ContentArea, R.string.compose_action_view) { latestOpenThread(ThreadNavArgs(ev.tid, ev.title, ev.fid, forumName)) }
                 }
                 is FullEditorEvent.ReplySubmitted -> {
                     savedState = FullEditorSavedState()
-                    if (latestSelectedTid == ev.tid) {
-                        replyResults.tryEmit(FullEditorReplySubmitted(ev.tid, ev.redirectedPage))
-                    } else {
-                        val pid = ev.redirectedPage?.floors?.lastOrNull()?.postId
-                        coroutineScope.launch {
-                            snackbarController.show(resources.getString(R.string.compose_snackbar_reply_sent), PaneSnackbarTarget.DetailPane, resources.getString(R.string.compose_action_view)) {
-                                latestOpenThread(ThreadNavArgs(ev.tid, targetPid = pid))
-                            }
-                        }
-                    }
+                    if (latestSelectedTid == ev.tid) replyResults.tryEmit(FullEditorReplySubmitted(ev.tid, ev.redirectedPage))
+                    else showBar(R.string.compose_snackbar_reply_sent, PaneSnackbarTarget.DetailPane, R.string.compose_action_view) { latestOpenThread(ThreadNavArgs(ev.tid, targetPid = ev.redirectedPage?.floors?.lastOrNull()?.postId)) }
                 }
                 FullEditorEvent.Closed -> savedState = FullEditorSavedState()
             }
@@ -243,53 +178,36 @@ fun rememberFullEditorHostController(
     }
 
     val movableEditor = remember {
-        movableContentOf { vm: FullEditorViewModel, isModal: Boolean ->
-            FullEditorScreen(
-                viewModel = vm, onOpenLogin = { latestOpenLogin() }, isModalCard = isModal,
-                registerBackHandler = false, onRegisterBackAction = { backAction = it }, emojiPanelSlot = latestEmojiSlot,
-            )
+        movableContentOf { editorVm: FullEditorViewModel, isModal: Boolean ->
+            FullEditorScreen(editorVm, { latestOpenLogin() }, isModalCard = isModal, registerBackHandler = false, onRegisterBackAction = { backAction = it }, emojiPanelSlot = latestEmojiSlot)
         }
     }
     val effectiveRightW = if (paneLayout.isThreePane) (paneLayout.contentWidthDp.dp - effectiveMiddleWidthDp).coerceAtLeast(0.dp) else paneLayout.rightPaneWidthDp.dp
     val placement = resolveFullEditorPlacement(paneLayout, windowHeightDp, effectiveRightW.value)
-    val isVisible = activeVm != null && activeUiState?.isOpen == true
-    val invokeBack: () -> Unit = { backAction?.invoke() ?: activeVm?.requestClose(true) }
-
+    val invokeBack: () -> Unit = { backAction?.invoke() ?: vm?.requestClose(true) }
     return FullEditorHostController(
-        isVisible = isVisible, sessionId = activeUiState?.sessionId ?: 0L, placement = placement,
+        isVisible = vm != null && uiState?.isOpen == true, sessionId = uiState?.sessionId ?: 0L, placement = placement,
         replyResults = replyResults, open = open, handleBack = invokeBack,
-        renderInPlacement = { p, winW ->
-            if (activeVm != null) {
-                FullEditorPlacementFrame(p, winW, activeUiState?.isSubmitting == true, invokeBack) { isModal ->
-                    movableEditor(activeVm, isModal)
-                }
-            }
-        },
+        renderInPlacement = { p, winW -> if (vm != null) FullEditorPlacementFrame(p, winW, uiState?.isSubmitting == true, invokeBack) { isModal -> movableEditor(vm, isModal) } },
     )
 }
 
 /** 纯色完整编辑器承载容器（0 `HiGlassMarker`）。 */
 @Composable
-fun FullEditorPlacementFrame(
-    placement: FullEditorPlacement, windowWidthDp: Float, isSubmitting: Boolean,
-    onRequestClose: () -> Unit, modifier: Modifier = Modifier, content: @Composable (isModalCard: Boolean) -> Unit,
-) {
+fun FullEditorPlacementFrame(placement: FullEditorPlacement, windowWidthDp: Float, isSubmitting: Boolean, onRequestClose: () -> Unit, modifier: Modifier = Modifier, content: @Composable (isModalCard: Boolean) -> Unit) {
     val cs = MaterialTheme.colorScheme
     when (placement) {
         FullEditorPlacement.FullScreen -> Surface(modifier.fillMaxSize(), color = cs.surface, contentColor = cs.onSurface) { content(false) }
         FullEditorPlacement.CenteredModal -> Box(modifier.fillMaxSize()) {
             val scrimInt = remember { MutableInteractionSource() }
-            Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = FULL_EDITOR_SCRIM_ALPHA)).clickable(scrimInt, null, enabled = !isSubmitting, onClick = onRequestClose))
+            Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = 0.40f)).clickable(scrimInt, null, enabled = !isSubmitting, onClick = onRequestClose))
             Surface(
-                modifier = Modifier.align(Alignment.Center).systemBarsPadding().imePadding().padding(vertical = 24.dp)
-                    .width(calculateCenteredModalWidthDp(windowWidthDp)).fillMaxHeight().heightIn(max = 720.dp).clip(HiShapeTokens.Large),
+                Modifier.align(Alignment.Center).systemBarsPadding().imePadding().padding(vertical = 24.dp).width(calculateCenteredModalWidthDp(windowWidthDp)).fillMaxHeight().heightIn(max = 720.dp).clip(HiShapeTokens.Large),
                 shape = HiShapeTokens.Large, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
             ) { content(true) }
         }
         FullEditorPlacement.RightPane -> Surface(modifier.fillMaxSize(), color = cs.surface, contentColor = cs.onSurface) {
-            Box(Modifier.fillMaxSize(), Alignment.TopCenter) {
-                Box(Modifier.widthIn(max = FULL_EDITOR_MAX_WIDTH_DP.dp).fillMaxWidth().fillMaxHeight()) { content(false) }
-            }
+            Box(Modifier.fillMaxSize(), Alignment.TopCenter) { Box(Modifier.widthIn(max = FULL_EDITOR_MAX_WIDTH_DP.dp).fillMaxWidth().fillMaxHeight()) { content(false) } }
         }
     }
 }

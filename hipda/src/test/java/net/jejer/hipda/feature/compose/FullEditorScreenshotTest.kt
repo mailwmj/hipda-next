@@ -1,10 +1,15 @@
 package net.jejer.hipda.feature.compose
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.MotionDurationScale
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -16,6 +21,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import coil3.ImageLoader
+import coil3.asImage
+import coil3.decode.DataSource
+import coil3.request.SuccessResult
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flowOf
 import net.jejer.hipda.data.local.DraftEntity
@@ -30,6 +39,8 @@ import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.feature.app.MultiPaneTestHarness
 import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
+import net.jejer.hipda.feature.common.LocalHiImageLoader
+import net.jejer.hipda.feature.threaddetail.media.OfflineTestImageLoader
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
@@ -153,10 +164,23 @@ class FullEditorScreenshotTest {
                 else -> flowOf(ImageUploadProgress.Failed(ImageUploadError.NetworkError("timeout")))
             }
         }
+        val sampleLoader = OfflineTestImageLoader { request ->
+            val key = request.data.toString()
+            val palette = when {
+                key.endsWith("u1.jpg") -> intArrayOf(Color.rgb(28, 126, 168), Color.rgb(118, 196, 224), Color.rgb(235, 196, 124))
+                key.endsWith("u2.jpg") -> intArrayOf(Color.rgb(66, 133, 91), Color.rgb(144, 198, 149), Color.rgb(238, 224, 177))
+                key.endsWith("u3.jpg") -> intArrayOf(Color.rgb(122, 92, 164), Color.rgb(186, 158, 219), Color.rgb(240, 210, 186))
+                key.endsWith("u4.jpg") -> intArrayOf(Color.rgb(186, 108, 72), Color.rgb(228, 166, 122), Color.rgb(246, 226, 196))
+                else -> intArrayOf(Color.rgb(164, 78, 86), Color.rgb(218, 134, 140), Color.rgb(242, 204, 206))
+            }
+            SuccessResult(image = createScenicSampleBitmap(320, 220, palette).asImage(), request = request, dataSource = DataSource.DISK)
+        }
         captureStandalone(
             name = "editor_phone_w411_upload_inline_light",
             themeMode = HiThemeMode.LIGHT,
             uploadRepo = uploadRepo,
+            imageLoader = sampleLoader,
+            expectedBodySubstring = "第一段图文说明",
             configure = { vm ->
                 vm.open(FullEditorRequest.NewThread(initialFid = 2))
             },
@@ -279,6 +303,8 @@ class FullEditorScreenshotTest {
             }
         },
         uploadRepo: FakeImageUploadRepository = FakeImageUploadRepository(),
+        imageLoader: ImageLoader? = null,
+        expectedBodySubstring: String? = null,
         nowMs: Long = 10_000L,
         configure: (FullEditorViewModel) -> Unit,
         afterLoad: ((FullEditorViewModel) -> Unit)? = null,
@@ -290,7 +316,13 @@ class FullEditorScreenshotTest {
 
         composeRule.setContent {
             HiTheme(themeMode = themeMode, seed = HiColorPresets.Brand.toSeed(), motionDurationScale = staticScale) {
-                FullEditorScreen(viewModel = vm, onOpenLogin = {})
+                if (imageLoader != null) {
+                    CompositionLocalProvider(LocalHiImageLoader provides imageLoader) {
+                        FullEditorScreen(viewModel = vm, onOpenLogin = {})
+                    }
+                } else {
+                    FullEditorScreen(viewModel = vm, onOpenLogin = {})
+                }
             }
         }
         composeRule.waitForIdle()
@@ -302,8 +334,23 @@ class FullEditorScreenshotTest {
             composeRule.runOnIdle { afterSecondIdle(vm) }
             composeRule.waitForIdle()
         }
+        val bodyText = expectedBodySubstring ?: vm.uiState.value.body.blocks.filterIsInstance<EditorBodyBlock.Text>().firstOrNull { it.text.isNotBlank() }?.text
+        if (!bodyText.isNullOrBlank()) composeRule.onNodeWithText(bodyText, substring = true).assertIsDisplayed()
         composeRule.assertGlassSurfaceCountAtMost(0)
         composeRule.onRoot().captureHiSnapshot(name)
+    }
+
+    private fun createScenicSampleBitmap(width: Int, height: Int, palette: IntArray): Bitmap {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.color = palette[1]
+        canvas.drawRect(0f, 0f, width.toFloat(), height * 0.62f, paint)
+        paint.color = palette[0]
+        canvas.drawRect(0f, height * 0.52f, width.toFloat(), height.toFloat(), paint)
+        paint.color = palette[2]
+        canvas.drawCircle(width * 0.72f, height * 0.28f, height * 0.14f, paint)
+        return bitmap
     }
 
     private fun captureInNextAppRoot(
@@ -372,6 +419,8 @@ class FullEditorScreenshotTest {
             }
         }
         composeRule.waitForIdle()
+        val expectedBody = if (openViaForumNewThread) "右栏宽度达到 560dp" else "从快速回复面板无损展开"
+        composeRule.onNodeWithText(expectedBody, substring = true).assertIsDisplayed()
 
         composeRule.assertGlassSurfaceCountAtMost(maxGlassSurfaces)
         composeRule.onRoot().captureHiSnapshot(name)

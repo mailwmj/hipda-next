@@ -549,17 +549,21 @@ class MultiPaneGlassBudgetTest {
         )
 
         val editorMarkers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
-        assertTrue("1280dp 右栏展开完整编辑器时 HiGlassMarker 必须 ≤ 3，实际=${editorMarkers.size}", editorMarkers.size <= 3)
+        assertEquals("1280dp 右栏展开纯色编辑器时底层右栏详情玻璃须挂起，全屏仅剩中栏顶栏 1 块 HiGlassMarker", 1, editorMarkers.size)
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
         val editorAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
-        assertTrue("独立 LayerBackdrop 必须 ≤ 2，实际=${editorAudit.layerBackdropCount}", editorAudit.layerBackdropCount <= 2)
+        assertEquals("右栏详情玻璃挂起后独立 LayerBackdrop 应降至 1（仅中栏）", 1, editorAudit.layerBackdropCount)
         assertEquals("严禁父子嵌套 LayerBackdrop", 0, editorAudit.nestedLayerBackdropCount)
         assertTrue("静止 drawBackdrop pass 必须 ≤ 5，实际=${editorAudit.drawBackdropCount}", editorAudit.drawBackdropCount <= 5)
 
-        // 2. 点击顶栏返回关闭编辑器，底部三段工具条自动恢复且玻璃预算保持 3 / 2 / ≤ 5
+        // 2. 点击顶栏返回关闭编辑器，底部三段工具条与右栏玻璃采样自动恢复且守住 3 / 2 / ≤ 5
         composeRule.onNodeWithContentDescription("返回").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("回复").assertIsDisplayed()
+        assertEquals("关闭编辑器后应恢复 3 块 HiGlassMarker（中顶 + 右顶 + 右底）", 3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        val restoredAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertEquals("关闭编辑器后独立 LayerBackdrop 应恢复为 2", 2, restoredAudit.layerBackdropCount)
+        assertEquals(0, restoredAudit.nestedLayerBackdropCount)
         composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
     }
 }
