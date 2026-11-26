@@ -29,12 +29,14 @@ import org.junit.runner.RunWith
  * Independent API 36 emulator probe for M7-4a executed directly against the CI debug-signed
  * `release` APK (`net.jejer.hipda.next`):
  *
- * - Probe (a-device): verifies all 101 emoji PNGs, notification icon (`ic_stat_hi`), splash
- *   resources (`splash`, `splash_screen`), shortcut icons (4), `win`, launcher icons,
- *   `assets/` about docs, and `assets/dexopt/baseline.prof(m)` inside the installed release APK.
+ * - Probe (a-device): verifies all 101 emoji PNGs, notification icon (`ic_stat_hi`),
+ *   shortcut icons (4), `win`, launcher icons (`mipmap/ic_launcher*`, noting legacy `splash` /
+ *   `splash_screen` were deleted by `M7-2`), `assets/` about docs, and `assets/dexopt/baseline.prof(m)`
+ *   inside the installed release APK.
  * - Probe (b): offline end-to-end smoke across cold start, Settings/About (all 3 assets docs),
  *   Login, Forum list, Thread detail (inline emojis + post image), ImageViewer, QuickReplySheet,
- *   and FullEditor without contacting the live forum.
+ *   EmojiPanel (`默认表情` / `酷猴表情` / `呆呆表情` tabs + insert/backspace), and FullEditor
+ *   without contacting the live forum.
  * - Probe (c): cold-start latency comparison (`am start -W` + first-content ready) between
  *   uncompiled/verify (`--reset` & `-m verify -f`) and Baseline Profile AOT (`-m speed-profile -f`).
  */
@@ -149,7 +151,6 @@ class ReleaseSmokeAndStartupProbeTest {
         val requiredBitmaps = listOf(
             "win",
             "ic_stat_hi",
-            "splash",
             "ic_shortcut_wb_sunny",
             "ic_shortcut_search",
             "ic_shortcut_mail",
@@ -165,14 +166,16 @@ class ReleaseSmokeAndStartupProbeTest {
             bmp.recycle()
         }
 
-        val splashXmlId = res.getIdentifier("splash_screen", "drawable", TARGET_PKG)
-        assertTrue("Missing drawable/splash_screen", splashXmlId != 0)
-        assertNotNull("Failed to load drawable/splash_screen", releaseContext.getDrawable(splashXmlId))
+        val legacySplashId = res.getIdentifier("splash", "drawable", TARGET_PKG)
+        val legacySplashXmlId = res.getIdentifier("splash_screen", "drawable", TARGET_PKG)
+        report += "Legacy MainFrameActivity splash ids: splash=$legacySplashId, splash_screen=$legacySplashXmlId (removed in M7-2)"
 
-        val launcherId = res.getIdentifier("ic_launcher", "mipmap", TARGET_PKG)
-        assertTrue("Missing mipmap/ic_launcher", launcherId != 0)
-        assertNotNull("Failed to load mipmap/ic_launcher", releaseContext.getDrawable(launcherId))
-        report += "Verified splash_screen & mipmap/ic_launcher on device"
+        for (mipmapName in listOf("ic_launcher", "ic_launcher_foreground")) {
+            val mipmapId = res.getIdentifier(mipmapName, "mipmap", TARGET_PKG)
+            assertTrue("Missing mipmap/$mipmapName", mipmapId != 0)
+            assertNotNull("Failed to load mipmap/$mipmapName", releaseContext.getDrawable(mipmapId))
+        }
+        report += "Verified mipmap/ic_launcher & mipmap/ic_launcher_foreground on device"
     }
 
     private fun runOfflineReleaseUiSmoke(report: MutableList<String>): Boolean {
@@ -268,25 +271,59 @@ class ReleaseSmokeAndStartupProbeTest {
         )
         report += "Smoke[image-viewer]: opened & dismissed cleanly"
 
-        // QuickReplySheet -> open from ThreadBottomToolbar -> verify & expand to FullEditor
+        // QuickReplySheet -> open from ThreadBottomToolbar -> test E7 EmojiPanel -> expand to FullEditor
         clickSafely(By.text("回复"))
         waitObj(By.desc("展开全屏"), 10_000)
-        val quickEmojiToggle = device.findObject(By.desc("表情"))
+        val quickEmojiToggle = waitObj(By.desc("表情"), 5_000)
         snap("11-quick-reply-sheet.png")
-        report += "Smoke[quick-reply]: opened cleanly (emojiTogglePresent=${quickEmojiToggle != null})"
+        report += "Smoke[quick-reply]: opened cleanly (emojiTogglePresent=true)"
 
+        // Open E7 EmojiPanel in QuickReplySheet & verify all 3 emoji groups + insert/backspace
+        quickEmojiToggle.click()
+        waitObj(By.desc("默认表情"), 5_000)
+        waitObj(By.desc("酷猴表情"), 5_000)
+        waitObj(By.desc("呆呆表情"), 5_000)
+        waitObj(By.desc("删除"), 5_000)
+        waitObj(By.desc("表情 :)"), 5_000)
+        snap("12-emoji-panel-default.png")
+
+        clickSafely(By.desc("表情 :)"), 5_000)
+        waitObj(By.text(":)"), 5_000)
+        clickSafely(By.desc("删除"), 5_000)
+        assertTrue(
+            "Emoji backspace did not remove ':)' from QuickReply input",
+            device.wait(Until.gone(By.text(":)")), 5_000),
+        )
+
+        clickSafely(By.desc("酷猴表情"), 5_000)
+        waitObj(By.desc("表情 {:2_41:}"), 5_000)
+        snap("13-emoji-panel-monkey.png")
+
+        clickSafely(By.desc("呆呆表情"), 5_000)
+        waitObj(By.desc("表情 {:3_57:}"), 5_000)
+        snap("14-emoji-panel-dumb.png")
+        report += "Smoke[emoji-panel]: verified 3 tabs (默认/酷猴/呆呆), grid icons, insert & backspace"
+
+        // Expand to FullEditor & verify controls + emoji toggle there too
         clickSafely(By.desc("展开全屏"))
         waitObj(By.desc("发送"), 10_000)
         waitObj(By.desc("插入图片"), 10_000)
-        val fullEmojiToggle = device.findObject(By.desc("表情"))
-        snap("12-full-editor.png")
-        report += "Smoke[full-editor]: opened cleanly (emojiTogglePresent=${fullEmojiToggle != null})"
+        val fullEmojiToggle = waitObj(By.desc("表情"), 5_000)
+        snap("15-full-editor.png")
+
+        fullEmojiToggle.click()
+        waitObj(By.desc("默认表情"), 5_000)
+        waitObj(By.desc("表情 :)"), 5_000)
+        snap("16-full-editor-emoji.png")
+        device.findObject(By.desc("键盘"))?.click()
+        device.waitForIdle(500)
+        report += "Smoke[full-editor]: opened cleanly with emoji panel toggle & 3-group picker"
 
         // Close editor back to thread
         dismissKeyboardIfVisible()
         device.findObject(By.desc("返回"))?.click() ?: device.pressBack()
         device.waitForIdle(2_000)
-        return quickEmojiToggle != null || fullEmojiToggle != null
+        return true
     }
 
     private fun dismissKeyboardIfVisible() {

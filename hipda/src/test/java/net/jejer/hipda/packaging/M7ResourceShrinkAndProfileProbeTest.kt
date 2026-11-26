@@ -17,10 +17,10 @@ import org.junit.Test
  *    `emoji/`) plus production manifests/XMLs for all `R.*` references, XML `@type/name`
  *    references, and dynamic name lookups (`getIdentifier`, reflection on `R$*`), and verifies none
  *    were removed or stubbed by `isShrinkResources = true`.
- * 3. Verifies every emoji drawable (101 PNGs across all 61 `EmojiMap` codes), notification icon
- *    (`ic_stat_hi`), splash resources (`splash`, `splash_screen`), shortcut icons (4 items),
- *    launcher icon resources, `win.png`, and `assets/` about docs exist non-stubbed in the built
- *    release APK.
+ * 3. Verifies every emoji drawable (101 PNGs across all 61 `EmojiMap` codes), `E7` emoji strings,
+ *    notification icon (`ic_stat_hi`), shortcut icons (4 items), launcher/splash icons
+ *    (`mipmap/ic_launcher*`, noting legacy `splash`/`splash_screen` were removed in `M7-2`), `win.png`,
+ *    and `assets/` about docs exist non-stubbed in the built release APK.
  */
 class M7ResourceShrinkAndProfileProbeTest {
 
@@ -172,20 +172,25 @@ class M7ResourceShrinkAndProfileProbeTest {
         val criticalResources = emojiNames + listOf(
             "drawable:win",
             "drawable:ic_stat_hi",
-            "drawable:splash",
-            "drawable:splash_screen",
             "drawable:ic_shortcut_wb_sunny",
             "drawable:ic_shortcut_search",
             "drawable:ic_shortcut_mail",
             "drawable:ic_shortcut_favorite",
             "mipmap:ic_launcher",
             "mipmap:ic_launcher_foreground",
+            "color:ic_launcher_background",
+            "string:emoji_panel_title",
+            "string:emoji_group_default",
+            "string:emoji_group_monkey",
+            "string:emoji_group_dumb",
+            "string:emoji_item_cd",
+            "string:emoji_action_backspace",
         )
         val missingCritical = criticalResources.filter { key ->
             key in report.unreachable || key !in report.reachable
         }
         assertEquals(
-            "Critical emojis / notification / splash / shortcut / launcher resources missing or shrunk: $missingCritical",
+            "Critical emojis / notification / shortcut / launcher / emoji-UI resources missing or shrunk: $missingCritical",
             emptyList<String>(),
             missingCritical,
         )
@@ -268,7 +273,6 @@ class M7ResourceShrinkAndProfileProbeTest {
                 "hipda/src/main/res/xml/provider_paths.xml",
                 "hipda/src/main/res/xml/backup_config.xml",
                 "hipda/src/main/res/xml/data_extraction_rules.xml",
-                "hipda/src/main/res/drawable/splash_screen.xml",
                 "hipda/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
             )
             for (rel in xmlFiles) {
