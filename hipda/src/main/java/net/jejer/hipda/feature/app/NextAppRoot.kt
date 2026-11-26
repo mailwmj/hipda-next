@@ -1,6 +1,11 @@
 package net.jejer.hipda.feature.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -25,36 +30,56 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.ImageLoader
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.feature.common.AttachmentDownloadHandler
 import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.feature.common.HiThemeSettingsAdapter
 import net.jejer.hipda.feature.common.ImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
 import net.jejer.hipda.feature.common.ImageViewerRenderer
+import net.jejer.hipda.feature.common.LocalAttachmentDownloadHandler
 import net.jejer.hipda.feature.common.LocalHiImageLoader
 import net.jejer.hipda.feature.common.LocalImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
+import net.jejer.hipda.feature.common.LocalPostLinkDispatcher
 import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.LoginOverlayRenderer
 import net.jejer.hipda.feature.common.MessagesPaneRenderer
+import net.jejer.hipda.feature.common.PaneSnackbarTarget
+import net.jejer.hipda.feature.common.SafeLinkPolicy
 import net.jejer.hipda.feature.common.SearchMinePaneRenderer
+import net.jejer.hipda.feature.common.SettingsGroup
 import net.jejer.hipda.feature.common.SettingsProfilePaneRenderer
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
+import net.jejer.hipda.feature.routing.AndroidExternalLinkOpener
+import net.jejer.hipda.feature.routing.AttachmentDownloadResult
+import net.jejer.hipda.feature.routing.AttachmentDownloader
+import net.jejer.hipda.feature.routing.DeepLinkTarget
+import net.jejer.hipda.feature.routing.DefaultPostLinkDispatcher
+import net.jejer.hipda.feature.routing.ExternalLinkOpener
+import net.jejer.hipda.feature.routing.requiresLegacyDownloadPermission
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
@@ -81,6 +106,8 @@ fun NextAppRoot(
     searchMinePaneRenderer: SearchMinePaneRenderer? = null,
     settingsProfilePaneRenderer: SettingsProfilePaneRenderer? = null,
     imageViewerRenderer: ImageViewerRenderer? = null,
+    attachmentDownloader: AttachmentDownloader? = null,
+    externalLinkOpener: ExternalLinkOpener? = null,
     hostViewModel: NextAppHostViewModel = viewModel(),
     forumViewModel: ForumViewModel = viewModel(),
     onFallbackLoginClick: (() -> Unit)? = null,
@@ -108,6 +135,14 @@ fun NextAppRoot(
 
     LaunchedEffect(settings.followedForums) { hostViewModel.syncDefaultForum(settings.followedForums) }
 
+    val pendingIntents by hostViewModel.pendingIntents.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingIntents, settings.forumServer) {
+        if (pendingIntents.isNotEmpty()) hostViewModel.consumePendingIntents(settings.forumServer)
+    }
+
+    val context = LocalContext.current
+    val resources = LocalResources.current
+    val coroutineScope = rememberCoroutineScope()
     val windowDpSize = LocalWindowInfo.current.containerDpSize
     val isLandscape = windowDpSize.width >= windowDpSize.height
     val persistedSplit = if (isLandscape) settings.paneSplitLandscape else settings.paneSplitPortrait
@@ -116,6 +151,117 @@ fun NextAppRoot(
     val themeConfig = remember(settings) { HiThemeSettingsAdapter.toThemeConfig(settings) }
     val snackbarHostState = remember { SnackbarHostState() }
     val snackbarController = remember(snackbarHostState) { MultiPaneSnackbarController(snackbarHostState) }
+    val resolvedExternalLinkOpener = remember(externalLinkOpener, context) {
+        externalLinkOpener ?: AndroidExternalLinkOpener(context)
+    }
+    val latestForumServer by rememberUpdatedState(settings.forumServer)
+    val postLinkDispatcher = remember(hostViewModel, resolvedExternalLinkOpener, snackbarController, resources) {
+        DefaultPostLinkDispatcher(
+            forumServerProvider = { latestForumServer },
+            onOpenForum = { fid -> hostViewModel.selectForumSource(ForumListSource.Forum(fid)) },
+            onOpenThread = { tid, page -> hostViewModel.applyDeepLink(DeepLinkTarget.Thread(tid, page)) },
+            onOpenThreadLastPage = { tid -> hostViewModel.applyDeepLink(DeepLinkTarget.ThreadLastPage(tid)) },
+            onOpenPost = { tid, pid -> hostViewModel.applyDeepLink(DeepLinkTarget.Post(tid, pid)) },
+            onOpenUserProfile = { uid -> hostViewModel.pushUserProfile(uid, "") },
+            externalLinkOpener = resolvedExternalLinkOpener,
+            onExternalOpenFailed = {
+                coroutineScope.launch {
+                    snackbarController.show(resources.getString(R.string.routing_error_no_browser), PaneSnackbarTarget.DetailPane)
+                }
+            },
+        )
+    }
+
+    var pendingDownloadAfterPermission by remember { mutableStateOf<Pair<String, String?>?>(null) }
+    var activeAttachmentSnackbarJob by remember { mutableStateOf<Job?>(null) }
+    val showAttachmentSnackbar: (String) -> Job = remember(coroutineScope, snackbarController) {
+        { msg ->
+            activeAttachmentSnackbarJob?.cancel()
+            coroutineScope.launch { snackbarController.show(msg, PaneSnackbarTarget.DetailPane) }.also {
+                activeAttachmentSnackbarJob = it
+            }
+        }
+    }
+    val executeAttachmentDownload: (String, String?) -> Unit = remember(attachmentDownloader, coroutineScope, showAttachmentSnackbar, resources) {
+        { safeUrl, suggestedFileName ->
+            val downloader = attachmentDownloader
+            if (downloader != null) {
+                val downloadingMsg = resources.getString(R.string.routing_attachment_downloading)
+                val savedMsg = resources.getString(R.string.routing_attachment_saved)
+                val failedMsg = resources.getString(R.string.routing_attachment_download_failed)
+                coroutineScope.launch {
+                    val progressJob = showAttachmentSnackbar(downloadingMsg)
+                    val result = downloader.download(safeUrl, suggestedFileName)
+                    progressJob.cancel()
+                    showAttachmentSnackbar(if (result is AttachmentDownloadResult.Success) savedMsg else failedMsg)
+                }
+            }
+        }
+    }
+    val attachmentPermLauncher = if (LocalActivityResultRegistryOwner.current != null) {
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val pending = pendingDownloadAfterPermission ?: return@rememberLauncherForActivityResult
+            pendingDownloadAfterPermission = null
+            if (granted) {
+                executeAttachmentDownload(pending.first, pending.second)
+            } else {
+                showAttachmentSnackbar(resources.getString(R.string.routing_attachment_download_failed))
+            }
+        }
+    } else {
+        null
+    }
+    val attachmentDownloadHandler = remember(attachmentDownloader, context, attachmentPermLauncher, executeAttachmentDownload, showAttachmentSnackbar, resources) {
+        if (attachmentDownloader == null) {
+            null
+        } else {
+            AttachmentDownloadHandler { rawUrl, suggestedFileName ->
+                val safeUrl = SafeLinkPolicy.sanitizeHttpUrl(rawUrl) ?: return@AttachmentDownloadHandler
+                if (requiresLegacyDownloadPermission() &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    if (attachmentPermLauncher != null) {
+                        pendingDownloadAfterPermission = safeUrl to suggestedFileName
+                        attachmentPermLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    } else {
+                        showAttachmentSnackbar(resources.getString(R.string.routing_attachment_download_failed))
+                    }
+                    return@AttachmentDownloadHandler
+                }
+                executeAttachmentDownload(safeUrl, suggestedFileName)
+            }
+        }
+    }
+
+    LaunchedEffect(hostViewModel, snackbarController, resources, resolvedExternalLinkOpener) {
+        hostViewModel.deepLinkFeedback.collect { event ->
+            when (event) {
+                is DeepLinkFeedbackEvent.UnsupportedUrl -> {
+                    snackbarController.show(
+                        message = resources.getString(R.string.routing_deeplink_unsupported_url),
+                        target = PaneSnackbarTarget.ContentArea,
+                        actionLabel = resources.getString(R.string.routing_action_open_in_browser),
+                    ) {
+                        if (!resolvedExternalLinkOpener.open(event.url)) {
+                            coroutineScope.launch {
+                                snackbarController.show(
+                                    message = resources.getString(R.string.routing_error_no_browser),
+                                    target = PaneSnackbarTarget.ContentArea,
+                                )
+                            }
+                        }
+                    }
+                }
+                DeepLinkFeedbackEvent.PostResolveFailed -> {
+                    snackbarController.show(
+                        message = resources.getString(R.string.common_error_load_failed),
+                        target = PaneSnackbarTarget.ContentArea,
+                    )
+                }
+            }
+        }
+    }
+
     val openLoginOrAccount: (LoginOverlayMode) -> Unit = { mode ->
         if (loginOverlayRenderer != null) hostViewModel.openLoginOverlay(mode) else onFallbackLoginClick?.invoke()
     }
@@ -140,12 +286,20 @@ fun NextAppRoot(
     val navBarsBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val imageViewerArgs = activeImageViewerArgs
     val isImageViewerOpen = imageViewerArgs != null && imageViewerRenderer != null
+    val openManageForums: () -> Unit = {
+        hostViewModel.openSettingsGroup(
+            group = SettingsGroup.ForumAndPost,
+            openDetailInSinglePane = !latestPaneLayout.hasDetailPane,
+        )
+    }
 
     HiTheme(themeConfig.themeMode, themeConfig.pureBlack, themeConfig.seed, themeConfig.fontSizeStep, themeConfig.lineHeightPreset) {
         CompositionLocalProvider(
             LocalHiImageLoader provides imageLoader,
             LocalPaneSnackbarController provides snackbarController,
             LocalImageViewerBoundsRegistry provides imageViewerBoundsRegistry,
+            LocalPostLinkDispatcher provides postLinkDispatcher,
+            LocalAttachmentDownloadHandler provides attachmentDownloadHandler,
         ) {
             Box(modifier = modifier.fillMaxSize()) {
                 // 全屏看图覆盖期间暂停底层液态玻璃与 GPU 离屏采样，守住同屏 0 玻璃预算（V-E14 probeM4）
@@ -157,6 +311,7 @@ fun NextAppRoot(
                     onSelectSidebarEntry = hostViewModel::selectSidebarEntry,
                     onToggleSidebarCollapsed = { next -> hostViewModel.persistSidebarCollapsed(isLandscape, next) },
                     onAccountClick = { openLoginOrAccount(if (account != null) LoginOverlayMode.AccountMenu else LoginOverlayMode.Login) },
+                    onManageForumsClick = openManageForums,
                     hasDetailContent = appState.hasDetailContent,
                     hideBottomNavigation = appState.isSinglePaneSecondary,
                     messagesUnreadCount = sidebarState.totalUnreadCount,
@@ -190,6 +345,12 @@ fun NextAppRoot(
                                 listState = listState,
                                 contentPadding = padding,
                                 shellContentScope = this,
+                                onManageForumsClick = {
+                                    hostViewModel.openSettingsGroup(
+                                        group = SettingsGroup.ForumAndPost,
+                                        openDetailInSinglePane = !paneLayout.hasDetailPane,
+                                    )
+                                },
                                 viewModel = forumViewModel,
                             )
                         },

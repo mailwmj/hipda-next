@@ -34,8 +34,11 @@ fun FavoritesPane(
             when (ev) {
                 is FavoritesSnackbarEvent.Removed -> {
                     val msgRes = if (ev.token.kind == FavoriteKind.FAVORITE) R.string.mine_snackbar_unfavorited else R.string.mine_snackbar_unattentioned
-                    snackbar.show(resources.getString(msgRes), PaneSnackbarTarget.ContentArea, resources.getString(R.string.feedback_action_undo)) { viewModel.undoRemove(ev.token.id) }
-                    viewModel.expireUndo(ev.token.id)
+                    try {
+                        snackbar.show(resources.getString(msgRes), PaneSnackbarTarget.ContentArea, resources.getString(R.string.feedback_action_undo)) { viewModel.undoRemove(ev.token.id) }
+                    } finally {
+                        viewModel.expireUndo(ev.token.id)
+                    }
                 }
                 is FavoritesSnackbarEvent.ActionError -> showErrorSnackbar(snackbar, resources, ev.error, { viewModel.refresh(priority = it) }, onOpenLogin)
             }

@@ -46,8 +46,11 @@ fun SearchPane(
         viewModel.snackbarEvents.collectLatest { ev ->
             when (ev) {
                 is SearchSnackbarEvent.HistoryDeleted -> {
-                    snackbar.show(resources.getString(R.string.search_snackbar_deleted), PaneSnackbarTarget.ContentArea, resources.getString(R.string.feedback_action_undo)) { viewModel.undoDeleteHistory(ev.token.id) }
-                    viewModel.expireHistoryUndo(ev.token.id)
+                    try {
+                        snackbar.show(resources.getString(R.string.search_snackbar_deleted), PaneSnackbarTarget.ContentArea, resources.getString(R.string.feedback_action_undo)) { viewModel.undoDeleteHistory(ev.token.id) }
+                    } finally {
+                        viewModel.expireHistoryUndo(ev.token.id)
+                    }
                 }
                 is SearchSnackbarEvent.RefreshError -> showErrorSnackbar(snackbar, resources, ev.error, viewModel::refresh, onOpenLogin)
             }

@@ -24,6 +24,9 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
+import net.jejer.hipda.feature.common.LocalAttachmentDownloadHandler
+import net.jejer.hipda.feature.common.LocalPostLinkDispatcher
+import net.jejer.hipda.feature.common.SafeLinkPolicy
 import net.jejer.hipda.feature.threaddetail.interact.QuoteBlock
 import net.jejer.hipda.feature.threaddetail.media.PostImageBlock
 import net.jejer.hipda.parser.threaddetail.ContentBlock
@@ -31,43 +34,13 @@ import net.jejer.hipda.parser.threaddetail.InlineSpan
 import net.jejer.hipda.parser.threaddetail.TextFormat
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 private const val SMALL_FONT_SCALE: Float = 0.85f
 private const val EMOJI_INLINE_SCALE: Float = 1.4f
 private const val SMALL_IMAGE_INLINE_SCALE: Float = 0.9f
-private val MAILTO_ADDRESS_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$")
 
-/**
- * 帖子正文链接与附件 URL 的严格 scheme 白名单纯函数（渲染层与点击层共用）。
- *
- * 仅放行：`http` / `https`（需经 `HttpUrl` 解析且含非空 host）以及经校验的 `mailto:`（仅允许合法纯邮箱地址，不含查询参数或注入字符）。
- * 其余一律返回 `null`（含 `javascript:`、`intent:`、`file:`、`content:`、`data:`、无 scheme、大小写变体、前导空白及控制字符）。
- */
-fun sanitizePostUrl(rawUrl: String?): String? {
-    if (rawUrl.isNullOrEmpty()) return null
-    if (rawUrl.first().isWhitespace() || rawUrl.last().isWhitespace()) return null
-    if (rawUrl.any { it.isISOControl() }) return null
-    if (rawUrl.startsWith("mailto:", ignoreCase = true)) {
-        val address = rawUrl.substring(7)
-        return if (isValidMailtoAddress(address)) "mailto:$address" else null
-    }
-    if (!rawUrl.startsWith("http://", ignoreCase = true) && !rawUrl.startsWith("https://", ignoreCase = true)) {
-        return null
-    }
-    val parsed = rawUrl.toHttpUrlOrNull() ?: return null
-    if ((parsed.scheme != "http" && parsed.scheme != "https") || parsed.host.isBlank()) return null
-    return parsed.toString()
-}
-
-private fun isValidMailtoAddress(address: String): Boolean {
-    if (address.isEmpty() || address.contains("..")) return false
-    val at = address.indexOf('@')
-    if (at <= 0 || at != address.lastIndexOf('@')) return false
-    val local = address.substring(0, at)
-    if (local.startsWith('.') || local.endsWith('.')) return false
-    return MAILTO_ADDRESS_REGEX.matches(address)
-}
+/** 帖子正文链接严格 scheme 白名单纯函数（委托统一 [SafeLinkPolicy.sanitizeLinkUrl]）。 */
+fun sanitizePostUrl(rawUrl: String?): String? = SafeLinkPolicy.sanitizeLinkUrl(rawUrl)
 
 @Immutable
 internal data class BuiltPostTextBlock(
@@ -162,10 +135,28 @@ fun PostBodyRenderer(
 ) {
     if (blocks.isEmpty()) return
     val uriHandler = LocalUriHandler.current
-    val resolvedLinkHandler: (String) -> Unit = remember(onLinkClick, uriHandler) {
+    val postLinkDispatcher = LocalPostLinkDispatcher.current
+    val attachmentDownloadHandler = LocalAttachmentDownloadHandler.current
+    val resolvedLinkHandler: (String) -> Unit = remember(onLinkClick, postLinkDispatcher, uriHandler) {
         { rawUrl ->
-            sanitizePostUrl(rawUrl)?.let { safeUrl ->
-                if (onLinkClick != null) onLinkClick(safeUrl) else runCatching { uriHandler.openUri(safeUrl) }
+            SafeLinkPolicy.sanitizeLinkUrl(rawUrl)?.let { safeUrl ->
+                when {
+                    onLinkClick != null -> onLinkClick(safeUrl)
+                    postLinkDispatcher != null -> postLinkDispatcher.dispatch(safeUrl)
+                    else -> runCatching { uriHandler.openUri(safeUrl) }
+                }
+            }
+        }
+    }
+    val resolvedAttachmentHandler: (ContentBlock.Attachment) -> Unit = remember(onLinkClick, attachmentDownloadHandler, postLinkDispatcher, uriHandler) {
+        { attachment ->
+            SafeLinkPolicy.sanitizeHttpUrl(attachment.url)?.let { safeUrl ->
+                when {
+                    onLinkClick != null -> onLinkClick(safeUrl)
+                    attachmentDownloadHandler != null -> attachmentDownloadHandler.download(safeUrl, attachment.title)
+                    postLinkDispatcher != null -> postLinkDispatcher.dispatch(safeUrl)
+                    else -> runCatching { uriHandler.openUri(safeUrl) }
+                }
             }
         }
     }
@@ -177,7 +168,7 @@ fun PostBodyRenderer(
                 is ContentBlock.Quote -> QuoteBlock(block, onJumpToFloor = onJumpToFloor, onLinkClick = resolvedLinkHandler)
                 is ContentBlock.GoToFloor -> PostGoToFloorBlockView(block, onJumpToFloor)
                 is ContentBlock.Image -> PostImageBlock(block, floorPostId, listState, onOpenImageViewer)
-                is ContentBlock.Attachment -> PostAttachmentBlockView(block, resolvedLinkHandler)
+                is ContentBlock.Attachment -> PostAttachmentBlockView(block, resolvedAttachmentHandler)
                 is ContentBlock.Notice -> PostNoticeBlockView(block)
             }
         }
@@ -222,9 +213,9 @@ private fun PostGoToFloorBlockView(
 }
 
 @Composable
-private fun PostAttachmentBlockView(attachment: ContentBlock.Attachment, onOpenUrl: (String) -> Unit) {
+private fun PostAttachmentBlockView(attachment: ContentBlock.Attachment, onClickAttachment: (ContentBlock.Attachment) -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val safeUrl = remember(attachment.url) { sanitizePostUrl(attachment.url) }
+    val safeUrl = remember(attachment.url) { SafeLinkPolicy.sanitizeHttpUrl(attachment.url) }
     val content: @Composable () -> Unit = {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(attachment.title, style = MaterialTheme.typography.labelLarge, color = if (safeUrl != null) cs.primary else cs.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -236,7 +227,7 @@ private fun PostAttachmentBlockView(attachment: ContentBlock.Attachment, onOpenU
     val mod = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
     val border = BorderStroke(0.5.dp, cs.outlineVariant)
     if (safeUrl != null) {
-        Surface(onClick = { onOpenUrl(safeUrl) }, modifier = mod, shape = HiShapeTokens.Small, color = cs.surfaceContainerLow, border = border, content = content)
+        Surface(onClick = { onClickAttachment(attachment) }, modifier = mod, shape = HiShapeTokens.Small, color = cs.surfaceContainerLow, border = border, content = content)
     } else {
         Surface(modifier = mod, shape = HiShapeTokens.Small, color = cs.surfaceContainerLow, border = border, content = content)
     }
