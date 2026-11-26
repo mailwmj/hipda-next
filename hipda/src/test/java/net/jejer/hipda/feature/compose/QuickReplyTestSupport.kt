@@ -20,11 +20,19 @@ import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeSolver
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.access.SolveResult
+import net.jejer.hipda.data.post.ImageUploadInput
+import net.jejer.hipda.data.post.ImageUploadProgress
+import net.jejer.hipda.data.post.ImageUploadRepository
 import net.jejer.hipda.data.post.PostRepository
 import net.jejer.hipda.data.post.PostSubmitRequest
 import net.jejer.hipda.data.post.PostSubmitResult
 import net.jejer.hipda.data.post.PrePostRequest
 import net.jejer.hipda.data.post.PrePostResult
+import net.jejer.hipda.data.settings.AppSettings
+import net.jejer.hipda.data.settings.LineSpacing
+import net.jejer.hipda.data.settings.PaneSplit
+import net.jejer.hipda.data.settings.SettingsRepository
+import net.jejer.hipda.data.settings.ThemeMode
 import net.jejer.hipda.data.threaddetail.PollVoteResult
 import net.jejer.hipda.data.threaddetail.ThreadDetailFilter
 import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
@@ -35,6 +43,7 @@ import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
 import net.jejer.hipda.parser.common.PromptCounts
+import net.jejer.hipda.parser.post.PrePostInfo
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.parser.threaddetail.InlineSpan
 import net.jejer.hipda.parser.threaddetail.PostFloor
@@ -80,7 +89,11 @@ internal class FakePostRepository(
 
     val saveDraftCalls = CopyOnWriteArrayList<DraftEntity>()
     val deleteDraftCalls = CopyOnWriteArrayList<DraftKey>()
+    val prePostRequests = CopyOnWriteArrayList<PrePostRequest>()
     val submitRequests = CopyOnWriteArrayList<PostSubmitRequest>()
+    var prePostHandler: suspend (PrePostRequest) -> PrePostResult = {
+        PrePostResult.Success(defaultSamplePrePostInfo())
+    }
     var submitHandler: suspend (PostSubmitRequest) -> PostSubmitResult = { req ->
         val tid = when (req) {
             is PostSubmitRequest.ReplyThread -> req.tid
@@ -88,7 +101,7 @@ internal class FakePostRepository(
             is PostSubmitRequest.QuotePost -> req.tid
             is PostSubmitRequest.EditPost -> req.tid
             is PostSubmitRequest.DeletePost -> req.tid
-            is PostSubmitRequest.NewThread -> "0"
+            is PostSubmitRequest.NewThread -> "990001"
         }
         PostSubmitResult.Success(tid = tid)
     }
@@ -104,8 +117,10 @@ internal class FakePostRepository(
         return if (rem <= 0L) 0 else ((rem + 999L) / 1_000L).toInt()
     }
 
-    override suspend fun fetchPrePost(request: PrePostRequest, priority: AccessPriority): PrePostResult =
-        PrePostResult.SiteError("not configured")
+    override suspend fun fetchPrePost(request: PrePostRequest, priority: AccessPriority): PrePostResult {
+        prePostRequests += request
+        return prePostHandler(request)
+    }
 
     override suspend fun submitPost(request: PostSubmitRequest, priority: AccessPriority): PostSubmitResult {
         submitRequests += request
@@ -249,3 +264,75 @@ internal fun createIdleComposeGateway() = SiteAccessGateway(
     detector = ChallengeDetector(),
     solver = ChallengeSolver { SolveResult.Cancelled },
 )
+
+internal fun defaultSamplePrePostInfo(
+    typeOptions: Map<String, String> = emptyMap(),
+    typeId: String? = "0",
+): PrePostInfo = PrePostInfo(
+    formhash = "fh_compose",
+    uid = "1001",
+    hash = "uploadhash123456",
+    subject = null,
+    text = "",
+    quoteText = "",
+    isDeletable = false,
+    maxUploadFileSizeBytes = 2 * 1024 * 1024,
+    noticeAuthor = null,
+    noticeAuthorMsg = null,
+    noticeTrimStr = null,
+    existingImages = emptyList(),
+    existingAttachments = emptyList(),
+    typeId = typeId,
+    typeOptions = typeOptions,
+    meta = composeSampleMeta(),
+)
+
+internal class FakeImageUploadRepository(
+    var uploadFlowFactory: (ImageUploadInput, String, String, Int?) -> Flow<ImageUploadProgress> = { _, _, _, _ ->
+        kotlinx.coroutines.flow.flowOf(
+            ImageUploadProgress.Compressing,
+            ImageUploadProgress.Uploading(1024L, 1024L, 1f),
+            ImageUploadProgress.Succeeded(imageId = "1721001", compressedBytes = 1024L, wasCompressed = true),
+        )
+    },
+) : ImageUploadRepository {
+    val calls = CopyOnWriteArrayList<ImageUploadInput>()
+    override fun uploadImage(
+        input: ImageUploadInput,
+        uid: String,
+        hash: String,
+        maxUploadBytes: Int?,
+        priority: AccessPriority,
+    ): Flow<ImageUploadProgress> {
+        calls += input
+        return uploadFlowFactory(input, uid, hash, maxUploadBytes)
+    }
+}
+
+internal class FakeComposeSettingsRepository(
+    initial: AppSettings = AppSettings(),
+) : SettingsRepository {
+    val flow = MutableStateFlow(initial)
+    override val settings: Flow<AppSettings> = flow
+    override suspend fun setThemeMode(themeMode: ThemeMode) = Unit
+    override suspend fun setPureBlack(enabled: Boolean) = Unit
+    override suspend fun setThemeSeed(themeSeed: String) = Unit
+    override suspend fun setFontStep(step: Int) = Unit
+    override suspend fun setLineSpacing(lineSpacing: LineSpacing) = Unit
+    override suspend fun setFollowedForums(forumIds: List<Int>) = Unit
+    override suspend fun setShowStickyThreads(show: Boolean) = Unit
+    override suspend fun setSortByPostTime(fid: Int, sortByPostTime: Boolean) = Unit
+    override suspend fun setTailEnabled(enabled: Boolean) = Unit
+    override suspend fun setTailText(text: String) = Unit
+    override suspend fun setTailUrl(url: String) = Unit
+    override suspend fun setNotificationsEnabled(enabled: Boolean) = Unit
+    override suspend fun setSilentModeEnabled(enabled: Boolean) = Unit
+    override suspend fun setSilentBeginMinutes(minutes: Int) = Unit
+    override suspend fun setSilentEndMinutes(minutes: Int) = Unit
+    override suspend fun setForumServer(server: String) = Unit
+    override suspend fun setImageCacheLimitMb(limitMb: Int) = Unit
+    override suspend fun setPaneSplitPortrait(split: PaneSplit) = Unit
+    override suspend fun setPaneSplitLandscape(split: PaneSplit) = Unit
+    override suspend fun setSidebarCollapsedPortrait(collapsed: Boolean) = Unit
+    override suspend fun setSidebarCollapsedLandscape(collapsed: Boolean) = Unit
+}

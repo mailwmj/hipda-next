@@ -727,6 +727,26 @@ fun ThreadDetailPane(
         }
     }
 
+    val handleReplySubmitted: (net.jejer.hipda.parser.threaddetail.ThreadDetailPage?) -> Unit = { redirectedPage ->
+        val snap = latestUiState
+        if (isNearLastPageTail(snap, listState)) {
+            viewModel.onReplySuccessAtTail(redirectedPage)
+        } else {
+            val targetPid = redirectedPage?.floors?.lastOrNull()?.postId
+            coroutineScope.launch {
+                snackbarController.show(
+                    message = replySentMsg,
+                    target = PaneSnackbarTarget.DetailPane,
+                    actionLabel = viewReplyLabel,
+                    onAction = {
+                        val anchor = resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)
+                        viewModel.jumpToNewReply(targetPid = targetPid, fromAnchor = anchor, redirectedPage = redirectedPage)
+                    },
+                )
+            }
+        }
+    }
+
     LaunchedEffect(boundQuickReplyVm) {
         val qrVm = boundQuickReplyVm ?: return@LaunchedEffect
         qrVm.events.collect { event ->
@@ -743,24 +763,17 @@ fun ThreadDetailPane(
                 }
                 is QuickReplyEvent.Submitted -> {
                     activeReplyTarget = null
-                    val snap = latestUiState
-                    if (isNearLastPageTail(snap, listState)) {
-                        viewModel.onReplySuccessAtTail(event.redirectedPage)
-                    } else {
-                        val targetPid = event.redirectedPage?.floors?.lastOrNull()?.postId
-                        coroutineScope.launch {
-                            snackbarController.show(
-                                message = replySentMsg,
-                                target = PaneSnackbarTarget.DetailPane,
-                                actionLabel = viewReplyLabel,
-                                onAction = {
-                                    val anchor = resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)
-                                    viewModel.jumpToNewReply(targetPid = targetPid, fromAnchor = anchor, redirectedPage = event.redirectedPage)
-                                },
-                            )
-                        }
-                    }
+                    handleReplySubmitted(event.redirectedPage)
                 }
+            }
+        }
+    }
+
+    val fullEditorReplyResults = LocalFullEditorReplyResults.current
+    LaunchedEffect(fullEditorReplyResults, args.tid) {
+        fullEditorReplyResults?.collect { submitted ->
+            if (submitted.tid == latestUiState.tid || submitted.tid == args.tid) {
+                handleReplySubmitted(submitted.redirectedPage)
             }
         }
     }
