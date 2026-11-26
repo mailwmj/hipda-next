@@ -10,11 +10,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
@@ -299,6 +303,12 @@ fun HiAdaptiveShell(
             },
         )
 
+    val horizontalSafeInsets = if (paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) {
+        Modifier
+    } else {
+        Modifier.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Horizontal))
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -307,6 +317,7 @@ fun HiAdaptiveShell(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .then(horizontalSafeInsets)
                 .then(underlyingInteractionGuard),
         ) {
             Box(

@@ -1,9 +1,13 @@
 package net.jejer.hipda.service
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -12,6 +16,18 @@ import javax.inject.Singleton
 import net.jejer.hipda.R
 import net.jejer.hipda.data.message.UnreadSnapshot
 import net.jejer.hipda.feature.app.MainActivity
+
+/** 仅在 Android 13（API 33）及以上发送系统通知需具备 `POST_NOTIFICATIONS` 运行时权限。 */
+fun requiresNotificationPermission(sdkInt: Int = Build.VERSION.SDK_INT): Boolean =
+    sdkInt >= Build.VERSION_CODES.TIRAMISU
+
+/** 检查当前进程是否允许发布系统通知：API < 33 恒返回 `true`，API 33+ 校验 `POST_NOTIFICATIONS` 授权状态。 */
+@SuppressLint("InlinedApi")
+fun hasNotificationPermission(
+    context: Context,
+    sdkInt: Int = Build.VERSION.SDK_INT,
+): Boolean = !requiresNotificationPermission(sdkInt) ||
+    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
 /**
  * Rendered title and body copy for a system notification derived from an [UnreadSnapshot].
@@ -37,6 +53,9 @@ class AndroidNotificationPoster @Inject constructor(
     override fun postUnread(snapshot: UnreadSnapshot) {
         if (snapshot.smsUnreadCount <= 0 && snapshot.notifyUnreadCount <= 0) {
             cancel()
+            return
+        }
+        if (!hasNotificationPermission(context)) {
             return
         }
         val notificationManager = context.getSystemService(NotificationManager::class.java) ?: return
@@ -94,7 +113,11 @@ class AndroidNotificationPoster @Inject constructor(
 
     override fun cancel() {
         val notificationManager = context.getSystemService(NotificationManager::class.java) ?: return
-        notificationManager.cancel(NOTIFICATION_ID)
+        try {
+            notificationManager.cancel(NOTIFICATION_ID)
+        } catch (_: SecurityException) {
+            // Notification permission revoked on API 33+; fail quietly without crashing worker.
+        }
     }
 
     private fun ensureChannel(notificationManager: NotificationManager) {

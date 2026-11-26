@@ -156,7 +156,9 @@ fun SmsConversationScreen(
         }
 
         if (uiState.error?.action != UiErrorAction.Login) {
-            SmsSolidInputBar(uiState.inputText, uiState.cooldownSeconds, uiState.canSend, contentPadding.calculateBottomPadding(), viewModel::onInputChange, viewModel::sendMessage)
+            val imeBottomDp = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+            val inputBarBottomPadding = (contentPadding.calculateBottomPadding() - imeBottomDp).coerceAtLeast(0.dp)
+            SmsSolidInputBar(uiState.inputText, uiState.cooldownSeconds, uiState.canSend, inputBarBottomPadding, viewModel::onInputChange, viewModel::sendMessage)
         }
     }
 

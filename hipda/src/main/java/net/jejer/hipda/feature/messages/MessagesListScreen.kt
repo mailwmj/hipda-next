@@ -204,7 +204,7 @@ internal fun MessagesSolidTopBarFrame(
     val cs = MaterialTheme.colorScheme
     val bgColor by animateColorAsState(if (isScrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "MessagesTopBarBg")
     Column(Modifier.fillMaxWidth().background(bgColor)) {
-        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
         HiCappedFontScale {
             Row(Modifier.fillMaxWidth().height(TOP_BAR_ROW_HEIGHT).padding(start = if (showBack && onBack != null) 4.dp else 16.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (showBack && onBack != null) {

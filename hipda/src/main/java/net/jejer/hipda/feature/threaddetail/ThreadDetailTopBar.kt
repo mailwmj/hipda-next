@@ -37,6 +37,7 @@ import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
@@ -90,7 +91,7 @@ internal fun ThreadDetailTopBar(
                             drawRect(dividerColor.copy(alpha = dividerColor.alpha * reveal), Offset(0f, size.height - h), Size(size.width, h))
                         }
                     }
-                    .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top)),
+                    .windowInsetsPadding(WindowInsets.hiTopSafeBar),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().height(ThreadDetailTopBarHeight).padding(horizontal = 8.dp),

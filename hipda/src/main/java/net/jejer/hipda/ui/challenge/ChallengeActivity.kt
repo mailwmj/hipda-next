@@ -49,6 +49,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.jejer.hipda.data.network.webview.applyUnifiedDesktopUserAgent
+import net.jejer.hipda.ui.designsystem.applyHiEdgeToEdge
+import net.jejer.hipda.ui.designsystem.isSystemNightModeActive
 import okhttp3.HttpUrl
 import org.json.JSONObject
 
@@ -66,6 +68,7 @@ open class ChallengeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         disableTransitions()
+        applyHiEdgeToEdge(darkTheme = isSystemNightModeActive())
         applyWindowInteractiveMode(interactive = false)
 
         rootContainer = FrameLayout(this).apply {

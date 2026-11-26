@@ -1,15 +1,18 @@
 package net.jejer.hipda.feature.imageviewer
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -108,7 +111,7 @@ class AndroidImageViewerMediaActions(
             put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/HiPDA")
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+        val uri = runCatching { resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) }.getOrNull() ?: return false
         return try {
             val stream = resolver.openOutputStream(uri) ?: run { resolver.delete(uri, null, null); return false }
             stream.use { out -> source.inputStream().use { it.copyTo(out) } }
@@ -121,13 +124,18 @@ class AndroidImageViewerMediaActions(
     }
 
     @Suppress("DEPRECATION")
-    private fun saveToLegacyPicturesDir(source: File, fileName: String, mimeType: String): Boolean = runCatching {
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HiPDA").apply { if (!exists()) mkdirs() }
-        val target = File(dir, fileName)
-        source.copyTo(target, overwrite = true)
-        MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf(mimeType), null)
-        true
-    }.getOrDefault(false)
+    private fun saveToLegacyPicturesDir(source: File, fileName: String, mimeType: String): Boolean {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            return false
+        }
+        return runCatching {
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HiPDA").apply { if (!exists()) mkdirs() }
+            val target = File(dir, fileName)
+            source.copyTo(target, overwrite = true)
+            MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf(mimeType), null)
+            true
+        }.getOrDefault(false)
+    }
 
     companion object {
         private const val SHARE_FILE_PREFIX = "share_"

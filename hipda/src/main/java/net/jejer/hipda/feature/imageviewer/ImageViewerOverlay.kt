@@ -38,6 +38,7 @@ import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LocalImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.feedback.rememberHiHaptics
 import net.jejer.hipda.ui.designsystem.motion.*
 
@@ -415,7 +416,7 @@ fun ImageViewerOverlay(
         AnimatedVisibility(
             visible = currentState.isGif && currentSafeUrl != null && phase == ViewerTransitionPhase.Settled,
             enter = hiFadeIn(HiMotion.effectsFast()), exit = hiFadeOut(HiMotion.exit(HiMotion.effectsFast())),
-            modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(top = 68.dp, start = 16.dp),
+            modifier = Modifier.align(Alignment.TopStart).windowInsetsPadding(WindowInsets.hiTopSafeBar).padding(top = 68.dp, start = 16.dp),
         ) { ImageViewerGifBadge(currentGifPlaying, onToggle = { updatePage(currentPage) { it.copy(isGifPlaying = !currentGifPlaying) } }) }
         AnimatedVisibility(showChrome, Modifier.align(Alignment.TopCenter), hiFadeIn(HiMotion.effectsFast()), hiFadeOut(HiMotion.exit(HiMotion.effectsFast()))) {
             ImageViewerTopBar(topTitle, currentPage, totalPages, onClose = { triggerDismiss() })

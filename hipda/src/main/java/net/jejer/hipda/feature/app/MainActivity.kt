@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.ViewModelProvider
 import coil3.ImageLoader
@@ -23,6 +22,8 @@ import net.jejer.hipda.feature.common.SettingsProfilePaneRenderer
 import net.jejer.hipda.feature.forum.ForumViewModel
 import net.jejer.hipda.feature.routing.AttachmentDownloader
 import net.jejer.hipda.feature.routing.EXTRA_DEEP_LINK_URL
+import net.jejer.hipda.ui.designsystem.applyHiEdgeToEdge
+import net.jejer.hipda.ui.designsystem.isSystemNightModeActive
 import net.jejer.hipda.utils.Constants
 
 /**
@@ -59,7 +60,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        applyHiEdgeToEdge(darkTheme = isSystemNightModeActive())
         if (savedInstanceState == null && !isLaunchedFromHistory(intent)) {
             sanitizeIncomingIntent(intent)?.let(hostViewModel::submitIncomingIntent)
         }

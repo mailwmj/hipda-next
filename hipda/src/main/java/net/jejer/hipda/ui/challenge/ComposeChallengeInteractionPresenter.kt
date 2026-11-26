@@ -33,6 +33,7 @@ import net.jejer.hipda.data.settings.AppSettings
 import net.jejer.hipda.data.settings.SettingsRepository
 import net.jejer.hipda.feature.common.HiThemeSettingsAdapter
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.SyncHiEdgeToEdge
 
 /**
  * 生产用 [ChallengeInteractionPresenter]：在现有 [ChallengeActivity] 窗口中挂载 [ChallengePanelOverlay]，
@@ -117,6 +118,7 @@ class ComposeChallengeInteractionPresenter internal constructor(
                         fontSizeStep = themeConfig.fontSizeStep,
                         lineHeightPreset = themeConfig.lineHeightPreset,
                     ) {
+                        SyncHiEdgeToEdge(darkTheme = HiTheme.state.darkTheme)
                         LaunchedEffect(Unit) {
                             if (!resultDeferred.isCompleted) {
                                 panelShown = true

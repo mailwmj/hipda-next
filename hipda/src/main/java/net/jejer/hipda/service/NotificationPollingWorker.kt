@@ -69,6 +69,12 @@ class NotificationPollingWorker @AssistedInject constructor(
             return Result.success()
         }
 
+        // Gate 2b: Skip silently on API 33+ when POST_NOTIFICATIONS runtime permission is revoked/missing,
+        // preserving persisted settings without issuing network requests.
+        if (!hasNotificationPermission(applicationContext)) {
+            return Result.success()
+        }
+
         // Gate 3: Skip silently during configured quiet hours (same-day or cross-midnight).
         if (
             QuietHoursChecker.isInQuietHours(
@@ -97,12 +103,16 @@ class NotificationPollingWorker @AssistedInject constructor(
         return when (pollResult) {
             is NotificationPollResult.Success -> {
                 val snapshot = pollResult.snapshot
-                if (snapshot.smsUnreadCount > 0 || snapshot.notifyUnreadCount > 0) {
-                    if (!appVisibilityProvider.isAppVisible() && authRepository.currentAccount.value != null) {
-                        notificationPoster.postUnread(snapshot)
+                try {
+                    if (snapshot.smsUnreadCount > 0 || snapshot.notifyUnreadCount > 0) {
+                        if (!appVisibilityProvider.isAppVisible() && authRepository.currentAccount.value != null) {
+                            notificationPoster.postUnread(snapshot)
+                        }
+                    } else {
+                        notificationPoster.cancel()
                     }
-                } else {
-                    notificationPoster.cancel()
+                } catch (_: SecurityException) {
+                    // Notification permission revoked mid-flight; finish quietly without retry storm.
                 }
                 Result.success()
             }

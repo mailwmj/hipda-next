@@ -1,10 +1,14 @@
 package net.jejer.hipda.feature.settings
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -30,12 +34,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import net.jejer.hipda.BuildConfig
 import net.jejer.hipda.R
 import net.jejer.hipda.data.settings.*
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.service.hasNotificationPermission
 import net.jejer.hipda.ui.designsystem.*
 import net.jejer.hipda.ui.designsystem.feedback.hiListItemPressIndication
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
@@ -59,7 +67,7 @@ internal fun SettingsSolidTopBar(
     val cs = MaterialTheme.colorScheme
     val bgColor by animateColorAsState(if (scrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "SettingsTopBarColor")
     Column(modifier.fillMaxWidth().background(bgColor)) {
-        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = if (showBack) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
             if (showBack && onBack != null) {
                 val interaction = remember { MutableInteractionSource() }
@@ -154,6 +162,60 @@ fun SettingsDetailPane(
     val snackbar = LocalPaneSnackbarController.current
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val latestViewModel by rememberUpdatedState(viewModel)
+    var notificationPermissionDenied by rememberSaveable { mutableStateOf(false) }
+    var pendingEnableNotificationsAfterSettings by rememberSaveable { mutableStateOf(false) }
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && hasNotificationPermission(context)) {
+                notificationPermissionDenied = false
+                if (pendingEnableNotificationsAfterSettings) {
+                    pendingEnableNotificationsAfterSettings = false
+                    latestViewModel.setNotificationsEnabled(true)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val notificationPermissionLauncher = if (LocalActivityResultRegistryOwner.current != null) {
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                notificationPermissionDenied = false
+                pendingEnableNotificationsAfterSettings = false
+                viewModel.setNotificationsEnabled(true)
+            } else {
+                notificationPermissionDenied = true
+                pendingEnableNotificationsAfterSettings = false
+                viewModel.setNotificationsEnabled(false)
+            }
+        }
+    } else {
+        null
+    }
+    val onToggleNotifications: (Boolean) -> Unit = { enabled ->
+        if (!enabled) {
+            notificationPermissionDenied = false
+            pendingEnableNotificationsAfterSettings = false
+            viewModel.setNotificationsEnabled(false)
+        } else if (hasNotificationPermission(context)) {
+            notificationPermissionDenied = false
+            pendingEnableNotificationsAfterSettings = false
+            viewModel.setNotificationsEnabled(true)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && notificationPermissionLauncher != null) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            notificationPermissionDenied = true
+            pendingEnableNotificationsAfterSettings = false
+            viewModel.setNotificationsEnabled(false)
+        }
+    }
+    val onOpenPermissionSettings: () -> Unit = {
+        if (onOpenSystemNotificationSettings()) {
+            pendingEnableNotificationsAfterSettings = true
+        }
+    }
     var activeDialog by rememberSaveable(group) { mutableStateOf<SettingsDialogKind?>(null) }
     var activeAboutDocument by rememberSaveable(group) { mutableStateOf<AboutAssetDocument?>(null) }
     val groupListStates = SettingsGroup.entries.associateWith { g -> key(g) { rememberLazyListState() } }
@@ -190,7 +252,16 @@ fun SettingsDetailPane(
                         onEditTailText = { activeDialog = SettingsDialogKind.TailText },
                         onEditTailUrl = { activeDialog = SettingsDialogKind.TailUrl },
                     )
-                    SettingsGroup.Notification -> notificationItems(uiState.settings, viewModel, onOpenSystemNotificationSettings, { activeDialog = SettingsDialogKind.QuietBegin }, { activeDialog = SettingsDialogKind.QuietEnd })
+                    SettingsGroup.Notification -> notificationItems(
+                        settings = uiState.settings,
+                        vm = viewModel,
+                        onToggleNotifications = onToggleNotifications,
+                        notificationPermissionDenied = notificationPermissionDenied,
+                        onOpenPermissionSettings = onOpenPermissionSettings,
+                        onOpenSystemNotificationSettings = onOpenSystemNotificationSettings,
+                        onPickBegin = { activeDialog = SettingsDialogKind.QuietBegin },
+                        onPickEnd = { activeDialog = SettingsDialogKind.QuietEnd },
+                    )
                     SettingsGroup.NetworkAndCache -> networkAndCacheItems(
                         uiState, { activeDialog = SettingsDialogKind.ForumServer }, { activeDialog = SettingsDialogKind.CacheLimit },
                         onClearImageCache = { viewModel.clearImageCache { showContentSnackbar(String.format(clearedFmt, it)) } },
@@ -261,8 +332,24 @@ private fun LazyListScope.forumAndPostItems(
     item("blacklist") { ClickableSettingRow(stringResource(R.string.settings_blacklist_title), null, showChevron = true, onClick = onOpenBlacklist) }
 }
 
-private fun LazyListScope.notificationItems(settings: AppSettings, vm: SettingsViewModel, onOpenSystemNotificationSettings: () -> Boolean, onPickBegin: () -> Unit, onPickEnd: () -> Unit) {
-    item("notifications_enabled") { SwitchSettingRow(stringResource(R.string.settings_notifications_title), null, settings.notificationsEnabled, vm::setNotificationsEnabled) }
+private fun LazyListScope.notificationItems(
+    settings: AppSettings,
+    vm: SettingsViewModel,
+    onToggleNotifications: (Boolean) -> Unit,
+    notificationPermissionDenied: Boolean,
+    onOpenPermissionSettings: () -> Unit,
+    onOpenSystemNotificationSettings: () -> Boolean,
+    onPickBegin: () -> Unit,
+    onPickEnd: () -> Unit,
+) {
+    item("notifications_enabled") {
+        Column(Modifier.fillMaxWidth()) {
+            SwitchSettingRow(stringResource(R.string.settings_notifications_title), null, settings.notificationsEnabled, onToggleNotifications)
+            HiExpandableSection(notificationPermissionDenied) {
+                NotificationPermissionDeniedBanner(onOpenSettings = onOpenPermissionSettings)
+            }
+        }
+    }
     item("notification_sound") { ClickableSettingRow(stringResource(R.string.settings_notification_sound_title), stringResource(R.string.settings_notification_sound_summary), showChevron = true) { onOpenSystemNotificationSettings() } }
     item("quiet_hours") {
         Column(Modifier.fillMaxWidth()) {
@@ -272,6 +359,38 @@ private fun LazyListScope.notificationItems(settings: AppSettings, vm: SettingsV
                     ClickableSettingRow(stringResource(R.string.settings_quiet_hours_begin), formatMinutesOfDay(settings.silentBeginMinutes), onClick = onPickBegin)
                     ClickableSettingRow(stringResource(R.string.settings_quiet_hours_end), formatMinutesOfDay(settings.silentEndMinutes), onClick = onPickEnd)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationPermissionDeniedBanner(onOpenSettings: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val interaction = remember { MutableInteractionSource() }
+    Surface(
+        shape = HiShapeTokens.Medium,
+        color = cs.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, cs.outlineVariant),
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_notification_permission_denied),
+                style = MaterialTheme.typography.bodyMedium,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = onOpenSettings,
+                interactionSource = interaction,
+                modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp).hiPressScale(interaction),
+            ) {
+                Text(stringResource(R.string.settings_action_open_system_settings))
             }
         }
     }

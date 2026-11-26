@@ -35,7 +35,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -452,7 +452,7 @@ private fun SidebarColumnBody(
                 .testTag(HiShellTestTags.SidebarTopBar)
                 .fillMaxWidth()
                 .background(topBarBg)
-                .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top)),
+                .windowInsetsPadding(WindowInsets.hiTopSafeBar),
         ) {
             if (expanded) {
                 SidebarExpandedTopBar(state.account, onAccountClick, onToggleSidebar)

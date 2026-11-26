@@ -9,4 +9,8 @@
         name="my_images"
         path="Android/data/${applicationId}/files/Pictures"/>
 
+    <external-cache-path
+        name="external_cache"
+        path="."/>
+
 </paths>

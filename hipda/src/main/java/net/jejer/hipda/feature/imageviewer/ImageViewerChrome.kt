@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.HiLoadingSpinner
@@ -59,7 +60,7 @@ internal fun ImageViewerTopBar(
     val closeDesc = stringResource(R.string.image_viewer_action_close)
     val pageText = stringResource(R.string.image_viewer_page_indicator, currentPage + 1, totalPages.coerceAtLeast(1))
     val closeInteraction = remember { MutableInteractionSource() }
-    Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).statusBarsPadding()) {
+    Column(modifier.fillMaxWidth().background(ImageViewerPalette.BarBackground).windowInsetsPadding(WindowInsets.hiTopSafeBar)) {
         Row(
             modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 56.dp).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,

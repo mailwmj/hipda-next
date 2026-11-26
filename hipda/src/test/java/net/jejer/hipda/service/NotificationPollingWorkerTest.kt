@@ -118,6 +118,7 @@ class NotificationPollingWorkerTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        shadowOf(context as Application).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
         notificationManager = context.getSystemService(NotificationManager::class.java)
         notificationManager.cancelAll()
         OkHttp.initialize(context)

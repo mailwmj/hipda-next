@@ -297,6 +297,7 @@ class MainActivityEntryAndManifestTest {
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
     fun notificationPosterPendingIntents_allThreeCategoriesTargetMainActivityAndRouteWithoutReplayOrUsernameLeak() {
         val context = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.cancelAll()
         val poster = AndroidNotificationPoster(context)

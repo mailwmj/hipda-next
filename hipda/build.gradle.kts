@@ -91,6 +91,7 @@ androidComponents {
 }
 
 tasks.withType<Test>().configureEach {
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) })
     val taskPath = path
     val taskLogger = logger
     testLogging {

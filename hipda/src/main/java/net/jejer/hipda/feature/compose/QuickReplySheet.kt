@@ -383,7 +383,7 @@ fun QuickReplySheet(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val paneHeightDp = maxHeight
-        val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(density).toDp() }
+        val statusBarTopDp = with(density) { WindowInsets.hiTopSafeBar.getTop(density).toDp() }
         val imeBottomDp = with(density) { WindowInsets.ime.getBottom(density).toDp() }
         val navBarBottomDp = maxOf(with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }, bottomInset)
         LaunchedEffect(imeBottomDp) {

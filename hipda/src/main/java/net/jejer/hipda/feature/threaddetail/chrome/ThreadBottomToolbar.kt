@@ -201,12 +201,13 @@ fun ThreadBottomToolbar(
             )
         }
 
+        val imeBottomDp = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+        val effectiveBottomInset = maxOf(bottomInset, imeBottomDp)
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .imePadding()
-                .padding(bottom = bottomInset + ThreadBottomToolbarBottomGap)
+                .padding(bottom = effectiveBottomInset + ThreadBottomToolbarBottomGap)
                 .padding(horizontal = ToolbarHorizontalMargin),
             contentAlignment = Alignment.BottomCenter,
         ) {
