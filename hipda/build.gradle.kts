@@ -105,6 +105,8 @@ androidComponents {
 }
 
 tasks.withType<Test>().configureEach {
+    maxHeapSize = "1536m"
+    forkEvery = 400L
     val taskPath = path
     val taskLogger = logger
     testLogging {

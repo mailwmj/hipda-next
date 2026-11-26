@@ -23,5 +23,31 @@
     <string name="compose_snackbar_draft_saved">已保存草稿</string>
     <string name="compose_action_discard_draft">放弃</string>
     <string name="compose_snackbar_reply_sent">回复已发送</string>
+    <string name="compose_snackbar_thread_sent">帖子已发出</string>
     <string name="compose_action_view">查看</string>
+
+    <!-- 完整编辑器标题、字段与内联校验（逐字取自 docs/design/copy.md） -->
+    <string name="compose_title_new_thread">发新帖</string>
+    <string name="compose_title_reply">回复</string>
+    <string name="compose_title_quote_reply">引用回复</string>
+    <string name="compose_field_forum">版块</string>
+    <string name="compose_field_category">分类</string>
+    <string name="compose_field_subject_hint">标题</string>
+    <string name="compose_field_body_hint">正文</string>
+    <string name="compose_validation_select_forum">请选择版块</string>
+    <string name="compose_validation_select_category">请选择分类</string>
+    <string name="compose_validation_enter_title">请输入标题</string>
+    <string name="compose_validation_title_min_length">标题至少 6 个字</string>
+    <string name="compose_validation_content_min_length">内容至少 6 个字</string>
+
+    <!-- 多图上传条状态、无障碍与内联提示（docs/design/copy.md） -->
+    <string name="compose_upload_summary">正在上传 %1$d/%2$d</string>
+    <string name="compose_upload_failed_retry_cd">上传失败，点击重试</string>
+    <string name="compose_upload_remove_cd">移除图片</string>
+    <string name="compose_upload_uninserted_badge">未插入</string>
+    <string name="compose_upload_inline_image_cd">已插入图片</string>
+    <string name="compose_upload_in_progress_hint">图片正在上传，请等待完成后再发送</string>
+    <string name="compose_upload_has_failed_hint">有图片上传失败，请重试或移除后再发送</string>
+    <string name="compose_upload_invalid_uri">无法读取所选图片</string>
+    <string name="compose_error_real_name_required">需要完成实名认证后才能继续操作</string>
 </resources>
