@@ -18,6 +18,7 @@
 - 平台 API 的测试替身必须按真实语义建模：A5a 的假 `WebViewCookieAccess` 只按 Cookie 名删除，掩盖了真实 `CookieManager` 里 host-only 过期头删不掉 `Domain=.4d4y.com` Cookie 的行为（R-A5a 阻断）。卡片里写明：替身要按 (name, domain, path) 存取，并模拟已知的平台怪癖。（2026-11-25）
 - 本机的 Android SDK 和 JDK 由 mise 安装、不在环境变量里：本地 Gradle 前先 `export ANDROID_HOME=/home/mir/.local/share/mise/installs/android-sdk/21.0 JAVA_HOME=/home/mir/.local/share/mise/installs/java/latest; export PATH="$JAVA_HOME/bin:$PATH"`（不要在 worktree 写 `local.properties`），否则会误报“没有 SDK”。新 Roborazzi 基线用 `:hipda:recordRoborazziDebug --tests <本卡截图测试类>` 在本地按 DISPATCH 第 2 节录制，必须用 `--tests` 限定，以 CI 的 verify 为准。（2026-11-25）
 - 合并推送到 main 后 GitHub 偶发不触发 push 事件，30 秒内 `gh run list` 查不到时用 `gh workflow run "Android CI" --ref main` 补跑。（2026-11-25）
+- 单测 JVM 默认堆不够，测试数过千后 Roborazzi 大图会触发 OOM；已在 `hipda/build.gradle.kts` `Test` 任务设置 `maxHeapSize = "1536m"` 与 `forkEvery = 400L` 守住（`CI-heap` `@822dccb`，耗时反而缩短 12.6%–16.8%）。（2026-11-26）
 
 ## 协作
 - 8 个代理同时用 `gh run watch`（默认每 3 秒查一次）约 40 分钟就耗尽了 GitHub API 每小时 5000 次的额度，所有 `gh` 命令返回 403；规则已写进 DISPATCH §2（`--interval 60`）。（2026-11-24）
@@ -33,3 +34,5 @@
 - V-E14 在实现分支的独立组件探针 13/13 全部 PASS，但合入 `main` 后在真实链路（`NextAppRoot + ThreadDetailPane + ImageViewerRendererImpl`）下复现 3 项集成缺陷（`E2b` 上方图片撑高后退场飞回旧坐标、`Dismissing` 退场期连按返回穿透关帖、三栏看图时底层玻璃仍采样）。规则：涉及跨卡浮层、返回栈拦截或玻璃拓扑的卡，必须做合入 `main` 后的真实链路集成探针。（2026-11-26）
 - 并发 `BackHandler` 按 LIFO 抢占：V-E4 首轮 `probeD2` 暴露启动即常驻挂载的模态抽屉 `BackHandler(enabled = visible)` 排在后挂载的详情 `PositionStack` 之后，导致抽屉打开时按返回先弹出位置栈而非关闭抽屉。规则：常驻的浮层/抽屉 `BackHandler` 必须只在打开时条件启用，并以打开状态为 `key` 重挂到 LIFO 栈顶。（2026-11-26）
 - Compose 拖拽偏移不要用 `scope.launch { Animatable.snapTo }` 异步写——V-E5 首轮 `probe3b` 暴露同帧 `down → move → up` 会让松手回调先于排队协程读到旧值，R-E5 第 2 轮亦查出默认调度的 `stop()` 抢占取消退场协程导致面板锁死。规则：拖动态用同步 state（首次停弹簧用 `CoroutineStart.UNDISPATCHED`），`Animatable` 只管松手动画，所有过渡动画用 `try/finally` 落终态。（2026-11-26）
+- 实现方自报「已目视核验截图」不可信：E6 有 7/12 张新增 `editor_*.png` 正文空白的错误基线被 R-E6 逐张目视发现。规则：所有新增或变更的 Roborazzi 截图基线必须由独立审查员（R）逐张目视核验。（2026-11-26）
+- 依赖链提速：基于在审分支提前开工（如 `E7`/`E6b` 基于 `E6`、`M7-2`/`M7-3` 基于 `M7-1`）可行，前提是在审卡改动面已稳定、且派卡时写清合并冲突责任方（通常由后合入方负责解冲突并复跑 CI）。（2026-11-26）
