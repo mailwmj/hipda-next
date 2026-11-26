@@ -309,7 +309,7 @@ jobs:
             adb uninstall net.jejer.hipda.next || true
             adb logcat -c
             adb install -r "$apk_path"
-            adb shell am start -W -n net.jejer.hipda.next/net.jejer.hipda.ui.MainFrameActivity
+            adb shell am start -W -n net.jejer.hipda.next/net.jejer.hipda.feature.app.MainActivity
             sleep 15
 
             local log_file="smoke-artifacts/logcat-${variant}.txt"

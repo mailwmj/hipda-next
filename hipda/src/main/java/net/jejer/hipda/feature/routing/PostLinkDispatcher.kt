@@ -50,7 +50,9 @@ class AndroidExternalLinkOpener(
             // 本应用自身匹配此 URL（例如未知路径的 4d4y.com 链接）：仅尝试显式浏览器组件，绝不回落未过滤隐式 Intent 以防死循环
             if (safeUrl.startsWith("http://") || safeUrl.startsWith("https://")) {
                 val browserSelector = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER)
-                val browsers = queryHandlers(pm, browserSelector)
+                val httpsBrowsableProbe = Intent(Intent.ACTION_VIEW, Uri.parse("https://"))
+                    .addCategory(Intent.CATEGORY_BROWSABLE)
+                val browsers = (queryHandlers(pm, browserSelector) + queryHandlers(pm, httpsBrowsableProbe))
                     .filter { it.packageName != selfPackage && it.exported }
                     .distinctBy { "${it.packageName}/${it.name}" }
                 if (browsers.isNotEmpty()) {
