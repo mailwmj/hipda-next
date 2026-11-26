@@ -36,6 +36,7 @@ import net.jejer.hipda.feature.threaddetail.chrome.toReadingFilterTriple
 import net.jejer.hipda.feature.threaddetail.chrome.toSnapshot
 import net.jejer.hipda.feature.threaddetail.chrome.toThreadDetailFilterUi
 import net.jejer.hipda.parser.threaddetail.PostFloor
+import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.parser.threaddetail.ThreadPoll
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
 
@@ -59,6 +60,7 @@ data class PendingScrollTarget(
     val postId: String?,
     val scrollOffset: Int = 0,
     val highlightPostId: String? = null,
+    val smooth: Boolean = false,
 )
 
 @Immutable
@@ -428,13 +430,93 @@ class ThreadDetailViewModel(
         loadInternal(page.coerceIn(1, cur.lastPage.coerceAtLeast(1)), cur.filter, AccessPriority.UserBlocking, scrollToTop = true)
     }
 
-    /** 查看新回复（按目标 `pid` 或末页定位），跳前压入 [PositionStack]。 */
-    fun jumpToNewReply(targetPid: String? = null, fromAnchor: ReadingPositionAnchor? = null) {
+    /** 查看新回复（按目标 `pid`、已有落地页或末页定位），跳前压入 [PositionStack]。 */
+    fun jumpToNewReply(
+        targetPid: String? = null,
+        fromAnchor: ReadingPositionAnchor? = null,
+        redirectedPage: ThreadDetailPage? = null,
+    ) {
         val cur = metaState.value
         if (cur.tid.isBlank()) return
         pushCurrentAnchorForJump(fromAnchor)
         val cleanPid = targetPid?.trim()?.takeIf { it.isNotEmpty() }
+        if (redirectedPage != null && redirectedPage.floors.isNotEmpty()) {
+            val resolvedPid = cleanPid?.takeIf { pid -> redirectedPage.floors.any { it.postId == pid } }
+                ?: redirectedPage.floors.last().postId
+            val token = ++scrollTokenSeq
+            val res = ThreadDetailLoadResult.Success(
+                page = redirectedPage,
+                filter = ThreadDetailFilter.All,
+                forumName = cur.forumName,
+                threadAuthorId = cur.threadAuthorId ?: redirectedPage.floors.firstOrNull { it.floor == 1 }?.uid,
+                targetPostId = resolvedPid,
+            )
+            preFilterAnchor = null
+            cancelPagingJobs()
+            loadJob?.cancel()
+            ++sessionGeneration
+            commitSinglePageSuccess(
+                curTid = cur.tid,
+                res = res,
+                resolvedFilter = ThreadDetailFilterUi.All,
+                pendingScroll = PendingScrollTarget(token, resolvedPid, 0, highlightPostId = resolvedPid),
+                highlightedFloor = HighlightedFloor(resolvedPid, token),
+            )
+            return
+        }
         if (cleanPid != null) loadByPostIdInternal(cleanPid, highlight = true) else loadLastPageInternal()
+    }
+
+    /** 末页末尾附近回复成功：不压位置栈，直接合入新楼层（或刷新末页）并平滑滚至新楼。 */
+    fun onReplySuccessAtTail(redirectedPage: ThreadDetailPage? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
+        if (redirectedPage == null || redirectedPage.floors.isEmpty()) {
+            loadLastPageInternal(smoothScroll = true)
+            return
+        }
+        val incoming = redirectedPage.floors
+        val targetPid = incoming.last().postId
+        val token = ++scrollTokenSeq
+        cancelPagingJobs()
+        loadJob?.cancel()
+        val nextEpoch = ++sessionGeneration
+        metaState.update { state ->
+            val incomingPage = redirectedPage.page.coerceAtLeast(1)
+            val mergedFloors = when {
+                incomingPage in state.firstLoadedPage..state.lastLoadedPage -> {
+                    val incomingIds = incoming.mapTo(HashSet(incoming.size)) { it.postId }
+                    val keptEarlier = state.rawFloors.filter { it.page < incomingPage && it.postId !in incomingIds }
+                    keptEarlier + incoming
+                }
+                incomingPage == state.lastLoadedPage + 1 -> {
+                    val existingIds = state.rawFloors.mapTo(HashSet(state.rawFloors.size + incoming.size)) { it.postId }
+                    state.rawFloors + incoming.filter { existingIds.add(it.postId) }
+                }
+                else -> incoming
+            }
+            val nextFirst = if (incomingPage in state.firstLoadedPage..(state.lastLoadedPage + 1)) {
+                state.firstLoadedPage
+            } else {
+                incomingPage
+            }
+            val nextLastPage = maxOf(state.lastPage, redirectedPage.lastPage, incomingPage).coerceAtLeast(1)
+            state.copy(
+                page = incomingPage,
+                requestedPage = incomingPage,
+                firstLoadedPage = nextFirst,
+                lastLoadedPage = incomingPage,
+                lastPage = nextLastPage,
+                rawFloors = mergedFloors,
+                isLoading = false,
+                isPrepending = false,
+                isAppending = false,
+                prependError = null,
+                appendError = null,
+                resetEpoch = nextEpoch,
+                pendingScroll = PendingScrollTarget(token, targetPid, 0, smooth = true),
+            )
+        }
     }
 
     /**
@@ -803,14 +885,14 @@ class ThreadDetailViewModel(
         },
     )
 
-    private fun loadLastPageInternal() = launchSinglePageLoad(
+    private fun loadLastPageInternal(smoothScroll: Boolean = false) = launchSinglePageLoad(
         keepExistingFloorsOnError = true,
         fetch = { cur -> threadDetailRepository.loadLastPage(cur.tid, recordHistory = false, forumName = cur.forumName, priority = AccessPriority.UserBlocking) },
         onSuccess = { cur, res ->
             val floors = res.page.floors
             commitSinglePageSuccess(
                 curTid = cur.tid, res = res, resolvedFilter = ThreadDetailFilterUi.All,
-                pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(++scrollTokenSeq, floors.lastOrNull()?.postId, 0) else null,
+                pendingScroll = if (floors.isNotEmpty()) PendingScrollTarget(++scrollTokenSeq, floors.lastOrNull()?.postId, 0, smooth = smoothScroll) else null,
             )
         },
     )

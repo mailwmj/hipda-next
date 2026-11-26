@@ -5,6 +5,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -12,6 +14,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -20,6 +23,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -34,6 +38,7 @@ import net.jejer.hipda.data.favorite.FavoriteKind
 import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
 import net.jejer.hipda.feature.common.*
+import net.jejer.hipda.feature.compose.*
 import net.jejer.hipda.feature.threaddetail.chrome.ReadingPositionAnchor
 import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbar
 import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarClearance
@@ -49,8 +54,10 @@ import net.jejer.hipda.feature.threaddetail.media.LocalAboveViewportHeightCompen
 import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
+import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
+import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.hiFadeIn
 import net.jejer.hipda.ui.designsystem.motion.hiFadeOut
 import net.jejer.hipda.ui.designsystem.state.*
@@ -189,10 +196,10 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
             clearLandingAnchor()
         }
 
-        // F1/F2：在 LazyColumn 首次测量之前同步落地 PendingScrollTarget（跨页/本页跳楼、退出只看回原楼、翻页/切 tid），
+        // F1/F2：在 LazyColumn 首次测量之前同步落地非平滑 PendingScrollTarget（跨页/本页跳楼、退出只看回原楼、翻页/切 tid），
         // 彻底消除首帧先闪第 0 项/原过滤首项/offset=0 再跳动的 1 帧闪烁。
         val pending = uiState.pendingScroll
-        if (pending != null && !uiState.isLoading && uiState.floors.isNotEmpty() && pending.id != handledPendingScrollId) {
+        if (pending != null && !pending.smooth && !uiState.isLoading && uiState.floors.isNotEmpty() && pending.id != handledPendingScrollId) {
             handledPendingScrollId = pending.id
             clearPending()
             clearFrameAuthorityState()
@@ -359,6 +366,60 @@ private class PrependAnchorController(initialGeneration: Long, initialHeader: Bo
         clearLandingAnchor()
         listState.scrollToItem(0, 0)
     }
+
+    /** 统一经由单一滚动权威平滑滚至末页新增回复楼层（减动效 0ms 一步到位）。 */
+    suspend fun smoothScrollPendingTarget(
+        uiState: ThreadDetailUiState,
+        listState: LazyListState,
+        reducedMotion: Boolean,
+        onConsumePendingScroll: (Long) -> Unit,
+    ) {
+        val pending = uiState.pendingScroll ?: return
+        if (!pending.smooth || uiState.isLoading || uiState.floors.isEmpty() || pending.id == handledPendingScrollId) return
+        handledPendingScrollId = pending.id
+        clearPending()
+        clearFrameAuthorityState()
+        clearLandingAnchor()
+        val idx = pending.postId?.let { pid -> uiState.floors.indexOfFirst { it.postId == pid }.takeIf { it >= 0 } }
+            ?: uiState.floors.lastIndex
+        val targetIndex = (if (uiState.showPrependHeader) 1 else 0) + idx
+        if (reducedMotion) {
+            listState.scrollToItem(targetIndex, 0)
+        } else {
+            listState.animateScrollToItem(targetIndex, 0)
+        }
+        onConsumePendingScroll(pending.id)
+    }
+
+    /** 常规窗口唤起快速回复面板时按需微调滚动，使正在阅读或被引用的目标楼层露出于面板上方。 */
+    suspend fun keepFloorVisibleAboveSheet(
+        targetPostId: String?,
+        occupiedBottomPx: Float,
+        topClearancePx: Float,
+        listState: LazyListState,
+        reducedMotion: Boolean,
+    ) {
+        if (occupiedBottomPx <= 0f) return
+        val layoutInfo = listState.layoutInfo
+        val viewportHeight = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset).toFloat()
+        val safeBottom = viewportHeight - occupiedBottomPx
+        if (safeBottom <= topClearancePx + 24f) return
+        val visibleFloors = layoutInfo.visibleItemsInfo.filter { (it.key as? String)?.startsWith(FLOOR_KEY_PREFIX) == true }
+        val targetItem = targetPostId?.let { pid -> visibleFloors.firstOrNull { it.key == "$FLOOR_KEY_PREFIX$pid" } }
+            ?: firstVisibleFloor(listState)
+            ?: return
+        val itemBottom = (targetItem.offset + targetItem.size).toFloat()
+        if (itemBottom <= safeBottom) return
+        val maxLiftKeepingTopVisible = (targetItem.offset - topClearancePx).coerceAtLeast(0f)
+        val delta = minOf(itemBottom - safeBottom, maxLiftKeepingTopVisible)
+        if (delta <= 1f || !listState.canScrollForward) return
+        clearLandingAnchor()
+        if (reducedMotion) {
+            listState.scrollBy(delta)
+        } else {
+            listState.animateScrollBy(delta, HiMotion.spatialDefault())
+        }
+    }
 }
 
 private fun resolveFloorIndex(item: LazyListItemInfo?, floors: List<ThreadDetailFloorItem>, headerCount: Int): Int {
@@ -382,7 +443,7 @@ private data class ScrollWindow(
     val hasPendingScroll: Boolean,
 )
 
-/** 帖子详情核心完整面板（M5 `E2a`/`E2d`/`E2c`，严格保持 `E0` 锁定顶层签名、`floor:$postId` 主键与 `PrependAnchorController` 单一滚动权威）。 */
+/** 帖子详情核心完整面板（M5 `E2a`/`E2d`/`E2c`/`E4`/`E5`，严格保持 `E0` 锁定顶层签名、`floor:$postId` 主键与 `PrependAnchorController` 单一滚动权威）。 */
 @Composable
 fun ThreadDetailPane(
     args: ThreadNavArgs,
@@ -393,20 +454,31 @@ fun ThreadDetailPane(
     listState: LazyListState = rememberLazyListState(),
     contentPadding: PaddingValues = PaddingValues(0.dp),
     onOpenImageViewer: (ImageViewerLaunchArgs) -> Unit = {},
-    onOpenReply: (ReplyRequest) -> Unit = {},
+    onOpenReply: ((ReplyRequest) -> Unit)? = null,
     onOpenUserProfile: (uid: String, username: String) -> Unit = { _, _ -> },
     viewModel: ThreadDetailViewModel = viewModel(key = "thread:${args.tid}"),
+    quickReplyViewModel: QuickReplyViewModel? = null,
+    onExpandToFullEditor: ((FullEditorHandoff) -> Unit)? = null,
+    emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
 ) {
     LaunchedEffect(args.tid) { viewModel.bindArgs(args) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val latestUiState by rememberUpdatedState(uiState)
     val context = LocalContext.current
+    val density = LocalDensity.current
+    val reducedMotion = HiTheme.isReducedMotion
     val snackbarController = LocalPaneSnackbarController.current
     val coroutineScope = rememberCoroutineScope()
     val detailGlassState = rememberHiGlassState()
     val activeMenuFloorState = remember(args.tid, uiState.tid) { mutableStateOf<PostFloor?>(null) }
     var activeMenuFloor by activeMenuFloorState
     var isJumpBarExpanded by remember(args.tid) { mutableStateOf(false) }
+    var activeReplyTarget by rememberSaveable(args.tid, stateSaver = QuickReplyTargetSaver) { mutableStateOf<QuickReplyTarget?>(null) }
+    var boundQuickReplyVm by remember(args.tid, quickReplyViewModel) { mutableStateOf(quickReplyViewModel) }
+    var quickReplyOccupiedBottomDp by remember(args.tid) { mutableStateOf(0.dp) }
+    var shouldLiftListForQuickReply by remember(args.tid) { mutableStateOf(false) }
+    val isQuickReplyOpen = activeReplyTarget != null
+    val effectiveSuppressBottomGlass = chromeSpec.suppressBottomGlass || isQuickReplyOpen
 
     // 返回优先级（Addendum #3）：PositionStack 仅在非空时拦截，且优先于 E3 多栏返回栈，
     // 晚于内联跳页条收起与楼层长按菜单关闭（Compose BackHandler 后进先出）。
@@ -604,11 +676,86 @@ fun ThreadDetailPane(
     val copyLinkLabel = stringResource(R.string.thread_detail_more_copy_link)
     val linkCopiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_link_copied)
     val shareChooserTitle = stringResource(R.string.thread_detail_more_share)
+    val draftSavedMsg = stringResource(R.string.compose_snackbar_draft_saved)
+    val discardDraftLabel = stringResource(R.string.compose_action_discard_draft)
+    val replySentMsg = stringResource(R.string.compose_snackbar_reply_sent)
+    val viewReplyLabel = stringResource(R.string.compose_action_view)
     val bottomInset = contentPadding.calculateBottomPadding()
     val fixedBottomClearance = bottomInset + ThreadBottomToolbarClearance
+    val effectiveListBottomClearance = if (isQuickReplyOpen && shouldLiftListForQuickReply) {
+        maxOf(fixedBottomClearance, quickReplyOccupiedBottomDp)
+    } else {
+        fixedBottomClearance
+    }
 
-    LaunchedEffect(bodySlot, chromeSpec.suppressBottomGlass) {
-        if (bodySlot != DetailBodySlot.CONTENT || chromeSpec.suppressBottomGlass) isJumpBarExpanded = false
+    LaunchedEffect(bodySlot, effectiveSuppressBottomGlass) {
+        if (bodySlot != DetailBodySlot.CONTENT || effectiveSuppressBottomGlass) isJumpBarExpanded = false
+    }
+
+    LaunchedEffect(uiState.pendingScroll?.id, uiState.isLoading, uiState.floors.size, reducedMotion) {
+        if (uiState.pendingScroll?.smooth == true && !uiState.isLoading && uiState.floors.isNotEmpty()) {
+            anchorController.smoothScrollPendingTarget(uiState, listState, reducedMotion, viewModel::consumePendingScroll)
+        }
+    }
+
+    LaunchedEffect(activeReplyTarget, quickReplyOccupiedBottomDp, shouldLiftListForQuickReply, topClearance, reducedMotion) {
+        val target = activeReplyTarget
+        if (target != null && shouldLiftListForQuickReply && quickReplyOccupiedBottomDp > 0.dp) {
+            anchorController.keepFloorVisibleAboveSheet(
+                targetPostId = target.targetPid,
+                occupiedBottomPx = with(density) { quickReplyOccupiedBottomDp.toPx() },
+                topClearancePx = with(density) { topClearance.toPx() },
+                listState = listState,
+                reducedMotion = reducedMotion,
+            )
+        }
+    }
+
+    LaunchedEffect(boundQuickReplyVm) {
+        val qrVm = boundQuickReplyVm ?: return@LaunchedEffect
+        qrVm.events.collect { event ->
+            when (event) {
+                is QuickReplyEvent.DraftSaved -> {
+                    coroutineScope.launch {
+                        snackbarController.show(
+                            message = draftSavedMsg,
+                            target = PaneSnackbarTarget.DetailPane,
+                            actionLabel = discardDraftLabel,
+                            onAction = { qrVm.discardSavedDraft(event.draftKey) },
+                        )
+                    }
+                }
+                is QuickReplyEvent.Submitted -> {
+                    activeReplyTarget = null
+                    val snap = latestUiState
+                    if (isNearLastPageTail(snap, listState)) {
+                        viewModel.onReplySuccessAtTail(event.redirectedPage)
+                    } else {
+                        val targetPid = event.redirectedPage?.floors?.lastOrNull()?.postId
+                        coroutineScope.launch {
+                            snackbarController.show(
+                                message = replySentMsg,
+                                target = PaneSnackbarTarget.DetailPane,
+                                actionLabel = viewReplyLabel,
+                                onAction = {
+                                    val anchor = resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)
+                                    viewModel.jumpToNewReply(targetPid = targetPid, fromAnchor = anchor, redirectedPage = event.redirectedPage)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val openQuickReplyOrCallback: (QuickReplyTarget, ReplyRequest) -> Unit = { target, legacyRequest ->
+        if (onOpenReply != null) {
+            onOpenReply(legacyRequest)
+        } else {
+            isJumpBarExpanded = false
+            activeReplyTarget = target
+        }
     }
 
     Surface(modifier = modifier.fillMaxSize(), color = cs.background, contentColor = cs.onBackground) {
@@ -645,7 +792,7 @@ fun ThreadDetailPane(
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier.fillMaxSize().nestedScroll(pagingNestedScroll).hiGlassSource(detailGlassState).background(cs.background),
-                                contentPadding = PaddingValues(top = topClearance, bottom = fixedBottomClearance),
+                                contentPadding = PaddingValues(top = topClearance, bottom = effectiveListBottomClearance),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
                                 if (uiState.showPrependHeader) {
@@ -723,13 +870,23 @@ fun ThreadDetailPane(
                 FilterCapsuleBar(uiState.filter, viewModel::clearFilter)
             }
 
-            // 严格兄弟节点 3：底部三段式液态玻璃工具条与内联跳页条（suppressBottomGlass == true 时整块卸载 HiGlassRegion）
-            if (!chromeSpec.suppressBottomGlass && bodySlot == DetailBodySlot.CONTENT) {
+            // 严格兄弟节点 3：底部三段式液态玻璃工具条与内联跳页条（快速回复面板展开或 suppressBottomGlass == true 时整块卸载 HiGlassRegion）
+            if (!effectiveSuppressBottomGlass && bodySlot == DetailBodySlot.CONTENT) {
                 ThreadBottomToolbar(
                     page = visiblePage, lastPage = uiState.lastPage, isFavorited = uiState.isFavorited, isAttention = uiState.isAttention,
-                    glassState = detailGlassState, suppressBottomGlass = chromeSpec.suppressBottomGlass,
+                    glassState = detailGlassState, suppressBottomGlass = effectiveSuppressBottomGlass,
                     isJumpBarExpanded = isJumpBarExpanded, onExpandedChange = { isJumpBarExpanded = it },
-                    onReplyClick = { onOpenReply(ReplyRequest(tid = uiState.tid)) },
+                    onReplyClick = {
+                        openQuickReplyOrCallback(
+                            QuickReplyTarget(
+                                tid = uiState.tid.ifBlank { args.tid },
+                                fid = uiState.fid.takeIf { it > 0 } ?: args.fid,
+                                mode = QuickReplyMode.ReplyThread,
+                                threadAuthor = uiState.threadAuthorName ?: args.author,
+                            ),
+                            ReplyRequest(tid = uiState.tid),
+                        )
+                    },
                     onJumpToPage = { targetPage -> viewModel.jumpToPage(targetPage, resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)) },
                     onToggleFavorite = viewModel::toggleFavorite, onRefreshClick = viewModel::refreshCurrentPage,
                     onToggleAttention = viewModel::toggleAttention,
@@ -753,10 +910,32 @@ fun ThreadDetailPane(
                 isLoggedIn = uiState.isLoggedIn,
                 currentUserUid = uiState.currentUserUid,
                 onQuoteReply = { floor ->
-                    onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = floor.postId, quoteAuthor = floor.author, quoteFloor = floor.floor))
+                    openQuickReplyOrCallback(
+                        QuickReplyTarget(
+                            tid = uiState.tid.ifBlank { args.tid },
+                            fid = uiState.fid.takeIf { it > 0 } ?: args.fid,
+                            mode = QuickReplyMode.QuotePost,
+                            targetPid = floor.postId,
+                            targetAuthor = floor.author,
+                            targetFloor = floor.floor,
+                            threadAuthor = uiState.threadAuthorName ?: args.author,
+                        ),
+                        ReplyRequest(tid = uiState.tid, quotePid = floor.postId, quoteAuthor = floor.author, quoteFloor = floor.floor),
+                    )
                 },
                 onReply = { floor ->
-                    onOpenReply(ReplyRequest(tid = uiState.tid, quotePid = null, quoteAuthor = floor.author, quoteFloor = floor.floor))
+                    openQuickReplyOrCallback(
+                        QuickReplyTarget(
+                            tid = uiState.tid.ifBlank { args.tid },
+                            fid = uiState.fid.takeIf { it > 0 } ?: args.fid,
+                            mode = QuickReplyMode.ReplyPost,
+                            targetPid = floor.postId,
+                            targetAuthor = floor.author,
+                            targetFloor = floor.floor,
+                            threadAuthor = uiState.threadAuthorName ?: args.author,
+                        ),
+                        ReplyRequest(tid = uiState.tid, quotePid = null, quoteAuthor = floor.author, quoteFloor = floor.floor),
+                    )
                 },
                 onFilterByUser = { floor ->
                     val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "$FLOOR_KEY_PREFIX${floor.postId}" }
@@ -773,8 +952,47 @@ fun ThreadDetailPane(
                 onOpenLogin = onOpenLogin,
                 onDismiss = { activeMenuFloor = null },
             )
+
+            // 严格兄弟节点 5（详情容器最顶层）：毛玻璃快速回复面板（复用 detailGlassState，与底部工具条互斥守 ≤ 3 玻璃预算）
+            if (isQuickReplyOpen) {
+                val resolvedQuickReplyVm = quickReplyViewModel ?: viewModel<QuickReplyViewModel>(key = "quick_reply:${args.tid}")
+                SideEffect { if (boundQuickReplyVm !== resolvedQuickReplyVm) boundQuickReplyVm = resolvedQuickReplyVm }
+                LaunchedEffect(activeReplyTarget, resolvedQuickReplyVm) {
+                    val target = activeReplyTarget ?: return@LaunchedEffect
+                    resolvedQuickReplyVm.open(target) { pid ->
+                        latestUiState.floors.firstOrNull { it.postId == pid }?.let { it.floor.floor to it.floor.author }
+                    }
+                }
+                QuickReplySheet(
+                    viewModel = resolvedQuickReplyVm,
+                    glassState = detailGlassState,
+                    onDismissFinished = { activeReplyTarget = null },
+                    onOpenLogin = onOpenLogin,
+                    bottomInset = bottomInset,
+                    onExpandToFullEditor = onExpandToFullEditor,
+                    emojiPanelSlot = emojiPanelSlot,
+                    onOccupiedBottomChanged = { occupied, shouldLift ->
+                        quickReplyOccupiedBottomDp = occupied
+                        shouldLiftListForQuickReply = shouldLift
+                    },
+                )
+            }
         }
     }
+}
+
+private fun isNearLastPageTail(
+    s: ThreadDetailUiState,
+    listState: LazyListState,
+): Boolean {
+    if (s.filter !is ThreadDetailFilterUi.All) return false
+    if (s.floors.isEmpty() || s.lastLoadedPage < s.lastPage) return false
+    if (!listState.canScrollForward) return true
+    val header = if (s.showPrependHeader) 1 else 0
+    val lastVisibleFloor = listState.layoutInfo.visibleItemsInfo
+        .lastOrNull { (it.key as? String)?.startsWith(FLOOR_KEY_PREFIX) == true }
+    val lastVisibleIdx = resolveFloorIndex(lastVisibleFloor, s.floors, header)
+    return lastVisibleIdx >= (s.floors.lastIndex - 2).coerceAtLeast(0)
 }
 
 private fun resolveViewportAnchor(

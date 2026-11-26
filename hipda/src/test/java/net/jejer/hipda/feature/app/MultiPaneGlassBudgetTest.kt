@@ -31,6 +31,8 @@ import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.compose.FakePostRepository
+import net.jejer.hipda.feature.compose.QuickReplyViewModel
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.ui.designsystem.HiTheme
@@ -383,5 +385,93 @@ class MultiPaneGlassBudgetTest {
             composeRule.mainClock.autoAdvance = true
         }
         composeRule.waitForIdle()
+    }
+
+    /**
+     * E5 验收项 1（三栏快速回复面板玻璃预算与右栏边界）：
+     * 三栏下点底部工具条 `回复` 展开 `QuickReplySheet` 时，必须彻底卸载底部三段工具条 `HiGlassMarker` 与 `drawBackdrop`，
+     * 守住同屏 `HiGlassMarker == 3 (≤ 3)`、独立 `LayerBackdrop == 2 (≤ 2)`、0 嵌套、`drawBackdrop ≤ 5`，
+     * 且面板严格限定在右栏宽度内；关闭面板后底部工具条自动恢复。
+     */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun threePane_quickReplyExpanded_unmountsBottomToolbarGlassAndStaysInRightPane_within3Markers_2Sources_5Passes() {
+        val harness = MultiPaneTestHarness()
+        val fakePostRepo = FakePostRepository()
+        val combinedFactory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = when {
+                modelClass.isAssignableFrom(QuickReplyViewModel::class.java) ->
+                    QuickReplyViewModel(fakePostRepo, harness.authRepo) as T
+                else -> harness.vmFactory.create(modelClass)
+            }
+        }
+        val combinedOwner = object : androidx.lifecycle.ViewModelStoreOwner, androidx.lifecycle.HasDefaultViewModelProviderFactory {
+            override val viewModelStore = harness.parentOwner.viewModelStore
+            override val defaultViewModelProviderFactory = combinedFactory
+        }
+
+        composeRule.setContent {
+            ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides combinedOwner,
+                ) {
+                    NextAppRoot(
+                        settingsFlow = harness.settingsRepo.settings,
+                        currentAccountFlow = harness.authRepo.currentAccount,
+                        smsUnreadCountFlow = harness.smsUnread,
+                        notifyUnreadCountFlow = harness.notifyUnread,
+                        hostViewModel = harness.hostViewModel,
+                        forumViewModel = harness.forumViewModel,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 打开帖子 1001：默认三栏 3 Marker / 2 LayerBackdrop / 5 drawBackdrop
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        assertEquals(3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+
+        // 2. 点击底部工具条「回复」展开毛玻璃快速回复面板
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+
+        // 底部三段工具条必须已彻底卸载（页码胶囊不存在），快速回复面板把手可见且严格落在右栏（≥ 338dp）
+        assertEquals(
+            "快速回复展开时底部工具条进度胶囊必须已卸载",
+            0,
+            composeRule.onAllNodes(
+                SemanticsMatcher("pageCapsule") { node ->
+                    node.config.contains(SemanticsProperties.ContentDescription) &&
+                        node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开跳页") }
+                },
+            ).fetchSemanticsNodes().size,
+        )
+        val handleBounds = composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val handleLeftDp = with(composeRule.density) { handleBounds.left.toDp().value }
+        val handleRightDp = with(composeRule.density) { handleBounds.right.toDp().value }
+        assertTrue("三栏快速回复面板左缘 ${handleLeftDp}dp 不得越过中右分隔线 338dp", handleLeftDp >= 337.5f)
+        assertTrue("三栏快速回复面板右缘 ${handleRightDp}dp 不得溢出窗口 749dp", handleRightDp <= 749.5f)
+
+        val expandedMarkers = composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes()
+        assertEquals("三栏展开快速回复面板时应恰有 3 个 HiGlassMarker（中顶栏 + 右顶栏 + 快速回复面板）", 3, expandedMarkers.size)
+        composeRule.assertGlassSurfaceCountAtMost(HiGlassTokens.MaxGlassSurfacesOnScreen)
+
+        val expandedAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertEquals("独立 LayerBackdrop 采样源必须仍为 2（复用 detailGlassState，绝不新增第 3 源）", 2, expandedAudit.layerBackdropCount)
+        assertEquals("严禁父子嵌套 LayerBackdrop", 0, expandedAudit.nestedLayerBackdropCount)
+        assertTrue("三栏快速回复展开时静止 drawBackdrop pass 必须 ≤ 5，实际=${expandedAudit.drawBackdropCount}", expandedAudit.drawBackdropCount <= 5)
+
+        // 3. 收起快速回复面板：底部三段工具条自动恢复，预算保持 3 / 2 / ≤ 5
+        composeRule.onNodeWithContentDescription("收起回复面板").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").assertIsDisplayed()
+        assertEquals(3, composeRule.onAllNodes(SemanticsMatcher.expectValue(HiGlassMarker, true), useUnmergedTree = true).fetchSemanticsNodes().size)
+        val restoredAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
+        assertEquals(2, restoredAudit.layerBackdropCount)
+        assertEquals(0, restoredAudit.nestedLayerBackdropCount)
+        assertTrue(restoredAudit.drawBackdropCount <= 5)
     }
 }
