@@ -3,8 +3,20 @@
     <!-- 论坛顶栏动作与排序菜单（逐字取自 docs/design/copy.md） -->
     <string name="forum_action_new_thread">发新帖</string>
     <string name="forum_action_more">更多</string>
+    <string name="forum_action_filter_type">分类</string>
     <string name="forum_sort_by_reply">按回复排序</string>
     <string name="forum_sort_by_post">按发帖排序</string>
+
+    <!-- Buy & Sell（fid=6）分类筛选项（逐字取自旧版 HiUtils.BS_TYPES） -->
+    <string name="forum_bs_type_all">全部</string>
+    <string name="forum_bs_type_phone">手机</string>
+    <string name="forum_bs_type_pda">掌上电脑</string>
+    <string name="forum_bs_type_laptop">笔记本电脑</string>
+    <string name="forum_bs_type_wireless">无线产品</string>
+    <string name="forum_bs_type_camera">数码相机、摄像机</string>
+    <string name="forum_bs_type_mp3">MP3随身听</string>
+    <string name="forum_bs_type_accessories">各类配件</string>
+    <string name="forum_bs_type_other">其他好玩的</string>
 
     <!-- 新帖提示胶囊（逐字取自 docs/design/copy.md） -->
     <string name="forum_new_threads_pill">有 %1$d 条新帖</string>

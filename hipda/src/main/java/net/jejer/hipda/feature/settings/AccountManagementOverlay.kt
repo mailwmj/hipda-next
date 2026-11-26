@@ -45,11 +45,12 @@ data class AccountManagementUiState(
     val currentAccount: SavedAccount? = null,
     val savedAccounts: List<SavedAccount> = emptyList(),
     val switchingUid: String? = null,
+    val removingUid: String? = null,
     val isLoggingOut: Boolean = false,
     val isClearingCredentials: Boolean = false,
     @param:StringRes val errorRes: Int? = null,
 ) {
-    val isBusy: Boolean get() = switchingUid != null || isLoggingOut || isClearingCredentials
+    val isBusy: Boolean get() = switchingUid != null || removingUid != null || isLoggingOut || isClearingCredentials
 }
 
 /** 正式账号管理 ViewModel：切号免确认、退出登录免确认保留凭据、清除登录信息删除保存密码并退出。 */
@@ -87,6 +88,24 @@ class AccountManagementViewModel(private val authRepository: AuthRepository) : V
     fun clearCredentialsAndLogout(uid: String, snackbar: PaneSnackbarController, loggedOutMessage: String, onDone: () -> Unit) =
         runAccountAction({ copy(isClearingCredentials = it) }, snackbar, loggedOutMessage, onDone) { authRepository.removeAccount(uid) }
 
+    fun removeSavedAccount(account: SavedAccount, snackbar: PaneSnackbarController, removedTemplate: String) {
+        val s = _uiState.value
+        if (s.isBusy || s.currentAccount?.uid == account.uid) return
+        _uiState.update { it.copy(removingUid = account.uid, errorRes = null) }
+        viewModelScope.launch {
+            val ok = try {
+                authRepository.removeAccount(account.uid)
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _uiState.update { it.copy(errorRes = R.string.common_error_load_failed) }
+                false
+            }.also { _uiState.update { cur -> cur.copy(removingUid = null) } }
+            if (ok) snackbar.show(String.format(removedTemplate, account.username), PaneSnackbarTarget.ContentArea)
+        }
+    }
+
     private fun runAccountAction(markBusy: AccountManagementUiState.(Boolean) -> AccountManagementUiState, snackbar: PaneSnackbarController, doneMessage: String, onDone: () -> Unit, block: suspend () -> Unit) {
         if (_uiState.value.isBusy) return
         _uiState.update { it.markBusy(true).copy(errorRes = null) }
@@ -110,9 +129,16 @@ fun AccountManagementOverlay(viewModel: AccountManagementViewModel, onAddAccount
     val snackbar = LocalPaneSnackbarController.current
     val switchedFmt = stringResource(R.string.settings_account_switched)
     val loggedOutMsg = stringResource(R.string.settings_account_logged_out)
+    val removedFmt = stringResource(R.string.settings_account_removed)
     AccountManagementContent(
-        uiState, { viewModel.switchAccount(it, snackbar, switchedFmt, onDismiss) }, onAddAccount,
-        { viewModel.logout(snackbar, loggedOutMsg, onDismiss) }, { viewModel.clearCredentialsAndLogout(it, snackbar, loggedOutMsg, onDismiss) }, onDismiss, modifier,
+        uiState = uiState,
+        onSwitchAccount = { viewModel.switchAccount(it, snackbar, switchedFmt, onDismiss) },
+        onAddAccount = onAddAccount,
+        onLogout = { viewModel.logout(snackbar, loggedOutMsg, onDismiss) },
+        onClearCredentials = { viewModel.clearCredentialsAndLogout(it, snackbar, loggedOutMsg, onDismiss) },
+        onDismiss = onDismiss,
+        onRemoveSavedAccount = { viewModel.removeSavedAccount(it, snackbar, removedFmt) },
+        modifier = modifier,
     )
 }
 
@@ -124,6 +150,7 @@ fun AccountManagementContent(
     onLogout: () -> Unit,
     onClearCredentials: (String) -> Unit,
     onDismiss: () -> Unit,
+    onRemoveSavedAccount: (SavedAccount) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -131,6 +158,7 @@ fun AccountManagementContent(
     val isModalCard = windowSize.width >= ACCOUNT_MODAL_WIDTH_BREAKPOINT && windowSize.height >= ACCOUNT_MODAL_HEIGHT_BREAKPOINT
     val title = stringResource(R.string.settings_account_title)
     var confirmClear by remember { mutableStateOf<SavedAccount?>(null) }
+    var confirmRemoveSaved by remember { mutableStateOf<SavedAccount?>(null) }
     BackHandler(enabled = !uiState.isBusy, onBack = onDismiss)
 
     val panel: @Composable (Modifier) -> Unit = { mod ->
@@ -152,7 +180,7 @@ fun AccountManagementContent(
                             Row(
                                 modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 60.dp)
                                     .clickable(remember { MutableInteractionSource() }, hiListItemPressIndication(), enabled = !isCurrent && !uiState.isBusy) { onSwitchAccount(account.uid) }
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    .padding(start = 14.dp, end = if (isCurrent) 14.dp else 4.dp, top = 6.dp, bottom = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
                                 Box(Modifier.size(40.dp).clip(HiShapeTokens.Full).background(if (isCurrent) cs.primaryContainer else cs.surfaceContainerHigh), Alignment.Center) {
@@ -162,7 +190,21 @@ fun AccountManagementContent(
                                     Text(account.username, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     if (isCurrent) Text(stringResource(R.string.settings_account_current), style = MaterialTheme.typography.bodySmall, color = cs.primary)
                                 }
-                                if (uiState.switchingUid == account.uid) HiLoadingSpinner(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                when {
+                                    uiState.switchingUid == account.uid || uiState.removingUid == account.uid ->
+                                        Box(Modifier.size(48.dp), Alignment.Center) { HiLoadingSpinner(Modifier.size(20.dp), strokeWidth = 2.dp) }
+                                    !isCurrent -> {
+                                        val removeInt = remember(account.uid) { MutableInteractionSource() }
+                                        IconButton(
+                                            onClick = { confirmRemoveSaved = account },
+                                            modifier = Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(removeInt),
+                                            enabled = !uiState.isBusy,
+                                            interactionSource = removeInt,
+                                        ) {
+                                            Icon(Icons.Rounded.Close, stringResource(R.string.settings_account_remove_cd, account.username), tint = cs.onSurfaceVariant)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -205,6 +247,15 @@ fun AccountManagementContent(
             title = { Text(stringResource(R.string.settings_account_clear_confirm_title, target.username)) },
             dismissButton = { TextButton({ confirmClear = null }, Modifier.defaultMinSize(48.dp, 48.dp), enabled = !uiState.isBusy) { Text(stringResource(R.string.settings_action_cancel)) } },
             confirmButton = { TextButton({ confirmClear = null; onClearCredentials(target.uid) }, Modifier.defaultMinSize(48.dp, 48.dp), enabled = !uiState.isBusy, colors = ButtonDefaults.textButtonColors(contentColor = cs.error)) { Text(stringResource(R.string.settings_account_clear_confirm_action)) } },
+        )
+    }
+
+    confirmRemoveSaved?.let { target ->
+        AlertDialog(
+            onDismissRequest = { if (!uiState.isBusy) confirmRemoveSaved = null }, shape = HiShapeTokens.Large,
+            title = { Text(stringResource(R.string.settings_account_remove_confirm_title, target.username)) },
+            dismissButton = { TextButton({ confirmRemoveSaved = null }, Modifier.defaultMinSize(48.dp, 48.dp), enabled = !uiState.isBusy) { Text(stringResource(R.string.settings_action_cancel)) } },
+            confirmButton = { TextButton({ confirmRemoveSaved = null; onRemoveSavedAccount(target) }, Modifier.defaultMinSize(48.dp, 48.dp), enabled = !uiState.isBusy, colors = ButtonDefaults.textButtonColors(contentColor = cs.error)) { Text(stringResource(R.string.settings_account_clear_confirm_action)) } },
         )
     }
 }

@@ -43,6 +43,7 @@ import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
 import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
+import net.jejer.hipda.ui.designsystem.topbar.hiTopBarTapToScrollTop
 
 /** 帖子详情透明顶栏固定高度（不含状态栏内边距），供楼层 `LazyColumn` 顶部固定 `contentPadding` 对齐。 */
 internal val ThreadDetailTopBarHeight: Dp = 60.dp
@@ -62,6 +63,7 @@ internal fun ThreadDetailTopBar(
     onBack: () -> Unit,
     onToggleAuthorOnly: () -> Unit,
     modifier: Modifier = Modifier,
+    onScrollToTop: (() -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val darkTheme = HiTheme.state.darkTheme
@@ -98,7 +100,14 @@ internal fun ThreadDetailTopBar(
                     if (chromeSpec.showBack) {
                         TopBarCircleActionButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back), false, darkTheme, onBack)
                     }
-                    Column(Modifier.weight(1f).padding(horizontal = if (chromeSpec.showBack) 4.dp else 8.dp), verticalArrangement = Arrangement.Center) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop) else Modifier)
+                            .padding(horizontal = if (chromeSpec.showBack) 4.dp else 8.dp),
+                        verticalArrangement = Arrangement.Center,
+                    ) {
                         Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         authorName?.trim()?.takeIf { it.isNotEmpty() }?.let { opName ->
                             Text("${stringResource(R.string.thread_detail_badge_op)} · $opName", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)

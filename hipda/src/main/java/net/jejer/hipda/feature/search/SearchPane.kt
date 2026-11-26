@@ -28,6 +28,8 @@ import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.feedback.*
 import net.jejer.hipda.ui.designsystem.motion.*
 import net.jejer.hipda.ui.designsystem.state.HiStateAction
+import net.jejer.hipda.ui.designsystem.topbar.hiTopBarTapToScrollTop
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 import net.jejer.hipda.ui.shell.ForumMetadataRegistry
 
 /** 新版搜索页（product-design.md §3、§7.7；纯色顶栏，零毛玻璃）。 */
@@ -72,11 +74,13 @@ internal fun SearchScreenContent(
 ) {
     val cs = MaterialTheme.colorScheme; val searchPaneTitle = stringResource(R.string.shell_nav_search)
     val isScrolled by rememberListScrolled(listState)
+    val scrollToTop = rememberHiScrollToTopAction(listState)
     val topBarColor by animateColorAsState(if (isScrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "SearchTopBarColor")
     val clearDesc = stringResource(R.string.search_action_clear_input)
+    val openLastPageLabel = stringResource(R.string.common_action_open_last_page)
 
     Column(modifier.fillMaxSize().background(cs.surface).semantics { paneTitle = searchPaneTitle; isTraversalGroup = true }) {
-        Column(Modifier.fillMaxWidth().background(topBarColor)) {
+        Column(Modifier.fillMaxWidth().background(topBarColor).hiTopBarTapToScrollTop(scrollToTop)) {
             Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
             Row(Modifier.fillMaxWidth().padding(start = if (showBack && onBack != null) 4.dp else 16.dp, end = 16.dp, top = 8.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (showBack && onBack != null) MineIconButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back), onBack, cs.onSurface, 24.dp)
@@ -112,9 +116,19 @@ internal fun SearchScreenContent(
                 { "${it.tid.orEmpty()}:${it.pid.orEmpty()}:${it.title}" }, { vm?.refresh() }, { vm?.loadMore() }, { vm?.retry(it) }, onOpenLogin,
                 Modifier.weight(1f), emptyAction = if (uiState.hasActiveFilters) HiStateAction(stringResource(R.string.search_action_clear_filters)) { vm?.clearFiltersAndRetry() } else null,
             ) { item ->
-                MineThreadRow(item.title, item.snippet, item.forumName, item.author, item.time) {
-                    val tid = item.tid?.takeIf(String::isNotBlank) ?: return@MineThreadRow
-                    onOpenThread(ThreadNavArgs(tid, item.title, forumName = item.forumName, author = item.author, targetPid = item.pid?.takeIf(String::isNotBlank)))
+                val navArgs = item.tid?.takeIf(String::isNotBlank)?.let { tid ->
+                    ThreadNavArgs(tid, item.title, forumName = item.forumName, author = item.author, targetPid = item.pid?.takeIf(String::isNotBlank))
+                }
+                MineThreadRow(
+                    title = item.title,
+                    preview = item.snippet,
+                    forumName = item.forumName,
+                    author = item.author,
+                    time = item.time,
+                    onLongClickLabel = openLastPageLabel,
+                    onLongClick = navArgs?.let { args -> { onOpenThread(args.copy(openLastPage = true)) } },
+                ) {
+                    navArgs?.let(onOpenThread)
                 }
             }
         }

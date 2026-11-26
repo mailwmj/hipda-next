@@ -124,7 +124,9 @@ class MultiPaneDividerGestureTest {
         assertTrue("R-E3 B1：在分隔线热区附近竖滑必须滚动中栏列表，before=$scrollBefore after=$scrollAfter", scrollAfter > scrollBefore)
 
         // 3. 打开帖子后，横向拖动分隔线仍然有效并吸附至 COLLAPSED（0dp）
-        composeRule.onNodeWithText("测试帖子标题 1005").performClick()
+        // 第 2 步竖滑后「测试帖子标题 1005」已滚入 56dp 浮空顶栏后方；M7-G1 #3 使顶栏空白区消费点击并回顶，
+        // 改点位于顶栏下方完全可见的「测试帖子标题 1008」，保持 B1 全部断言与验收条件不变。
+        composeRule.onNodeWithText("测试帖子标题 1008").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag(HiShellTestTags.PaneDivider).performTouchInput {
             down(center)

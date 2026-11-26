@@ -1,15 +1,22 @@
 package net.jejer.hipda.feature.threaddetail
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +62,7 @@ internal fun PostFloorCard(
     onLinkClick: ((String) -> Unit)? = null,
     onJumpToFloor: ((targetPid: String, targetTid: String?) -> Unit)? = null,
     onLongPress: ((PostFloor) -> Unit)? = null,
+    onWarningClick: ((PostFloor) -> Unit)? = null,
     highlightToken: Long? = null,
     onHighlightFinished: (Long) -> Unit = {},
     pollSlot: (@Composable (ThreadPoll) -> Unit)? = null,
@@ -135,7 +143,15 @@ internal fun PostFloorCard(
                     Text(floor.timePost, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            Text(stringResource(R.string.common_floor_badge, floor.floor), style = MaterialTheme.typography.labelMedium, color = cs.primary, maxLines = 1)
+            if (floor.isWarned && !item.isAuthorBlocked) {
+                WarnedFloorBadge(
+                    floorNumber = floor.floor,
+                    clickable = onWarningClick != null && floor.uid.isNotBlank(),
+                    onClick = { onWarningClick?.invoke(floor) },
+                )
+            } else {
+                Text(stringResource(R.string.common_floor_badge, floor.floor), style = MaterialTheme.typography.labelMedium, color = cs.primary, maxLines = 1)
+            }
         }
 
         Spacer(Modifier.height(4.dp))
@@ -160,6 +176,29 @@ internal fun PostFloorCard(
                 floor.postStatus?.trim()?.takeIf { it.isNotEmpty() }?.let { status ->
                     Text(status, style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, color = cs.onSurfaceVariant)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WarnedFloorBadge(floorNumber: Int, clickable: Boolean, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val description = stringResource(R.string.thread_detail_warning_badge_description, floorNumber)
+    val clickMod = if (clickable) {
+        Modifier.clickable(remember { MutableInteractionSource() }, LocalIndication.current, role = Role.Button, onClick = onClick)
+    } else {
+        Modifier
+    }
+    Box(
+        modifier = Modifier.defaultMinSize(48.dp, 48.dp).clip(HiShapeTokens.Small)
+            .semantics(mergeDescendants = true) { contentDescription = description }.then(clickMod),
+        contentAlignment = Alignment.CenterEnd,
+    ) {
+        Surface(shape = HiShapeTokens.Small, color = cs.errorContainer, contentColor = cs.onErrorContainer, border = BorderStroke(0.5.dp, cs.error.copy(alpha = 0.55f))) {
+            Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Icon(Icons.Rounded.Warning, contentDescription = null, tint = cs.onErrorContainer, modifier = Modifier.size(14.dp))
+                Text(stringResource(R.string.common_floor_badge, floorNumber), style = MaterialTheme.typography.labelMedium, color = cs.onErrorContainer, maxLines = 1)
             }
         }
     }

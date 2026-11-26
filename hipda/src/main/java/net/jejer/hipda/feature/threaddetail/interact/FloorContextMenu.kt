@@ -10,7 +10,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -83,6 +85,8 @@ fun FloorContextMenuOverlay(
     onOpenLogin: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    onSelectText: (PostFloor) -> Unit = {},
+    onShare: (PostFloor) -> Unit = {},
     onEdit: (PostFloor) -> Unit = {},
     onDelete: (PostFloor) -> Unit = {},
 ) {
@@ -125,7 +129,7 @@ fun FloorContextMenuOverlay(
                 color = cs.surfaceContainerHigh,
                 shadowElevation = 6.dp,
             ) {
-                Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp)) {
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 8.dp)) {
                     Text(
                         text = title, style = MaterialTheme.typography.titleSmall, color = cs.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -143,6 +147,8 @@ fun FloorContextMenuOverlay(
                         FloorMenuActionRow(stringResource(R.string.thread_detail_menu_user_only)) { onDismiss(); onFilterByUser(activeFloor) }
                     }
                     FloorMenuActionRow(stringResource(R.string.thread_detail_menu_copy)) { onDismiss(); onCopy(activeFloor) }
+                    FloorMenuActionRow(stringResource(R.string.thread_detail_menu_select_text)) { onDismiss(); onSelectText(activeFloor) }
+                    FloorMenuActionRow(stringResource(R.string.thread_detail_menu_share)) { onDismiss(); onShare(activeFloor) }
                     if (isOwnFloor) {
                         HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f))
                         FloorMenuActionRow(stringResource(R.string.thread_detail_menu_edit)) { onDismiss(); onEdit(activeFloor) }

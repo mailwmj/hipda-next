@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-26 13:01 +07）
+# 负责人交接说明（2026-11-26 15:11 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -7,7 +7,7 @@
 ## 1. 全局进度总览
 
 - 设计与流程文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4；`docs/agents/decisions.md`（`0895b83`）；`docs/agents/DISPATCH.md`、`lesson.md` 与 `docs/agents/cards/_common.md` 已落地站点 scheme 白名单阻断（`00cb3c4`）、**流程提速**（`e735e7a` + `5bae5ab`）、2 条通用新规（`1dc594e`）、“跨卡浮层/返回/玻璃卡必做合入后真实链路探针”（`3617fad`）以及“常驻浮层/抽屉 `BackHandler` 须条件启用并按打开状态重挂至 LIFO 栈顶”经验。另外 **`team-lead` skill 已提交 `5a2fc95`，等待用户确认是否推送**。
-- **已合并进 `main`**（当前代码 `HEAD`：`6ff55a9`；**M5、M6 全部完成，`E5` 审查/验证中，`E6`/`E7` 待派，之后 `M7-1..5`**；M5 验收包已更新至 `docs/device-check.md`）：
+- **已合并进 `main`**（当前代码 `HEAD`：`f2fbe60`；**M5、M6 全部完成，`E5`、`M7-0`、`M7-G4`、`M7-G1`、`M7-G2` 已合入；`E6` 与 `M7-G3` 在途；`E6b` 待 `E6` 与 `M7-G3` 合入后派；`E7` 在 `E6` 后；之后 `M7-1..5`**；M5 验收包已更新至 `docs/device-check.md`）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
   - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
@@ -61,21 +61,27 @@
     - M6-polish M6 跨卡与各页 6 项小修（`SmsConversationScreen` 冷却/错误顶替旧撤销条、`NextAppStateSaver` 短消息仅存 `uid`、`detail:$tid` 20 帖 LRU 淘汰、`BlacklistViewModel` 排在途移除项、`Search`/`Favorites` 无未决令牌刷新秩表、`ImageViewerOverlay` 多图远滑重返不重弹提示；R-M6-polish APPROVE `@0e186fb`）→ `0eebc8a`
     - E4 阅读位置记忆（`NonCancellable` 串行落盘与首轮门闩）、`PositionStack`（返回优先级低于模态抽屉）、底部三段式液态玻璃工具条（支持 `suppressBottomGlass` 与 `LocalHiGlassSuspended` 暂停采样）、内联跳页条、`rawUserInfo` 链接安全加固、`E2d` 方案 B 移除旧分页栏与 `R-C5b` 收口（R-E4 两轮 APPROVE `@bed7fcc`；V-E4 首轮 FAIL `probeD2` 抽屉返回被位置栈抢占 → 第 2 轮 PASS，CI `45757086073`）→ `92e1563`（**main CI `45758541824` 绿，M5 全部完成**）
     - E16 外部链接、桌面快捷方式、通知直达、帖子站内链接、鉴权附件下载与剩余路由总收口（唯一 `SafeLinkPolicy` 统一 5 份白名单并吸收 `rawUserInfo` 防护、未知链接排他浏览器回落防自环、路径净化与 `MediaStore`/API 28 权限落盘及跨域零 Cookie 隔离、`管理版块` 接通与 `R-M6-polish S1` 撤回必红收口；R-E16 APPROVE `@b415a6c`；V-E16 7 组探针 PASS，CI `45763289885`）→ `6ff55a9`（**M6 全部完成**）
+    - M7-0 只读功能对齐审计（Hydrogen 盘点旧版 `ui/` 共 127 项用户可见功能，检出 14 项缺失并拆为 `M7-G1..G4` 与 `E7 #11` 补齐；报告归档 `docs/agents/reports/M7-0.md`）
+    - M7-G4 短消息列表顶栏 `发送短消息`（任意用户名 + 15s 冷却）与气泡长按 `复制` 纯文本（R-M7-G4 APPROVE `@6df20f3`，含 7 张截图目视复核）→ `fd414a1`
+    - E5 毛玻璃跟手弹出快速回复面板（`HiGlassStyle.Sheet` 卸载底栏守 ≤ 3 区域、IME 逐帧升降与 6 级优先级让位 `SheetSlotPlan + Column`、同步拖拽与 `try/finally` 终态过渡、草稿与 `R-D6 S2` 删空清库、30s 冷却与 `@BindsOptionalOf` 三插槽；R-E5 三轮，第 3 轮 APPROVE `@a5c9440`；V-E5 首轮 FAIL 拖拽异步 `snapTo` → 第 2、3 轮 16/16 探针 PASS）→ `afa3783`
+    - M7-G1 Buy&Sell（`fid=6`）9 项分类筛选、设计系统统一顶栏滚顶原语与论坛/我的/搜索/资料页接线、六类列表长按直达末页、资料页点大头像按 Coil key 清除内存+磁盘缓存重载（R-M7-G1 APPROVE `@e4690ea`，含 2 张新截图目视复核；`R-M7-G1 S1` 文案已同步 `copy.md`）→ `83484fd`
+    - M7-G2 移除非当前已存账号凭据、冷启动 `NotificationScheduler.syncFromSettings()`、帖子看图多图图集接口（`ThreadImageGallery` + `PostImageBlock`）、关于页三文档（`release-notes`/`donors`/`license`）与按 `versionCode` 升级首启更新记录弹窗（R-M7-G2 APPROVE `@4b3c1b9`；建议修复 `@5317579` 闭合 S1 全新安装静默不弹与 S4 `copy.md` 同步，经负责人核对）→ `f2fbe60`
 - **阶段验收状态**：
   - **M1 / M2 / M3 / M4**：均已验收通过或全部合入（M4 待用户用真机包调参回写 §5）。
   - **M5 阅读核心全部完成**（9/9 卡全部合入，`main @ 92e1563`，CI `45758541824` 绿；M5 真机验收清单已更新至 `docs/device-check.md`）。
   - **M6 页面群全部完成**（`E-slots` `4b6c1f0`、`E8` `0883c89`、`E12` `158ac9c`、`E10` `eb1ace1`、`E14` `1cffcd9`、`M6-polish` `0eebc8a`、`E16` `6ff55a9` 全部已合入）。
-  - **发帖链路与后续里程碑**：**`E5` 审查/验证中**，**`E6`/`E7` 待派**；之后进入 **`M7-1..5`**。
-- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `E16`/`R-E16`/`V-E16` 全套卡与报告；`E2c`/`E-slots` 卡报位于工作副本待补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`、`_review_common.md`、`_verify_common.md`。
+  - **发帖链路与 M7 对齐补齐**：`E5`（`afa3783`）、`M7-0`、`M7-G4`（`fd414a1`）、`M7-G1`（`83484fd`）、`M7-G2`（`f2fbe60`）已合入；**`E6` 与 `M7-G3` 在途**；**`E6b` 待 `E6` 与 `M7-G3` 合入后派**；**`E7` 在 `E6` 后**；之后进入 **`M7-1..5`**。
+- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `E5`/`R-E5`/`V-E5`、`M7-0`、`M7-G4`/`R-M7-G4`、`M7-G1`/`R-M7-G1`、`M7-G2`/`R-M7-G2` 全套卡与报告；`E2c`/`E-slots` 卡报位于工作副本待补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`、`_review_common.md`、`_verify_common.md`。
 
 ## 2. 进行中与待派发
 
 | 卡号 | 分支 / worktree | 状态 |
 |---|---|---|
-| E5（毛玻璃快速回复面板 + `R-D6 S2`，高风险 R+V） | `card/E5-quick-reply-sheet` | **审查/验证中**（基于含 `E4` 的 `92e1563`） |
-| E6（完整编辑器与多图上传条 + `R-D1`/`R-D6 S1/S2`/`R-E16 S2`） | 待派（串行依赖 `E5`） | **待派**（已预起草） |
-| E7（表情选择面板与键盘等高互换 + `C1b#3`） | 待派（串行依赖 `E6`） | **待派**（已预起草） |
-| M7-1..5（入口切换/清旧依赖/targetSdk 36/R8/真机回归） | 待派（依赖 `E7`） | **待排期** |
+| E6（完整编辑器本体、多图上传条、发新帖/回复草稿、多栏投放 + `R-D6 S1`/`R-D1`，高风险 R+V） | `card/E6-full-editor` | **在途**（基于 `afa3783`） |
+| M7-G3（楼层文字选择/分享/警告 + 详情顶栏滚顶 + `#9` 图集 Provider + `R-E16 S2`，普通档只走 R） | `card/M7-G3-floor-actions-detail-top` | **在途**（基于 `f2fbe60`） |
+| E6b（编辑已发表楼层 + `还原原文`、楼层菜单删除自己楼层 + `R-D6 S2`，高风险 R+V） | 待派（依赖 `E6` 与 `M7-G3`） | **待派**（已起草） |
+| E7（表情选择面板与键盘等高互换 + `C1b#3` + `M7-0 #11` 短消息表情，高风险 R+V） | 待派（依赖 `E6`） | **待派**（已预起草） |
+| M7-1..5（入口切换/清旧依赖/targetSdk 36/R8+Baseline Profile/真机回归） | 待派（依赖 `E6b`/`E7`） | **待排期**（已预起草） |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线；流程提速规则已生效（`5bae5ab`）。
@@ -85,7 +91,7 @@
 
 - **BATCH-4 计划（已全部合入收官，归档至 `docs/agents/cards/BATCH-4.md`）**：12 张卡、5 波全部合入 `main`。
 - **BATCH-5 计划（M5 全部完成，归档至 `docs/agents/cards/BATCH-5.md`）**：9 卡 4 波全部合入 `main`（`E0`、`E15`、`E2a`、`E1`、`E2b`、`E2d`、`E3`、`E2c`、`E4 @ 92e1563`，main CI `45758541824` 绿），已出 M5 真机验收包。
-- **M6 与发帖链路**：**M6 全部完成**（`E-slots`/`E8`/`E12`/`E10`/`E14`/`M6-polish`/`E16 @ 6ff55a9` 全合入）；发帖链路 **`E5` 审查/验证中**，**`E6`/`E7` 待派**；之后进入 **`M7-1..5`**（切正式入口、清旧依赖、targetSdk 36、R8 与真机回归）。
+- **M6、发帖链路与 M7 对齐补齐**：**M6 全部完成**（`E-slots`/`E8`/`E12`/`E10`/`E14`/`M6-polish`/`E16 @ 6ff55a9` 全合入）；`E5`（`afa3783`）、`M7-0`、`M7-G4`（`fd414a1`）、`M7-G1`（`83484fd`）、`M7-G2`（`f2fbe60`）已合入；当前 **`E6` 与 `M7-G3` 在途**，**`E6b` 待 `E6` 与 `M7-G3` 合入后派**，**`E7` 在 `E6` 后**；随后进入 **`M7-1..5`**（切正式入口、清旧依赖、targetSdk 36、R8 + Baseline Profile 与真机回归）。
 - **待观察风险**：
   - **Cloudflare 桌面 UA 下 WebView 过验证尚未在真机触发**：A5c 切换为桌面 Linux Chrome UA + Client Hints（`platform=Linux`、`mobile=false`）后，真机 M1 请求均直接 200 通过、未触发 Cloudflare 人机验证；该 UA 组合下的 WebView 自动/人工过盾与 `cf_clearance` 同步路径尚未经真机实测，列为待观察风险，后续真机首次触发验证时重点核实。
   - **安全提问报错文案格式（`R-E15 S5`）**：若真机 4d4y.com 对安全提问错返回不含 `"登录失败"` 前缀的原文，需记录原文以供 `LoginParser` 补配（已列入 `docs/device-check.md` 第 1 项）。
@@ -94,29 +100,34 @@
 
 ## 4. 派发后续卡时必须带入的审查遗留建议（尚待处理项）
 
-> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4、B9a/B9b/B8/B7/D2/D4/D5/D7/D8a/D8b/D9/G1/G2/C4c/C4d/C5b/A6/E0/E1/E2a/E2b/E2d/E2c/E3/E4/E-slots/E8/E10/E12/E14/E15/E16/D-cleanup/M6-polish 全部已闭合项）已移除，下面为**进行中或尚未落地**的条目：
+> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4、B9a/B9b/B8/B7/D2/D4/D5/D7/D8a/D8b/D9/G1/G2/C4c/C4d/C5b/A6/E0/E1/E2a/E2b/E2d/E2c/E3/E4/E5/E-slots/E8/E10/E12/E14/E15/E16/D-cleanup/M6-polish/M7-G1/M7-G2/M7-G4 全部已闭合项）已移除，下面为**进行中或尚未落地**的条目：
 
 - **→ “毛玻璃定稿”小卡（待用户用 `92e1563` debug 实时调参面板给出最终参数后派发）**：
   - 将用户拍板的最终液态玻璃参数与同屏上限 `3` 回写 `docs/design/product-design.md` §5。
 - **→ 真机观察（见 `docs/device-check.md`）**：
   - R-E2b S2：快速惯性滑行（fling）途中首楼越顶图片解码完成触发 `requestScrollToItem` 是否打断惯性顿停；若真机可感知则评估不中断手势的偏移修正策略。
   - R-E15 S5：安全提问回答错误时记录真实站点返回原文，确认是否缺 `"登录失败"` 前缀。
-- **→ E5（审查/验证中，毛玻璃快速回复面板，高风险 R+V）**：
-  - `R-D6 S2`：恢复已有草稿后若用户删空全部文字退出，显式调用 `deleteDraft(DraftKey.reply(tid))`，避免旧草稿下次进入复活。
-- **→ E6（待派，完整编辑器）**：
+- **→ E6（在途，完整编辑器本体，高风险 R+V）**：
   - `R-D1`：在“今日新帖”里点“发新帖”时必须先选定版块（正整数 `fid`）再生成 `DraftKey.newThread(fid)`。
   - `R-D6 S1`：将 `data/post/PostModels.kt` 的 `ImageUploadInput.original` 默认值改为 `false` 并补测试（按规范压缩后上传）。
-  - `R-D6 S2`：完整编辑器同样在恢复草稿被清空退出时显式调用 `deleteDraft`。
-  - `R-E16 S2`：同一帖内点击指向同 `tid` 其他楼层的站内链接时，`ThreadDetailPane`（约 L400）要响应新的 `targetPid` 跳楼（经 `PrependAnchorController`、先压 `PositionStack`），附撤回即红测试。
-- **→ E7（待派）**：C1b#3 — `EmojiGroup.name` 是 `:emoji` 里写死的中文，表情面板分类标签的无障碍 `contentDescription` 需走 `:hipda` 的 `strings_emoji.xml`。
+  - `R-D6 S2`：完整编辑器（发新帖/回复）同样在恢复草稿被清空退出时显式调用 `deleteDraft`。
+- **→ M7-G3（在途，楼层交互与详情顶栏滚顶）**：
+  - `R-E16 S2` + `R-M7-G1 S2`：同一帖内点击指向同 `tid` 其他楼层的站内链接（或多栏下同帖已挂载时长按跳末页）时，`ThreadDetailPane` 响应新的 `targetPid` 跳楼（经 `PrependAnchorController`、先压 `PositionStack`），附撤回即红测试。
+- **→ E6b（待派，待 `E6` 与 `M7-G3` 合入后，高风险 R+V）**：
+  - 编辑已发表楼层与 `还原原文`（`DraftKey.edit(pid)`、`R-D6 S2` 清空恢复草稿调 `deleteDraft`、编辑免 30s 冷却且不附小尾巴）+ 楼层菜单删除自己楼层（`PostSubmitRequest.DeletePost` 不可撤销二次确认，仅 `MockWebServer` 测成功/失败/取消）。
+- **→ E7（待派，在 `E6` 后，高风险 R+V）**：
+  - `C1b#3`：`EmojiGroup.name` 是 `:emoji` 里写死的中文，表情面板分类标签的无障碍 `contentDescription` 需走 `:hipda` 的 `strings_emoji.xml`。
+  - `M7-0 #11`：同时绑定短消息对话页（`SmsConversationScreen.kt`）输入栏的表情按钮与面板。
 - **→ 后续轻修备忘**：
-  - R-E2b S1：精简 `feature/threaddetail/media/` 约 60–65 行冗余包装与零生产调用重载；V-E14 观察：`ImageViewerPage.kt:178` 直开 HD 超长高图可考虑补 `4096` 上限；R-E4 N1：`DefaultThreadDetailRepository` 可选对 `readingPositionDao` 读写加轻量 `Mutex`；V-E16 观察：`ThreadBottomToolbar.openExternalHttpUrl` 可选统一复用 `AndroidExternalLinkOpener`。
+  - R-E2b S1：精简 `feature/threaddetail/media/` 约 60–65 行冗余包装与零生产调用重载；V-E14 观察：`ImageViewerPage.kt:178` 直开 HD 超长高图可考虑补 `4096` 上限；R-E4 N1：`DefaultThreadDetailRepository` 可选对 `readingPositionDao` 读写加轻量 `Mutex`；V-E16 观察：`ThreadBottomToolbar.openExternalHttpUrl` 可选统一复用 `AndroidExternalLinkOpener`；R-M7-G1 S3：列表已在顶时 `hiTopBarTapToScrollTop` 可按 `isScrolled` 启用；R-M7-G2 S3：多图横滑跨楼层按页扩展 `floorNumber`/`author` 与重复 URL 坐标键；R-M7-G4 S2：纯图片短消息气泡可隐藏 `复制` 菜单项。
 - **→ M5 / M7 性能验收**：R-M0-2 R4 — `tech-plan.md` §4 提到的 `Macrobenchmark` 尚未加入 `libs.versions.toml`；真机 120Hz 帧时间与卡顿率在 M5/M7 阶段核验。
 - **→ M7-1**：
   - `R-E16 S1`：修改主清单 `src/main/AndroidManifest.xml` 切换正式入口时补齐 `<queries>`（浏览器 intent 可见性），并在 `PostLinkDispatcher.kt:52` 增 `https://` `BROWSABLE` 探测。
+  - `R-M7-G2 S2`：切正式主入口时确保 `MAIN/LAUNCHER`、深链与 `NotificationPoster` 统一汇流至新宿主 Activity（建议 `singleTask`），确保冷启 `NotificationScheduler.syncFromSettings()` 与热启复用唯一 `NextAppHostViewModel`。
 - **→ M7-2**：
   - C1b#1：删除旧 `EmojiHandler` 等类时，将 `EmojiMapTest` 固化为 `(code, imageSrc, lightRes, darkRes)` 四元组表驱动测试。
   - R-D9 S3：删除旧 `NotiWorker` 时调用 `WorkManager.cancelUniqueWork("noti_work")` 清理旧周期任务。
+  - `M7-0` 风险备忘：剥离 `NotificationWorkModule` 对 `HiApplication.isAppVisible()` 的依赖，并将崩溃日志写入（`filesDir/logs`）迁移至 `HiNextApplication` 避免关于页错误日志断链。
 
 ---
 

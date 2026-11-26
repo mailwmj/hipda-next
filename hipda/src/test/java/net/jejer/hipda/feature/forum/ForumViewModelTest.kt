@@ -687,6 +687,60 @@ class ForumViewModelTest {
         errJob.cancel()
     }
 
+    /** #1：Buy & Sell（fid=6）分类筛选透传 typeId，非 fid=6 版块绝不透传，切回 fid=6 记住选中项，选「全部」恢复 null。 */
+    @Test
+    fun buyAndSellCategoryFilter_appliesOnlyToFid6AndResetsToNullOnAll() = runTest {
+        val threadRepo = TestThreadListRepository { query ->
+            val tag = query.typeId ?: "all"
+            successBatch(query, listOf(summary("${query.fid}0${if (tag == "all") "0" else tag}", "fid=${query.fid} type=$tag")))
+        }
+        val vm = ForumViewModel(threadRepo, TestSearchRepository(), TestSettingsRepository(), TestAuthRepository(), idleGateway())
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
+        advanceUntilIdle()
+
+        // 1. fid=2 下调用 selectTypeId 必须直接忽略，typeId 恒为 null
+        vm.selectTypeId("1")
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.selectedTypeId)
+        assertTrue("fid=2 下绝不得向仓库透传 typeId", threadRepo.refreshQueries.filter { it.fid == 2 }.all { it.typeId == null })
+
+        // 2. 切至 fid=6（Buy & Sell），选中第 2 项「手机」(typeId = "1")
+        vm.bindSource(ForumListSource.Forum(6))
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.selectedTypeId)
+        assertEquals(ThreadListQuery(fid = 6, sortByPostTime = false, typeId = null), threadRepo.refreshQueries.last())
+
+        vm.selectTypeId("1")
+        advanceUntilIdle()
+        assertEquals("1", vm.uiState.value.selectedTypeId)
+        assertEquals(ThreadListQuery(fid = 6, sortByPostTime = false, typeId = "1"), threadRepo.refreshQueries.last())
+        assertEquals("fid=6 type=1", vm.uiState.value.items.single().summary.title)
+
+        // loadMore 同样携带 typeId = "1"
+        vm.loadMore()
+        advanceUntilIdle()
+        assertEquals(ThreadListQuery(fid = 6, sortByPostTime = false, typeId = "1"), threadRepo.loadMoreQueries.last())
+
+        // 3. 切回 fid=2：隐藏/屏蔽 typeId 且不透传
+        vm.bindSource(ForumListSource.Forum(2))
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.selectedTypeId)
+        assertTrue(threadRepo.observedQueries.filter { it.fid == 2 }.all { it.typeId == null })
+
+        // 4. 切回 fid=6 记住选中项 "1"，再选「全部」恢复 typeId = null 并发出新刷新
+        vm.bindSource(ForumListSource.Forum(6))
+        advanceUntilIdle()
+        assertEquals("1", vm.uiState.value.selectedTypeId)
+
+        vm.selectTypeId("")
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.selectedTypeId)
+        assertEquals(ThreadListQuery(fid = 6, sortByPostTime = false, typeId = null), threadRepo.refreshQueries.last())
+        assertEquals("fid=6 type=all", vm.uiState.value.items.single().summary.title)
+
+        collector.cancel()
+    }
+
     // ---- Test Fakes ----
 
     private class TestAuthRepository(

@@ -5,6 +5,8 @@
     <string name="common_action_refresh">刷新</string>
     <string name="common_action_login">登录</string>
     <string name="common_action_back">返回</string>
+    <string name="common_action_scroll_to_top">回到顶部</string>
+    <string name="common_action_open_last_page">转到最新回复</string>
 
     <!-- 通用错误短语（有按钮只写原因，严禁异常类名与状态码，docs/design/copy.md） -->
     <string name="common_error_network">网络连接失败</string>

@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.collectLatest
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.ui.designsystem.topbar.rememberHiScrollToTopAction
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 
 /** 「我的帖子 / 我的回复」页：单栏下显示 `主题 | 回复` 双标签，宽屏侧栏态隐藏重复标签行，回复项携带 `targetPid`。 */
@@ -43,9 +44,11 @@ fun MyPostsPane(
     val activeListState = if (isThreads) (if (entryTab == MyPostsTab.Threads) listState else otherListState) else (if (entryTab == MyPostsTab.Replies) listState else otherListState)
     val title = stringResource(if (isSidebar && !isThreads) R.string.shell_sidebar_my_replies else R.string.shell_sidebar_my_threads)
     val isScrolled by rememberListScrolled(activeListState)
+    val scrollToTop = rememberHiScrollToTopAction(activeListState)
+    val openLastPageLabel = stringResource(R.string.common_action_open_last_page)
 
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).semantics { paneTitle = title; isTraversalGroup = true }) {
-        MineSolidTopBar(title, isScrolled, showBack, onBack, bottomSlot = if (!isSidebar) {
+        MineSolidTopBar(title, isScrolled, showBack, onBack, onScrollToTop = scrollToTop, bottomSlot = if (!isSidebar) {
             {
                 MineSegmentedTabs(listOf(stringResource(R.string.mine_tab_threads), stringResource(R.string.mine_tab_replies)), if (isThreads) 0 else 1, onSelect = {
                     val tab = if (it == 0) MyPostsTab.Threads else MyPostsTab.Replies
@@ -60,8 +63,16 @@ fun MyPostsPane(
             activeListState, contentPadding, MyPostRow::key, { viewModel.refresh(activeTab) },
             { viewModel.loadMore(activeTab) }, { viewModel.retry(activeTab, it) }, onOpenLogin, Modifier.weight(1f), uiState.isSignedIn,
         ) { item ->
-            MineThreadRow(item.title, item.preview, item.forumName, time = item.time) {
-                onOpenThread(ThreadNavArgs(item.tid, item.title, forumName = item.forumName, targetPid = item.pid))
+            val navArgs = ThreadNavArgs(item.tid, item.title, forumName = item.forumName, targetPid = item.pid)
+            MineThreadRow(
+                title = item.title,
+                preview = item.preview,
+                forumName = item.forumName,
+                time = item.time,
+                onLongClickLabel = openLastPageLabel,
+                onLongClick = { onOpenThread(navArgs.copy(openLastPage = true)) },
+            ) {
+                onOpenThread(navArgs)
             }
         }
     }

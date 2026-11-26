@@ -125,13 +125,13 @@ class FloorContextMenuTest {
         }
         composeRule.waitForIdle()
 
-        // 1. 长按本人 1 楼：触发 LongPress 触感，展示全部 6 项且绝无“举报”（限定在菜单 Pane 内查找，避免与底部工具条“回复”胶囊重名）
+        // 1. 长按本人 1 楼：触发 LongPress 触感，展示全部 8 项且绝无“举报”（限定在菜单 Pane 内查找，避免与底部工具条“回复”胶囊重名）
         composeRule.onNodeWithText("本人 1 楼正文内容", substring = true).performTouchInput { longClick() }
         composeRule.waitForIdle()
         assertEquals(listOf(HapticFeedbackType.LongPress), haptics)
         composeRule.onNodeWithText("第 1 楼 · 本人账号").assertIsDisplayed()
         val floor1Menu = hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "第 1 楼 · 本人账号"))
-        for (label in listOf("引用回复", "回复", "只看此人", "复制", "编辑", "删除")) {
+        for (label in listOf("引用回复", "回复", "只看此人", "复制", "文字选择", "分享", "编辑", "删除")) {
             composeRule.onNode(hasText(label) and floor1Menu).assertIsDisplayed().assertHeightIsAtLeast(48.dp)
         }
         assertEquals("绝不得出现“举报”菜单项", 0, composeRule.onAllNodesWithText("举报", substring = true).fetchSemanticsNodes().size)
@@ -144,13 +144,13 @@ class FloorContextMenuTest {
             replyRequests,
         )
 
-        // 2. 长按他人 2 楼：仅展示 4 项，不含 编辑/删除/举报
+        // 2. 长按他人 2 楼：展示 6 项，不含 编辑/删除/举报
         composeRule.onNodeWithText("他人 2 楼正文内容").performTouchInput { longClick() }
         composeRule.waitForIdle()
         assertEquals(2, haptics.size)
         composeRule.onNodeWithText("第 2 楼 · 路人坛友").assertIsDisplayed()
         val floor2Menu = hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "第 2 楼 · 路人坛友"))
-        for (label in listOf("引用回复", "回复", "只看此人", "复制")) {
+        for (label in listOf("引用回复", "回复", "只看此人", "复制", "文字选择", "分享")) {
             composeRule.onNode(hasText(label) and floor2Menu).assertIsDisplayed()
         }
         assertEquals(0, composeRule.onAllNodesWithText("编辑").fetchSemanticsNodes().size)

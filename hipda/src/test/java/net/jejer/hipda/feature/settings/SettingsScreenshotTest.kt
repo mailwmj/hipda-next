@@ -139,11 +139,34 @@ class SettingsScreenshotTest {
 
     @Test
     @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun settings_about_w411_light() = captureAbout("settings_about_w411_light", HiThemeMode.LIGHT)
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun settings_about_w411_dark() = captureAbout("settings_about_w411_dark", HiThemeMode.DARK)
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
     fun account_w411_light() = captureAccount("account_w411_light", HiThemeMode.LIGHT)
 
     @Test
     @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
     fun account_w411_dark() = captureAccount("account_w411_dark", HiThemeMode.DARK)
+
+    private fun captureAbout(name: String, themeMode: HiThemeMode) = captureScreen(name, themeMode) {
+        val vm = remember { previewVm(AppSettings()) }
+        SettingsDetailPane(
+            group = SettingsGroup.About,
+            viewModel = vm,
+            onOpenSystemNotificationSettings = { false },
+            showBack = true,
+            onBack = {},
+            onOpenThread = {},
+            blacklistContent = { _, _ -> },
+            contentPadding = PaddingValues(0.dp),
+            appVersionName = "5.0.05",
+        )
+    }
 
     private fun captureAccount(name: String, themeMode: HiThemeMode) = captureScreen(name, themeMode) {
         AccountManagementContent(

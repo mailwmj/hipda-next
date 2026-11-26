@@ -88,6 +88,8 @@ import net.jejer.hipda.feature.routing.DeepLinkTarget
 import net.jejer.hipda.feature.routing.DefaultPostLinkDispatcher
 import net.jejer.hipda.feature.routing.ExternalLinkOpener
 import net.jejer.hipda.feature.routing.requiresLegacyDownloadPermission
+import net.jejer.hipda.feature.settings.AboutAssetDocument
+import net.jejer.hipda.feature.settings.AboutAssetDocumentDialog
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
@@ -133,6 +135,7 @@ fun NextAppRoot(
     var savedAppState by rememberSaveable(stateSaver = NextAppStateSaver) { mutableStateOf(hostViewModel.state.value) }
     remember(hostViewModel) { hostViewModel.restoreSavedStateIfFresh(savedAppState); true }
     val appState by hostViewModel.state.collectAsStateWithLifecycle()
+    val showReleaseNotesPrompt by hostViewModel.showReleaseNotesPrompt.collectAsStateWithLifecycle()
     SideEffect { if (savedAppState != appState) savedAppState = appState }
 
     // 提升至 HiAdaptiveShell 的 AnimatedContent 之外，确保跨一级目的地切换保留全部 LazyListState 且同帖平滑移交（R-E3 B2）
@@ -502,6 +505,13 @@ fun NextAppRoot(
                 val overlayMode = appState.loginOverlayMode
                 if (overlayMode != null && loginOverlayRenderer != null) {
                     loginOverlayRenderer.Content(overlayMode, hostViewModel::dismissLoginOverlay, hostViewModel::dismissLoginOverlay)
+                }
+
+                if (showReleaseNotesPrompt) {
+                    AboutAssetDocumentDialog(
+                        document = AboutAssetDocument.ReleaseNotes,
+                        onDismiss = hostViewModel::dismissReleaseNotesPrompt,
+                    )
                 }
 
                 val bottomPillVisible = !latestPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || latestPaneLayout.hasDetailPane)

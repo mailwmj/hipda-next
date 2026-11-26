@@ -12,4 +12,8 @@
     <string name="profile_uid_format">UID %1$s</string>
     <string name="profile_blacklist_added">已将 %1$s 加入黑名单</string>
     <string name="profile_blacklist_removed">已将 %1$s 移出黑名单</string>
+    <string name="profile_avatar_content_desc">头像</string>
+    <string name="profile_action_refresh_avatar">刷新头像</string>
+    <string name="profile_avatar_refreshed">头像已经刷新</string>
+    <string name="profile_avatar_not_set">用户未设置头像</string>
 </resources>
