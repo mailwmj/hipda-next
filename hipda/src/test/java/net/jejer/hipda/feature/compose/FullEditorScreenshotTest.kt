@@ -294,6 +294,66 @@ class FullEditorScreenshotTest {
         maxGlassSurfaces = 3,
     )
 
+    /** 对应 V-E6 `probe9`：单栏详情页退出完整编辑器保存草稿后，「已保存草稿 | 放弃」Snackbar 抬高至底部工具条上方，完全不遮挡「回复」入口。 */
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun editor_phone_w411_draft_saved_snackbar_light() {
+        val harness = MultiPaneTestHarness(
+            initialSettings = AppSettings(themeMode = ThemeMode.LIGHT, themeSeed = HiColorPresets.Brand.id),
+            richSampleContent = true,
+        )
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
+                modelClass.isAssignableFrom(QuickReplyViewModel::class.java) -> QuickReplyViewModel(postRepo, harness.authRepo) as T
+                modelClass.isAssignableFrom(FullEditorViewModel::class.java) -> editorVm as T
+                else -> harness.vmFactory.create(modelClass)
+            }
+        }
+        val owner = object : ViewModelStoreOwner, HasDefaultViewModelProviderFactory {
+            override val viewModelStore: ViewModelStore = harness.parentOwner.viewModelStore
+            override val defaultViewModelProviderFactory: ViewModelProvider.Factory = factory
+        }
+
+        composeRule.setContent {
+            ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = harness.settingsRepo.settings,
+                        currentAccountFlow = harness.authRepo.currentAccount,
+                        smsUnreadCountFlow = harness.smsUnread,
+                        notifyUnreadCountFlow = harness.notifyUnread,
+                        hostViewModel = harness.hostViewModel,
+                        forumViewModel = harness.forumViewModel,
+                        fullEditorViewModel = editorVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("折腾折叠屏客户端", substring = true).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+        composeRule.runOnIdle {
+            editorVm.onTextBlockChanged(editorVm.uiState.value.body.firstTextBlockId, "待自动保存的回复草稿内容", 12, 12)
+        }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { editorVm.requestClose(emitSavedSnackbar = true) }
+        composeRule.waitForIdle()
+
+        val snackBounds = composeRule.onNodeWithText("已保存草稿").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val replyBounds = composeRule.onNodeWithText("回复").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertFalse("Snackbar 不得遮挡回复按钮", snackBounds.overlaps(replyBounds))
+        composeRule.assertGlassSurfaceCountAtMost(2)
+        composeRule.onRoot().captureHiSnapshot("editor_phone_w411_draft_saved_snackbar_light")
+    }
+
     private fun captureStandalone(
         name: String,
         themeMode: HiThemeMode,

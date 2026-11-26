@@ -246,10 +246,13 @@ class MultiPaneGlassBudgetTest {
         assertEquals(64.dp, railRegion.startDp)
         assertEquals(576.dp, railRegion.widthDp)
 
-        // 4. 全屏阅读（整窗居中）
+        // 4. 全屏阅读（整窗居中）与详情页底部工具条避让（probe9）
         val fullRegion = calculateSnackbarRegion(threePane, 0.dp, true, PaneSnackbarTarget.DetailPane, false, 0.dp, 0.dp)
         assertEquals(0.dp, fullRegion.startDp)
         assertEquals(749.dp, fullRegion.widthDp)
+        val singlePhone = calculateShellPaneLayout(411f, 891f, hasDetailContent = true)
+        val detailElevated = calculateSnackbarRegion(singlePhone, 0.dp, false, PaneSnackbarTarget.DetailPane, false, 0.dp, 0.dp, detailBottomClearanceDp = 56.dp)
+        assertEquals(64.dp, detailElevated.bottomClearanceDp)
     }
 
     @Test

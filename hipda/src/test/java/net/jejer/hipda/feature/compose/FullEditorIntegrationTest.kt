@@ -12,12 +12,14 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,14 +33,18 @@ import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityOptionsCompat
@@ -51,6 +57,7 @@ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import net.jejer.hipda.data.local.DraftKey
 import net.jejer.hipda.data.post.PrePostRequest
 import net.jejer.hipda.data.post.PrePostResult
+import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.feature.app.MultiPaneResizableWindowHost
 import net.jejer.hipda.feature.app.MultiPaneTestHarness
 import net.jejer.hipda.feature.app.NextAppRoot
@@ -62,9 +69,11 @@ import net.jejer.hipda.feature.common.LoginOverlayRenderer
 import net.jejer.hipda.ui.designsystem.glass.GlassEnvironmentState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassMarker
 import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
+import net.jejer.hipda.ui.shell.HiShellTestTags
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -186,9 +195,8 @@ class FullEditorIntegrationTest {
         assertNotNull(postRepo.draftFor(DraftKey.reply("1001")))
         composeRule.onNodeWithText("已保存草稿").assertIsDisplayed()
         composeRule.onNodeWithText("放弃").assertIsDisplayed()
-        composeRule.mainClock.advanceTimeBy(11_000L)
-        composeRule.waitForIdle()
 
+        // Snackbar 抬高至底部工具条上方，无需等待消失即可直接点击「回复」
         composeRule.onNodeWithText("回复").performClick()
         composeRule.waitForIdle()
         val beforePickCount = pickerLaunchCount
@@ -205,10 +213,12 @@ class FullEditorIntegrationTest {
         val attachTagNodes = composeRule.onAllNodesWithText("[attachimg]", substring = true).fetchSemanticsNodes()
         assertEquals("编辑器 UI 严禁向用户暴露原始 [attachimg] 标签文本", 0, attachTagNodes.size)
 
-        // 发送回复 -> 关闭编辑器并弹「回复已发送 | 查看」
+        // 发送回复 -> 关闭编辑器并弹「回复已发送 | 查看」（先推进时钟让前序「已保存草稿」自然退场）
         composeRule.onNodeWithContentDescription("发送").performClick()
         composeRule.waitForIdle()
         assertFalse(editorVm.uiState.value.isOpen)
+        composeRule.mainClock.advanceTimeBy(11_000L)
+        composeRule.waitForIdle()
         composeRule.onNodeWithText("回复已发送").assertIsDisplayed()
         composeRule.onNodeWithText("查看").assertIsDisplayed()
     }
@@ -462,6 +472,234 @@ class FullEditorIntegrationTest {
         composeRule.onNodeWithText("跨形态保活标题测试").assertIsDisplayed()
         composeRule.onNodeWithText("旋转保活正文").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("已插入图片").assertIsDisplayed()
+    }
+
+    /** 移植自 V-E6 `probe2b`：含内联图片块的多段正文（`t0 + img + t2`）光标停在 `t2` 偏移 1，经进程重建后仍留在 `t2` 偏移 1。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun probe2b_multiBlockInlineImageCursor_preservedAcrossStateRestoration() {
+        val restorationTester = StateRestorationTester(composeRule)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val uploadRepo = FakeImageUploadRepository()
+        val createdEditorVms = mutableListOf<FullEditorViewModel>()
+
+        restorationTester.setContent {
+            val freshStore = remember { ViewModelStore() }
+            val vmFactory = remember {
+                object : ViewModelProvider.Factory {
+                    @Suppress("UNCHECKED_CAST")
+                    override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
+                        modelClass.isAssignableFrom(QuickReplyViewModel::class.java) -> QuickReplyViewModel(postRepo, harness.authRepo) as T
+                        modelClass.isAssignableFrom(FullEditorViewModel::class.java) -> FullEditorViewModel(postRepo, uploadRepo, harness.authRepo, harness.settingsRepo) { 10_000L }.also(createdEditorVms::add) as T
+                        else -> harness.vmFactory.create(modelClass)
+                    }
+                }
+            }
+            val owner = remember(freshStore) {
+                object : ViewModelStoreOwner, HasDefaultViewModelProviderFactory {
+                    override val viewModelStore: ViewModelStore = freshStore
+                    override val defaultViewModelProviderFactory: ViewModelProvider.Factory = vmFactory
+                }
+            }
+            Box(Modifier.requiredSize(DpSize(411.dp, 891.dp))) {
+                MultiPaneResizableWindowHost(DpSize(411.dp, 891.dp)) {
+                    CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                        ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                            NextAppRoot(
+                                settingsFlow = harness.settingsRepo.settings,
+                                currentAccountFlow = harness.authRepo.currentAccount,
+                                smsUnreadCountFlow = harness.smsUnread,
+                                notifyUnreadCountFlow = harness.notifyUnread,
+                                hostViewModel = harness.hostViewModel,
+                                forumViewModel = harness.forumViewModel,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+
+        val editorVm = createdEditorVms.last()
+        composeRule.runOnIdle { editorVm.onPickImages(listOf(Uri.parse("content://probe.test/img/1"))) }
+        composeRule.waitForIdle()
+
+        val bodyField = composeRule.onNodeWithContentDescription("回复 楼层作者1")
+        bodyField.performSemanticsAction(SemanticsActions.RequestFocus)
+        composeRule.waitForIdle()
+        bodyField.performTextInput("前段后段")
+        composeRule.waitForIdle()
+        bodyField.performTextInputSelection(TextRange(2, 2))
+        composeRule.waitForIdle()
+        val uploadedLocalId = editorVm.uiState.value.uploads.single().localId
+        composeRule.runOnIdle { editorVm.onInsertUploadedImage(uploadedLocalId) }
+        composeRule.waitForIdle()
+
+        val afterImgBlockId = editorVm.uiState.value.body.lastTextBlockId
+        composeRule.runOnIdle { editorVm.onTextBlockSelectionChanged(afterImgBlockId, 1, 1) }
+        composeRule.waitForIdle()
+        assertEquals(afterImgBlockId, editorVm.uiState.value.body.activeTextBlockId)
+        assertEquals(1, editorVm.uiState.value.body.activeSelectionStart)
+
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+
+        val restoredVm = createdEditorVms.last()
+        assertEquals(
+            "多段图文重建后光标应留在图片后的文本块 (${restoredVm.uiState.value.body.lastTextBlockId})，实际 active=${restoredVm.uiState.value.body.activeTextBlockId}",
+            restoredVm.uiState.value.body.lastTextBlockId,
+            restoredVm.uiState.value.body.activeTextBlockId,
+        )
+        assertEquals(1, restoredVm.uiState.value.body.activeSelectionStart)
+        assertEquals(1, restoredVm.uiState.value.body.activeSelectionEnd)
+        composeRule.onNodeWithText("前段").assertIsDisplayed()
+        composeRule.onNodeWithText("后段").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("已插入图片").assertIsDisplayed()
+    }
+
+    /** 移植自 V-E6 `probe4b`：749dp 收起中栏右栏展开编辑器且同时打开 240dp 模态抽屉，经 `StateRestorationTester` 重建后按返回必须优先关抽屉而非编辑器。 */
+    @Test
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun probe4b_drawerAboveRightPaneEditor_backPriorityPreservedAcrossStateRestoration() {
+        val restorationTester = StateRestorationTester(composeRule)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val uploadRepo = FakeImageUploadRepository()
+        val editorVm = FullEditorViewModel(postRepo, uploadRepo, harness.authRepo, harness.settingsRepo) { 10_000L }
+        val preservedStore = harness.parentOwner.viewModelStore
+        val owner = ownerWithComposeVms(harness, postRepo, editorVm)
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        restorationTester.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            Box(Modifier.requiredSize(DpSize(749.dp, 559.dp))) {
+                MultiPaneResizableWindowHost(DpSize(749.dp, 559.dp)) {
+                    CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                        ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                            NextAppRoot(
+                                settingsFlow = harness.settingsRepo.settings,
+                                currentAccountFlow = harness.authRepo.currentAccount,
+                                smsUnreadCountFlow = harness.smsUnread,
+                                notifyUnreadCountFlow = harness.notifyUnread,
+                                hostViewModel = harness.hostViewModel,
+                                forumViewModel = harness.forumViewModel,
+                                fullEditorViewModel = editorVm,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 进帖子并收起中栏，右栏 685dp >= 560dp -> RightPane 展开编辑器，再展开 240dp 模态侧栏抽屉
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { harness.settingsRepo.updateSettings { it.copy(paneSplitLandscape = PaneSplit.COLLAPSED) } }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+        assertTrue(editorVm.uiState.value.isOpen)
+
+        // 重建后抽屉与右栏编辑器同时恢复打开，按返回 1 必须优先关闭抽屉，保留右栏编辑器
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+        assertTrue(editorVm.uiState.value.isOpen)
+
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        val remainingDrawers = composeRule.onAllNodesWithTag(HiShellTestTags.SidebarModalDrawer).fetchSemanticsNodes()
+        assertTrue(
+            "按返回应优先关闭抽屉，但抽屉仍存在(${remainingDrawers.size})，底层编辑器 open=${editorVm.uiState.value.isOpen}",
+            remainingDrawers.isEmpty(),
+        )
+        assertTrue("关闭抽屉后，完整编辑器应保持打开", editorVm.uiState.value.isOpen)
+
+        // 按返回 2 再关闭完整编辑器
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertFalse("第二次返回应关闭完整编辑器", editorVm.uiState.value.isOpen)
+        assertNotNull(preservedStore)
+    }
+
+    /** 移植自 V-E6 `probe9`：`FullEditorRequestBus` 单例总线消费 + 退出保存草稿时「已保存草稿」Snackbar 必须避开底部「回复」工具条且可立即点击「回复」。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun probe9_fullEditorRequestBus_andDraftSavedSnackbarAvoidsBottomReplyToolbar() {
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val bus = FullEditorRequestBus()
+        val owner = ownerWithComposeVms(harness, postRepo, editorVm)
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            MultiPaneResizableWindowHost(DpSize(411.dp, 891.dp)) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = harness.authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            fullEditorRequestBus = bus,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+
+        val handoff = FullEditorHandoff(
+            tid = "1001", fid = 2, text = "总线交接文本", selectionStart = 2, selectionEnd = 2,
+            quotePid = "1001_2", quoteAuthor = "楼层作者2", quoteFloor = 2,
+        )
+        composeRule.runOnIdle { bus.open(handoff) }
+        composeRule.waitForIdle()
+        assertNull("PendingFullEditorRequest 在 NextAppRoot 打开后必须被立即消费", bus.pendingRequest.value)
+        assertTrue(editorVm.uiState.value.isOpen)
+        assertEquals("总线交接文本", editorVm.uiState.value.body.serialize())
+        assertEquals(2, editorVm.uiState.value.body.activeSelectionStart)
+
+        // 返回退出保存草稿，核验「已保存草稿」Snackbar 严格在底部「回复」按钮上方（0 重叠），且不等待 11 秒即可直接点开快速回复
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        val snackbarBounds = composeRule.onNodeWithText("已保存草稿").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val replyBounds = composeRule.onNodeWithText("回复").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertFalse(
+            "「已保存草稿」Snackbar ($snackbarBounds) 不得遮挡底部「回复」按钮 ($replyBounds)",
+            snackbarBounds.overlaps(replyBounds),
+        )
+        assertTrue(
+            "「已保存草稿」Snackbar 底缘 (${snackbarBounds.bottom}) 必须严格高于「回复」按钮顶缘 (${replyBounds.top})",
+            snackbarBounds.bottom <= replyBounds.top,
+        )
+
+        // 立即点「回复」应直接打开快速回复面板，无需等待 Snackbar 消失
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("插入图片").assertIsDisplayed()
     }
 
     private fun ownerWithComposeVms(

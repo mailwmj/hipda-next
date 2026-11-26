@@ -23,6 +23,14 @@ data class EditorBodyDocument(
     val firstTextBlockId: String get() = (blocks.first() as EditorBodyBlock.Text).id
     val lastTextBlockId: String get() = (blocks.last() as EditorBodyBlock.Text).id
 
+    fun activeTextBlockOrdinal(): Int = blocks.filterIsInstance<EditorBodyBlock.Text>().indexOfFirst { it.id == activeTextBlockId }.coerceAtLeast(0)
+
+    fun selectTextBlockByOrdinal(ordinal: Int, selectionStart: Int, selectionEnd: Int): EditorBodyDocument {
+        val textBlocks = blocks.filterIsInstance<EditorBodyBlock.Text>()
+        val target = textBlocks.getOrNull(ordinal) ?: textBlocks.last()
+        return updateSelection(target.id, selectionStart, selectionEnd)
+    }
+
     fun insertedImageIds(): Set<String> = blocks.mapNotNullTo(LinkedHashSet()) { (it as? EditorBodyBlock.Image)?.imageId }
 
     fun plainTextTrimmedCodePoints(): Int = buildString { blocks.forEach { if (it is EditorBodyBlock.Text) append(it.text) } }.trim().let { if (it.isEmpty()) 0 else it.codePointCount(0, it.length) }

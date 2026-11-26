@@ -1,5 +1,6 @@
 package net.jejer.hipda.feature.compose
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -77,6 +78,7 @@ data class FullEditorSavedState(
     val uploadedImageIds: List<String> = emptyList(),
     val hadPersistedDraft: Boolean = false,
     val showDraftRestoredBanner: Boolean = false,
+    val activeTextBlockOrdinal: Int = 0,
 )
 
 val FullEditorSavedStateSaver: Saver<FullEditorSavedState, Any> = listSaver(
@@ -86,7 +88,7 @@ val FullEditorSavedStateSaver: Saver<FullEditorSavedState, Any> = listSaver(
             is FullEditorMode.ReplyThread -> listOf("reply", m.tid, m.fid, "", "", -1, m.threadAuthor.orEmpty())
             is FullEditorMode.ReplyPost -> listOf("reply_post", m.tid, m.fid, m.targetPid, m.targetAuthor.orEmpty(), m.targetFloor ?: -1, m.threadAuthor.orEmpty())
             is FullEditorMode.QuotePost -> listOf("quote", m.tid, m.fid, m.targetPid, m.targetAuthor.orEmpty(), m.targetFloor ?: -1, m.threadAuthor.orEmpty())
-        } + listOf(s.selectedFid ?: -1, s.selectedTypeId, s.subject, s.serializedBody, s.selectionStart, s.selectionEnd, s.uploadedImageIds, s.hadPersistedDraft, s.showDraftRestoredBanner)
+        } + listOf(s.selectedFid ?: -1, s.selectedTypeId, s.subject, s.serializedBody, s.selectionStart, s.selectionEnd, s.uploadedImageIds, s.hadPersistedDraft, s.showDraftRestoredBanner, s.activeTextBlockOrdinal)
     },
     restore = { r ->
         if (r.size < 16) FullEditorSavedState() else {
@@ -99,7 +101,7 @@ val FullEditorSavedStateSaver: Saver<FullEditorSavedState, Any> = listSaver(
                 else -> FullEditorMode.NewThread(fid.takeIf { it > 0 })
             }
             @Suppress("UNCHECKED_CAST")
-            FullEditorSavedState(true, mode, (r[7] as Int).takeIf { it > 0 }, r[8] as String, r[9] as String, r[10] as String, r[11] as Int, r[12] as Int, (r[13] as? List<String>).orEmpty(), r[14] as Boolean, r[15] as Boolean)
+            FullEditorSavedState(true, mode, (r[7] as Int).takeIf { it > 0 }, r[8] as String, r[9] as String, r[10] as String, r[11] as Int, r[12] as Int, (r[13] as? List<String>).orEmpty(), r[14] as Boolean, r[15] as Boolean, (r.getOrNull(16) as? Int)?.coerceAtLeast(0) ?: 0)
         }
     },
 )
@@ -139,12 +141,16 @@ fun rememberFullEditorHostController(
     val vm: FullEditorViewModel? = if (savedState.isOpen || pendingReq != null || mountedVm != null) {
         (injectedViewModel ?: mountedVm ?: viewModel<FullEditorViewModel>()).also { resolved -> SideEffect { if (mountedVm !== resolved) mountedVm = resolved } }
     } else null
+    // 同步恢复保存态，确保进程重建首帧即按正确投放位置挂载 BackHandler（右栏态早于模态抽屉）
+    if (vm != null && savedState.isOpen && pendingReq == null) {
+        remember(vm) { vm.restoreSavedStateIfFresh(savedState); true }
+    }
     val uiState = vm?.uiState?.collectAsStateWithLifecycle()?.value
     LaunchedEffect(vm, pendingReq?.id) {
         val targetVm = vm ?: return@LaunchedEffect
-        val p = pendingReq
-        if (p != null) { targetVm.open(p.request); if (pendingReq?.id == p.id) pendingReq = null }
-        else if (savedState.isOpen) targetVm.restoreSavedStateIfFresh(savedState)
+        val p = pendingReq ?: return@LaunchedEffect
+        targetVm.open(p.request)
+        if (pendingReq?.id == p.id) pendingReq = null
     }
     if (vm != null && uiState?.isOpen == true) SideEffect { val exp = vm.exportSavedState(); if (savedState != exp) savedState = exp }
 
@@ -188,7 +194,13 @@ fun rememberFullEditorHostController(
     return FullEditorHostController(
         isVisible = vm != null && uiState?.isOpen == true, sessionId = uiState?.sessionId ?: 0L, placement = placement,
         replyResults = replyResults, open = open, handleBack = invokeBack,
-        renderInPlacement = { p, winW -> if (vm != null) FullEditorPlacementFrame(p, winW, uiState?.isSubmitting == true, invokeBack) { isModal -> movableEditor(vm, isModal) } },
+        renderInPlacement = { p, winW ->
+            if (vm != null) {
+                // 随投放位置挂载 BackHandler：右栏态在 HiAdaptiveShell 内低于抽屉，全屏/居中态在壳层之上且低于看图与登录浮层
+                key(uiState?.sessionId ?: 0L) { BackHandler(enabled = uiState?.isOpen == true, onBack = invokeBack) }
+                FullEditorPlacementFrame(p, winW, uiState?.isSubmitting == true, invokeBack) { isModal -> movableEditor(vm, isModal) }
+            }
+        },
     )
 }
 

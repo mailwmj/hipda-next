@@ -28,7 +28,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -91,6 +90,8 @@ import net.jejer.hipda.feature.routing.requiresLegacyDownloadPermission
 import net.jejer.hipda.feature.settings.AboutAssetDocument
 import net.jejer.hipda.feature.settings.AboutAssetDocumentDialog
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
+import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarBottomGap
+import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarHeight
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
 import net.jejer.hipda.ui.designsystem.state.HiEmptyState
@@ -292,8 +293,27 @@ fun NextAppRoot(
         )
     }
 
-    var latestPaneLayout by remember { mutableStateOf(calculateShellPaneLayout(windowDpSize.width.value, windowDpSize.height.value)) }
-    var latestMiddleWidthDp by remember { mutableStateOf(latestPaneLayout.middlePaneWidthDp.dp) }
+    val initialPaneLayout = remember(windowDpSize, sidebarCollapsedPref, appState.hasDetailContent) {
+        calculateShellPaneLayout(
+            widthDp = windowDpSize.width.value,
+            heightDp = windowDpSize.height.value,
+            leftCollapsedPref = sidebarCollapsedPref,
+            hasDetailContent = appState.hasDetailContent,
+        )
+    }
+    var latestPaneLayout by remember { mutableStateOf(initialPaneLayout) }
+    var latestMiddleWidthDp by remember {
+        mutableStateOf(
+            when {
+                appState.isFullScreenReading -> 0.dp
+                initialPaneLayout.isThreePane -> {
+                    val anchors = resolvePaneSplitAnchors(initialPaneLayout, appState.hasDetailContent)
+                    (anchors[resolveEffectivePaneSplit(persistedSplit, anchors)] ?: initialPaneLayout.middlePaneWidthDp).dp
+                }
+                else -> initialPaneLayout.middlePaneWidthDp.dp
+            },
+        )
+    }
     var latestBottomPaddingDp by remember { mutableStateOf(0.dp) }
     var activeImageViewerArgs by remember { mutableStateOf<ImageViewerLaunchArgs?>(null) }
     val imageViewerBoundsRegistry = remember { ImageViewerBoundsRegistry() }
@@ -483,10 +503,9 @@ fun NextAppRoot(
                 }
                 }
 
-                // 完整编辑器返回拦截与全屏/居中模态承载（按打开态 sessionId 重挂，高于 PositionStack/多栏返回栈，低于看图与登录浮层）
-                if (editorHost.isVisible) {
-                    key(editorHost.sessionId) { BackHandler(enabled = true, onBack = editorHost.handleBack) }
-                    if (!editorHost.isInRightPane) editorHost.renderInPlacement(editorHost.placement, windowDpSize.width.value)
+                // 全屏/居中模态完整编辑器承载（BackHandler 随投放形态挂载：右栏态在壳层内低于抽屉，全屏/模态态高于壳层且低于看图与登录浮层）
+                if (editorHost.isVisible && !editorHost.isInRightPane) {
+                    editorHost.renderInPlacement(editorHost.placement, windowDpSize.width.value)
                 }
 
                 // 兜底拦截：在看图浮层自持 BackHandler 之前注册；真实 E14 浮层在退场动画结束前全程保持启用吞掉重复返回（V-E14 probeM3b / R-E-slots S3）
@@ -516,6 +535,9 @@ fun NextAppRoot(
 
                 val bottomPillVisible = !latestPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || latestPaneLayout.hasDetailPane)
                 val snackbarFullScreen = appState.isFullScreenReading || (isImageViewerOpen && latestPaneLayout.layoutMode != ShellPaneLayoutMode.HingeTwoPane)
+                val detailToolbarClearanceDp = if (appState.selectedThread != null && !isImageViewerOpen && !(editorHost.isVisible && (editorHost.isInRightPane || editorHost.isFullScreen))) {
+                    navBarsBottomDp + ThreadBottomToolbarHeight + ThreadBottomToolbarBottomGap
+                } else 0.dp
                 MultiPaneSnackbarHost(
                     hostState = snackbarHostState,
                     paneLayout = latestPaneLayout,
@@ -524,6 +546,7 @@ fun NextAppRoot(
                     bottomPillVisible = bottomPillVisible,
                     bottomPillClearanceDp = latestBottomPaddingDp,
                     navBarsBottomDp = navBarsBottomDp,
+                    detailBottomClearanceDp = detailToolbarClearanceDp,
                 )
             }
         }

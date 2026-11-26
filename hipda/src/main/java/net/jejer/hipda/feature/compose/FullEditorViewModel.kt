@@ -221,7 +221,7 @@ class FullEditorViewModel internal constructor(
     fun restoreSavedStateIfFresh(saved: FullEditorSavedState?) {
         if (saved == null || !saved.isOpen || _uiState.value.isOpen) return
         val token = ++sessionToken
-        val doc = EditorBodyDocument.parse(saved.serializedBody, saved.selectionStart, saved.selectionEnd)
+        val doc = EditorBodyDocument.parse(saved.serializedBody).selectTextBlockByOrdinal(saved.activeTextBlockOrdinal, saved.selectionStart, saved.selectionEnd)
         resetSession(
             isOpen = true, sessionId = token, mode = saved.mode, selectedFid = saved.selectedFid?.takeIf { it > 0 },
             selectedTypeId = saved.selectedTypeId.ifBlank { "0" }, subject = saved.subject, body = doc,
@@ -232,7 +232,7 @@ class FullEditorViewModel internal constructor(
     }
 
     fun exportSavedState(): FullEditorSavedState = _uiState.value.let { s ->
-        FullEditorSavedState(s.isOpen, s.mode, s.selectedFid, s.selectedTypeId, s.subject, s.body.serialize(), s.body.activeSelectionStart, s.body.activeSelectionEnd, s.uploadedImageIds, s.hadPersistedDraft, s.showDraftRestoredBanner)
+        FullEditorSavedState(s.isOpen, s.mode, s.selectedFid, s.selectedTypeId, s.subject, s.body.serialize(), s.body.activeSelectionStart, s.body.activeSelectionEnd, s.uploadedImageIds, s.hadPersistedDraft, s.showDraftRestoredBanner, s.body.activeTextBlockOrdinal())
     }
 
     fun consumeImagePickerTrigger(triggerId: Long) = _uiState.update { if (it.pendingImagePickerTrigger == triggerId) it.copy(pendingImagePickerTrigger = 0L) else it }

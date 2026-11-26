@@ -343,6 +343,7 @@ class FullEditorViewModelTest {
             uploadedImageIds = listOf("7788", "7789"),
             hadPersistedDraft = true,
             showDraftRestoredBanner = true,
+            activeTextBlockOrdinal = 1,
         )
         val allowAll = androidx.compose.runtime.saveable.SaverScope { true }
         val saved = with(FullEditorSavedStateSaver) { allowAll.save(original) }
