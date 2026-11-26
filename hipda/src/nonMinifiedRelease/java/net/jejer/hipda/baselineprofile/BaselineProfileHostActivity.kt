@@ -1,6 +1,7 @@
 package net.jejer.hipda.baselineprofile
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -66,9 +67,12 @@ class BaselineProfileHostActivity : ComponentActivity() {
             ?.trim()
             ?.takeIf { LOOPBACK_SERVER_REGEX.matches(it) }
         if (loopbackServer != null) {
+            Log.i(TAG, "Configuring loopback forum server: $loopbackServer")
             runBlocking {
                 settingsRepository.setForumServer(loopbackServer)
             }
+        } else {
+            Log.w(TAG, "No valid loopback forum server extra on intent: ${intent.extras}")
         }
 
         setContent {
@@ -91,6 +95,7 @@ class BaselineProfileHostActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val TAG: String = "BaselineProfile"
         const val EXTRA_FORUM_SERVER: String = "net.jejer.hipda.baselineprofile.EXTRA_FORUM_SERVER"
         private val LOOPBACK_SERVER_REGEX = Regex("""^http://127\.0\.0\.1:\d{1,5}$""")
     }

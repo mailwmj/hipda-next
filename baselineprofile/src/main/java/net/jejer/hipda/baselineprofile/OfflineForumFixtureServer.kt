@@ -1,5 +1,6 @@
 package net.jejer.hipda.baselineprofile
 
+import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
@@ -67,6 +68,7 @@ internal class OfflineForumFixtureServer : Closeable {
             val rawTarget = requestLine.split(' ').getOrNull(1).orEmpty()
             val path = rawTarget.substringBefore('?')
             val query = rawTarget.substringAfter('?', "")
+            Log.i(TAG, "Fixture HTTP GET $rawTarget")
 
             val (contentType, bodyBytes) = when {
                 path.endsWith("forumdisplay.php") -> {
@@ -124,9 +126,11 @@ internal class OfflineForumFixtureServer : Closeable {
     }
 
     companion object {
+        private const val TAG: String = "BaselineProfile"
         private val GBK: Charset = Charset.forName("GBK")
 
         const val FIRST_THREAD_ID: String = "900001"
+        const val THREAD_TITLE_PREFIX: String = "Baseline Profile 主题 #"
         const val FIRST_THREAD_TITLE: String = "Baseline Profile 主题 #1 液态玻璃与阅读体验"
         const val FIRST_FLOOR_MARKER: String = "Baseline Profile 楼层内容 #1"
 

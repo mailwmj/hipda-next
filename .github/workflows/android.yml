@@ -418,7 +418,17 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
             set -euo pipefail
+            set +e
             ./gradlew :hipda:generateBaselineProfile --stacktrace
+            RC=$?
+            set -e
+            if [ "$RC" -ne 0 ]; then
+              echo "=== Connected AndroidTest XML Results ==="
+              find baselineprofile/build/outputs/androidTest-results -name "*.xml" -print -exec cat {} + || true
+              echo "=== Recent logcat (BaselineProfile / Benchmark / AndroidRuntime) ==="
+              adb logcat -d -s BaselineProfile:V Benchmark:V AndroidRuntime:E TestRunner:V | tail -n 200 || true
+              exit "$RC"
+            fi
 
       - name: Verify generated Baseline Profile files
         run: |
@@ -446,4 +456,6 @@ jobs:
           path: |
             hipda/src/main/generated/baselineProfiles/
             baselineprofile/build/outputs/connected_android_test_additional_output/
+            baselineprofile/build/outputs/androidTest-results/
+            baselineprofile/build/reports/androidTests/
           if-no-files-found: warn
