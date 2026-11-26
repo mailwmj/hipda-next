@@ -5,7 +5,9 @@ import android.app.Application
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color as AndroidColor
 import android.os.Looper
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
@@ -39,6 +41,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -49,10 +52,13 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -81,6 +87,7 @@ import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.nio.charset.Charset
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -93,9 +100,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import coil3.ColorImage
+import coil3.ImageLoader
+import coil3.decode.DataSource
+import coil3.intercept.Interceptor
+import coil3.request.SuccessResult
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -114,8 +127,19 @@ import net.jejer.hipda.data.favorite.FavoriteListResult
 import net.jejer.hipda.data.favorite.FavoriteMutationResult
 import net.jejer.hipda.data.favorite.FavoriteRepository
 import net.jejer.hipda.data.favorite.FavoriteSyncResult
+import net.jejer.hipda.data.local.BrowseHistoryDao
+import net.jejer.hipda.data.local.BrowseHistoryEntity
 import net.jejer.hipda.data.local.ReadingFilterMode
 import net.jejer.hipda.data.local.ReadingPositionEntity
+import net.jejer.hipda.data.message.MessageResult
+import net.jejer.hipda.data.message.NotificationPollResult
+import net.jejer.hipda.data.message.NotifyEntry
+import net.jejer.hipda.data.message.NotifyFeed
+import net.jejer.hipda.data.message.NotifyRepository
+import net.jejer.hipda.data.message.SmsClearOutcome
+import net.jejer.hipda.data.message.SmsRepository
+import net.jejer.hipda.data.message.SmsSendOutcome
+import net.jejer.hipda.data.message.UnreadSnapshot
 import net.jejer.hipda.data.network.ChallengeDetector
 import net.jejer.hipda.data.network.HttpClientModule
 import net.jejer.hipda.data.network.InMemorySiteCookieStore
@@ -147,14 +171,28 @@ import net.jejer.hipda.data.threadlist.ThreadListLoadResult
 import net.jejer.hipda.data.threadlist.ThreadListLoadState
 import net.jejer.hipda.data.threadlist.ThreadListQuery
 import net.jejer.hipda.data.threadlist.ThreadListRepository
+import net.jejer.hipda.data.user.BlacklistMutationResult
+import net.jejer.hipda.data.user.BlacklistRepository
+import net.jejer.hipda.data.user.BlacklistSnapshot
+import net.jejer.hipda.data.user.BlacklistSyncResult
+import net.jejer.hipda.data.user.UserProfileResult
+import net.jejer.hipda.data.user.UserRepository
+import net.jejer.hipda.data.user.UserThreadsResult
 import net.jejer.hipda.feature.app.NextAppHostViewModel
 import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
+import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
+import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
+import net.jejer.hipda.feature.common.LoginOverlayMode
 import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.forum.ForumViewModel
+import net.jejer.hipda.feature.login.LoginOverlayRendererImpl
+import net.jejer.hipda.feature.messages.MessagesPaneRendererImpl
+import net.jejer.hipda.feature.mine.SearchMinePaneRendererImpl
+import net.jejer.hipda.feature.settings.SettingsProfilePaneRendererImpl
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
 import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbar
@@ -167,13 +205,21 @@ import net.jejer.hipda.feature.threaddetail.chrome.shareExternalHttpUrl
 import net.jejer.hipda.parser.common.DiscuzPageMeta
 import net.jejer.hipda.parser.common.DiscuzSessionInfo
 import net.jejer.hipda.parser.common.PromptCounts
+import net.jejer.hipda.parser.message.NotifyItem
+import net.jejer.hipda.parser.message.NotifyKind
+import net.jejer.hipda.parser.message.SmsDetailPage
+import net.jejer.hipda.parser.message.SmsListPage
 import net.jejer.hipda.parser.search.SearchItem
 import net.jejer.hipda.parser.search.SearchPage
+import net.jejer.hipda.parser.simplelist.FavoriteThreadItem
+import net.jejer.hipda.parser.simplelist.FavoritesListPage
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.parser.threaddetail.InlineSpan
 import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.parser.threadlist.ThreadSummary
+import net.jejer.hipda.parser.user.UserProfile
+import net.jejer.hipda.service.NotificationScheduler
 import net.jejer.hipda.testing.assertFrameContinuity
 import net.jejer.hipda.testing.withAnimatorDurationScale
 import net.jejer.hipda.ui.designsystem.HiColorPresets
@@ -191,6 +237,8 @@ import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.glass.resolveHiGlassStyleSpec
 import net.jejer.hipda.ui.designsystem.hiColorSchemeFromSeed
+import net.jejer.hipda.ui.shell.HiShellTestTags
+import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import okhttp3.OkHttp
 import okhttp3.OkHttpClient
 import okio.Buffer
@@ -1141,6 +1189,593 @@ class E4ProbeTest {
     }
 
     // -------------------------------------------------------------------------
+    // 负责人追加合并态集成探针 (d)(e)：与 origin/main (E-slots/E8/E10/E12) 联调验证
+    // -------------------------------------------------------------------------
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.FOLD8_LANDSCAPE_749_559)
+    fun probeD1_mergedThreePane_imageViewerAccountAndMessagesDrilldownOverlays_preserveToolbarAndPositionStack() {
+        val imageBlock = ContentBlock.Image(
+            fullUrl = "https://www.4d4y.com/forum/attachments/probe_d1.jpg",
+            thumbUrl = "https://www.4d4y.com/forum/attachments/probe_d1_t.jpg",
+            fileSizeBytes = 2048L,
+        )
+        val detailRepo = ProbeThreadDetailRepository(
+            imagePages = mapOf(("1001" to 1) to imageBlock),
+        ).apply {
+            preSavedPositions["1001"] = ReadingPositionEntity(
+                tid = "1001",
+                page = 5,
+                pid = "p503",
+                offsetPx = 120,
+                filterMode = ReadingFilterMode.NONE,
+                updatedAt = 100L,
+            )
+        }
+        val listRepo = ProbeThreadListRepository()
+        val searchRepo = ProbeSearchRepository()
+        val settingsRepo = ProbeSettingsRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val favRepo = ProbeFavoriteRepository()
+        val smsRepo = ProbeSmsRepository()
+        val notifyRepo = ProbeNotifyRepository()
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(listRepo, searchRepo, settingsRepo, authRepo, gateway)
+        val offlineImageLoader = createOfflineImageLoader()
+
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, favRepo, settingsRepo) },
+        )
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+        var overlayViewerOpen = false
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = settingsRepo.settings,
+                        currentAccountFlow = authRepo.currentAccount,
+                        smsUnreadCountFlow = MutableStateFlow(0),
+                        notifyUnreadCountFlow = MutableStateFlow(0),
+                        imageLoader = offlineImageLoader,
+                        loginOverlayRenderer = LoginOverlayRendererImpl(authRepo, gateway),
+                        messagesPaneRenderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway),
+                        searchMinePaneRenderer = SearchMinePaneRendererImpl(searchRepo, favRepo, ProbeBrowseHistoryDao(), authRepo, settingsRepo, gateway),
+                        settingsProfilePaneRenderer = SettingsProfilePaneRendererImpl(
+                            ApplicationProvider.getApplicationContext(),
+                            settingsRepo,
+                            ProbeNotificationScheduler(),
+                            offlineImageLoader,
+                            authRepo,
+                            ProbeBlacklistRepository(),
+                            ProbeUserRepository(),
+                        ),
+                        imageViewerRenderer = object : ImageViewerRenderer {
+                            @Composable
+                            override fun Overlay(args: ImageViewerLaunchArgs, onDismiss: () -> Unit) {
+                                overlayViewerOpen = true
+                                BackHandler(onBack = onDismiss)
+                                Box(Modifier.fillMaxSize()) {
+                                    Text("看图浮层预览:${args.urls.firstOrNull().orEmpty()}")
+                                }
+                            }
+                        },
+                        hostViewModel = hostVm,
+                        forumViewModel = forumVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 从论坛中栏打开帖子 1001，等待唯一一次位置恢复落到第 5 页 p503
+        composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        assertEquals("首次打开帖子位置恢复门闩只能触发一次", 1, detailRepo.getReadingPositionCount("1001"))
+        composeRule.onNodeWithContentDescription("第 5 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        val detailVm = ViewModelProvider(
+            hostVm.viewModelStoreOwnerForThread("1001", owner.defaultViewModelProviderFactory),
+        )["thread:1001", ThreadDetailViewModel::class.java]
+        assertEquals(5, detailVm.uiState.value.page)
+        composeRule.runOnIdle { detailVm.onReadingPositionChanged(5, "p506", 30) }
+        advanceVirtualAndMainLooper(500L)
+
+        // 跳去首页建立非空 PositionStack
+        composeRule.onNodeWithContentDescription("第 5 页，共 10 页，点按展开跳页").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("首页").performClick()
+        advanceVirtualAndMainLooper(200L)
+        composeRule.waitForIdle()
+        assertEquals(1, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+        val toolbarBeforeOverlay = composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        assertNotNull(toolbarBeforeOverlay)
+
+        // 2. 点击第 1 页 1 楼图片打开 E-slots 看图浮层：工具条与位置栈不得误卸载，返回只关看图浮层
+        waitUntilRealCondition(5_000L, { "楼层图片未进入可点击已加载状态" }) {
+            composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image))[0].performClick()
+        composeRule.waitForIdle()
+        assertTrue(overlayViewerOpen)
+        composeRule.onNodeWithText("看图浮层预览", substring = true).assertIsDisplayed()
+        assertEquals("打开看图浮层期间不得误触发二次水合", 1, detailRepo.getReadingPositionCount("1001"))
+        assertEquals(1, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("看图浮层预览", substring = true).assertDoesNotExist()
+        assertEquals("关闭看图浮层后位置栈不得被连带出栈", 1, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+        composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        // 3. 打开 E12 账号管理浮层（LoginOverlayMode.AccountMenu）：不卸载 E4 工具条，返回只关账号浮层
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarAccountRow).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("当前账号").assertIsDisplayed()
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+        assertEquals(1, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        assertNull(hostVm.state.value.loginOverlayMode)
+        assertEquals("关闭账号浮层后位置栈仍应保持非空且停在第 1 页", 1, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+        composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        // 4. 在右栏上层叠 E12 用户资料 -> E8 短消息对话下钻：返回逐级退出后 E4 仍保留原页与位置栈且绝不二次水合
+        composeRule.onNodeWithContentDescription("楼主，楼主，2026-11-26 10:00")
+            .performClick()
+        advanceVirtualAndMainLooper(150L)
+        composeRule.onNodeWithText("发短消息").assertIsDisplayed().performClick()
+        advanceVirtualAndMainLooper(150L)
+        assertEquals(2, hostVm.state.value.detailDrilldownStack.size)
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        assertEquals(1, hostVm.state.value.detailDrilldownStack.size)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        advanceVirtualAndMainLooper(150L)
+        assertTrue(hostVm.state.value.detailDrilldownStack.isEmpty())
+        assertEquals("从消息/资料下钻返回帖子不得再次调用 getReadingPosition", 1, detailRepo.getReadingPositionCount("1001"))
+        assertEquals(1, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+        composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        // 5. 所有上层浮层与下钻均关闭后，下一次返回终于由 E4 PositionStack 接管回到第 5 页 p506
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        advanceVirtualAndMainLooper(200L)
+        assertEquals(5, detailVm.uiState.value.page)
+        assertFalse(detailVm.uiState.value.canPopPositionStack)
+        composeRule.onNodeWithContentDescription("第 5 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+
+        // 6. 栈空后再次返回交给 E3 多栏退出右栏回到空占位
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        assertNull(hostVm.state.value.selectedThread)
+        composeRule.onNodeWithText("选一篇帖子开始阅读").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w600dp-h800dp")
+    fun probeD2_mergedModalDrawer_andSettingsSubPageOverlays_doNotConsumePositionStackOrRehydrate() {
+        val detailRepo = ProbeThreadDetailRepository().apply {
+            preSavedPositions["1001"] = ReadingPositionEntity(
+                tid = "1001",
+                page = 4,
+                pid = "p402",
+                offsetPx = 40,
+                filterMode = ReadingFilterMode.NONE,
+                updatedAt = 100L,
+            )
+        }
+        val settingsRepo = ProbeSettingsRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val favRepo = ProbeFavoriteRepository()
+        val searchRepo = ProbeSearchRepository()
+        val smsRepo = ProbeSmsRepository()
+        val notifyRepo = ProbeNotifyRepository()
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(ProbeThreadListRepository(), searchRepo, settingsRepo, authRepo, gateway)
+        val offlineImageLoader = createOfflineImageLoader()
+
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, favRepo, settingsRepo) },
+        )
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = settingsRepo.settings,
+                        currentAccountFlow = authRepo.currentAccount,
+                        smsUnreadCountFlow = MutableStateFlow(0),
+                        notifyUnreadCountFlow = MutableStateFlow(0),
+                        imageLoader = offlineImageLoader,
+                        loginOverlayRenderer = LoginOverlayRendererImpl(authRepo, gateway),
+                        messagesPaneRenderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway),
+                        searchMinePaneRenderer = SearchMinePaneRendererImpl(searchRepo, favRepo, ProbeBrowseHistoryDao(), authRepo, settingsRepo, gateway),
+                        settingsProfilePaneRenderer = SettingsProfilePaneRendererImpl(
+                            ApplicationProvider.getApplicationContext(),
+                            settingsRepo,
+                            ProbeNotificationScheduler(),
+                            offlineImageLoader,
+                            authRepo,
+                            ProbeBlacklistRepository(),
+                            ProbeUserRepository(),
+                        ),
+                        imageViewerRenderer = object : ImageViewerRenderer {
+                            @Composable
+                            override fun Overlay(args: ImageViewerLaunchArgs, onDismiss: () -> Unit) {
+                                BackHandler(onBack = onDismiss)
+                                Box(Modifier.fillMaxSize()) { Text("单栏看图") }
+                            }
+                        },
+                        hostViewModel = hostVm,
+                        forumViewModel = forumVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 打开帖子并建立 PositionStack（4 -> 首页 1）
+        composeRule.onNodeWithText("探针论坛帖子 1001").performClick()
+        advanceVirtualAndMainLooper(250L)
+        composeRule.onNodeWithContentDescription("第 4 页，共 10 页，点按展开跳页").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("首页").performClick()
+        advanceVirtualAndMainLooper(150L)
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+
+        val detailVm = ViewModelProvider(
+            hostVm.viewModelStoreOwnerForThread("1001", owner.defaultViewModelProviderFactory),
+        )["thread:1001", ThreadDetailViewModel::class.java]
+        assertEquals(1, detailVm.uiState.value.page)
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+
+        // 1. 600dp 抽屉导航态：展开模态侧栏浮层（SidebarModalDrawer）覆盖在单栏正文之上 -> 返回仅关闭抽屉
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+        assertTrue(detailVm.uiState.value.canPopPositionStack)
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        assertEquals("关闭导航抽屉不得出栈 E4 PositionStack（抽屉未拦截导致底层退栈）", 1, detailVm.uiState.value.page)
+        assertTrue("关闭导航抽屉时 E4 PositionStack 仍应保持非空", detailVm.uiState.value.canPopPositionStack)
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertDoesNotExist()
+        assertEquals(1, detailRepo.getReadingPositionCount("1001"))
+
+        // 2. 抽屉关闭后 PositionStack 仍可回退第 4 页并再按返回离开正文
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        advanceVirtualAndMainLooper(200L)
+        assertEquals(4, detailVm.uiState.value.page)
+        assertFalse(detailVm.uiState.value.canPopPositionStack)
+        composeRule.onNodeWithContentDescription("第 4 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        assertNull(hostVm.state.value.selectedThread)
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun probeD3_mergedSettingsReleaseThreadAndAccountAndMessages_isolateOverlaysAndPositionStack() {
+        val detailRepo = ProbeThreadDetailRepository().apply {
+            // 设置 -> 关于 -> 客户端发布帖 (tid = 1579403 = CLIENT_RELEASE_TID) 预置恢复点，用于验证设置进入帖子 + 浮层叠加
+            preSavedPositions["1579403"] = ReadingPositionEntity(
+                tid = "1579403",
+                page = 4,
+                pid = "p402",
+                offsetPx = 40,
+                filterMode = ReadingFilterMode.NONE,
+                updatedAt = 100L,
+            )
+        }
+        val settingsRepo = ProbeSettingsRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val favRepo = ProbeFavoriteRepository()
+        val searchRepo = ProbeSearchRepository()
+        val smsRepo = ProbeSmsRepository()
+        val notifyRepo = ProbeNotifyRepository()
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(ProbeThreadListRepository(), searchRepo, settingsRepo, authRepo, gateway)
+        val offlineImageLoader = createOfflineImageLoader()
+
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, favRepo, settingsRepo) },
+        )
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = settingsRepo.settings,
+                        currentAccountFlow = authRepo.currentAccount,
+                        smsUnreadCountFlow = MutableStateFlow(0),
+                        notifyUnreadCountFlow = MutableStateFlow(0),
+                        imageLoader = offlineImageLoader,
+                        loginOverlayRenderer = LoginOverlayRendererImpl(authRepo, gateway),
+                        messagesPaneRenderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway),
+                        searchMinePaneRenderer = SearchMinePaneRendererImpl(searchRepo, favRepo, ProbeBrowseHistoryDao(), authRepo, settingsRepo, gateway),
+                        settingsProfilePaneRenderer = SettingsProfilePaneRendererImpl(
+                            ApplicationProvider.getApplicationContext(),
+                            settingsRepo,
+                            ProbeNotificationScheduler(),
+                            offlineImageLoader,
+                            authRepo,
+                            ProbeBlacklistRepository(),
+                            ProbeUserRepository(),
+                        ),
+                        imageViewerRenderer = null,
+                        hostViewModel = hostVm,
+                        forumViewModel = forumVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 进入 我的 -> 设置 -> 论坛与发帖 -> 管理版块子页，验证子页 BackHandler 干净退回设置分组详情
+        composeRule.onNodeWithText("我的").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("设置").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("论坛与发帖").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("管理版块").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("已关注").assertIsDisplayed()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("显示置顶帖").assertIsDisplayed()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("关于").assertIsDisplayed()
+
+        // 2. 进入 关于 -> 客户端发布帖 (1579403)：位置恢复一次落第 4 页，跳去首页入栈后叠加 E12 账号管理浮层再关闭
+        composeRule.onNodeWithText("关于").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("客户端发布帖").performClick()
+        advanceVirtualAndMainLooper(300L)
+        assertEquals(1, detailRepo.getReadingPositionCount("1579403"))
+        composeRule.onNodeWithContentDescription("第 4 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        composeRule.onNodeWithContentDescription("第 4 页，共 10 页，点按展开跳页").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("首页").performClick()
+        advanceVirtualAndMainLooper(150L)
+
+        composeRule.runOnIdle { hostVm.openLoginOverlay(LoginOverlayMode.AccountMenu) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("当前账号").assertIsDisplayed()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        assertNull(hostVm.state.value.loginOverlayMode)
+        assertEquals(1, detailRepo.getReadingPositionCount("1579403"))
+        composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        // 3. 弹出 PositionStack 回第 4 页，再返回退回 设置 -> 关于，不再次触发水合
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        advanceVirtualAndMainLooper(200L)
+        composeRule.onNodeWithContentDescription("第 4 页，共 10 页，点按展开跳页").assertIsDisplayed()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("客户端发布帖").assertIsDisplayed()
+        assertEquals(1, detailRepo.getReadingPositionCount("1579403"))
+
+        // 4. 退到 我的 主菜单后切换 消息 验证 E8 短消息列表正常加载
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() } // 关于 -> 设置分组
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() } // 设置分组 -> 我的主菜单
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("消息").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("消息探针用户").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = FeatureScreenshotQualifiers.PHONE_411_891)
+    fun probeE_enterFromM6Pages_searchResults_searchLink_favorites_notifyLinks_hydratesOnceAndReturnsCleanly() {
+        val searchItems = listOf(
+            SearchItem("9101", null, "搜索命中帖 9101", "摘要内容", "楼主", "100", null, "今天", "Discovery"),
+        )
+        val favoriteItems = listOf(
+            FavoriteThreadItem("9201", "我的收藏探针帖 9201", "2026-11-26", "Discovery"),
+        )
+        val notifyEntries = listOf(
+            NotifyEntry(
+                key = "n1",
+                item = NotifyItem(NotifyKind.REPLY, "提醒回复帖 9301", "回复了你的主题", "坛友A", "201", null, "9301", null, "刚刚", true),
+                isRead = false,
+            ),
+            NotifyEntry(
+                key = "n2",
+                item = NotifyItem(NotifyKind.QUOTE, "提醒引用楼层帖 9302", "引用了第2页楼层", "坛友B", "202", null, "9302", "p205", "1分钟前", true),
+                isRead = false,
+            ),
+        )
+
+        val detailRepo = ProbeThreadDetailRepository().apply {
+            preSavedPositions["9101"] = ReadingPositionEntity("9101", 4, "p406", 90, ReadingFilterMode.NONE, updatedAt = 100L)
+            preSavedPositions["9102"] = ReadingPositionEntity("9102", 3, "p304", 75, ReadingFilterMode.NONE, updatedAt = 100L)
+            preSavedPositions["9201"] = ReadingPositionEntity("9201", 6, "p608", 110, ReadingFilterMode.NONE, updatedAt = 100L)
+            preSavedPositions["9301"] = ReadingPositionEntity("9301", 7, "p704", 80, ReadingFilterMode.NONE, updatedAt = 100L)
+            preSavedPositions["9302"] = ReadingPositionEntity("9302", 5, "p503", 60, ReadingFilterMode.NONE, updatedAt = 100L)
+        }
+        val settingsRepo = ProbeSettingsRepository()
+        val authRepo = ProbeAuthRepository(signedInAccount())
+        val favRepo = ProbeFavoriteRepository(favoriteItems = favoriteItems)
+        val searchRepo = ProbeSearchRepository(searchResults = searchItems)
+        val smsRepo = ProbeSmsRepository()
+        val notifyRepo = ProbeNotifyRepository(notifyEntries = notifyEntries)
+        val gateway = createOfflineGateway()
+        val hostVm = NextAppHostViewModel(settingsRepo)
+        val forumVm = ForumViewModel(ProbeThreadListRepository(), searchRepo, settingsRepo, authRepo, gateway)
+        val offlineImageLoader = createOfflineImageLoader()
+
+        val owner = ProbeViewModelStoreOwner(
+            hostVm = hostVm,
+            forumVm = forumVm,
+            detailVmFactory = { ThreadDetailViewModel(detailRepo, gateway, authRepo, favRepo, settingsRepo) },
+        )
+        var backDispatcher: androidx.activity.OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            ProvideGlassEnvironment(GlassEnvironmentState.RefractionAndBlur) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    NextAppRoot(
+                        settingsFlow = settingsRepo.settings,
+                        currentAccountFlow = authRepo.currentAccount,
+                        smsUnreadCountFlow = MutableStateFlow(0),
+                        notifyUnreadCountFlow = MutableStateFlow(0),
+                        imageLoader = offlineImageLoader,
+                        loginOverlayRenderer = LoginOverlayRendererImpl(authRepo, gateway),
+                        messagesPaneRenderer = MessagesPaneRendererImpl(smsRepo, notifyRepo, authRepo, gateway),
+                        searchMinePaneRenderer = SearchMinePaneRendererImpl(searchRepo, favRepo, ProbeBrowseHistoryDao(), authRepo, settingsRepo, gateway),
+                        settingsProfilePaneRenderer = SettingsProfilePaneRendererImpl(
+                            ApplicationProvider.getApplicationContext(),
+                            settingsRepo,
+                            ProbeNotificationScheduler(),
+                            offlineImageLoader,
+                            authRepo,
+                            ProbeBlacklistRepository(),
+                            ProbeUserRepository(),
+                        ),
+                        imageViewerRenderer = null,
+                        hostViewModel = hostVm,
+                        forumViewModel = forumVm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. M6 搜索结果页 -> 进入帖子 9101：位置恢复门闩仅触发一次且落到第 4 页 p406，不展示首楼 p401
+        composeRule.onNodeWithText("搜索").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNode(hasSetTextAction()).performTextReplacement("探针检索")
+        composeRule.onNode(hasSetTextAction()).performImeAction()
+        advanceVirtualAndMainLooper(150L)
+
+        composeRule.onNodeWithText("搜索命中帖 9101").assertIsDisplayed().performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        assertEquals("搜索结果进入应仅调用 1 次 getReadingPosition", 1, detailRepo.getReadingPositionCount("9101"))
+        composeRule.onNodeWithContentDescription("第 4 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithText("p406", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("p401", substring = true).assertDoesNotExist()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("搜索命中帖 9101").assertIsDisplayed()
+        assertEquals("从搜索帖子返回不得再次水合", 1, detailRepo.getReadingPositionCount("9101"))
+
+        // 2. 搜索框站内帖子链接直达 9102 -> 门闩仅触发一次且落到第 3 页 p304，返回仍回搜索页
+        composeRule.onNode(hasSetTextAction()).performTextReplacement("https://www.4d4y.com/forum/viewthread.php?tid=9102")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("打开这个链接").assertIsDisplayed().performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        assertEquals(1, detailRepo.getReadingPositionCount("9102"))
+        composeRule.onNodeWithContentDescription("第 3 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithText("p304", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("p301", substring = true).assertDoesNotExist()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("打开这个链接").assertIsDisplayed()
+        assertEquals(1, detailRepo.getReadingPositionCount("9102"))
+
+        // 3. M6「我的 -> 收藏与关注」进入 9201 -> 门闩仅触发一次且落到第 6 页 p608，返回回收藏列表
+        composeRule.onNodeWithText("我的").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("收藏与关注").performClick()
+        advanceVirtualAndMainLooper(150L)
+
+        composeRule.onNodeWithText("我的收藏探针帖 9201").assertIsDisplayed().performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        assertEquals("收藏列表进入应仅调用 1 次 getReadingPosition", 1, detailRepo.getReadingPositionCount("9201"))
+        composeRule.onNodeWithContentDescription("第 6 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithText("p608", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("p601", substring = true).assertDoesNotExist()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("我的收藏探针帖 9201").assertIsDisplayed()
+        assertEquals(1, detailRepo.getReadingPositionCount("9201"))
+
+        // 二级子页“收藏与关注”按返回回到“我的”主菜单，底栏导航重新出现后再切“消息”
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+
+        // 4a. M6「消息 -> 提醒」无目标 pid 帖子链接（tid=9301）：仅触发 1 次恢复门闩且落第 7 页 p704，返回回提醒列表
+        composeRule.onNodeWithText("消息").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("提醒").performClick()
+        advanceVirtualAndMainLooper(150L)
+
+        composeRule.onNodeWithText("提醒回复帖 9301").assertIsDisplayed().performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        assertEquals("消息提醒帖进入应仅调用 1 次 getReadingPosition", 1, detailRepo.getReadingPositionCount("9301"))
+        composeRule.onNodeWithContentDescription("第 7 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithText("p704", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("p701", substring = true).assertDoesNotExist()
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("提醒回复帖 9301").assertIsDisplayed()
+        assertEquals(1, detailRepo.getReadingPositionCount("9301"))
+
+        // 4b. M6「消息 -> 提醒」带明确 targetPid（tid=9302, pid=p205）：直达指定楼层 p205（第 2 页），不误冲写原记录并干净返回
+        composeRule.onNodeWithText("提醒引用楼层帖 9302").assertIsDisplayed().performClick()
+        advanceVirtualAndMainLooper(300L)
+        composeRule.waitForIdle()
+        assertEquals("带 targetPid 提醒深链不应走上次阅读位置恢复", 0, detailRepo.getReadingPositionCount("9302"))
+        composeRule.onNodeWithContentDescription("第 2 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithText("p205", substring = true).assertIsDisplayed()
+        assertEquals(0, detailRepo.saveCalls.count { it.tid == "9302" })
+
+        composeRule.runOnIdle { backDispatcher!!.onBackPressed() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("提醒引用楼层帖 9302").assertIsDisplayed()
+    }
+
+    // -------------------------------------------------------------------------
     // 离线测试替身与辅助函数
     // -------------------------------------------------------------------------
 
@@ -1255,15 +1890,25 @@ class E4ProbeTest {
         override suspend fun trySilentRelogin(failedEpoch: Long, priority: AccessPriority) = SilentReloginResult.NotLoggedIn
     }
 
-    private class ProbeFavoriteRepository : FavoriteRepository {
-        override val favoriteTids = MutableStateFlow<Set<String>>(emptySet())
+    private class ProbeFavoriteRepository(
+        private val favoriteItems: List<FavoriteThreadItem> = emptyList(),
+    ) : FavoriteRepository {
+        override val favoriteTids = MutableStateFlow(favoriteItems.map { it.tid }.toSet())
         override val attentionTids = MutableStateFlow<Set<String>>(emptySet())
         override fun isFavorite(tid: String) = tid in favoriteTids.value
         override fun isAttention(tid: String) = tid in attentionTids.value
         override suspend fun getList(kind: FavoriteKind, page: Int, priority: AccessPriority): FavoriteListResult =
-            FavoriteError.SiteError("offline")
+            FavoriteListResult.Success(
+                kind = kind,
+                page = page,
+                listPage = FavoritesListPage(
+                    maxPage = 1,
+                    items = if (kind == FavoriteKind.FAVORITE) favoriteItems else emptyList(),
+                    meta = probeMeta(),
+                ),
+            )
         override suspend fun syncCache(kind: FavoriteKind, maxPages: Int, priority: AccessPriority): FavoriteSyncResult =
-            FavoriteError.SiteError("offline")
+            FavoriteSyncResult.Success(kind, favoriteTids.value, 1, 1, 0L)
         override suspend fun add(kind: FavoriteKind, tid: String, priority: AccessPriority): FavoriteMutationResult =
             FavoriteMutationResult.Success(kind, tid, "ok")
         override suspend fun remove(kind: FavoriteKind, tid: String, priority: AccessPriority): FavoriteMutationResult =
@@ -1292,10 +1937,12 @@ class E4ProbeTest {
         override fun observeFiltered(rawThreads: Flow<List<ThreadSummary>>) = rawThreads.map { l -> l.map { ThreadListItem(it, false) } }
     }
 
-    private class ProbeSearchRepository : SearchRepository {
+    private class ProbeSearchRepository(
+        private val searchResults: List<SearchItem> = emptyList(),
+    ) : SearchRepository {
         override val searchHistory: Flow<List<String>> = MutableStateFlow(emptyList())
         override suspend fun search(query: String, author: String, forumId: Int?, fullText: Boolean, page: Int, searchId: String?, priority: AccessPriority, recordHistory: Boolean) =
-            getNewPosts(page, searchId, priority)
+            SearchResult.Success(page, false, SearchPage("s1", 1, searchResults, probeMeta()))
         override suspend fun getNewPosts(page: Int, searchId: String?, priority: AccessPriority): SearchResult =
             SearchResult.Success(1, false, SearchPage("s1", 1, emptyList(), probeMeta()))
         override suspend fun getMyThreads(page: Int, priority: AccessPriority): MyThreadsResult = throw UnsupportedOperationException()
@@ -1317,12 +1964,16 @@ class E4ProbeTest {
 
     private class ProbeThreadDetailRepository(
         private val lastPage: Int = 10,
+        private val imagePages: Map<Pair<String, Int>, ContentBlock.Image> = emptyMap(),
     ) : ThreadDetailRepository {
         val preSavedPositions = LinkedHashMap<String, ReadingPositionEntity>()
         val pageDelays = LinkedHashMap<Pair<String, Int>, CompletableDeferred<Unit>>()
         val loadPageCalls = CopyOnWriteArrayList<Pair<String, Int>>()
         val saveCalls = CopyOnWriteArrayList<SavedReadingCall>()
         val getReadingPositionCalls = AtomicInteger(0)
+        private val getPositionCountsByTid = ConcurrentHashMap<String, AtomicInteger>()
+
+        fun getReadingPositionCount(tid: String): Int = getPositionCountsByTid[tid]?.get() ?: 0
 
         override suspend fun loadPage(
             tid: String,
@@ -1334,9 +1985,22 @@ class E4ProbeTest {
         ): ThreadDetailLoadResult {
             loadPageCalls.add(tid to page)
             pageDelays[tid to page]?.await()
+            val pageImage = imagePages[tid to page]
             val floors = (1..15).map { idx ->
                 val floorNo = (page - 1) * 15 + idx
                 val pid = "p${page * 100 + idx}"
+                val blocks = buildList {
+                    if (idx == 1 && pageImage != null) {
+                        add(pageImage)
+                    }
+                    add(
+                        ContentBlock.Text(
+                            listOf(
+                                InlineSpan.Plain("帖子 $tid 第 $page 页 第 $floorNo 楼 ($pid) 测试正文。"),
+                            ),
+                        ),
+                    )
+                }
                 PostFloor(
                     postId = pid,
                     floor = floorNo,
@@ -1349,13 +2013,7 @@ class E4ProbeTest {
                     postStatus = null,
                     signature = null,
                     poll = null,
-                    blocks = listOf(
-                        ContentBlock.Text(
-                            listOf(
-                                InlineSpan.Plain("帖子 $tid 第 $page 页 第 $floorNo 楼 ($pid) 测试正文。"),
-                            ),
-                        ),
-                    ),
+                    blocks = blocks,
                 )
             }
             return ThreadDetailLoadResult.Success(
@@ -1370,13 +2028,14 @@ class E4ProbeTest {
 
         override suspend fun loadByPostId(pid: String, tid: String?, recordHistory: Boolean, forumName: String?, priority: AccessPriority): ThreadDetailLoadResult {
             val resolvedTid = tid ?: "8001"
-            val page = 1
+            val page = pid.removePrefix("p").toIntOrNull()?.div(100)?.coerceIn(1, lastPage) ?: 1
             val res = loadPage(resolvedTid, page, ThreadDetailFilter.All, recordHistory, forumName, priority) as ThreadDetailLoadResult.Success
             return res.copy(targetPostId = pid)
         }
 
         override suspend fun getReadingPosition(tid: String): ReadingPositionEntity? {
             getReadingPositionCalls.incrementAndGet()
+            getPositionCountsByTid.computeIfAbsent(tid) { AtomicInteger(0) }.incrementAndGet()
             return preSavedPositions[tid]
         }
 
@@ -1429,6 +2088,112 @@ class E4ProbeTest {
         composeRule.waitForIdle()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         assertTrue(onTimeoutMessage(), predicate())
+    }
+
+    private fun createOfflineImageLoader(): ImageLoader {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        return ImageLoader.Builder(context)
+            .components {
+                add(
+                    Interceptor { chain ->
+                        SuccessResult(
+                            image = ColorImage(AndroidColor.LTGRAY, width = 320, height = 240),
+                            request = chain.request,
+                            dataSource = DataSource.MEMORY_CACHE,
+                        )
+                    },
+                )
+            }
+            .build()
+    }
+
+    private class ProbeSmsRepository : SmsRepository {
+        override val cooldownUntilMs = MutableStateFlow(0L)
+        override fun getRemainingCooldownSeconds() = 0
+        override suspend fun getConversations(unreadOnly: Boolean, priority: AccessPriority) =
+            MessageResult.Success(
+                SmsListPage(
+                    items = listOf(
+                        net.jejer.hipda.parser.message.SmsConversationItem(
+                            uid = "100",
+                            author = "消息探针用户",
+                            avatarUrl = null,
+                            time = "今天",
+                            summary = "短消息摘要",
+                            isNew = false,
+                        ),
+                    ),
+                    meta = probeMeta(),
+                    hasContainer = true,
+                ),
+            )
+        override suspend fun getConversationDetail(uid: String, priority: AccessPriority) =
+            MessageResult.Success(SmsDetailPage("42", "HiProbeUser", "abc", emptyList(), probeMeta(), true))
+        override suspend fun sendSms(uid: String?, username: String?, message: String, priority: AccessPriority) = SmsSendOutcome.Sent
+        override suspend fun clearConversation(uid: String, priority: AccessPriority) = SmsClearOutcome.Cleared
+    }
+
+    private class ProbeNotifyRepository(
+        notifyEntries: List<NotifyEntry> = emptyList(),
+    ) : NotifyRepository {
+        override val smsUnreadCount = MutableStateFlow(0)
+        override val notifyUnreadCount = MutableStateFlow(notifyEntries.count { !it.isRead })
+        override val notifications = MutableStateFlow(notifyEntries)
+        override suspend fun getNotifications(priority: AccessPriority) =
+            MessageResult.Success(NotifyFeed(notifications.value, probeMeta(), true))
+        override suspend fun markNotificationRead(key: String) {
+            notifications.update { list -> list.map { if (it.key == key) it.copy(isRead = true) else it } }
+        }
+        override suspend fun markAllNotificationsRead() {
+            notifications.update { list -> list.map { it.copy(isRead = true) } }
+        }
+        override suspend fun pollUnreadCounts(priority: AccessPriority) =
+            NotificationPollResult.Success(UnreadSnapshot(0, 0))
+        override fun updateFromPageMeta(promptCounts: PromptCounts) = Unit
+        override fun updateSmsUnreadState(unreadConversationUids: Set<String>, unreadCount: Int) = Unit
+        override fun markSmsConversationRead(uid: String, hadUnreadMessages: Boolean) = Unit
+    }
+
+    private class ProbeBrowseHistoryDao : BrowseHistoryDao {
+        private val items = MutableStateFlow<List<BrowseHistoryEntity>>(emptyList())
+        override fun observeRecent(limit: Int) = items
+        override fun observeVisitedTids(): Flow<List<String>> = flowOf(emptyList())
+        override suspend fun upsert(entity: BrowseHistoryEntity) = Unit
+        override suspend fun delete(tid: String) = Unit
+        override suspend fun restore(entity: BrowseHistoryEntity) = Unit
+        override suspend fun trimTo(max: Int) = Unit
+    }
+
+    private class ProbeBlacklistRepository : BlacklistRepository {
+        override val blockedUsernames = MutableStateFlow<Set<String>>(emptySet())
+        override val lastSyncedAtMs = MutableStateFlow<Long?>(null)
+        override fun isBlocked(username: String) = false
+        override suspend fun syncBlacklist(priority: AccessPriority) =
+            BlacklistSyncResult.Success(
+                BlacklistSnapshot(ownerUid = "42", usernames = blockedUsernames.value, lastSyncedAtMs = null),
+                isEmptyConfirmed = true,
+                formhash = "abc",
+            )
+        override suspend fun addToBlacklist(username: String, formhash: String?, priority: AccessPriority) =
+            BlacklistMutationResult.Success(username, blockedUsernames.value)
+        override suspend fun removeFromBlacklist(username: String, formhash: String?, priority: AccessPriority) =
+            BlacklistMutationResult.Success(username, blockedUsernames.value)
+    }
+
+    private class ProbeUserRepository : UserRepository {
+        override suspend fun getUserProfile(uid: String, priority: AccessPriority) =
+            UserProfileResult.Success(
+                UserProfile(uid, "楼主", isOnline = true, avatarUrl = null, formhash = "abc", detail = "", meta = probeMeta()),
+            )
+        override suspend fun getUserThreads(uid: String, page: Int, searchId: String?, priority: AccessPriority) =
+            UserThreadsResult.Success(uid, page, SearchPage("s1", 1, emptyList(), probeMeta()))
+    }
+
+    private class ProbeNotificationScheduler : NotificationScheduler {
+        override fun syncSchedule(notificationsEnabled: Boolean) = Unit
+        override suspend fun syncFromSettings() = Unit
+        override fun schedule() = Unit
+        override fun cancel() = Unit
     }
 
     private companion object {
