@@ -46,6 +46,7 @@ import net.jejer.hipda.data.network.ChallengeDetector
 import net.jejer.hipda.data.network.access.ChallengeSolver
 import net.jejer.hipda.data.network.access.SiteAccessGateway
 import net.jejer.hipda.data.network.access.SolveResult
+import net.jejer.hipda.data.post.PrePostResult
 import net.jejer.hipda.emoji.EmojiMap
 import net.jejer.hipda.feature.app.MultiPaneTestHarness
 import net.jejer.hipda.feature.app.NextAppRoot
@@ -1168,6 +1169,80 @@ class EmojiPanelBehaviorTest {
             }
         } finally {
             composeRule.mainClock.autoAdvance = true
+        }
+    }
+
+    /** S3/E6b 合并回归：编辑已发表首楼（EditPost）下表情面板等高零位移互换、插入与整枚回删、点标题框切回键盘及「还原原文」联动。 */
+    @Test
+    fun fullEditor_editPostMode_emojiPanel_zeroShift_insertWholeBackspace_andSubjectTapSwitchesToKeyboard() {
+        val postRepo = FakePostRepository().apply {
+            prePostHandler = {
+                PrePostResult.Success(
+                    defaultSamplePrePostInfo(
+                        typeOptions = linkedMapOf("0" to "分类", "56" to "Discovery"),
+                        typeId = "56",
+                    ).copy(subject = "编辑模式原标题", text = "原始楼层正文"),
+                )
+            }
+        }
+        val vm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), FakeQuickReplyAuthRepository(), FakeComposeSettingsRepository()) { 10_000L }
+        vm.open(FullEditorRequest.EditPost(fid = 2, tid = "2704001", pid = "53529099", page = 1, isFirstFloor = true, floorNumber = 1, author = "linus_hi"))
+        var hostView: View? = null
+
+        composeRule.setContent {
+            hostView = LocalView.current
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                FullEditorPlacementFrame(FullEditorPlacement.FullScreen, 411f, isSubmitting = false, onRequestClose = {}) { isModal ->
+                    FullEditorScreen(viewModel = vm, onOpenLogin = {}, isModalCard = isModal, emojiPanelSlot = emojiSlot)
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        val density = composeRule.density
+        fun dispatchInsets(imeDp: Int, navDp: Int = 24) {
+            composeRule.runOnUiThread {
+                val insets = WindowInsetsCompat.Builder()
+                    .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.of(0, 0, 0, with(density) { navDp.dp.roundToPx() }))
+                    .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, with(density) { imeDp.dp.roundToPx() }))
+                    .build()
+                ViewCompat.dispatchApplyWindowInsets(requireNotNull(hostView), insets)
+            }
+            composeRule.waitForIdle()
+        }
+        fun toolbarBottomDp(): Float =
+            with(density) { composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode().boundsInRoot.bottom.toDp().value }
+
+        // 1. IME=260dp → 表情，逐帧底缘零位移
+        dispatchInsets(260)
+        val baseline = toolbarBottomDp()
+        composeRule.onNodeWithContentDescription("表情").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("键盘").assertIsDisplayed()
+        for (ime in listOf(160, 60, 0)) {
+            dispatchInsets(ime)
+            assertEquals("EditPost IME→表情 ime=$ime 工具栏底缘偏移", baseline, toolbarBottomDp(), 1.0f)
+        }
+
+        // 2. 编辑模式下插入 {:2_41:} 触发「还原原文」出现，再点删除键整枚回删恢复原文
+        composeRule.onNodeWithContentDescription("酷猴表情").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("表情 {:2_41:}").performClick()
+        composeRule.waitForIdle()
+        assertEquals("原始楼层正文{:2_41:}", vm.uiState.value.body.serialize())
+        composeRule.onNodeWithText("还原原文").assertIsDisplayed()
+
+        composeRule.onNodeWithContentDescription("删除").performClick()
+        composeRule.waitForIdle()
+        assertEquals("编辑模式删除键应整枚回删 {:2_41:}", "原始楼层正文", vm.uiState.value.body.serialize())
+
+        // 3. 点编辑首楼标题框（EditorSubjectField.onInputPress）自动收起表情切回键盘，底缘零位移
+        composeRule.onNodeWithContentDescription("标题").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("表情").assertIsDisplayed()
+        assertEquals("EditPost 点标题框首帧底缘不得塌陷", baseline, toolbarBottomDp(), 1.0f)
+        for (ime in listOf(120, 260)) {
+            dispatchInsets(ime)
+            assertEquals("EditPost 点标题框→IME ime=$ime 底缘偏移", baseline, toolbarBottomDp(), 1.0f)
         }
     }
 }
