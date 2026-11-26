@@ -105,6 +105,8 @@ private sealed interface RightPaneSlot {
     }
 }
 
+internal const val MAX_SAVED_DETAIL_STATES: Int = 20
+
 /**
  * 提升到 `HiAdaptiveShell` `AnimatedContent` 之外的槽位与可保存状态宿主（R-E3 B2）：
  * 跨一级目的地共享同一 `SaveableStateHolder` 与 `detailMovables`，确保切页不丢列表/详情滚动位，
@@ -114,10 +116,38 @@ private sealed interface RightPaneSlot {
 class MultiPaneSlotHolder internal constructor(
     internal val hostViewModel: NextAppHostViewModel,
     internal val saveableStateHolder: SaveableStateHolder,
+    private val maxSavedDetailStates: Int = MAX_SAVED_DETAIL_STATES,
 ) {
+    private val savedDetailLimit: Int = maxSavedDetailStates.coerceAtLeast(1)
     internal var detailRenderer: @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, LazyListState, () -> Unit) -> Unit = { _, _, _, _, _ -> }
     internal var activeThreadTids: Set<String> = emptySet()
     internal val detailMovables = LinkedHashMap<String, @Composable (ThreadNavArgs, DetailChromeSpec, PaddingValues, () -> Unit) -> Unit>()
+    private val savedDetailLru = LinkedHashMap<String, Unit>(savedDetailLimit + 1, 0.75f, true)
+    private val mountedDetailCounts = HashMap<String, Int>()
+
+    private fun onDetailStateMounted(tid: String) {
+        mountedDetailCounts[tid] = (mountedDetailCounts[tid] ?: 0) + 1
+        savedDetailLru[tid] = Unit
+        evictExcessSavedDetailStates()
+    }
+
+    private fun onDetailStateDisposed(tid: String, isInactive: Boolean) {
+        val next = (mountedDetailCounts[tid] ?: 0) - 1
+        if (next <= 0) mountedDetailCounts.remove(tid) else mountedDetailCounts[tid] = next
+        if (isInactive) evictExcessSavedDetailStates()
+    }
+
+    private fun evictExcessSavedDetailStates() {
+        if (savedDetailLru.size <= savedDetailLimit) return
+        val iterator = savedDetailLru.keys.iterator()
+        while (savedDetailLru.size > savedDetailLimit && iterator.hasNext()) {
+            val candidate = iterator.next()
+            if (candidate !in activeThreadTids && (mountedDetailCounts[candidate] ?: 0) == 0) {
+                iterator.remove()
+                saveableStateHolder.removeState(detailSaveableKey(candidate))
+            }
+        }
+    }
 
     internal fun detailMovableFor(tid: String) = detailMovables.getOrPut(tid) {
         movableContentOf { args: ThreadNavArgs, chromeSpec: DetailChromeSpec, padding: PaddingValues, onBack: () -> Unit ->
@@ -129,11 +159,14 @@ class MultiPaneSlotHolder internal constructor(
             key(args.tid) {
                 DisposableEffect(args.tid) {
                     hostViewModel.onThreadMounted(args.tid)
+                    onDetailStateMounted(args.tid)
                     onDispose {
                         hostViewModel.onThreadDisposed(args.tid)
-                        if (args.tid !in activeThreadTids) {
+                        val isInactive = args.tid !in activeThreadTids
+                        if (isInactive) {
                             detailMovables.remove(args.tid)
                         }
+                        onDetailStateDisposed(args.tid, isInactive)
                     }
                 }
                 saveableStateHolder.SaveableStateProvider(key = detailSaveableKey(args.tid)) {

@@ -490,6 +490,87 @@ class ImageViewerHardeningRegressionTest {
         assertEquals(listOf(url), mediaActions.savedUrls)
         assertTrue("保存成功应提示“已保存到相册”", "已保存到相册" in snackbars.messages)
     }
+
+    // ==================== R-E14 R2-S1：多图远滑回收重返已加载原图页不重复弹提示 ====================
+
+    @Test
+    fun rE14R2S1_multiPageReturnToCompletedOriginal_doesNotReshowLoadedSnackbar() {
+        val urls = List(5) { idx -> "https://img.example.invalid/r2s1_page_$idx.png" }
+        val origFile = writeTempPngFile(tempDir, "r2s1_orig_page0.png", width = 640, height = 480)
+        val loader = ViewerTestImageLoader { request ->
+            SuccessResult(createViewerPhotoBitmap(640, 480).asImage(), request, DataSource.DISK)
+        }
+        val stream = MutableSharedFlow<OriginalDownloadState>(extraBufferCapacity = 4)
+        val downloader = FakeOriginalImageDownloader { stream.asSharedFlow() }
+        val snackbars = RecordingSnackbarController()
+
+        composeRule.setContent {
+            CompositionLocalProvider(
+                LocalHiImageLoader provides loader,
+                LocalPaneSnackbarController provides snackbars,
+            ) {
+                HiTheme(themeMode = HiThemeMode.DARK, seed = HiColorPresets.Brand.toSeed()) {
+                    ImageViewerOverlay(
+                        args = ImageViewerLaunchArgs(urls = urls),
+                        onDismiss = {},
+                        originalDownloader = downloader,
+                        mediaActions = FakeImageViewerMediaActions(),
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("1 / 5").assertIsDisplayed()
+
+        // 1. 第 0 页下载并解码原图完成 -> 仅弹出 1 次「已加载原图」
+        composeRule.onNodeWithText("查看原图").performClick()
+        composeRule.waitForIdle()
+        stream.tryEmit(OriginalDownloadState.Completed(file = origFile, mimeType = "image/png"))
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("已加载原图").fetchSemanticsNodes().isNotEmpty() &&
+                snackbars.messages.count { it == "已加载原图" } == 1
+        }
+        composeRule.waitForIdle()
+        assertEquals("首次加载原图完成应弹出 1 次「已加载原图」", 1, snackbars.messages.count { it == "已加载原图" })
+        assertEquals("首次原图解码请求数应为 1", 1, loader.requests.count { it.data == origFile })
+
+        // 2. 横滑至第 4 页（5 / 5）使第 0 页离屏回收
+        fun swipePage(forward: Boolean, expectedLabel: String) {
+            composeRule.onRoot().performTouchInput {
+                val startX = if (forward) width * 0.85f else width * 0.15f
+                val stepX = if (forward) -width * 0.09f else width * 0.09f
+                down(Offset(startX, height * 0.5f))
+                repeat(8) { moveBy(Offset(stepX, 0f), delayMillis = 16L) }
+                up()
+            }
+            composeRule.waitUntil(timeoutMillis = 5_000L) {
+                composeRule.onAllNodesWithText(expectedLabel).fetchSemanticsNodes().isNotEmpty()
+            }
+            composeRule.waitForIdle()
+        }
+
+        for (targetPage in 1..4) {
+            swipePage(forward = true, expectedLabel = "${targetPage + 1} / 5")
+        }
+        composeRule.onNodeWithText("5 / 5").assertIsDisplayed()
+
+        // 3. 滑回第 0 页（1 / 5）：第 0 页重新进入组合并重解缓存原图文件，底栏保持「已加载原图」，但绝不重复弹 Snackbar
+        for (targetPage in 3 downTo 0) {
+            swipePage(forward = false, expectedLabel = "${targetPage + 1} / 5")
+        }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            loader.requests.count { it.data == origFile } >= 2
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("1 / 5").assertIsDisplayed()
+        composeRule.onNodeWithText("已加载原图").assertIsDisplayed()
+        assertEquals(
+            "远滑回收后重返已加载原图页不得重复弹出「已加载原图」提示，实际=${snackbars.messages}",
+            1,
+            snackbars.messages.count { it == "已加载原图" },
+        )
+    }
 }
 
 private class FakePermissionRegistryOwner(

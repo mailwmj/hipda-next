@@ -363,10 +363,14 @@ fun ImageViewerOverlay(
                     updatePage(page) { it.copy(imageSize = if (sz.width > 0 && sz.height > 0) sz else it.imageSize, isGif = it.isGif || anim) }
                 },
                 onOriginalDecodeResult = { ok, sz, anim ->
-                    val completed = stateOf(page).pendingOriginal
+                    val current = stateOf(page)
+                    val completed = current.pendingOriginal
+                    val wasAlreadyCompleted = current.downloadState is OriginalDownloadState.Completed
                     if (ok && completed != null) {
                         updatePage(page) { it.copy(imageSize = if (sz != null && sz.width > 0 && sz.height > 0) sz else it.imageSize, isGif = it.isGif || anim, downloadState = completed) }
-                        motionScope.launch { snackbar.show(originalLoadedMsg) }
+                        if (!wasAlreadyCompleted) {
+                            motionScope.launch { snackbar.show(originalLoadedMsg) }
+                        }
                     } else {
                         updatePage(page) { it.copy(downloadState = OriginalDownloadState.Failed, pendingOriginal = null) }
                     }

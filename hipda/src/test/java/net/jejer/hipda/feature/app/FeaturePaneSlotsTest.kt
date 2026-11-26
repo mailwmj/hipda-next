@@ -598,7 +598,82 @@ class FeaturePaneSlotsTest {
         )
         val saved = with(NextAppStateSaver) { scope.save(original) }
         val restored = NextAppStateSaver.restore(requireNotNull(saved))
-        assertEquals(original, restored)
+        assertEquals(
+            original.copy(
+                selectedSmsConversation = SmsConversationArgs("42", ""),
+                detailDrilldownStack = listOf(
+                    DetailDrilldownEntry.UserProfile("42", "alice"),
+                    DetailDrilldownEntry.SmsConversation(SmsConversationArgs("77", "")),
+                ),
+            ),
+            restored,
+        )
+    }
+
+    /** 闭合 R-E8 跨卡：NextAppStateSaver 对短消息根会话与下钻条目只存 uid，不把对端用户名写入保存结果。 */
+    @Test
+    fun rE8_nextAppStateSaver_omitsSmsPeerUsernameFromSavedPayloadAndRestoresEmptyName() {
+        fun collectAllStrings(value: Any?, out: MutableList<String>) {
+            when (value) {
+                null -> Unit
+                is String -> out += value
+                is Iterable<*> -> value.forEach { collectAllStrings(it, out) }
+                is Array<*> -> value.forEach { collectAllStrings(it, out) }
+                is Map<*, *> -> value.forEach { (k, v) -> collectAllStrings(k, out); collectAllStrings(v, out) }
+                else -> out += value.toString()
+            }
+        }
+
+        val rootSentinel = "PEER_NAME_SENTINEL_ROOT"
+        val drillSentinel = "PEER_NAME_SENTINEL_DRILL"
+        val profileKeepName = "PROFILE_KEEP_NAME"
+        val scope = SaverScope { true }
+        val original = NextAppState(
+            selectedDestination = ShellDestination.Messages,
+            selectedSidebarEntry = ShellSidebarEntry.Sms,
+            selectedSmsConversation = SmsConversationArgs("42", rootSentinel),
+            selectedSettingsGroup = SettingsGroup.About,
+            isSettingsDetailOpen = true,
+            detailDrilldownStack = listOf(
+                DetailDrilldownEntry.UserProfile("10", profileKeepName),
+                DetailDrilldownEntry.SmsConversation(SmsConversationArgs("77", drillSentinel)),
+            ),
+        )
+
+        val saved = requireNotNull(with(NextAppStateSaver) { scope.save(original) })
+        val savedList = saved as List<*>
+        assertEquals("保持 20 元列表槽位兼容", 20, savedList.size)
+
+        val allStrings = mutableListOf<String>()
+        collectAllStrings(saved, allStrings)
+        assertTrue("保存结果严禁包含根会话对端用户名哨兵，实际=$allStrings", allStrings.none { rootSentinel in it })
+        assertTrue("保存结果严禁包含下钻短消息对端用户名哨兵，实际=$allStrings", allStrings.none { drillSentinel in it })
+        assertTrue("UserProfile 用户名应继续保留", profileKeepName in allStrings)
+
+        val restored = requireNotNull(NextAppStateSaver.restore(saved))
+        assertEquals(SmsConversationArgs("42", ""), restored.selectedSmsConversation)
+        assertEquals(
+            listOf(
+                DetailDrilldownEntry.UserProfile("10", profileKeepName),
+                DetailDrilldownEntry.SmsConversation(SmsConversationArgs("77", "")),
+            ),
+            restored.detailDrilldownStack,
+        )
+
+        // 即使遇到旧版 20 元 Bundle 里残留了短消息用户名，restore 也一律还原为空串交由对话页重拉回填
+        val legacy20WithNames = savedList.toMutableList().apply {
+            this[15] = listOf("u", "10", profileKeepName, "s", "77", drillSentinel)
+            this[17] = rootSentinel
+        }
+        val restoredLegacy = requireNotNull(NextAppStateSaver.restore(legacy20WithNames))
+        assertEquals(SmsConversationArgs("42", ""), restoredLegacy.selectedSmsConversation)
+        assertEquals(
+            listOf(
+                DetailDrilldownEntry.UserProfile("10", profileKeepName),
+                DetailDrilldownEntry.SmsConversation(SmsConversationArgs("77", "")),
+            ),
+            restoredLegacy.detailDrilldownStack,
+        )
     }
 
     /** 闭合 R-E-slots S1：旧 16 元保存态（含 chunked(2) 无标签多级 UserProfile，甚至用户名恰为 "u"/"s"）无损兼容恢复。 */

@@ -106,7 +106,7 @@ class BlacklistViewModel(
         val state = _uiState.value
         if (username in state.removingUsernames) return
         activeUndoToken = null
-        val visible = state.orderedUsernames.filter { it in state.activeBlockedSet }
+        val visible = state.orderedUsernames.filter { it in state.activeBlockedSet && it !in state.removingUsernames }
         val prevNeighbor = visible.indexOf(username).let { idx -> if (idx > 0) visible[idx - 1] else null }
         val token = BlacklistUndoToken(++latestUndoTokenId, username, prevNeighbor)
         _uiState.update { it.copy(removingUsernames = it.removingUsernames + username) }

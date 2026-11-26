@@ -412,6 +412,69 @@ class MinePagesBehaviorTest {
     }
 
     @Test
+    fun rE10R2S1_favorites_refreshReordersFirstPage_cancelTopAndUndoRestoresAtFirstPosition() {
+        val serverItems = java.util.concurrent.atomic.AtomicReference(
+            listOf("7001" to "收藏甲", "7002" to "收藏乙", "7003" to "收藏丙"),
+        )
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.target.contains("item=favorites&type=thread") -> gbkHtmlResponse(
+                    favoriteListHtml(testAccount.uid, testAccount.username, FavoriteKind.FAVORITE, serverItems.get()),
+                )
+                request.target.contains("item=favorites&action=remove") -> gbkXmlResponse("此主题已成功从您的收藏夹中移除。")
+                request.target.contains("item=favorites&action=add") -> gbkXmlResponse("此主题已成功添加到您的收藏夹中。")
+                else -> MockResponse(code = 404)
+            }
+        }
+        val authRepo = MutableAuthRepo(testAccount)
+        val (favRepo, gateway) = createMockWebFavoriteRepo(authRepo)
+        val viewModel = FavoritesViewModel(favRepo, authRepo, gateway)
+
+        composeRule.setContent {
+            MineTestHost {
+                FavoritesPane(viewModel, showBack = true, onBack = {}, onOpenThread = {}, onOpenLogin = {})
+            }
+        }
+        waitUntilIdleAnd {
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7001", "7002", "7003") &&
+                composeRule.onAllNodesWithText("收藏甲").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 刷新首页返回重排新序 [7003, 7001, 7002]（无活跃撤销令牌且无在途变更 -> 重建秩表）
+        serverItems.set(listOf("7003" to "收藏丙", "7001" to "收藏甲", "7002" to "收藏乙"))
+        viewModel.refresh(FavoriteKind.FAVORITE)
+        waitUntilIdleAnd {
+            val tab = viewModel.uiState.value.tabState(FavoriteKind.FAVORITE)
+            !tab.isRefreshing && tab.items.map { it.tid } == listOf("7003", "7001", "7002")
+        }
+
+        // 取消首位 7003 后立即点「撤销」-> 必须精确恢复回第 1 位 [7003, 7001, 7002]
+        composeRule.onAllNodesWithContentDescription("取消收藏")[0].performClick()
+        waitUntilIdleAnd {
+            !favRepo.isFavorite("7003") &&
+                viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid } == listOf("7001", "7002") &&
+                composeRule.onAllNodesWithText("撤销").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithText("撤销").performClick()
+        waitUntilIdleAnd {
+            favRepo.isFavorite("7003") &&
+                viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.size == 3 &&
+                composeRule.onAllNodesWithText("收藏丙").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        assertEquals(
+            "刷新首页重排后撤销首位 7003 必须回到第 1 位，绝不得按旧秩落回末尾",
+            listOf("7003", "7001", "7002"),
+            viewModel.uiState.value.tabState(FavoriteKind.FAVORITE).items.map { it.tid },
+        )
+        val y7003 = composeRule.onNodeWithText("收藏丙").fetchSemanticsNode().positionInRoot.y
+        val y7001 = composeRule.onNodeWithText("收藏甲").fetchSemanticsNode().positionInRoot.y
+        val y7002 = composeRule.onNodeWithText("收藏乙").fetchSemanticsNode().positionInRoot.y
+        assertTrue("界面渲染顺序必须为 7003 < 7001 < 7002（实测 $y7003, $y7001, $y7002）", y7003 < y7001 && y7001 < y7002)
+    }
+
+    @Test
     fun myPosts_singlePaneShowsDualTabsAndReplyCarriesTargetPid_sidebarHidesDuplicateTabs() {
         val authRepo = MutableAuthRepo(testAccount)
         val searchRepo = FakeMyPostsSearchRepo(
