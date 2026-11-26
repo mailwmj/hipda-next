@@ -168,6 +168,46 @@ class ReleaseResourceAndProfileGuardTest {
     }
 
     @Test
+    fun committedBaselineAndStartupProfiles_coverCoreJourneysAndExcludeTestHarness() {
+        val repoRoot = locateRepoRoot()
+        val baselineProf = File(repoRoot, "hipda/src/main/generated/baselineProfiles/baseline-prof.txt")
+        val startupProf = File(repoRoot, "hipda/src/main/generated/baselineProfiles/startup-prof.txt")
+        assertTrue("Missing generated baseline-prof.txt at ${baselineProf.path}", baselineProf.isFile && baselineProf.length() > 0L)
+        assertTrue("Missing generated startup-prof.txt at ${startupProf.path}", startupProf.isFile && startupProf.length() > 0L)
+
+        val baselineText = baselineProf.readText(Charsets.UTF_8)
+        val startupText = startupProf.readText(Charsets.UTF_8)
+
+        assertFalse(
+            "baseline-prof.txt must not include nonMinifiedRelease harness classes",
+            baselineText.contains("Lnet/jejer/hipda/baselineprofile/"),
+        )
+        assertFalse(
+            "startup-prof.txt must not include nonMinifiedRelease harness classes",
+            startupText.contains("Lnet/jejer/hipda/baselineprofile/"),
+        )
+
+        val requiredSymbols = listOf(
+            "Lnet/jejer/hipda/ui/HiNextApplication;",
+            "Lnet/jejer/hipda/feature/app/NextAppRootKt;",
+            "Lnet/jejer/hipda/ui/shell/HiAdaptiveShellKt;",
+            "Lnet/jejer/hipda/feature/forum/ForumPaneKt;",
+            "Lnet/jejer/hipda/feature/threaddetail/ThreadDetailPaneKt;",
+            "Lnet/jejer/hipda/ui/designsystem/glass/HiGlassSurfaceKt;",
+            "Lnet/jejer/hipda/parser/threadlist/ThreadListParser;",
+            "Lnet/jejer/hipda/parser/threaddetail/ThreadDetailParser;",
+            "Lnet/jejer/hipda/emoji/EmojiMap;",
+            "Lcom/kyant/backdrop/",
+        )
+        val missingSymbols = requiredSymbols.filterNot { baselineText.contains(it) }
+        assertEquals(
+            "Committed baseline-prof.txt must cover cold start, forum list, thread detail, emoji, and glass hot paths",
+            emptyList<String>(),
+            missingSymbols,
+        )
+    }
+
+    @Test
     fun releaseApkAndResourceShrinkReport_preserveAllEmojiDrawablesAndBaselineProfile() {
         val repoRoot = locateRepoRoot()
         val releaseApk = File(repoRoot, "hipda/build/outputs/apk/release/hipda-ng-release.apk")
