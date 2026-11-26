@@ -83,9 +83,9 @@
 | E8 | E | 短消息 + 提醒（合并原 E8+E9，基于 D7，**已合入 `0883c89`**，R-E8 两轮 APPROVE `@c65a38b`）：会话列表、气泡乐观发送/失败重发/令牌锚点撤销、15 秒冷却、单条已读提醒与“全部已读”，并收口 `R-D9 S2` 通知文案归口 `copy.md` + `strings_notification.xml`；普通页仅走 `R`（含目视截图） | C5b、C1b、D7、E-slots |
 | E10 | E | 搜索 + 我的（合并原 E10+E11，基于 D8a + D1，**已合入 `eb1ace1`**，R-E10 两轮 APPROVE `@9ee39e9`）：搜索初始态（最近搜索令牌锚点撤销 + 可打断筛选面板 + `ForumLinkResolver` “打开这个链接”白名单）、我的菜单页、收藏与关注（令牌锚点撤销）、我的帖子（主题/回复）、浏览历史（单删/清空令牌撤销）；普通页仅走 `R`（含目视截图） | C5b、D8a、D1、E-slots |
 | E12 | E | 设置、账号管理、黑名单、管理版块 + 用户资料（合并原 E12+E13，基于 D2/D3a/D8b，**已合入 `158ac9c`**，R-E12 两轮 APPROVE `@c4046ff`）：5 组设置（外观与阅读/论坛与发帖/通知与免打扰/网络与缓存/关于，含错误日志查看/复制/分享脱敏）、黑名单原地进度移除与令牌锚点撤销、正式账号管理页（并收口 `R-E15 S2` 删除临时账号菜单）、用户资料（`资料 \| TA 的帖子`）；普通页仅走 `R`（含目视截图） | C5a、C5b、D2、D3a、D8b、D9、E-slots、E15 |
-| E14 | E | 看图全屏浮层（高风险走 `R + V`，待派/在途）：多图横滑、缩略图共享边界进退与不可见原地缩小淡出分支、双击/捏合缩放与竖向跟手下拉关闭（0→240dp / >120dp 或 >800dp/s / `spatialSnap` 弹回）、长图（AR>2.5）贴宽顶对齐、GIF 播放切换、收口 `R-E2b S4` 原图字节级确定进度下载与取消、`MediaStore` 保存与分享、`http`/`https` 白名单 | E2b、E-slots |
+| E14 | E | 看图全屏浮层（高风险走 `R + V`，**已合入 `1cffcd9`**，main CI `45749346160` 绿；R-E14 两轮 APPROVE `@76dc92e`；V-E14 首轮合入链路 3 FAIL → 第 2 轮 PASS，CI `45747336019`）：多图横滑、实时缩略图共享边界进退与离屏原地缩小淡出、双击/捏合缩放与竖向跟手下拉关闭、退场返回吞并与底层玻璃暂停、长图（AR>2.5）贴宽顶对齐、GIF 播放切换、收口 `R-E2b S4` 原图字节级确定进度下载与限尺寸解码、`MediaStore` 保存与分享、`http`/`https` 白名单 | E2b、E-slots |
 | E15 | E | 登录（**已合入 `65e627f`**） | C5a、A6、D2 |
-| M6-polish | E | M6 跨卡与各页小修待办卡（`feature/app` + 各页小修）：① `R-E8 R2-S1`：`SmsConversationScreen` 展示 `CooldownBlocked`/`ShowError` 前先 cancel 上一条撤销 Snackbar；② `R-E8` 跨卡：`NextAppState` 只存短消息对端 `uid`，不存用户名（`SavedState`）；③ `R-E3 R2-S1`：`detail:$tid` 保存态加 LRU 上限；④ `R-E12 R2-S1`：`BlacklistScreen` 取 `prevNeighbor` 时排除 `removingUsernames` 在途项；⑤ `R-E10 R2-S1`：`SearchViewModel` / `FavoritesViewModel` 无未决令牌时刷新秩表 | E8、E10、E12 |
+| M6-polish | E | M6 跨卡与各页小修待办卡（`feature/app` + 各页小修，普通档仅走 `R`）：① `R-E8 R2-S1`：`SmsConversationScreen` 展示 `CooldownBlocked`/`ShowError` 前先 cancel 上一条撤销 Snackbar；② `R-E8` 跨卡：`NextAppState` 只存短消息对端 `uid`，不存用户名（`SavedState`）；③ `R-E3 R2-S1`：`detail:$tid` 保存态加 LRU 上限（20 帖，仅改 `feature/app`）；④ `R-E12 R2-S1`：`BlacklistScreen` 取 `prevNeighbor` 时排除 `removingUsernames` 在途项；⑤ `R-E10 R2-S1`：`SearchViewModel` / `FavoritesViewModel` 无未决令牌时刷新秩表；⑥ `R-E14 R2-S1`：`ImageViewerOverlay.kt:369` 附近，多图远滑回收后重返原图页不重复弹提示 | E8、E10、E12、E14 |
 | E16 | E | 外部链接、桌面快捷方式、帖子里的站内链接、附件下载与剩余路由总收口（在预览入口里接通） | C4a、E1、E4b、E8、E10、E12、E14、M6-polish |
 | M7-1 | — | 切换启动入口、`IntentActivity` 和快捷方式到新外壳（保留 `.ng.IntentActivity` 别名） | E1–E16 |
 | M7-2 | — | 删除旧界面、EventBus、jobqueue、MaterialDrawer、Calligraphy 等旧依赖，以及 `:emoji` 的旧 View | M7-1 |
@@ -101,7 +101,7 @@
 - C 线和 D 线不依赖网络，可以一直和 A 线并行；**`G2`（玻璃引擎替换）独占修改共享依赖与混淆文件，完成后即解锁 `C4d`（补齐 `TopBar`/`Sheet` 预设、`HiAdaptiveShell` 无环兄弟采样拓扑与底部胶囊拖拽预选），`C4d` 完成后解锁 `E1`/`E2a`/`E3`/`E4b`/`E5`**。
 - E 线：
   - 详情与发帖串行链：`E2a → E2b / E2d（并行）→ E2c（已合入 70da638）→ E4 → E5 → E6 → E7`（高风险走 `R + V`）；
-  - M6 合并方案（`E8+E9 → E8`、`E10+E11 → E10`、`E12+E13 → E12`，实现者并发上限 5，经 `E-slots` 零重叠并行）：`E-slots`（`4b6c1f0`）、`E8`（`0883c89`）、`E12`（`158ac9c`）、`E10`（`eb1ace1`）均已合入 `main`；剩余 `E14`（看图，高风险走 `R + V`）与待办小卡 `M6-polish`（收录 5 项跨卡/各页小修），可与 `E4`/`E5`–`E7` 并行推进，最后由 `E16` 完成外链与总收口。
+  - M6 合并方案（`E8+E9 → E8`、`E10+E11 → E10`、`E12+E13 → E12`，实现者并发上限 5，经 `E-slots` 零重叠并行）：`E-slots`（`4b6c1f0`）、`E8`（`0883c89`）、`E12`（`158ac9c`）、`E10`（`eb1ace1`）、`E14`（`1cffcd9`）全部已合入 `main`；**M6 只剩 `M6-polish`（6 项跨卡/各页小修，普通档仅走 `R`）与 `E16`（外链与总收口）**，可与 `E4`/`E5`–`E7` 并行推进。
 
 ## 用户要做的事
 - B1b 之后，一次做完：在 debug 工具页里登录 → 确认能抓到版块页（这也是 M1 的验收）→ 按清单一键导出样本。
