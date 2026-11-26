@@ -28,8 +28,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -59,6 +61,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import androidx.window.layout.WindowLayoutInfo
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -76,6 +79,8 @@ import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.data.auth.SilentReloginResult
 import net.jejer.hipda.data.local.DraftEntity
 import net.jejer.hipda.data.local.DraftKey
+import net.jejer.hipda.data.local.ReadingFilterMode
+import net.jejer.hipda.data.local.ReadingPositionEntity
 import net.jejer.hipda.data.network.ChallengeDetector
 import net.jejer.hipda.data.network.access.AccessPriority
 import net.jejer.hipda.data.network.access.ChallengeSolver
@@ -91,7 +96,10 @@ import net.jejer.hipda.data.post.PrePostRequest
 import net.jejer.hipda.data.post.PrePostResult
 import net.jejer.hipda.data.settings.AppSettings
 import net.jejer.hipda.data.settings.PaneSplit
+import net.jejer.hipda.data.threaddetail.ThreadDetailRepository
 import net.jejer.hipda.feature.app.MultiPaneResizableWindowHost
+import net.jejer.hipda.feature.app.verticalHingeLayoutInfo
+import net.jejer.hipda.feature.app.withWindowLayoutFlow
 import net.jejer.hipda.feature.app.NextAppHostViewModel
 import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.app.OfflineSearchRepository
@@ -116,6 +124,7 @@ import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.glass.ProvideGlassEnvironment
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
 import net.jejer.hipda.ui.shell.HiShellTestTags
+import net.jejer.hipda.ui.shell.ShellSidebarEntry
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -287,10 +296,45 @@ class FullEditorProbeIntegrationTest {
         }
     }
 
+    private class ProbeThreadDetailRepository(
+        val readingPositions: MutableMap<String, ReadingPositionEntity> = LinkedHashMap(),
+        private val delegate: OfflineThreadDetailRepository = OfflineThreadDetailRepository(),
+    ) : ThreadDetailRepository by delegate {
+        val getReadingPositionCounts = LinkedHashMap<String, Int>()
+        val loadPageCalls get() = delegate.loadPageCalls
+
+        override suspend fun getReadingPosition(tid: String): ReadingPositionEntity? {
+            getReadingPositionCounts[tid] = (getReadingPositionCounts[tid] ?: 0) + 1
+            return readingPositions[tid]
+        }
+
+        override suspend fun saveReadingPosition(
+            tid: String,
+            page: Int,
+            pid: String,
+            offsetPx: Int,
+            filterMode: ReadingFilterMode,
+            filterUid: String?,
+            filterUserName: String?,
+        ) {
+            readingPositions[tid] = ReadingPositionEntity(
+                tid = tid,
+                page = page,
+                pid = pid,
+                offsetPx = offsetPx,
+                filterMode = filterMode,
+                filterUid = filterUid,
+                filterUserName = filterUserName,
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
+    }
+
     private class ProbeHarness(
         initialSettings: AppSettings = AppSettings(),
         initialAccount: SavedAccount? = SavedAccount(uid = "1001", username = "linus_hi", passwordMd5 = "0".repeat(32), lastLoginAt = 100L),
         initialDrafts: Map<String, DraftEntity> = emptyMap(),
+        initialReadingPositions: MutableMap<String, ReadingPositionEntity> = LinkedHashMap(),
     ) {
         val clockMs = AtomicLong(10_000L)
         val settingsRepo = RecordingSettingsRepository(initialSettings)
@@ -302,7 +346,7 @@ class FullEditorProbeIntegrationTest {
         val gateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled })
         val threadListRepo = OfflineThreadListRepository()
         val searchRepo = OfflineSearchRepository()
-        val threadDetailRepo = OfflineThreadDetailRepository()
+        val threadDetailRepo = ProbeThreadDetailRepository(initialReadingPositions)
 
         val createdHostVms = CopyOnWriteArrayList<NextAppHostViewModel>()
         val createdDetailVms = CopyOnWriteArrayList<ThreadDetailViewModel>()
@@ -1136,15 +1180,300 @@ class FullEditorProbeIntegrationTest {
         assertEquals("总线交接文本", editorVm.uiState.value.body.serialize())
         assertEquals(2, editorVm.uiState.value.body.activeSelectionStart)
 
-        // 退出保存草稿，检查「已保存草稿」Snackbar 与 ThreadBottomToolbar「回复」按钮是否重叠（已知 E3 MultiPaneSnackbarHost 缺陷观测）
+        // 退出保存草稿，验证「已保存草稿」Snackbar 严格避让 ThreadBottomToolbar「回复」按钮且可立刻点击「回复」
         composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
         composeRule.waitForIdle()
         val snackbarNode = composeRule.onNodeWithText("已保存草稿").assertIsDisplayed().fetchSemanticsNode()
         val replyNodes = composeRule.onAllNodesWithText("回复").fetchSemanticsNodes()
+        assertTrue("详情页底部回复按钮应可见", replyNodes.isNotEmpty())
         val overlapsReply = replyNodes.any { replyNode -> snackbarNode.boundsInRoot.overlaps(replyNode.boundsInRoot) }
         println(
             "PROBE9_SNACKBAR_BOUNDS=${snackbarNode.boundsInRoot} " +
                 "REPLY_BOUNDS=${replyNodes.firstOrNull()?.boundsInRoot} OVERLAPS_REPLY=$overlapsReply",
         )
+        assertFalse(
+            "411dp「已保存草稿」Snackbar 不得遮挡底部「回复」按钮: snackbar=${snackbarNode.boundsInRoot}, reply=${replyNodes.map { it.boundsInRoot }}",
+            overlapsReply,
+        )
+        assertTrue(
+            "Snackbar 底部(${snackbarNode.boundsInRoot.bottom})必须位于「回复」按钮顶部(${replyNodes.first().boundsInRoot.top})上方",
+            snackbarNode.boundsInRoot.bottom <= replyNodes.first().boundsInRoot.top + 2f,
+        )
+        // 不 advanceTimeBy 等待超时，Snackbar 仍在屏幕时直接点击底部「回复」也必须正常打开快速回复
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed()
+    }
+
+    /** 补充 (e)：1280dp 右栏编辑中再点中栏「发新帖」同版块 → 内容不丢、只聚焦；换版块 → 先存草稿再切换（含切回恢复验证）。 */
+    @Test
+    @Config(qualifiers = "w1280dp-h800dp-xhdpi")
+    fun probe10_supplementE_1280dpRightPane_sameForumFocusOnly_differentForumSavesDraftThenSwitches() {
+        val harness = ProbeHarness()
+        val storeOwner = StoreOwner(ViewModelStore(), harness.vmFactory)
+
+        composeRule.setContent {
+            Box(Modifier.requiredSize(DpSize(1280.dp, 800.dp))) {
+                MultiPaneResizableWindowHost(DpSize(1280.dp, 800.dp)) {
+                    ProbeAppRoot(harness, storeOwner)
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 在 Discovery (fid=2) 点中栏「发新帖」在右栏展开
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+        val editorVm = harness.createdEditorVms.single()
+        assertTrue(editorVm.uiState.value.isOpen)
+        assertEquals(2, editorVm.uiState.value.selectedFid)
+        val initialSessionId = editorVm.uiState.value.sessionId
+        val initialFocusVer = editorVm.uiState.value.focusRequestVersion
+
+        val subjectInput = composeRule.onNodeWithContentDescription("标题")
+        val bodyInput = composeRule.onNodeWithContentDescription("正文")
+        subjectInput.performTextInput("同版块编辑标题")
+        bodyInput.performTextInput("同版块编辑正文")
+        // 主动将焦点留在标题框，以实测再点同版块「发新帖」确实触发正文聚焦
+        subjectInput.performSemanticsAction(SemanticsActions.RequestFocus)
+        composeRule.waitForIdle()
+        subjectInput.assert(SemanticsMatcher.expectValue(SemanticsProperties.Focused, true))
+        val saveCallsBeforeReclick = harness.postRepo.saveDraftCalls.size
+
+        // 2. 同版块再点中栏「发新帖」：同会话保活、标题与正文 0 丢失、不冗余存草稿/不弹提示、只聚焦正文
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+        assertTrue(editorVm.uiState.value.isOpen)
+        assertEquals(initialSessionId, editorVm.uiState.value.sessionId)
+        assertEquals(2, editorVm.uiState.value.selectedFid)
+        assertEquals("同版块编辑标题", editorVm.uiState.value.subject)
+        assertEquals("同版块编辑正文", editorVm.uiState.value.body.serialize())
+        assertTrue(
+            "同版块再点发新帖应递增 focusRequestVersion",
+            editorVm.uiState.value.focusRequestVersion > initialFocusVer,
+        )
+        bodyInput.assert(SemanticsMatcher.expectValue(SemanticsProperties.Focused, true))
+        assertEquals(saveCallsBeforeReclick, harness.postRepo.saveDraftCalls.size)
+        assertEquals(0, composeRule.onAllNodesWithText("已保存草稿").fetchSemanticsNodes().size)
+
+        // 3. 左栏切换到 Buy & Sell (fid=6)，中栏再点「发新帖」（换版块）→ 先存 new:2 草稿再切到 fid=6 新帖会话
+        composeRule.onNodeWithTag(HiShellTestTags.sidebarEntry(ShellSidebarEntry.Forum(6))).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+
+        val savedForum2Draft = harness.postRepo.draftFor(DraftKey.newThread("2"))
+        assertNotNull("换版块前必须先保存原版块 new:2 草稿", savedForum2Draft)
+        assertEquals("同版块编辑标题", savedForum2Draft?.subject)
+        assertEquals("同版块编辑正文", savedForum2Draft?.content)
+        composeRule.onNodeWithText("已保存草稿").assertIsDisplayed()
+
+        assertTrue(editorVm.uiState.value.isOpen)
+        assertTrue(editorVm.uiState.value.sessionId > initialSessionId)
+        assertEquals(6, editorVm.uiState.value.selectedFid)
+        assertEquals("", editorVm.uiState.value.subject)
+        assertEquals("", editorVm.uiState.value.body.serialize())
+
+        // 4. 在 Buy & Sell 为空状态下切回 Discovery (fid=2) 再点「发新帖」，可无损恢复刚刚自动保存的草稿
+        composeRule.onNodeWithTag(HiShellTestTags.sidebarEntry(ShellSidebarEntry.Forum(2))).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+        assertEquals(2, editorVm.uiState.value.selectedFid)
+        assertEquals("同版块编辑标题", editorVm.uiState.value.subject)
+        assertEquals("同版块编辑正文", editorVm.uiState.value.body.serialize())
+        composeRule.onNodeWithText("已恢复上次草稿").assertIsDisplayed()
+    }
+
+    /** 补充 (f)：快速回复恢复旧草稿 → 在快速回复中手动删空后点「展开全屏」→ 完整编辑器必须为空且关闭后旧草稿已删除（绝不复活）。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun probe11_supplementF_quickReplyEraseRestoredDraftThenExpand_emptyAndDeletesDraftOnClose() {
+        val draftKey = DraftKey.reply("1001")
+        val harness = ProbeHarness(
+            initialDrafts = mapOf(
+                draftKey.value to DraftEntity(
+                    draftKey.value,
+                    content = "待在快速回复删空的旧草稿",
+                    updatedAt = 5_000L,
+                ),
+            ),
+        )
+        val storeOwner = StoreOwner(ViewModelStore(), harness.vmFactory)
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        composeRule.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            MultiPaneResizableWindowHost(DpSize(411.dp, 891.dp)) {
+                ProbeAppRoot(harness, storeOwner)
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 打开帖子并触发快速回复恢复旧草稿
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("已恢复上次草稿").assertIsDisplayed()
+        val qrInput = composeRule.onNodeWithContentDescription("回复 楼层作者1")
+        qrInput.assertTextContains("待在快速回复删空的旧草稿")
+
+        // 2. 在快速回复中手动删空全部文本（不点「清空」按钮），随后点「展开全屏」
+        qrInput.performTextReplacement("")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+
+        val editorVm = harness.createdEditorVms.single()
+        assertTrue(editorVm.uiState.value.isOpen)
+        assertEquals("展开后完整编辑器正文必须保持为空（不得回灌旧草稿）", "", editorVm.uiState.value.body.serialize())
+        assertTrue(editorVm.uiState.value.body.isVisuallyEmpty())
+        assertTrue("删空后展开必须透传 hadPersistedDraft=true 以便关闭清理", editorVm.uiState.value.hadPersistedDraft)
+        assertFalse(editorVm.uiState.value.showDraftRestoredBanner)
+        assertEquals(0, composeRule.onAllNodesWithText("待在快速回复删空的旧草稿").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("已恢复上次草稿").fetchSemanticsNodes().size)
+
+        // 3. 关闭完整编辑器：必须显式删除旧草稿，且不误弹「已保存草稿」，重开不再复活
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertFalse(editorVm.uiState.value.isOpen)
+        assertTrue("关闭删空交接后的完整编辑器必须 deleteDraft", draftKey in harness.postRepo.deleteDraftCalls)
+        assertNull("旧草稿必须彻底清除", harness.postRepo.draftFor(draftKey))
+        assertEquals(0, composeRule.onAllNodesWithText("已保存草稿").fetchSemanticsNodes().size)
+
+        // 重开验证绝不复活
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        assertEquals(0, composeRule.onAllNodesWithText("已恢复上次草稿").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("待在快速回复删空的旧草稿").fetchSemanticsNodes().size)
+    }
+
+    /** 补充 (g)：`NextAppRoot` 首帧 `initialPaneLayout`/`latestMiddleWidthDp` 改动后，验证 E3 三栏/铰链切换与 E4 阅读位置水合/`PositionStack`/进程重建回归。 */
+    @Test
+    @Config(qualifiers = "w1280dp-h1024dp-xhdpi")
+    fun probe12_supplementG_nextAppRootFirstFrame_e3ThreePaneSwitch_andE4ReadingPositionRestore() {
+        val seedPos = ReadingPositionEntity(
+            tid = "1001",
+            page = 2,
+            pid = "1001_10",
+            offsetPx = 40,
+            updatedAt = 5_000L,
+        )
+        val harness = ProbeHarness(
+            initialReadingPositions = linkedMapOf("1001" to seedPos),
+        )
+        val restorationTester = StateRestorationTester(composeRule)
+        var windowSize by mutableStateOf(DpSize(1280.dp, 800.dp))
+        val layoutFlow = MutableStateFlow(WindowLayoutInfo(emptyList()))
+        var backDispatcher: OnBackPressedDispatcher? = null
+
+        withWindowLayoutFlow(layoutFlow) {
+            restorationTester.setContent {
+                backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+                val owner = remember { StoreOwner(ViewModelStore(), harness.vmFactory) }
+                Box(Modifier.requiredSize(windowSize)) {
+                    MultiPaneResizableWindowHost(windowSize) {
+                        ProbeAppRoot(harness, owner)
+                    }
+                }
+            }
+            composeRule.waitForIdle()
+
+            // 1. 验证 1280dp 首帧三栏即刻成形：左侧导航、中栏「列表」、右栏「正文」占位无冗余
+            assertEquals(1, composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "导航")).fetchSemanticsNodes().size)
+            assertEquals(1, composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "列表")).fetchSemanticsNodes().size)
+            assertEquals(1, composeRule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "正文")).fetchSemanticsNodes().size)
+            composeRule.onNodeWithText("选一篇帖子开始阅读").assertIsDisplayed()
+
+            // 2. 打开帖子 1001：验证 E4 阅读位置恢复到第 2 页 1001_10，且只读一次 getReadingPosition
+            composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+            composeRule.waitForIdle()
+            assertEquals(1, harness.threadDetailRepo.getReadingPositionCounts["1001"])
+            composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
+            val detailScrollInitial = readVerticalScrollInPane("正文")
+            assertTrue("应精准恢复到第 2 页中部楼层而非停在顶部，scroll=$detailScrollInitial", detailScrollInitial > 0f)
+
+            // 滚动列表 Pane 与详情 Pane，并跳第 3 页后按返回验证 E4 PositionStack 回退第 2 页，再重跳第 3 页并滚离顶部
+            scrollVerticalInPane("列表", 700f)
+            val forumScrollBeforeSwitch = readVerticalScrollInPane("列表")
+            assertTrue(forumScrollBeforeSwitch > 0f)
+            composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("末页").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("第 3 页，共 3 页，点按展开跳页").assertIsDisplayed()
+            composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
+            scrollVerticalInPane("正文", 600f)
+            composeRule.waitForIdle()
+
+            // 3. 连续跨形态切换（1280dp 三栏 -> 749dp 紧凑三栏 -> 900x800 铰链双栏 -> 411dp 单栏 -> 749dp），不得触发多余 loadPage
+            val loadsBeforeResize = harness.threadDetailRepo.loadPageCalls.get()
+            listOf(
+                DpSize(749.dp, 559.dp) to false,
+                DpSize(900.dp, 800.dp) to true,
+                DpSize(411.dp, 891.dp) to false,
+                DpSize(749.dp, 559.dp) to false,
+            ).forEach { (sz, folded) ->
+                windowSize = sz
+                layoutFlow.value = if (folded) {
+                    verticalHingeLayoutInfo(leftDp = 446f, rightDp = 454f, heightDp = 800f, density = 2f, isSeparating = true)
+                } else {
+                    WindowLayoutInfo(emptyList())
+                }
+                composeRule.waitForIdle()
+                composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
+                assertEquals("形态切换 $sz(folded=$folded) 不得重复拉取帖子详情", loadsBeforeResize, harness.threadDetailRepo.loadPageCalls.get())
+            }
+
+            // 4. 在 749x559 三栏触发 StateRestorationTester 进程重建，验证 E3 论坛/帖子选择、列表与详情滚动位置均不丢失
+            val hostCountBeforeRestore = harness.createdHostVms.size
+            restorationTester.emulateSavedInstanceStateRestore()
+            composeRule.waitForIdle()
+            assertTrue(harness.createdHostVms.size > hostCountBeforeRestore)
+            assertEquals("1001", harness.createdHostVms.last().state.value.selectedThread?.tid)
+            val restoredDetailScroll = readVerticalScrollInPane("正文")
+            val restoredForumScroll = readVerticalScrollInPane("列表")
+            assertTrue("进程重建后列表滚动位应保留，实际=$restoredForumScroll", restoredForumScroll > 0f)
+            assertTrue("进程重建后详情滚动位应保留，实际=$restoredDetailScroll", restoredDetailScroll > 0f)
+
+            // 5. 验证重建后退出完整编辑器时的三栏详情分区 Snackbar 对齐（校验 NextAppRoot 首帧 latestMiddleWidthDp 与 detailToolbarClearanceDp）
+            composeRule.onNodeWithText("回复").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("展开全屏").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithContentDescription("回复 楼层作者1").performTextInput("三栏回归草稿")
+            composeRule.waitForIdle()
+            composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+            composeRule.waitForIdle()
+            val snackbarNode = composeRule.onNodeWithText("已保存草稿").assertIsDisplayed().fetchSemanticsNode()
+            val listBounds = composeRule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "列表")).fetchSemanticsNode().boundsInRoot
+            val replyButton = composeRule.onNodeWithText("回复").fetchSemanticsNode()
+            assertTrue(
+                "749dp 右栏 DetailPane Snackbar 左缘(${snackbarNode.boundsInRoot.left})应在列表右侧(${listBounds.right})",
+                snackbarNode.boundsInRoot.left >= listBounds.right - 2f,
+            )
+            assertTrue(
+                "749dp「已保存草稿」Snackbar 底部(${snackbarNode.boundsInRoot.bottom})应避让底部工具条「回复」顶部(${replyButton.boundsInRoot.top})",
+                snackbarNode.boundsInRoot.bottom <= replyButton.boundsInRoot.top + 2f,
+            )
+        }
+    }
+
+    private fun scrollVerticalInPane(paneTitle: String, deltaY: Float) {
+        val m = SemanticsMatcher("verticalScroll") { SemanticsProperties.VerticalScrollAxisRange in it.config } and
+            hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, paneTitle))
+        composeRule.onAllNodes(m, useUnmergedTree = true).onFirst()
+            .performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, deltaY) }
+        composeRule.waitForIdle()
+    }
+
+    private fun readVerticalScrollInPane(paneTitle: String): Float {
+        val m = SemanticsMatcher("verticalScroll") { SemanticsProperties.VerticalScrollAxisRange in it.config } and
+            hasAnyAncestor(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, paneTitle))
+        return composeRule.onAllNodes(m, useUnmergedTree = true).onFirst()
+            .fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
     }
 }
