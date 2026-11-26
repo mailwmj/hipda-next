@@ -58,7 +58,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build and lint
-        run: ./gradlew assembleDebug assembleRelease lintDebug --stacktrace
+        run: ./gradlew assembleDebug assembleRelease :baselineprofile:assembleNonMinifiedRelease lintDebug --stacktrace
 
       - name: Verify Room schema consistency
         run: |
@@ -172,6 +172,13 @@ jobs:
           path: hipda/build/outputs/apk/release/hipda-ng-release.apk
           if-no-files-found: error
 
+      - name: Upload smoke probe instrumentation APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-probe-apk
+          path: baselineprofile/build/outputs/apk/nonMinifiedRelease/*.apk
+          if-no-files-found: error
+
       - name: Upload lint reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -259,6 +266,12 @@ jobs:
           name: release-apk
           path: artifacts/release
 
+      - name: Download smoke probe instrumentation APK
+        uses: actions/download-artifact@v8
+        with:
+          name: smoke-probe-apk
+          path: artifacts/smoke-probe
+
       - name: Sign release APK with CI-only debug keystore
         run: |
           set -euo pipefail
@@ -299,61 +312,99 @@ jobs:
           set -euo pipefail
           mkdir -p smoke-artifacts
 
-          run_variant_smoke() {
+          # Keep emulator offline externally so neither debug nor release ever hits live 4d4y.com.
+          adb shell svc wifi disable || true
+          adb shell svc data disable || true
+          adb logcat -G 16M || true
+
+          check_no_crash_or_anr() {
             local variant="$1"
-            local apk_path="$2"
-            echo "=== Smoke testing [$variant]: $apk_path ==="
-            test -n "$apk_path"
-            test -f "$apk_path"
-
-            adb uninstall net.jejer.hipda.next || true
-            adb logcat -c
-            adb install -r "$apk_path"
-            adb shell am start -W -n net.jejer.hipda.next/net.jejer.hipda.feature.app.MainActivity
-            sleep 15
-
-            local log_file="smoke-artifacts/logcat-${variant}.txt"
-            local png_file="smoke-artifacts/main-activity-${variant}.png"
-            adb logcat -d > "$log_file"
-            adb exec-out screencap -p > "$png_file"
-            ls -lh "$log_file" "$png_file"
-            test -s "$png_file"
-
+            local log_file="$2"
             local failed=0
             if { grep -n -A 5 "FATAL EXCEPTION" "$log_file" || true; } | grep -q "net\.jejer\.hipda"; then
               echo "ERROR [$variant]: Found FATAL EXCEPTION for net.jejer.hipda in logcat!"
               grep -n -A 40 "FATAL EXCEPTION" "$log_file" || true
               failed=1
             fi
-
             if grep -n "ANR in net\.jejer\.hipda\.next" "$log_file"; then
               echo "ERROR [$variant]: Found ANR for net.jejer.hipda.next in logcat!"
               grep -n -A 20 "ANR in net\.jejer\.hipda\.next" "$log_file" || true
               failed=1
             fi
+            return "$failed"
+          }
 
+          run_debug_smoke() {
+            local apk_path="$1"
+            echo "=== Smoke testing [debug]: $apk_path ==="
+            test -f "$apk_path"
+            adb uninstall net.jejer.hipda.next || true
+            adb logcat -c
+            adb install -r "$apk_path"
+            adb shell am start -W -n net.jejer.hipda.next/net.jejer.hipda.feature.app.MainActivity
+            sleep 10
+            local log_file="smoke-artifacts/logcat-debug.txt"
+            local png_file="smoke-artifacts/main-activity-debug.png"
+            adb logcat -d > "$log_file"
+            adb exec-out screencap -p > "$png_file"
+            test -s "$png_file"
+            check_no_crash_or_anr debug "$log_file"
             local pid
             pid=$(adb shell pidof net.jejer.hipda.next | tr -d '\r' || true)
-            echo "[$variant] App PID: ${pid:-<not running>}"
-            if [ -z "$pid" ]; then
-              echo "ERROR [$variant]: net.jejer.hipda.next process is not running!"
-              if [ "$failed" -eq 0 ]; then
-                tail -n 100 "$log_file"
-              fi
-              failed=1
-            fi
+            echo "[debug] App PID: ${pid:-<not running>}"
+            test -n "$pid"
+          }
 
-            if [ "$failed" -ne 0 ]; then
+          run_release_probe_smoke() {
+            local apk_path="$1"
+            local probe_apk="$2"
+            echo "=== Smoke & Profile Probe testing [release]: $apk_path (probe=$probe_apk) ==="
+            test -f "$apk_path"
+            test -f "$probe_apk"
+
+            adb uninstall net.jejer.hipda.next || true
+            adb uninstall net.jejer.hipda.baselineprofile || true
+            adb logcat -c
+            adb install -r "$apk_path"
+            adb install -r "$probe_apk"
+
+            local instr_log="smoke-artifacts/instrumentation-release.log"
+            set +e
+            adb shell am instrument -w -r \
+              -e class net.jejer.hipda.baselineprofile.ReleaseSmokeAndStartupProbeTest \
+              net.jejer.hipda.baselineprofile/androidx.test.runner.AndroidJUnitRunner \
+              | tee "$instr_log"
+            local rc=${PIPESTATUS[0]}
+            set -e
+
+            adb logcat -d > smoke-artifacts/logcat-release.txt
+            adb exec-out screencap -p > smoke-artifacts/main-activity-release.png
+            adb pull /sdcard/Android/data/net.jejer.hipda.baselineprofile/files/smoke-artifacts/. smoke-artifacts/ || true
+            ls -lh smoke-artifacts/
+
+            if [ "$rc" -ne 0 ] || grep -q "FAILURES!!!" "$instr_log"; then
+              echo "ERROR [release]: Instrumentation probe failed (rc=$rc)"
+              cat "$instr_log"
+              tail -n 120 smoke-artifacts/logcat-release.txt || true
               return 1
             fi
-            echo "Smoke check passed [$variant]: PID=$pid, no app FATAL EXCEPTION or ANR in logcat."
+
+            check_no_crash_or_anr release smoke-artifacts/logcat-release.txt
+            if grep -q "4d4y" smoke-artifacts/logcat-release.txt; then
+              echo "INFO: checking 4d4y occurrences in release logcat:"
+              grep -n "4d4y" smoke-artifacts/logcat-release.txt | head -n 30 || true
+            fi
+            test -s smoke-artifacts/startup-benchmark.txt
+            echo "=== Release Startup Benchmark Summary ==="
+            cat smoke-artifacts/startup-benchmark.txt
           }
 
           DEBUG_APK=$(find artifacts/debug -name "*.apk" | sort | awk 'NR==1{print}')
           RELEASE_APK="artifacts/release/hipda-ng-release-signed.apk"
+          PROBE_APK=$(find artifacts/smoke-probe -name "*.apk" | sort | awk 'NR==1{print}')
 
-          run_variant_smoke debug "$DEBUG_APK"
-          run_variant_smoke release "$RELEASE_APK"
+          run_debug_smoke "$DEBUG_APK"
+          run_release_probe_smoke "$RELEASE_APK" "$PROBE_APK"
           EOF
           chmod +x /tmp/run-smoke.sh
 
