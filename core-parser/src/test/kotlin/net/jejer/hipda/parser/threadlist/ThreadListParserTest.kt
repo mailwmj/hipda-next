@@ -310,6 +310,55 @@ class ThreadListParserTest {
         assertEquals("唯一完整行", malformedPage.threads[0].title)
     }
 
+    @Test
+    fun parse_pseudoStaticPaginationFallbackAndSignedMaxPageFallbackToOne() {
+        // 闭合 R-B7 S2：
+        // 1. div.pages 无 page= 参数的伪静态链接（forum-2-5.html）回退读取锚点文本 5；
+        // 2. span.threadpages 带符号参数 page=+5 必须被 ASCII 纯数字校验拒绝并回退为 1（不可按 toIntOrNull() 解析成 5）。
+        val html = """
+            <html><body>
+              <div class="pages_btns">
+                <div class="pages">
+                  <strong>1</strong>
+                  <a href="forum-2-2.html">2</a>
+                  <a href="forum-2-5.html">5</a>
+                </div>
+              </div>
+              <table>
+                <tbody id="normalthread_9003">
+                  <tr>
+                    <th class="subject">
+                      <span><a href="viewthread.php?tid=9003">带符号页码回退测试</a></span>
+                      <span class="threadpages">
+                        <a href="viewthread.php?tid=9003&amp;page=+5">+5</a>
+                      </span>
+                    </th>
+                    <td class="author">
+                      <cite><a href="space.php?uid=10086">SignedTester</a></cite>
+                      <em>2026-11-26</em>
+                    </td>
+                    <td class="nums"><strong>12</strong>/<em>340</em></td>
+                    <td class="lastpost">
+                      <cite>SignedTester</cite>
+                      <em><a href="redirect.php?tid=9003&amp;goto=lastpost">2026-11-26 10:00</a></em>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </body></html>
+        """.trimIndent()
+
+        val doc = Jsoup.parse(html)
+        val before = doc.outerHtml()
+        val page = ThreadListParser.parse(doc)
+
+        assertEquals(before, doc.outerHtml())
+        assertEquals(1, page.page)
+        assertEquals(5, page.lastPage, "无 page= 的伪静态分页链接 forum-2-5.html 必须回退解析锚点文本 5")
+        assertEquals(1, page.threads.size)
+        assertEquals(1, page.threads.single().maxPage, "带正号参数 page=+5 必须被纯 ASCII 数字校验拦截并回退为 1")
+    }
+
     companion object {
         private const val SAMPLE_FORUM2_P1_LASTPOST = "thread_list/forum_2_p1_lastpost.html"
         private const val SAMPLE_FORUM2_P2_LASTPOST = "thread_list/forum_2_p2_lastpost.html"

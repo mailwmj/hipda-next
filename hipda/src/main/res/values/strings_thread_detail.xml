@@ -9,4 +9,27 @@
     <!-- 楼层标识与静态图片占位（docs/design/copy.md） -->
     <string name="thread_detail_badge_op">楼主</string>
     <string name="thread_detail_image_placeholder">点击加载图片</string>
+
+    <!-- 引用展开、楼层高亮与跳楼无障碍（docs/design/copy.md、§8） -->
+    <string name="thread_detail_quote_expand">展开</string>
+    <string name="thread_detail_quote_collapse">收起</string>
+    <string name="thread_detail_quote_jump">跳转到引用楼层</string>
+    <string name="thread_detail_floor_highlighted">已定位到此楼层</string>
+
+    <!-- 楼层长按菜单与复制反馈（逐字取自 docs/design/copy.md） -->
+    <string name="thread_detail_floor_title">第 %1$d 楼 · %2$s</string>
+    <string name="thread_detail_floor_menu_action">楼层操作</string>
+    <string name="thread_detail_menu_quote_reply">引用回复</string>
+    <string name="thread_detail_menu_reply">回复</string>
+    <string name="thread_detail_menu_user_only">只看此人</string>
+    <string name="thread_detail_menu_copy">复制</string>
+    <string name="thread_detail_menu_edit">编辑</string>
+    <string name="thread_detail_menu_delete">删除</string>
+    <string name="thread_detail_snackbar_copied">内容已复制</string>
+    <string name="thread_detail_login_to_operate">登录后即可操作</string>
+
+    <!-- 1 楼投票（逐字取自 docs/design/copy.md） -->
+    <string name="thread_detail_poll_submit">投票</string>
+    <string name="thread_detail_poll_max_choices">最多选 %1$d 项</string>
+    <string name="thread_detail_poll_submitting">正在投票…</string>
 </resources>
