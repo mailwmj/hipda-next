@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -40,6 +41,7 @@ import net.jejer.hipda.feature.app.MultiPaneTestHarness
 import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
 import net.jejer.hipda.feature.common.LocalHiImageLoader
+import net.jejer.hipda.feature.compose.emoji.EmojiPanelRendererImpl
 import net.jejer.hipda.feature.threaddetail.media.OfflineTestImageLoader
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
@@ -328,6 +330,7 @@ class FullEditorScreenshotTest {
                         hostViewModel = harness.hostViewModel,
                         forumViewModel = harness.forumViewModel,
                         fullEditorViewModel = editorVm,
+                        emojiPanelSlot = { host -> EmojiPanelRendererImpl().Content(host, Modifier) },
                     )
                 }
             }
@@ -375,13 +378,14 @@ class FullEditorScreenshotTest {
         val staticScale = object : MotionDurationScale { override val scaleFactor: Float = 0f }
 
         composeRule.setContent {
+            val boundEmojiSlot: @androidx.compose.runtime.Composable (QuickReplyEmojiPanelHost) -> Unit = { host -> EmojiPanelRendererImpl().Content(host, Modifier) }
             HiTheme(themeMode = themeMode, seed = HiColorPresets.Brand.toSeed(), motionDurationScale = staticScale) {
                 if (imageLoader != null) {
                     CompositionLocalProvider(LocalHiImageLoader provides imageLoader) {
-                        FullEditorScreen(viewModel = vm, onOpenLogin = {})
+                        FullEditorScreen(viewModel = vm, onOpenLogin = {}, emojiPanelSlot = boundEmojiSlot)
                     }
                 } else {
-                    FullEditorScreen(viewModel = vm, onOpenLogin = {})
+                    FullEditorScreen(viewModel = vm, onOpenLogin = {}, emojiPanelSlot = boundEmojiSlot)
                 }
             }
         }
@@ -453,6 +457,7 @@ class FullEditorScreenshotTest {
                         hostViewModel = harness.hostViewModel,
                         forumViewModel = harness.forumViewModel,
                         fullEditorViewModel = editorVm,
+                        emojiPanelSlot = { host -> EmojiPanelRendererImpl().Content(host, Modifier) },
                     )
                 }
             }

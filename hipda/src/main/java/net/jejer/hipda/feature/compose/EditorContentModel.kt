@@ -2,6 +2,7 @@ package net.jejer.hipda.feature.compose
 
 import android.net.Uri
 import androidx.compose.runtime.Immutable
+import net.jejer.hipda.feature.compose.emoji.previousEmojiOrGraphemeOffset
 
 /** 编辑器正文块模型：文本块与可视化缩略图块严格交替，UI 永不暴露 `[attachimg]` 原始标签。 */
 @Immutable
@@ -113,7 +114,7 @@ data class EditorBodyDocument(
         val end = maxOf(activeSelectionStart, activeSelectionEnd).coerceIn(0, cur.text.length)
         return when {
             start != end -> updateTextBlock(cur.id, cur.text.substring(0, start) + cur.text.substring(end), start, start)
-            start > 0 -> previousGraphemeOffset(cur.text, start).let { prev -> updateTextBlock(cur.id, cur.text.substring(0, prev) + cur.text.substring(start), prev, prev) }
+            start > 0 -> previousEmojiOrGraphemeOffset(cur.text, start).let { prev -> updateTextBlock(cur.id, cur.text.substring(0, prev) + cur.text.substring(start), prev, prev) }
             else -> (blocks.getOrNull(idx - 1) as? EditorBodyBlock.Image)?.let { removeImageBlock(it.id) } ?: this
         }
     }

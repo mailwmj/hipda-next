@@ -76,9 +76,9 @@
 | E3 | E | 三栏内容容器（中右双栏）、拖拽吸附与无障碍/键盘动作、详情透明顶栏轻量纯色圆形 `全屏阅读 / 显示列表` 按钮适配、三栏 3 区域实时液态玻璃协同（中栏顶栏 + 右栏顶栏 + 右栏底部三段工具条，`HiGlassMarker ≤ 3`、独立采样源 `≤ 2`、静止 `drawBackdrop ≤ 5`）与铰链双栏左列表顶栏纯色守上限、右栏底部浮层（三段工具条/内联跳页条/毛玻璃快速回复面板）严格限定在右栏宽度内不跨分隔线、竖向物理铰链双栏（`≥ 280/360dp`，不足退单栏）、三栏/2 栏返回栈、跨形态及展平三栏↔半折双栏无损迁移、多栏 Snackbar 对齐；阶段验收含真机极端样张可读性、120Hz 帧率实测与 §5 4 级回退验证；优先使用 Compose / Material 3 现成组件（如 `Row` + `AnchoredDraggable` 或 `ListDetailPaneScaffold`），确需自写 `Layout`/`Modifier.Node` 时须说明理由 | C4d、E1、E2a（改的是多栏内容容器，不改详情内部，可以和 E2b、E2c 并行） |
 | E4（合并 E4a+E4b） | E | 阅读位置记忆、位置栈、底部三段式液态玻璃工具条与原地展开内联跳页条（**已合入 `92e1563`**，main CI `45758541824` 绿；R-E4 两轮 APPROVE `@bed7fcc`；V-E4 首轮 FAIL `probeD2` 抽屉返回被位置栈抢占 → 第 2 轮 PASS，CI `45757086073`；收口 `R-C5b` 与 `E2d` 方案 B，**M5 全部完成**） | C4d、E2c、E3、D1、D8a |
 | E5 | E | 毛玻璃跟手弹出快速回复面板（**已合入 `afa3783`**，R-E5 三轮，第 3 轮 APPROVE `@a5c9440`；V-E5 首轮 FAIL 拖拽异步 `snapTo` → 第 2、3 轮 16/16 探针 PASS；复用 `C4d` `HiGlassStyle.Sheet`、`20dp` 顶部圆角、卸载底栏 `HiGlassMarker` 守 ≤ 3 区域、`SheetSlotPlan + Column` 六级优先级让位、同步拖拽与 `try/finally` 终态过渡、`R-D6 S2` 删空清库、30 秒冷却与 `@BindsOptionalOf` 三插槽） | C4d、E4、D6 |
-| E6 | E | 完整编辑器本体（**在途**，高风险走 `R + V`；无缝承接 `E5` 点 `展开全屏` / `插入图片` 传入的文本、光标与引用楼层，多图上传条、发新帖与回复草稿、多栏按 §4.2 右栏 `< 560dp` 居中模态 / `≥ 560dp` 右栏内展开；收口 `R-D6 S1` `ImageUploadInput.original = false` 与 `R-D1`） | E5 |
-| E6b | E | 编辑已发表楼层（`DraftKey.edit(pid)`、`还原原文` 与令牌撤销、`R-D6 S2`）与楼层菜单删除自己楼层（不可撤销二次确认、`PostSubmitRequest.DeletePost`、`MockWebServer`）（**待派**，高风险走 `R + V`，复用 `E6` 完整编辑器） | E6、M7-G3 |
-| E7 | E | 表情选择面板（**待派**，在 `E6` 后，高风险走 `R + V`，用 C1b 的映射并闭合 `C1b#3`）；和键盘等高原地互换的动效，同时服务 `E5` 毛玻璃快速回复面板、`E6` 完整编辑器与短消息对话输入栏（`M7-0 #11`；底缘零位移，无键盘高度时按 §7.4 限高） | E6 |
+| E6 | E | 完整编辑器本体（**已合入 `2739d4d`**，R-E6 两轮 APPROVE / V-E6 两轮 PASS `@adc777b`；无损承接 `E5` 点 `展开全屏` / `插入图片` 传入的文本、光标与引用楼层，多图上传条、发新帖与回复草稿、多栏按 §4.2 右栏 `< 560dp` 居中模态 / `≥ 560dp` 右栏内展开、详情底栏 Snackbar 避让；收口 `R-D6 S1`/`R-D6 S2`/`R-D1` 与 `R-E6 S3`） | E5 |
+| E6b | E | 编辑已发表楼层（`DraftKey.edit(pid)`、`还原原文` 与令牌撤销、`R-D6 S2`、免 30s 冷却不附小尾巴、`deletedAttachments`）与楼层菜单删除自己楼层（不可撤销二次确认、`PostSubmitRequest.DeletePost`、`MockWebServer`）（**已合入 `b803846`**，R-E6b APPROVE / V-E6b PASS `@7ac4c82`；后续小修 `E6b-followup` **已合入 `08a43a0`**，负责人核对 `@e9976d5`，闭合 `R-E6b S1/S2` 切号收起确认框与末页删空回上一页） | E6、M7-G3 |
+| E7 | E | 表情选择面板（**已合入 `83e0948`**，R-E7 两轮 APPROVE / V-E7 两轮 PASS `@e25e057`；闭合 `C1b#3`、`M7-0 #11` 短消息表情与 `R-M7-G4 S2` 纯图隐藏复制；`EmojiPanelSlotBox` 唯一 IME 消费点 + 共享净高缓存防导航栏污染，全形态含居中模态与编辑态等高原地互换、整枚表情回删与 §7.4 回退限高） | E6、E6b |
 | E-slots | E | M6 页面零耦合路由插槽（**已合入 `4b6c1f0`**）：4 个 `@BindsOptionalOf` 可选渲染器接口（`Messages`/`SearchMine`/`SettingsProfile`/`ImageViewer`）、外壳分发、旧 16 元保存态兼容、铰链设置开帖与看图兜底返回 | E3 |
 | E8 | E | 短消息 + 提醒（合并原 E8+E9，基于 D7，**已合入 `0883c89`**，R-E8 两轮 APPROVE `@c65a38b`）：会话列表、气泡乐观发送/失败重发/令牌锚点撤销、15 秒冷却、单条已读提醒与“全部已读”，并收口 `R-D9 S2` 通知文案归口 `copy.md` + `strings_notification.xml`；普通页仅走 `R`（含目视截图） | C5b、C1b、D7、E-slots |
 | E10 | E | 搜索 + 我的（合并原 E10+E11，基于 D8a + D1，**已合入 `eb1ace1`**，R-E10 两轮 APPROVE `@9ee39e9`）：搜索初始态（最近搜索令牌锚点撤销 + 可打断筛选面板 + `ForumLinkResolver` “打开这个链接”白名单）、我的菜单页、收藏与关注（令牌锚点撤销）、我的帖子（主题/回复）、浏览历史（单删/清空令牌撤销）；普通页仅走 `R`（含目视截图） | C5b、D8a、D1、E-slots |
@@ -90,13 +90,15 @@
 | M7-0 | — | 旧版 `ui/` 与新版功能逐项对齐只读审计（**已完成并归档**，盘点 127 项检出 14 项缺失，拆分为 `M7-G1..G4` 与 `E7 #11` 补齐） | E1–E16 |
 | M7-G1 | — | M7-0 缺失补齐 G1：Buy&Sell（`fid=6`）9 项分类筛选、设计系统统一顶栏滚顶原语、六类列表长按直达末页、资料页点大头像按 Coil key 清缓存重载（**已合入 `83484fd`**，R APPROVE `@e4690ea`） | M7-0 |
 | M7-G2 | — | M7-0 缺失补齐 G2：移除非当前已存账号、冷启调 `NotificationScheduler.syncFromSettings()`、看图多图图集接口、关于页三文档与升级首启更新记录弹窗（**已合入 `f2fbe60`**，R APPROVE `@4b3c1b9`，建议修复 `@5317579`） | M7-0 |
-| M7-G3 | — | M7-0 缺失补齐 G3：楼层长按 `文字选择`、`分享`（规范 `https` `pid` 链接）、被警告楼层标示与警告弹窗、详情顶栏滚顶与 `#9` 图集 Provider 接线，及 `R-E16 S2` 同帖跳楼（**在途**，普通档只走 R） | E5、M7-G1、M7-G2 |
+| M7-G3 | — | M7-0 缺失补齐 G3：楼层长按 `文字选择`、`分享`（规范 `https` `pid` 链接）、被警告楼层标示与警告弹窗、详情顶栏滚顶与 `#9` 图集 Provider 接线，及 `R-E16 S2`/`R-M7-G1 S2` 同帖跳楼（**已合入 `bb5a870`**，R APPROVE `@e57c7f8`；`R-M7-G3 S3` 已同步 `copy.md`） | E5、M7-G1、M7-G2 |
 | M7-G4 | — | M7-0 缺失补齐 G4：短消息列表顶栏 `发送短消息`（任意用户名 + 15s 冷却）与气泡长按复制纯文本（**已合入 `fd414a1`**，R APPROVE `@6df20f3`） | M7-0 |
-| M7-1 | — | 切换启动入口、`IntentActivity` 和快捷方式到新外壳（保留 `.ng.IntentActivity` 别名）；收口 `R-E16 S1`：改主清单时补 `<queries>`（浏览器 intent 可见性），`PostLinkDispatcher.kt:52` 增 `https://` `BROWSABLE` 探测 | E1–E16、E6b、E7、M7-G1..G4 |
-| M7-2 | — | 删除旧界面、EventBus、jobqueue、MaterialDrawer、Calligraphy 等旧依赖，以及 `:emoji` 的旧 View | M7-1 |
-| M7-3 | — | targetSdk 升到 36：通知权限、MediaStore 下载、全面屏 | M7-2 |
-| M7-4 | — | 收紧 R8 规则（保留经冒烟验证的 `com.kyant.backdrop`/`shapes` 必要规则并复跑 release 冒烟）；Baseline Profile | M7-2 |
-| M7-5 | — | 全新安装的回归测试和真机性能验收（含三栏 3 块实时液态玻璃 120Hz 帧率复验，需要用户的设备） | M7-3、M7-4 |
+| CI-heap | — | 单测 JVM 内存余量：`hipda/build.gradle.kts` `Test` 块设置 `maxHeapSize = "1536m"` + `forkEvery = 400L`，消除测试过千后 Roborazzi 大图 OOM（**已合入 `ed361c2`**，负责人核对 `@822dccb`） | E6 |
+| M7-1 | — | 切换启动入口、`IntentActivity` 和快捷方式到新外壳（保留 `.ng.IntentActivity` 别名）；收口 `R-E16 S1`（`<queries>` + `https://` `BROWSABLE` 探测）与 `R-M7-G2 S2`（**已合入 `846ff3a`**，R APPROVE / V PASS 含 API 36 模拟器冒烟 `@c001dee`） | E1–E16、E6b、M7-G1..G4 |
+| M7-2 | — | 删除旧界面、旧解析器与 24 项旧依赖（EventBus/jobqueue/MaterialDrawer/Calligraphy/`jitpack.io` 等）及 `:emoji` 旧 View；`HiNextApplication` 独立接管前后台计数与脱敏崩溃日志；收口 `C1b#1` 与 `R-D9 S3`；release APK 降幅 `-37.98%`（**已合入 `4c7f6a0`**，R APPROVE / V PASS 含 API 36 模拟器冒烟 `@1c2410b`） | M7-1 |
+| M7-3 | — | targetSdk 升到 36：通知权限、MediaStore 下载、全面屏；测试改 JDK21 launcher（负责人已授权 `build.gradle.kts` `Test` 块与 `android.yml` `setup-java`）（**在途**，高风险 `R + V`） | M7-1、M7-2 |
+| M7-4a | — | Baseline Profile 基建与生成、`isShrinkResources = true` 与动态资源 keep 规则（**在途**，R-M7-4a APPROVE `@85e3de0`，V 进行中；合入 `main` 时须同步清理已删 Iconics 字体断言） | M7-1 |
+| M7-4b | — | 收紧 R8 规则（清除旧 `HiSettingsHelper` 等已删类及泛保留规则，保留经冒烟验证的 `com.kyant.backdrop`/`shapes` 必要规则并复跑 release 冒烟）（**在途**，基于 `4c7f6a0` 开发中，高风险 `R + V`） | M7-2 |
+| M7-5 | — | 全新安装的回归测试、真机性能验收与发布（含三栏 3 块实时液态玻璃 120Hz 帧率复验，**需用户设备与用户批准**） | M7-3、M7-4a、M7-4b |
 
 页面卡（E 线）在定稿时按“布局和状态”“交互”“动效”继续检查大小，超过拆分规则的再拆。
 
@@ -107,7 +109,7 @@
 - E 线：
   - **M5 阅读核心全部完成**（`E0`、`E15`、`E2a`、`E1`、`E2b`、`E2d`、`E3`、`E2c`、`E4 @ 92e1563` 全合入，main CI `45758541824` 绿）；
   - **M6 页面群全部完成**（`E-slots` `4b6c1f0`、`E8` `0883c89`、`E12` `158ac9c`、`E10` `eb1ace1`、`E14` `1cffcd9`、`M6-polish` `0eebc8a`、`E16` `6ff55a9` 均已合入）；
-  - **发帖链路、M7-0 补齐与后续里程碑**：`E5`（`afa3783`）、`M7-0`、`M7-G4`（`fd414a1`）、`M7-G1`（`83484fd`）、`M7-G2`（`f2fbe60`）均已合入；**`E6` 与 `M7-G3` 在途**，**`E6b` 待 `E6` 与 `M7-G3` 合入后派**，**`E7` 在 `E6` 后**；之后进入 **`M7-1..5`**。
+  - **编辑器线与 M7-0 ~ M7-2 全部完成**：`E5`（`afa3783`）、`M7-0`、`M7-G4`（`fd414a1`）、`M7-G1`（`83484fd`）、`M7-G2`（`f2fbe60`）、`M7-G3`（`bb5a870`）、`E6`（`2739d4d`）、`CI-heap`（`ed361c2`）、`E6b`（`b803846`）、`M7-1`（`846ff3a`）、`E6b-followup`（`08a43a0`）、`M7-2`（`4c7f6a0`）、`E7`（`83e0948`）均已合入；当前 **`M7-3`、`M7-4a`（R APPROVE / V 进行中）、`M7-4b`（开发中）在途**；之后进入 **`M7-5` 用户真机验收与发布（需用户批准）**。
 
 ## 用户要做的事
 - B1b 之后，一次做完：在 debug 工具页里登录 → 确认能抓到版块页（这也是 M1 的验收）→ 按清单一键导出样本。
