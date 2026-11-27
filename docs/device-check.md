@@ -6,8 +6,8 @@
 
 debug 包在 CI 产物里（如仓库需登录 GitHub 可直接在网页或 `gh` 下载）：
 
-- **最新 M7-5 验收包（`main` @ `f9862b8`，待 CI）**：
-  - 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45958045820>（待 CI） → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`；合并态 API 36 模拟器冒烟 CI <https://github.com/mailwmj/hipda-next/actions/runs/45956240271> 全绿）
+- **最新 M7-5 验收包（`main` @ `f9862b8`）**：
+  - 网页：<https://github.com/mailwmj/hipda-next/actions/runs/45958045820> → 页面底部 Artifacts → `debug-apk`（下载后解压得到 `hipda-debug.apk`；合并态 API 36 模拟器冒烟 CI <https://github.com/mailwmj/hipda-next/actions/runs/45956240271> 全绿）
   - 命令行：`gh run download 45958045820 -R mailwmj/hipda-next -n debug-apk`
 - **旧包记录（如果已经在测旧包，可以继续对照，或先卸载后安装上面的最新 `main @ f9862b8` 验收包）**：
   - `main` @ `0916fb1`（CI <https://github.com/mailwmj/hipda-next/actions/runs/45922502190>）：M7-4b 验收包（不含 `M7-4c`/`M7-P1`/`M7-P2`）；
@@ -21,7 +21,7 @@ debug 包在 CI 产物里（如仓库需登录 GitHub 可直接在网页或 `gh`
 
 ## 当前待办一：M5/M7 真机功能与性能验证（`main` @ `f9862b8`）
 
-- **安装包**：上面第 0 节 `main` @ `f9862b8` 的 `debug-apk`（CI <https://github.com/mailwmj/hipda-next/actions/runs/45958045820>，待 CI）。
+- **安装包**：上面第 0 节 `main` @ `f9862b8` 的 `debug-apk`（CI <https://github.com/mailwmj/hipda-next/actions/runs/45958045820>）。
 - **入口**：直接打开新版主桌面图标（`MainActivity`；debug 包另保留独立「**HiPDA 预览**」图标用于下方待办二外壳调参）。完整 M7-5 全新安装、通知权限、MediaStore、外链、编辑器及 120Hz `dumpsys gfxinfo` 清单见 `docs/agents/cards/M7-5.md`。
 - **写操作说明**：**发送短消息、回帖、改资料、加黑名单、收藏/关注切换、投票**等会对论坛产生写操作的项目均为 **「可选，自行决定是否用真实账号尝试」**；其余浏览、搜索、看图、本地历史、返回栈、脱敏检查均为只读操作。
 - **测试项（逐项按「操作 → 预期」对照）**：

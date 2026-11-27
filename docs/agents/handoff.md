@@ -7,7 +7,7 @@
 ## 1. 全局进度总览
 
 - 设计与流程文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4；`docs/agents/decisions.md`（`0895b83`）；`docs/agents/DISPATCH.md`、`lesson.md` 与 `docs/agents/cards/_common.md` 已落地站点 scheme 白名单阻断（`00cb3c4`）、**流程提速**（`e735e7a` + `5bae5ab`）、2 条通用新规（`1dc594e`）、“跨卡浮层/返回/玻璃卡必做合入后真实链路探针”（`3617fad`）、“常驻浮层/抽屉 `BackHandler` 条件启用并按打开状态重挂”、“Compose 拖拽态同步 state + `try/finally` 终态”、“单测 JVM 1536m 堆上限 + `forkEvery=400`”、“Roborazzi 截图须由 R 逐张目视”、“基于稳定在审分支提前开工并写清冲突责任方”及“关键回归测试修复轮须做变异红/绿验证”等经验。另外 **`team-lead` skill 已提交 `5a2fc95`，等待用户确认是否推送**。
-- **已合并进 `main`**（当前代码 `HEAD`：`f9862b8`，合并态 CI `45956240271`（`emulator=true`）全绿、main 推送 CI `45958045820`（待 CI，成功后产出新 `debug-apk`）；**M5 / M6 / 编辑器线 / M7 开发与 P1/P2 收尾全部完成，下一步 `M7-5` 用户真机验收与发布（需用户批准）**；真机验收包已更新至 `docs/device-check.md`）：
+- **已合并进 `main`**（当前代码 `HEAD`：`f9862b8`，合并态 CI `45956240271`（`emulator=true`）全绿、main 推送 CI `45958045820`绿，已产出 `debug-apk`；**M5 / M6 / 编辑器线 / M7 开发与 P1/P2 收尾全部完成，下一步 `M7-5` 用户真机验收与发布（需用户批准）**；真机验收包已更新至 `docs/device-check.md`）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
   - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
@@ -134,7 +134,7 @@
 
 ## 5. 用户要做的事
 
-1. **M7-5 全新安装回归与真机 120Hz 验收 + 液态玻璃四组调参（最新包 `main` @ `f9862b8`，CI `45958045820` `debug-apk`〔待 CI〕；旧包 `0916fb1`/`92e1563`/`db52669`/`c0fc15d` 留作对照）**：按 `docs/agents/cards/M7-5.md` 与 `docs/device-check.md` 验证全新安装、图标与快捷方式、`.ng.IntentActivity` 外链防自环、通知权限、`MediaStore`、全面屏、读帖/发帖链路及 120Hz 三栏 3 块液态玻璃帧率与真实 Android Keystore 下的 Tink 凭据/Cookie 加密读写恢复，并用同一包「HiPDA 预览 → 外壳 → 调参」给出四档最终参数回写 §5（写操作项均为可选）。
+1. **M7-5 全新安装回归与真机 120Hz 验收 + 液态玻璃四组调参（最新包 `main` @ `f9862b8`，CI `45958045820` `debug-apk`；旧包 `0916fb1`/`92e1563`/`db52669`/`c0fc15d` 留作对照）**：按 `docs/agents/cards/M7-5.md` 与 `docs/device-check.md` 验证全新安装、图标与快捷方式、`.ng.IntentActivity` 外链防自环、通知权限、`MediaStore`、全面屏、读帖/发帖链路及 120Hz 三栏 3 块液态玻璃帧率与真实 Android Keystore 下的 Tink 凭据/Cookie 加密读写恢复，并用同一包「HiPDA 预览 → 外壳 → 调参」给出四档最终参数回写 §5（写操作项均为可选）。
 2. **确认 `team-lead` skill（`5a2fc95`）是否推送**。
 3. **正式发布批准门禁**：M7-5 全部通过且性能达标后，决定是否批准构建正式签名 release 包或发布。
 
