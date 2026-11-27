@@ -47,7 +47,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.outlined.DateRange
@@ -100,9 +99,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -139,7 +142,8 @@ import net.jejer.hipda.ui.designsystem.motion.hiShrinkVertically
 import net.jejer.hipda.ui.designsystem.motion.hiSlideInHorizontally
 import net.jejer.hipda.ui.designsystem.motion.hiSlideOutHorizontally
 
-private val SidebarFixedBarHeight: Dp = 48.dp
+private val SidebarFixedBarHeight: Dp = 56.dp
+private val SidebarBottomFixedBarHeight: Dp = 48.dp
 private val SidebarSlotSize: Dp = 48.dp
 private val SidebarPillSize: Dp = 44.dp
 private val SidebarDividerSectionHeight: Dp = 9.dp
@@ -148,6 +152,17 @@ private const val SidebarModalScrimAlpha: Float = 0.32f
 private const val SidebarModalDismissDragFraction: Float = 0.35f
 private const val SidebarModalDismissVelocityPxPerSec: Float = -600f
 private const val UnreadBadgeOverflowLimit: Int = 99
+
+private val SidebarCollapseVectorIcon: ImageVector by lazy {
+    ImageVector.Builder("HiSidebar.Collapse", 24.dp, 24.dp, 24f, 24f).apply {
+        path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f, strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+            moveTo(5.5f, 4f); horizontalLineTo(18.5f); arcTo(2.5f, 2.5f, 0f, false, true, 21f, 6.5f)
+            verticalLineTo(17.5f); arcTo(2.5f, 2.5f, 0f, false, true, 18.5f, 20f); horizontalLineTo(5.5f)
+            arcTo(2.5f, 2.5f, 0f, false, true, 3f, 17.5f); verticalLineTo(6.5f); arcTo(2.5f, 2.5f, 0f, false, true, 5.5f, 4f); close()
+            moveTo(9.5f, 4f); verticalLineTo(20f); moveTo(16.5f, 9.5f); lineTo(14f, 12f); lineTo(16.5f, 14.5f)
+        }
+    }.build()
+}
 
 /** 左侧栏账号展示信息。 */
 @Immutable
@@ -183,7 +198,7 @@ data class HiSidebarState(
 /**
  * ≥ 600dp 常驻左侧栏（取代旧版 80dp 毛玻璃导航轨，product-design.md §3.2、§5）。
  *
- * 纯色 `surfaceContainerLow` 主体与未滚动顶部固定区，右侧 `1dp outlineVariant` 细分隔线，无毛玻璃；
+ * 纯色 `surfaceContainerLow` 主体与未滚动顶部固定区，右侧 `0.5dp outlineVariant` 细分隔线，无毛玻璃；
  * 仅使用 Compose / Material 3 标准容器（`Column`/`Row`/`LazyColumn`/`Surface`），无自定义 `Layout`。
  */
 @Composable
@@ -260,7 +275,7 @@ fun HiNavigationSidebar(
                     onManageForumsClick = onManageForumsClick,
                 )
             }
-            Box(Modifier.width(1.dp).fillMaxHeight().background(cs.outlineVariant))
+            Box(Modifier.width(0.5.dp).fillMaxHeight().background(cs.outlineVariant.copy(alpha = 0.6f)))
         }
     }
 }
@@ -449,8 +464,8 @@ private fun SidebarColumnBody(
     val collapsedDisplays = remember(forums) { resolveCollapsedForumDisplays(forums) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // 顶部固定区（48dp，未滚动同为 surfaceContainerLow，滚动后渐变 surfaceContainer + 1dp 底线）
-        Column(
+        // 顶部固定区（56dp，与中/右栏顶栏水平对齐；静止无底线，滚动后渐变 surfaceContainer + 0.5dp 底线）
+        Box(
             modifier = Modifier
                 .testTag(HiShellTestTags.SidebarTopBar)
                 .fillMaxWidth()
@@ -466,14 +481,17 @@ private fun SidebarColumnBody(
                     selected = false,
                     isTab = false,
                     onClick = onToggleSidebar,
+                    slotHeight = SidebarFixedBarHeight,
                 ) {
                     Icon(Icons.Rounded.Menu, contentDescription = null, tint = cs.onSurfaceVariant, modifier = Modifier.size(22.dp))
                 }
             }
             HorizontalDivider(
-                modifier = Modifier.graphicsLayer { alpha = topBarDividerAlpha },
-                thickness = 1.dp,
-                color = cs.outlineVariant,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .graphicsLayer { alpha = topBarDividerAlpha },
+                thickness = 0.5.dp,
+                color = cs.outlineVariant.copy(alpha = 0.6f),
             )
         }
 
@@ -609,16 +627,18 @@ private fun SidebarColumnBody(
         ) {
             if (expanded) {
                 HorizontalDivider(thickness = 1.dp, color = cs.outlineVariant)
-                SidebarNavigationRow(
-                    label = stringResource(R.string.shell_sidebar_settings),
-                    selectedIcon = Icons.Rounded.Settings,
-                    unselectedIcon = Icons.Outlined.Settings,
-                    selected = state.selectedEntry == ShellSidebarEntry.Settings,
-                    expanded = true,
-                    unreadCount = 0,
-                    tag = HiShellTestTags.sidebarEntry(ShellSidebarEntry.Settings),
-                    onClick = { onSelectEntry(ShellSidebarEntry.Settings) },
-                )
+                Box(Modifier.fillMaxWidth().heightIn(min = SidebarBottomFixedBarHeight), contentAlignment = Alignment.Center) {
+                    SidebarNavigationRow(
+                        label = stringResource(R.string.shell_sidebar_settings),
+                        selectedIcon = Icons.Rounded.Settings,
+                        unselectedIcon = Icons.Outlined.Settings,
+                        selected = state.selectedEntry == ShellSidebarEntry.Settings,
+                        expanded = true,
+                        unreadCount = 0,
+                        tag = HiShellTestTags.sidebarEntry(ShellSidebarEntry.Settings),
+                        onClick = { onSelectEntry(ShellSidebarEntry.Settings) },
+                    )
+                }
             } else {
                 HorizontalDivider(
                     modifier = Modifier.graphicsLayer { alpha = collapsedBottomDividerAlpha },
@@ -633,6 +653,7 @@ private fun SidebarColumnBody(
                     selected = false,
                     isTab = false,
                     onClick = onAccountClick,
+                    slotHeight = SidebarBottomFixedBarHeight,
                 ) {
                     SidebarAvatarCircle(account = state.account, size = 32.dp)
                 }
@@ -662,7 +683,7 @@ private fun SidebarExpandedTopBar(
         Row(
             modifier = Modifier
                 .weight(1f)
-                .heightIn(min = SidebarFixedBarHeight)
+                .heightIn(min = SidebarSlotSize)
                 .hiPressScale(accountInteraction)
                 .testTag(HiShellTestTags.SidebarAccountRow)
                 .clip(HiShapeTokens.Medium)
@@ -691,10 +712,10 @@ private fun SidebarExpandedTopBar(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                imageVector = SidebarCollapseVectorIcon,
                 contentDescription = stringResource(R.string.shell_sidebar_collapse),
                 tint = cs.onSurfaceVariant,
-                modifier = Modifier.size(22.dp),
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -1083,6 +1104,7 @@ private fun SidebarCollapsedSlot(
     selected: Boolean,
     isTab: Boolean,
     onClick: () -> Unit,
+    slotHeight: Dp = SidebarSlotSize,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -1104,7 +1126,7 @@ private fun SidebarCollapsedSlot(
         )
     }
     Box(
-        modifier = Modifier.fillMaxWidth().heightIn(min = SidebarSlotSize),
+        modifier = Modifier.fillMaxWidth().heightIn(min = slotHeight),
         contentAlignment = Alignment.Center,
     ) {
         TooltipBox(

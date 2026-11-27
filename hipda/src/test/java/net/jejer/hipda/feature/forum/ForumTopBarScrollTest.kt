@@ -27,10 +27,20 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import org.robolectric.annotation.GraphicsMode
 import java.util.Collections
 import java.util.IdentityHashMap
 import kotlinx.coroutines.flow.Flow
@@ -567,6 +577,71 @@ class ForumTopBarScrollTest {
             assertEquals(0, state.firstVisibleItemIndex)
             assertEquals(0, state.firstVisibleItemScrollOffset)
             assertEquals("单击顶栏标题不得误触发发新帖", 1, newThreadClicks)
+        } finally {
+            mainClock.autoAdvance = true
+        }
+    }
+
+    /** U1 验收 1：论坛顶栏无标签态高严格 56dp，静止态底线透明度为 0f（像素零色差），滚动后随动效平滑淡入显示。 */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun forumTopBar_height56dp_andBottomDividerHiddenAtRestFadesInOnScroll() = withAnimatorDurationScale(1f) {
+        var scrolled by mutableStateOf(false)
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                val scrollState = rememberForumTopBarScrollState(collapsible = false)
+                Box(Modifier.fillMaxWidth().testTag("forum_top_bar_host")) {
+                    ForumTopBar(
+                        title = "Discovery",
+                        source = ForumListSource.Forum(2),
+                        followedForums = listOf(2, 6, 7),
+                        sortByPostTime = false,
+                        showForumTabs = false,
+                        glassState = null,
+                        isScrolled = { scrolled },
+                        scrollState = scrollState,
+                        onSelectSource = {},
+                        onNewThreadClick = {},
+                        onSelectSortByPostTime = {},
+                        onManageForumsClick = {},
+                    )
+                }
+            }
+        }
+        waitForIdle()
+
+        val barBounds = onNodeWithTag("forum_top_bar_host").fetchSemanticsNode().boundsInRoot
+        assertEquals("论坛顶栏（无标签态）高度必须严格为 56dp", 56f, with(density) { barBounds.height.toDp().value }, 0.5f)
+
+        fun bottomLineMaxChannelDelta(): Int {
+            val bmp = onNodeWithTag("forum_top_bar_host").captureToImage().asAndroidBitmap()
+            val yDivider = bmp.height - 1
+            val yAbove = (bmp.height - 4).coerceAtLeast(0)
+            val xProbe = bmp.width / 2
+            val pDiv = bmp.getPixel(xProbe, yDivider)
+            val pAbove = bmp.getPixel(xProbe, yAbove)
+            return maxOf(
+                kotlin.math.abs(android.graphics.Color.red(pDiv) - android.graphics.Color.red(pAbove)),
+                kotlin.math.abs(android.graphics.Color.green(pDiv) - android.graphics.Color.green(pAbove)),
+                kotlin.math.abs(android.graphics.Color.blue(pDiv) - android.graphics.Color.blue(pAbove)),
+            )
+        }
+
+        assertEquals("静止态论坛顶栏底线透明度必须为 0f（底缘与顶栏底色完全一致）", 0, bottomLineMaxChannelDelta())
+
+        mainClock.autoAdvance = false
+        try {
+            scrolled = true
+            Snapshot.sendApplyNotifications()
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
+            mainClock.advanceTimeByFrame()
+            val midDelta = bottomLineMaxChannelDelta()
+            mainClock.advanceTimeBy(1_000L)
+            val settledDelta = bottomLineMaxChannelDelta()
+            assertTrue("滚动后底线应渐显（settledDelta=$settledDelta 应 >= 10）", settledDelta >= 10)
+            assertTrue("渐显过程中应平滑淡入而非突跳（midDelta=$midDelta, settledDelta=$settledDelta）", midDelta in 1 until settledDelta)
         } finally {
             mainClock.autoAdvance = true
         }

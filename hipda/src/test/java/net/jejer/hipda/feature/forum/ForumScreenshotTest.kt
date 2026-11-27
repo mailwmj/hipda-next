@@ -566,6 +566,7 @@ class ForumScreenshotTest {
             settingsRepository = settingsRepo,
             authRepository = authRepo,
             siteAccessGateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled }),
+            todayProvider = { java.time.LocalDate.of(2026, 11, 26) },
         )
 
         private fun emptyMeta() = DiscuzPageMeta(DiscuzSessionInfo(true, "42", "HiPDA"), "fh", null, PromptCounts())

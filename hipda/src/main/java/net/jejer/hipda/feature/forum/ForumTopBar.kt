@@ -165,7 +165,6 @@ fun ForumTopBar(
     onSelectTypeId: (String?) -> Unit = {},
     onScrollToTop: (() -> Unit)? = null,
 ) {
-    val cs = MaterialTheme.colorScheme
     val showCategoryFilter = source == ForumListSource.Forum(BUY_AND_SELL_FID)
     val latestIsScrolled by rememberUpdatedState(isScrolled)
     val canScrollToTop by remember(scrollState) {
@@ -176,26 +175,34 @@ fun ForumTopBar(
         Column(Modifier.fillMaxWidth()) {
             Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
             Box(Modifier.fillMaxWidth().clipToBounds()) {
-                Column(Modifier.fillMaxWidth().graphicsLayer { translationY = -scrollState.collapseOffsetPx }) {
-                    ForumTopBarUpperRow(
-                        title = title,
-                        showCategoryFilter = showCategoryFilter,
-                        selectedTypeId = if (showCategoryFilter) selectedTypeId else null,
-                        showSortMenu = source is ForumListSource.Forum,
-                        sortByPostTime = sortByPostTime,
-                        scrollState = scrollState,
-                        canScrollToTop = canScrollToTop,
-                        onSelectTypeId = onSelectTypeId,
-                        onNewThreadClick = onNewThreadClick,
-                        onSelectSortByPostTime = onSelectSortByPostTime,
-                        onScrollToTop = onScrollToTop,
-                    )
-                    if (showForumTabs) BalancedForumTabRow(source, followedForums, onSelectSource, onManageForumsClick)
-                    HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
+                Box(Modifier.fillMaxWidth().graphicsLayer { translationY = -scrollState.collapseOffsetPx }) {
+                    Column(Modifier.fillMaxWidth()) {
+                        ForumTopBarUpperRow(
+                            title = title,
+                            showCategoryFilter = showCategoryFilter,
+                            selectedTypeId = if (showCategoryFilter) selectedTypeId else null,
+                            showSortMenu = source is ForumListSource.Forum,
+                            sortByPostTime = sortByPostTime,
+                            scrollState = scrollState,
+                            canScrollToTop = canScrollToTop,
+                            onSelectTypeId = onSelectTypeId,
+                            onNewThreadClick = onNewThreadClick,
+                            onSelectSortByPostTime = onSelectSortByPostTime,
+                            onScrollToTop = onScrollToTop,
+                        )
+                        if (showForumTabs) BalancedForumTabRow(source, followedForums, onSelectSource, onManageForumsClick)
+                    }
+                    ForumTopBarDivider(isScrolled = isScrolled, modifier = Modifier.align(Alignment.BottomCenter))
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ForumTopBarDivider(isScrolled: () -> Boolean, modifier: Modifier = Modifier) {
+    val alpha = animateFloatAsState(if (isScrolled()) 1f else 0f, HiMotion.effectsDefault(), label = "ForumTopBarDividerAlpha")
+    HorizontalDivider(modifier = modifier.graphicsLayer { this.alpha = alpha.value }, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
 }
 
 @Composable
