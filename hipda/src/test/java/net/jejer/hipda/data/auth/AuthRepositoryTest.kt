@@ -259,7 +259,7 @@ class AuthRepositoryTest {
         assertEquals("10000", credentialsStore.currentActiveUid())
         assertTrue(repo.sessionEpoch > 0L)
 
-        // Verify 3 requests: GET login form -> POST login -> GET login page to confirm #umenu uid/username
+        // Verify 3 requests: GET login form -> POST login -> GET index.php to confirm #umenu uid/username
         val req1 = server.takeRequest()
         assertEquals("GET", req1.method)
         assertEquals("/forum/logging.php?action=login", req1.target)
@@ -280,7 +280,7 @@ class AuthRepositoryTest {
 
         val req3 = server.takeRequest()
         assertEquals("GET", req3.method)
-        assertEquals("/forum/logging.php?action=login", req3.target)
+        assertEquals("/forum/index.php", req3.target)
         assertTrue(req3.headers["Cookie"].orEmpty().contains("cdb_auth=secret_auth_cookie_value"))
     }
 
@@ -520,6 +520,10 @@ class AuthRepositoryTest {
         server.enqueue(
             gbkXmlResponse(
                 """<?xml version="1.0" encoding="gbk"?><root><![CDATA[登录失败，您还可以尝试 3 次]]></root>""",
+                headers = listOf(
+                    "Set-Cookie" to "cdb_auth=bob_partial; Path=/",
+                    "Set-Cookie" to "cdb_sid=bob_partial_sid; Path=/forum",
+                ),
             ),
         )
 
@@ -533,6 +537,8 @@ class AuthRepositoryTest {
 
         val cookiesAfterFail = cookieStore.loadForRequest(mockForumUrl)
         assertFalse(cookiesAfterFail.any { it.name == "cdb_auth" })
+        assertFalse("Partial cdb_sid written by failed switch POST must be cleared", cookiesAfterFail.any { it.name == "cdb_sid" })
+        assertFalse("Partial bob_partial cookie must not survive in store snapshot", cookieStore.snapshot().any { it.value == "bob_partial" || it.value == "bob_partial_sid" })
         assertTrue(cookiesAfterFail.any { it.name == "cf_clearance" && it.value == "cf_keep_on_fail" })
     }
 
@@ -2387,6 +2393,347 @@ class AuthRepositoryTest {
         assertEquals(savedAccount, repo2.currentAccount.value)
         assertEquals(AuthState.SignedIn(savedAccount), repo2.authState.value)
         assertTrue(ShadowLog.getLogsForTag("DefaultAuthRepository").isEmpty())
+    }
+
+    @Test
+    fun login_gbkXmlWithoutContentTypeCharsetAndScriptOnlySuccess_verifiesViaIndexAndPersistsCredentials() = runBlocking {
+        val repo = createRepository()
+
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_gbk_no_charset")))
+        // A-1 ④: GBK bytes with <?xml encoding="gbk"?> and Content-Type WITHOUT charset + script-only welcome
+        val gbkXmlBody = """<?xml version="1.0" encoding="gbk"?><root><![CDATA[<script type="text/javascript" reload="1">showDialog('欢迎您回来，GbkUser');location.href='index.php';</script>]]></root>"""
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Content-Type", "text/xml")
+                .addHeader("Set-Cookie", "cdb_auth=gbk_auth_token_01; Path=/")
+                .body(AuthTestFixtures.gbkBuffer(gbkXmlBody))
+                .build(),
+        )
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedInPageHtml("30003", "GbkUser")))
+
+        val result = repo.login(username = "GbkUser", passwordOrMd5 = "GbkPass!1")
+
+        assertTrue("Expected Success but got $result", result is LoginResult.Success)
+        val saved = (result as LoginResult.Success).account
+        assertEquals("30003", saved.uid)
+        assertEquals("GbkUser", saved.username)
+        assertEquals(listOf(saved), credentialsStore.accountsSnapshot())
+        assertEquals("30003", credentialsStore.currentActiveUid())
+        assertFalse(credentialsStore.currentManuallyLoggedOut())
+        assertEquals(AuthState.SignedIn(saved), repo.authState.value)
+
+        server.takeRequest() // GET login form
+        server.takeRequest() // POST login submit
+        val verifyReq = server.takeRequest()
+        assertEquals("GET", verifyReq.method)
+        assertEquals("/forum/index.php", verifyReq.target)
+        assertTrue(verifyReq.headers["Cookie"].orEmpty().contains("cdb_auth=gbk_auth_token_01"))
+    }
+
+    @Test
+    fun login_verifyRetriesOnceWhenAuthCookieStoredAndSucceedsOnSecondIndexGet() = runBlocking {
+        val repo = createRepository()
+        val forumUrl = server.url("/forum/")
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(Cookie.Builder().name("cf_clearance").value("cf_retry_keep").hostOnlyDomain(forumUrl.host).path("/").build()),
+        )
+
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_verify_retry")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，RetryUser]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=retry_auth_token; Path=/"),
+            ),
+        )
+        // 1st GET index.php misses #umenu; 2nd GET index.php carries #umenu + uid
+        server.enqueue(gbkHtmlResponse("""<html><body><div class="alert_info">正在跳转</div></body></html>"""))
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedInPageHtml("40004", "RetryUser")))
+
+        val result = repo.login(username = "RetryUser", passwordOrMd5 = "RetryPass123")
+
+        assertTrue("Expected Success on 2nd verify GET, got $result", result is LoginResult.Success)
+        val account = (result as LoginResult.Success).account
+        assertEquals("40004", account.uid)
+        assertEquals("40004", credentialsStore.currentActiveUid())
+        assertEquals(AuthState.SignedIn(account), repo.authState.value)
+
+        assertEquals(4, server.requestCount)
+        server.takeRequest() // GET form
+        server.takeRequest() // POST submit
+        val verify1 = server.takeRequest()
+        val verify2 = server.takeRequest()
+        assertEquals("/forum/index.php", verify1.target)
+        assertEquals("/forum/index.php", verify2.target)
+        assertTrue(verify2.headers["Cookie"].orEmpty().contains("cdb_auth=retry_auth_token"))
+    }
+
+    @Test
+    fun login_verifyFailsTwice_returnsSessionNotConfirmedAndClearsScopedAuthCookiesPreservingCloudflare() = runBlocking {
+        ShadowLog.clear()
+        val forumUrl = server.url("/forum/")
+        val host = forumUrl.host
+        val expires = futureHttpDate(3_600L)
+        var webViewSyncedDuringVerify = false
+        val primaryClient = createPrimaryClient(
+            transportDelegate = okhttp3.Interceptor { chain ->
+                val req = chain.request()
+                val resp = chain.proceed(req)
+                if (req.url.encodedPath.endsWith("/forum/index.php") && !webViewSyncedDuringVerify) {
+                    webViewSyncedDuringVerify = true
+                    webViewCookieAccess.seedCookie(forumUrl, "cdb_auth=mid_sync_wv_auth; Path=/; Expires=$expires")
+                    webViewCookieAccess.seedCookie(forumUrl, "cdb_sid=mid_sync_wv_sid; Path=/forum; Expires=$expires")
+                }
+                resp
+            },
+        )
+        val repo = createRepository(primaryClient = primaryClient)
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(
+                Cookie.Builder().name("cf_clearance").value("cf_a3_keep").hostOnlyDomain(host).path("/").build(),
+                Cookie.Builder().name("__cf_bm").value("cf_bm_a3_keep").hostOnlyDomain(host).path("/").build(),
+            ),
+        )
+        webViewCookieAccess.seedCookie(forumUrl, "cf_clearance=cf_a3_keep; Path=/; Expires=$expires")
+        webViewCookieAccess.seedCookie(forumUrl, "__cf_bm=cf_bm_a3_keep; Path=/; Expires=$expires")
+
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_verify_fail_2x")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，GhostUser]]></root>""",
+                headers = listOf(
+                    "Set-Cookie" to "cdb_auth=ghost_root_auth; Path=/",
+                    "Set-Cookie" to "cdb_auth=ghost_forum_auth; Path=/forum",
+                    "Set-Cookie" to "cdb_sid=ghost_forum_sid; Path=/forum",
+                ),
+            ),
+        )
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedOutPageHtml("游客页1 formhash=fh_verify_fail_2x cdb_auth=inline_secret")))
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedOutPageHtml("游客页2 Set-Cookie: cdb_auth=header_secret")))
+
+        val result = repo.login(
+            username = "GhostUser",
+            passwordOrMd5 = "GhostPass!99",
+            securityQuestionId = 1,
+            securityAnswer = "GhostAnswer88",
+        )
+
+        assertTrue("Expected Failure but got $result", result is LoginResult.Failure)
+        assertEquals(LoginFailureReason.SessionNotConfirmed, (result as LoginResult.Failure).reason)
+        assertEquals(4, server.requestCount)
+        assertTrue("Credentials must not be written on verify failure", credentialsStore.accountsSnapshot().isEmpty())
+        assertNull(credentialsStore.currentActiveUid())
+        assertEquals(AuthState.SignedOut, repo.authState.value)
+
+        val remainingStore = cookieStore.snapshot()
+        assertFalse("Root-path cdb_auth must be cleared", remainingStore.any { it.name == "cdb_auth" })
+        assertFalse("Subpath /forum cdb_sid must be cleared", remainingStore.any { it.name == "cdb_sid" })
+        assertTrue("cf_clearance must be preserved", remainingStore.any { it.name == "cf_clearance" && it.value == "cf_a3_keep" })
+        assertTrue("__cf_bm must be preserved", remainingStore.any { it.name == "__cf_bm" && it.value == "cf_bm_a3_keep" })
+
+        assertTrue("Precondition: mid-login WebView auth cookie should have been injected", webViewSyncedDuringVerify)
+        val remainingWebView = webViewCookieAccess.storedRawHeaders(forumUrl)
+        assertFalse("WebView cdb_auth must be cleared on verify failure, got $remainingWebView", remainingWebView.any { it.startsWith("cdb_auth=") })
+        assertFalse("WebView cdb_sid must be cleared on verify failure, got $remainingWebView", remainingWebView.any { it.startsWith("cdb_sid=") })
+        assertTrue(remainingWebView.any { it.startsWith("cf_clearance=cf_a3_keep") })
+        assertTrue(remainingWebView.any { it.startsWith("__cf_bm=cf_bm_a3_keep") })
+
+        val logs = ShadowLog.getLogsForTag(LoginDiagnosticLogger.TAG)
+        assertTrue("Expected HxLogin WARN logs on verify failures, got $logs", logs.count { it.type == Log.WARN } >= 2)
+        logs.forEach { entry ->
+            assertTrue(entry.msg.contains("stage=verify"))
+            assertTrue(entry.msg.contains("status=200"))
+            assertFalse(entry.msg.contains("fh_verify_fail_2x"))
+            assertFalse(entry.msg.contains("GhostPass!99"))
+            assertFalse(entry.msg.contains("GhostAnswer88"))
+            assertFalse(entry.msg.contains("GhostUser"))
+            assertFalse(entry.msg.contains("inline_secret"))
+            assertFalse(entry.msg.contains("header_secret"))
+        }
+    }
+
+    @Test
+    fun login_verifyFailsWithoutStoredAuthCookies_doesNotRetrySecondIndexGet() = runBlocking {
+        val repo = createRepository()
+        val forumUrl = server.url("/forum/")
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(Cookie.Builder().name("cf_clearance").value("cf_no_auth_cookie").hostOnlyDomain(forumUrl.host).path("/").build()),
+        )
+
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_no_cookie")))
+        server.enqueue(gbkXmlResponse("""<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，NoCookieUser]]></root>"""))
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedOutPageHtml("未登录")))
+
+        val result = repo.login(username = "NoCookieUser", passwordOrMd5 = "Pass123")
+
+        assertTrue("Expected Failure but got $result", result is LoginResult.Failure)
+        assertEquals(LoginFailureReason.SessionNotConfirmed, (result as LoginResult.Failure).reason)
+        assertEquals("Should only issue 1 verify GET when no auth cookie was stored", 3, server.requestCount)
+        assertTrue(cookieStore.snapshot().any { it.name == "cf_clearance" && it.value == "cf_no_auth_cookie" })
+    }
+
+    @Test
+    fun login_unrecognizedSubmitResponseAndHttpStatus_clearAuthCookiesReturnCategorizedReasonsAndLogRedactedHxLogin() = runBlocking {
+        val repo = createRepository()
+        val forumUrl = server.url("/forum/")
+        val host = forumUrl.host
+        cookieStore.saveFromResponse(
+            forumUrl,
+            listOf(
+                Cookie.Builder().name("cf_clearance").value("cf_a4_keep").hostOnlyDomain(host).path("/").build(),
+                Cookie.Builder().name("__cf_bm").value("cf_bm_a4_keep").hostOnlyDomain(host).path("/").build(),
+            ),
+        )
+
+        // Subcase 1: UnknownError on submit -> Failure(UnrecognizedSubmitResponse), cookies cleared, redacted HxLogin WARN
+        ShadowLog.clear()
+        val rawPw = "SecretPassA4!99"
+        val rawAns = "SecretAnswerA4"
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_a4_unknown")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[未知站点响应 formhash=fh_a4_unknown password=inline_pw answer=inline_ans Set-Cookie: cdb_auth=inline_tok]]></root>""",
+                headers = listOf(
+                    "Set-Cookie" to "cdb_auth=unknown_auth_tok; Path=/",
+                    "Set-Cookie" to "cdb_sid=unknown_sid_tok; Path=/forum",
+                ),
+            ),
+        )
+
+        val unknownResult = repo.login(
+            username = "UserA4",
+            passwordOrMd5 = rawPw,
+            securityQuestionId = 2,
+            securityAnswer = rawAns,
+        )
+
+        assertTrue("Expected Failure but got $unknownResult", unknownResult is LoginResult.Failure)
+        assertEquals(LoginFailureReason.UnrecognizedSubmitResponse, (unknownResult as LoginResult.Failure).reason)
+        assertTrue(credentialsStore.accountsSnapshot().isEmpty())
+        assertEquals(AuthState.SignedOut, repo.authState.value)
+
+        val cookiesAfterUnknown = cookieStore.snapshot()
+        assertFalse("cdb_auth must be cleared after UnknownError", cookiesAfterUnknown.any { it.name == "cdb_auth" })
+        assertFalse("cdb_sid must be cleared after UnknownError", cookiesAfterUnknown.any { it.name == "cdb_sid" })
+        assertTrue(cookiesAfterUnknown.any { it.name == "cf_clearance" && it.value == "cf_a4_keep" })
+        assertTrue(cookiesAfterUnknown.any { it.name == "__cf_bm" && it.value == "cf_bm_a4_keep" })
+
+        val unknownLogs = ShadowLog.getLogsForTag(LoginDiagnosticLogger.TAG)
+        assertEquals(1, unknownLogs.count { it.type == Log.WARN })
+        val unknownLogMsg = unknownLogs.single().msg
+        assertTrue(unknownLogMsg.contains("stage=submit"))
+        assertTrue(unknownLogMsg.contains("status=200"))
+        assertTrue(unknownLogMsg.contains("contentType=text/xml"))
+        assertFalse(unknownLogMsg.contains("fh_a4_unknown"))
+        assertFalse(unknownLogMsg.contains("inline_pw"))
+        assertFalse(unknownLogMsg.contains("inline_ans"))
+        assertFalse(unknownLogMsg.contains("inline_tok"))
+        assertFalse(unknownLogMsg.contains(rawPw))
+        assertFalse(unknownLogMsg.contains(computeLegacyPasswordMd5(rawPw)))
+        assertFalse(unknownLogMsg.contains(rawAns))
+        assertFalse(unknownLogMsg.contains("UserA4"))
+
+        // Subcase 2: HTTP 503 on verify after POST wrote cdb_auth -> Failure(HttpStatus(503)), cookies cleared
+        ShadowLog.clear()
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_a4_503")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，UserA4]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=auth_before_503; Path=/"),
+            ),
+        )
+        server.enqueue(
+            MockResponse.Builder()
+                .code(503)
+                .addHeader("Content-Type", "text/html; charset=utf-8")
+                .body("Service Unavailable formhash=fh_a4_503 cdb_auth=err_503_tok")
+                .build(),
+        )
+
+        val httpResult = repo.login(username = "UserA4", passwordOrMd5 = rawPw)
+
+        assertTrue("Expected Failure but got $httpResult", httpResult is LoginResult.Failure)
+        assertEquals(LoginFailureReason.HttpStatus(503), (httpResult as LoginResult.Failure).reason)
+        assertTrue(credentialsStore.accountsSnapshot().isEmpty())
+        assertEquals(AuthState.SignedOut, repo.authState.value)
+
+        val cookiesAfter503 = cookieStore.snapshot()
+        assertFalse("cdb_auth written before 503 must be cleared", cookiesAfter503.any { it.name == "cdb_auth" })
+        assertTrue(cookiesAfter503.any { it.name == "cf_clearance" && it.value == "cf_a4_keep" })
+        assertTrue(cookiesAfter503.any { it.name == "__cf_bm" && it.value == "cf_bm_a4_keep" })
+
+        val httpLogs = ShadowLog.getLogsForTag(LoginDiagnosticLogger.TAG)
+        assertEquals(1, httpLogs.count { it.type == Log.WARN })
+        val httpLogMsg = httpLogs.single().msg
+        assertTrue(httpLogMsg.contains("stage=verify"))
+        assertTrue(httpLogMsg.contains("status=503"))
+        assertFalse(httpLogMsg.contains("fh_a4_503"))
+        assertFalse(httpLogMsg.contains("err_503_tok"))
+    }
+
+    @Test
+    fun s1_login_cancelDuringCredentialCommit_completesPersistenceAndKeepsAuthCookiesAndSignedIn() = runBlocking {
+        val setActiveEntered = CompletableDeferred<Unit>()
+        val allowSetActive = CompletableDeferred<Unit>()
+        val gatedCredentialsStore = object : CredentialsStore by credentialsStore {
+            override suspend fun setActive(uid: String) {
+                setActiveEntered.complete(Unit)
+                allowSetActive.await()
+                credentialsStore.setActive(uid)
+            }
+        }
+        val primaryClient = createPrimaryClient()
+        val recoveryClient = createRecoveryClient(primaryClient)
+        val detector = ChallengeDetector()
+        val solver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) }
+        val repo = DefaultAuthRepository(
+            credentialsStore = gatedCredentialsStore,
+            siteCookieStore = cookieStore,
+            settingsRepository = settingsRepository,
+            siteAccessGateway = SiteAccessGateway(primaryClient, detector, solver, { nowMs.get() }, scope, 5.seconds),
+            recoveryGateway = SiteAccessGateway(recoveryClient, detector, solver, { nowMs.get() }, scope, 5.seconds),
+            clock = { nowMs.get() },
+            scope = scope,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
+        )
+
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_s1_commit")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，CommitUser]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=commit_cancel_auth; Path=/"),
+            ),
+        )
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedInPageHtml("50005", "CommitUser")))
+
+        val loginJob = async(Dispatchers.Default) {
+            repo.login(username = "CommitUser", passwordOrMd5 = "CommitPass123")
+        }
+
+        // Wait until credential commit has begun (upsert succeeded, now suspended in setActive)
+        withTimeout(5.seconds) { setActiveEntered.await() }
+        // Cancel the caller coroutine mid-commit, then release the persistence gate
+        loginJob.cancel()
+        allowSetActive.complete(Unit)
+        withTimeout(5.seconds) { loginJob.join() }
+
+        val savedAccounts = credentialsStore.accountsSnapshot()
+        assertEquals("Committed account must be persisted despite caller cancellation", 1, savedAccounts.size)
+        val saved = savedAccounts.single()
+        assertEquals("50005", saved.uid)
+        assertEquals("CommitUser", saved.username)
+        assertEquals("activeUid must be persisted despite caller cancellation", "50005", credentialsStore.currentActiveUid())
+        assertFalse(credentialsStore.currentManuallyLoggedOut())
+        assertEquals("authState must reach SignedIn despite caller cancellation", AuthState.SignedIn(saved), repo.authState.value)
+        assertEquals(saved, repo.currentAccount.value)
+        assertTrue(
+            "Valid auth cookie must NOT be cleared once credential commit finishes",
+            cookieStore.loadForRequest(server.url("/forum/")).any { it.name == "cdb_auth" && it.value == "commit_cancel_auth" },
+        )
     }
 
     companion object {

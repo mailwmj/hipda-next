@@ -20,7 +20,12 @@ data class UiError(
     @param:StringRes val messageRes: Int,
     val details: String? = null,
     val action: UiErrorAction? = null,
+    val formatArgs: List<Any> = emptyList(),
 )
+
+@Composable
+fun UiError.asString(): String =
+    if (formatArgs.isEmpty()) stringResource(messageRes) else stringResource(messageRes, *formatArgs.toTypedArray())
 
 @Composable
 fun UiError.toStateAction(onRetry: (AccessPriority) -> Unit, onLogin: () -> Unit): HiStateAction? =
