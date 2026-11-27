@@ -14,12 +14,15 @@ import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -141,6 +144,7 @@ class ThreadDetailRepositoryTest {
     private fun createRepository(
         maxBrowseHistory: Int = DefaultThreadDetailRepository.DEFAULT_MAX_BROWSE_HISTORY,
         solver: ChallengeSolver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) },
+        customReadingPositionDao: ReadingPositionDao = readingPositionDao,
     ): DefaultThreadDetailRepository {
         val client = HttpClientModule.provideOkHttpClient(
             siteCookieStore = cookieStore,
@@ -169,7 +173,7 @@ class ThreadDetailRepositoryTest {
             settingsRepository = settingsRepository,
             blacklistRepository = blacklistRepository,
             browseHistoryDao = browseHistoryDao,
-            readingPositionDao = readingPositionDao,
+            readingPositionDao = customReadingPositionDao,
             clock = { nowMs.get() },
             maxBrowseHistory = maxBrowseHistory,
         )
@@ -695,6 +699,117 @@ class ThreadDetailRepositoryTest {
             ),
             repo.getReadingPosition("2602293"),
         )
+    }
+
+    @Test
+    fun readingPosition_mutexSerializesConcurrentGetAndUpsertAndPreservesNonCancellable() = runBlocking {
+        val inFlight = AtomicInteger(0)
+        val maxConcurrent = AtomicInteger(0)
+        val upsertEntered = CompletableDeferred<Unit>()
+        val allowUpsertCommit = CompletableDeferred<Unit>()
+        val getEntered = CompletableDeferred<Unit>()
+        val allowGetFinish = CompletableDeferred<Unit>()
+        val gateNextUpsert = java.util.concurrent.atomic.AtomicBoolean(false)
+        val gateNextGet = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val serializedCheckingDao = object : ReadingPositionDao {
+            override suspend fun get(tid: String): ReadingPositionEntity? {
+                val active = inFlight.incrementAndGet()
+                maxConcurrent.accumulateAndGet(active, Math::max)
+                try {
+                    if (gateNextGet.compareAndSet(true, false)) {
+                        getEntered.complete(Unit)
+                        allowGetFinish.await()
+                    }
+                    return readingPositionDao.get(tid)
+                } finally {
+                    inFlight.decrementAndGet()
+                }
+            }
+
+            override suspend fun upsert(position: ReadingPositionEntity) {
+                val active = inFlight.incrementAndGet()
+                maxConcurrent.accumulateAndGet(active, Math::max)
+                try {
+                    if (gateNextUpsert.compareAndSet(true, false)) {
+                        upsertEntered.complete(Unit)
+                        allowUpsertCommit.await()
+                    }
+                    readingPositionDao.upsert(position)
+                } finally {
+                    inFlight.decrementAndGet()
+                }
+            }
+        }
+
+        val repo = createRepository(customReadingPositionDao = serializedCheckingDao)
+
+        // 1. 预置写前值 v1
+        nowMs.set(1_700_001_000_000L)
+        repo.saveReadingPosition("90001", page = 1, pid = "101", offsetPx = 10)
+        val beforeWrite = requireNotNull(repo.getReadingPosition("90001"))
+        assertEquals("101", beforeWrite.pid)
+
+        // 2. upsert(v2) 持锁挂起期间发起并发 get -> 必须排队等待直至 upsert 提交，且首次读必为新值 v2
+        gateNextUpsert.set(true)
+        nowMs.set(1_700_002_000_000L)
+        val writeJob = launch(Dispatchers.Default) {
+            repo.saveReadingPosition("90001", page = 2, pid = "202", offsetPx = 88)
+        }
+        upsertEntered.await()
+
+        val concurrentRead = async(Dispatchers.Default) {
+            repo.getReadingPosition("90001")
+        }
+        delay(50L)
+        assertFalse("upsert 持锁期间并发 get 必须被同一 Mutex 阻塞，不得提前读到旧值", concurrentRead.isCompleted)
+
+        allowUpsertCommit.complete(Unit)
+        writeJob.join()
+        val readAfterUpsert = requireNotNull(concurrentRead.await())
+        assertEquals("写后第一次读必为新值", 2, readAfterUpsert.page)
+        assertEquals("写后第一次读必为新值", "202", readAfterUpsert.pid)
+        assertEquals(88, readAfterUpsert.offsetPx)
+
+        // 3. 保留 NonCancellable 落盘语义：saveReadingPosition 在等锁期间外部协程被取消仍能落盘
+        gateNextGet.set(true)
+        val holdReadJob = async(Dispatchers.Default) { repo.getReadingPosition("90001") }
+        getEntered.await()
+
+        nowMs.set(1_700_003_000_000L)
+        val cancellableSaveCaller = launch(Dispatchers.Default) {
+            repo.saveReadingPosition("90001", page = 3, pid = "303", offsetPx = 120)
+        }
+        delay(40L)
+        cancellableSaveCaller.cancel()
+        allowGetFinish.complete(Unit)
+        assertEquals("202", holdReadJob.await()?.pid)
+        cancellableSaveCaller.join()
+        val afterCancelledCaller = requireNotNull(repo.getReadingPosition("90001"))
+        assertEquals("NonCancellable 必须保证已发起的落盘完整写入", "303", afterCancelledCaller.pid)
+        assertEquals(3, afterCancelledCaller.page)
+        assertEquals("readingPositionDao 并发执行数绝不得超过 1", 1, maxConcurrent.get())
+
+        // 4. 真实内存 Room 下并发 get 与 upsert 同一 tid：每次读到的要么是写前值要么是写后值，写后首读必为新值
+        val roomRepo = createRepository()
+        roomRepo.saveReadingPosition("90002", page = 1, pid = "100", offsetPx = 0)
+        val expectedPids = setOf("100", "500")
+        val observed = java.util.concurrent.CopyOnWriteArrayList<ReadingPositionEntity>()
+        val readers = (1..20).map {
+            launch(Dispatchers.Default) {
+                roomRepo.getReadingPosition("90002")?.let(observed::add)
+            }
+        }
+        val writer = launch(Dispatchers.Default) {
+            roomRepo.saveReadingPosition("90002", page = 5, pid = "500", offsetPx = 64)
+        }
+        (readers + writer).joinAll()
+        assertTrue(observed.isNotEmpty())
+        assertTrue("并发读到的值必须属于写前或写后快照", observed.all { it.pid in expectedPids })
+        val firstReadAfterWrite = requireNotNull(roomRepo.getReadingPosition("90002"))
+        assertEquals("500", firstReadAfterWrite.pid)
+        assertEquals(5, firstReadAfterWrite.page)
+        assertEquals(64, firstReadAfterWrite.offsetPx)
     }
 
     @Test

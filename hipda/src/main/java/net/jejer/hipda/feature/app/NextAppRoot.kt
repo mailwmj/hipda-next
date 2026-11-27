@@ -543,7 +543,12 @@ fun NextAppRoot(
 
                 val bottomPillVisible = !latestPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || latestPaneLayout.hasDetailPane)
                 val snackbarFullScreen = appState.isFullScreenReading || (isImageViewerOpen && latestPaneLayout.layoutMode != ShellPaneLayoutMode.HingeTwoPane)
-                val detailToolbarClearanceDp = if (appState.selectedThread != null && !isImageViewerOpen && !(editorHost.isVisible && (editorHost.isInRightPane || editorHost.isFullScreen))) {
+                val detailTopHasBottomBar = when (appState.detailDrilldownStack.lastOrNull()) {
+                    is DetailDrilldownEntry.UserProfile -> false
+                    is DetailDrilldownEntry.SmsConversation -> true
+                    null -> appState.selectedThread != null || appState.selectedSmsConversation != null
+                }
+                val detailToolbarClearanceDp = if (detailTopHasBottomBar && !isImageViewerOpen && !(editorHost.isVisible && (editorHost.isInRightPane || editorHost.isFullScreen))) {
                     navBarsBottomDp + ThreadBottomToolbarHeight + ThreadBottomToolbarBottomGap
                 } else 0.dp
                 MultiPaneSnackbarHost(

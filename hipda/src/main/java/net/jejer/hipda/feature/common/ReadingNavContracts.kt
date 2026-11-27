@@ -25,6 +25,7 @@ data class ThreadNavArgs(
     val author: String? = null,
     val targetPid: String? = null,
     val openLastPage: Boolean = false,
+    val navSeq: Long = 0L,
 )
 
 @Immutable

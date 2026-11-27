@@ -105,7 +105,7 @@ internal fun ThreadDetailTopBar(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 48.dp)
-                            .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop) else Modifier)
+                            .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop, enabled = isScrolledState.value) else Modifier)
                             .padding(horizontal = if (chromeSpec.showBack) 4.dp else 8.dp),
                         verticalArrangement = Arrangement.Center,
                     ) {

@@ -168,7 +168,7 @@ fun HiSolidTopBar(
                 val titleModifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop) else Modifier)
+                    .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop, enabled = isScrolled) else Modifier)
                     .padding(horizontal = titleHorizontalPadding)
                 Box(modifier = titleModifier, contentAlignment = Alignment.CenterStart) {
                     Text(

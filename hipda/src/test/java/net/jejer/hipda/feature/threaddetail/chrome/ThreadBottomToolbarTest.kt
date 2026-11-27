@@ -3,8 +3,10 @@ package net.jejer.hipda.feature.threaddetail.chrome
 import android.app.Application
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Box
@@ -88,10 +90,13 @@ import androidx.compose.ui.Alignment
 import net.jejer.hipda.feature.app.auditGlassModifiers
 import net.jejer.hipda.feature.common.DetailChromeSpec
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
+import net.jejer.hipda.feature.common.LocalPostLinkDispatcher
 import net.jejer.hipda.feature.common.PaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.routing.DefaultPostLinkDispatcher
+import net.jejer.hipda.feature.routing.ExternalLinkOpener
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
 import androidx.compose.ui.test.onRoot
@@ -137,6 +142,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 /**
@@ -410,10 +416,25 @@ class ThreadBottomToolbarTest {
             buildSafeThreadUrl("http://127.0.0.1:8080/forum/", "1001", 1),
         )
 
+        val shadowPm = Shadows.shadowOf(context.packageManager)
+        val chromeComponent = ComponentName("com.android.chrome", "com.google.android.apps.chrome.Main")
+        shadowPm.addActivityIfNotPresent(chromeComponent)
+        shadowPm.addIntentFilterForActivity(
+            chromeComponent,
+            IntentFilter(Intent.ACTION_VIEW).apply {
+                addCategory(Intent.CATEGORY_DEFAULT)
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                addDataScheme("https")
+                addDataAuthority("www.4d4y.com", null)
+            },
+        )
+        shadowPm.getInternalMutablePackageInfo("com.android.chrome").activities?.forEach { it.exported = true }
+
         val launchedIntents = mutableListOf<Intent>()
         assertTrue(openExternalHttpUrl(context, "https://www.4d4y.com/forum/viewthread.php?tid=1001") { launchedIntents += it })
         assertEquals(1, launchedIntents.size)
         assertEquals(Intent.ACTION_VIEW, launchedIntents.single().action)
+        assertEquals(chromeComponent, launchedIntents.single().component)
 
         launchedIntents.clear()
         assertTrue(shareExternalHttpUrl(context, "测试帖", "https://www.4d4y.com/forum/viewthread.php?tid=1001", "分享") { launchedIntents += it })
@@ -452,6 +473,126 @@ class ThreadBottomToolbarTest {
         assertEquals("危险 URL 严禁触发任何系统 Intent", 0, launchedIntents.size)
         assertNull("非法 tid 必须拦截", buildSafeThreadUrl("https://www.4d4y.com", "123;rm", 1))
         assertNull("危险 forumServer scheme 必须拦截", buildSafeThreadUrl("javascript:alert(1)//", "1001", 1))
+    }
+
+    @Test
+    fun openInBrowser_delegatesToAndroidExternalLinkOpenerWithSelfExclusionAndInjectedOpener() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val shadowPm = Shadows.shadowOf(context.packageManager)
+        val selfPkg = context.packageName
+        val threadUrl = "https://www.4d4y.com/forum/viewthread.php?tid=1001"
+        val filter = IntentFilter(Intent.ACTION_VIEW).apply {
+            addCategory(Intent.CATEGORY_DEFAULT)
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            addDataScheme("https")
+            addDataAuthority("www.4d4y.com", null)
+        }
+        val selfComponent = ComponentName(selfPkg, "net.jejer.hipda.ng.IntentActivity")
+        shadowPm.addActivityIfNotPresent(selfComponent)
+        shadowPm.addIntentFilterForActivity(selfComponent, filter)
+
+        // 1. 仅本应用匹配时，经由 AndroidExternalLinkOpener 拒绝自循环（0 startActivity）
+        val launchedOnlySelf = mutableListOf<Intent>()
+        assertFalse(
+            "仅本应用匹配时 openExternalHttpUrl 必须经 AndroidExternalLinkOpener 拒绝自循环",
+            openExternalHttpUrl(context, threadUrl) { launchedOnlySelf += it },
+        )
+        assertEquals(0, launchedOnlySelf.size)
+
+        // 2. 注册外部浏览器后，经 AndroidExternalLinkOpener 显式拉起外部浏览器且排除本应用
+        val chromeComponent = ComponentName("com.android.chrome", "com.google.android.apps.chrome.Main")
+        shadowPm.addActivityIfNotPresent(chromeComponent)
+        shadowPm.addIntentFilterForActivity(chromeComponent, filter)
+        shadowPm.getInternalMutablePackageInfo("com.android.chrome").activities?.forEach { it.exported = true }
+
+        val launchedWithChrome = mutableListOf<Intent>()
+        assertTrue(openExternalHttpUrl(context, threadUrl) { launchedWithChrome += it })
+        assertEquals(1, launchedWithChrome.size)
+        assertEquals(chromeComponent, launchedWithChrome.single().component)
+        assertTrue(launchedWithChrome.single().hasCategory(Intent.CATEGORY_BROWSABLE))
+
+        // 3. 即使外部注入 opener，危险 scheme 仍先在 SafeLinkPolicy.sanitizeHttpUrl 拦截，0 次触发 opener
+        val openedByInjected = mutableListOf<String>()
+        var openerReturns = true
+        val injectedOpener = ExternalLinkOpener { url ->
+            openedByInjected += url
+            openerReturns
+        }
+        val dangerousUrls = listOf(
+            "javascript:alert(1)",
+            "intent://scan/#Intent;scheme=zxing;end",
+            "file:///etc/passwd",
+            "content://media/external/images/media/1",
+            "data:text/html,<script>alert(1)</script>",
+            "mailto:user@example.com",
+        )
+        for (bad in dangerousUrls) {
+            assertFalse("危险 scheme 必须先被 SafeLinkPolicy.sanitizeHttpUrl 拒绝: $bad", openExternalHttpUrl(context, bad, injectedOpener))
+        }
+        assertEquals("危险 scheme 绝不得调用 ExternalLinkOpener", 0, openedByInjected.size)
+
+        // 4. 工具条「在浏览器中打开」经 LocalPostLinkDispatcher 复用同一 ExternalLinkOpener 实例，失败时展示无浏览器提示
+        val snackMessages = mutableListOf<String>()
+        val fakeSnackbar = object : PaneSnackbarController {
+            override suspend fun show(
+                message: String,
+                target: PaneSnackbarTarget,
+                actionLabel: String?,
+                onAction: (() -> Unit)?,
+            ) {
+                snackMessages += message
+            }
+        }
+        val dispatcher = DefaultPostLinkDispatcher(
+            forumServerProvider = { AppSettings.DEFAULT_FORUM_SERVER },
+            onOpenForum = {},
+            onOpenThread = { _, _ -> },
+            onOpenThreadLastPage = {},
+            onOpenPost = { _, _ -> },
+            onOpenUserProfile = {},
+            externalLinkOpener = injectedOpener,
+        )
+        val gateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled })
+        val vm = ThreadDetailViewModel(
+            SimpleDetailRepository(),
+            gateway,
+            SwitchableAuthRepository(null, AuthState.SignedOut),
+            null,
+            StaticSettingsRepository(AppSettings(forumServer = "https://www.4d4y.com")),
+        )
+
+        composeRule.setContent {
+            CompositionLocalProvider(
+                LocalPaneSnackbarController provides fakeSnackbar,
+                LocalPostLinkDispatcher provides dispatcher,
+            ) {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    ThreadDetailPane(
+                        args = ThreadNavArgs(tid = "2602293", title = "外链复用测试"),
+                        chromeSpec = DetailChromeSpec(showBack = true),
+                        onBack = {},
+                        onOpenLogin = {},
+                        viewModel = vm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithContentDescription("更多").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("在浏览器中打开").performClick()
+        composeRule.waitForIdle()
+        assertEquals(listOf("https://www.4d4y.com/forum/viewthread.php?tid=2602293"), openedByInjected)
+        assertTrue(snackMessages.isEmpty())
+
+        openerReturns = false
+        composeRule.onNodeWithContentDescription("更多").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("在浏览器中打开").performClick()
+        composeRule.waitForIdle()
+        assertEquals(2, openedByInjected.size)
+        assertEquals(listOf("未找到可用的浏览器"), snackMessages)
     }
 
     @Test

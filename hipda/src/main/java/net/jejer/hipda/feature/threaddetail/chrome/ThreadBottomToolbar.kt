@@ -5,7 +5,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.VisibilityThreshold
@@ -43,6 +42,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.SafeLinkPolicy
+import net.jejer.hipda.feature.routing.AndroidExternalLinkOpener
+import net.jejer.hipda.feature.routing.ExternalLinkOpener
 import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
@@ -108,14 +109,15 @@ fun copyThreadLinkPlainText(context: Context, label: String, rawUrl: String?): B
     return runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, safeUrl)) }.isSuccess
 }
 
-/** 仅允许经 [sanitizeExternalHttpUrl] 校验的 `http`/`https` URL 交给系统浏览器，危险 scheme 直接拦截。 */
-fun openExternalHttpUrl(context: Context, rawUrl: String?, startIntent: (Intent) -> Unit = { context.startActivity(it) }): Boolean {
+/** 仅允许经 [sanitizeExternalHttpUrl] 校验的 `http`/`https` URL 经 [AndroidExternalLinkOpener] 交给系统浏览器，危险 scheme 直接拦截。 */
+fun openExternalHttpUrl(
+    context: Context,
+    rawUrl: String?,
+    externalLinkOpener: ExternalLinkOpener? = null,
+    startIntent: (Intent) -> Unit = { context.startActivity(it) },
+): Boolean {
     val safeUrl = sanitizeExternalHttpUrl(rawUrl) ?: return false
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl)).apply {
-        addCategory(Intent.CATEGORY_BROWSABLE)
-        if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    return runCatching { startIntent(intent) }.isSuccess
+    return (externalLinkOpener ?: AndroidExternalLinkOpener(context, startIntent)).open(safeUrl)
 }
 
 /** 仅允许经 [sanitizeExternalHttpUrl] 校验的 `http`/`https` URL 构造系统纯文本分享 Intent，危险 scheme 直接拦截。 */

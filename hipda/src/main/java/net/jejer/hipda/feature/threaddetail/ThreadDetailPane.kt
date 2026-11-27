@@ -39,6 +39,7 @@ import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.threaddetail.ThreadDetailFloorItem
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.feature.compose.*
+import net.jejer.hipda.feature.routing.DefaultPostLinkDispatcher
 import net.jejer.hipda.feature.threaddetail.chrome.ReadingPositionAnchor
 import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbar
 import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarClearance
@@ -472,7 +473,7 @@ fun ThreadDetailPane(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val latestUiState by rememberUpdatedState(uiState)
-    LaunchedEffect(args.tid, args.targetPid, args.openLastPage) {
+    LaunchedEffect(args.tid, args.targetPid, args.openLastPage, args.navSeq) {
         viewModel.bindArgs(args) { resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true) }
     }
     val context = LocalContext.current
@@ -692,6 +693,8 @@ fun ThreadDetailPane(
     val copiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_copied)
     val copyLinkLabel = stringResource(R.string.thread_detail_more_copy_link)
     val linkCopiedSnackbarMessage = stringResource(R.string.thread_detail_snackbar_link_copied)
+    val noBrowserSnackbarMessage = stringResource(R.string.routing_error_no_browser)
+    val externalLinkOpener = (LocalPostLinkDispatcher.current as? DefaultPostLinkDispatcher)?.externalLinkOpener
     val shareChooserTitle = stringResource(R.string.thread_detail_more_share)
     val shareTopicPrefix = stringResource(R.string.thread_detail_share_topic_prefix)
     val shareReplyPrefix = stringResource(R.string.thread_detail_share_reply_prefix)
@@ -954,7 +957,12 @@ fun ThreadDetailPane(
                             coroutineScope.launch { snackbarController.show(linkCopiedSnackbarMessage, target = PaneSnackbarTarget.DetailPane) }
                         }
                     },
-                    onOpenInBrowserClick = { openExternalHttpUrl(context, buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)) },
+                    onOpenInBrowserClick = {
+                        val url = buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage)
+                        if (url != null && !openExternalHttpUrl(context, url, externalLinkOpener)) {
+                            coroutineScope.launch { snackbarController.show(noBrowserSnackbarMessage, target = PaneSnackbarTarget.DetailPane) }
+                        }
+                    },
                     onShareClick = {
                         shareExternalHttpUrl(context, uiState.title.ifBlank { args.title }, buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage), shareChooserTitle)
                     },
