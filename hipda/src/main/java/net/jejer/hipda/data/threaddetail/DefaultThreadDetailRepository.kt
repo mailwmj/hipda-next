@@ -3,11 +3,15 @@ package net.jejer.hipda.data.threaddetail
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.AuthRequiredReason
 import net.jejer.hipda.data.auth.ForumHtmlResponse
@@ -44,6 +48,8 @@ class DefaultThreadDetailRepository internal constructor(
     private val clock: () -> Long,
     private val maxBrowseHistory: Int,
 ) : ThreadDetailRepository {
+
+    private val readingPositionMutex = Mutex()
 
     init {
         require(maxBrowseHistory >= 1) { "maxBrowseHistory must be >= 1" }
@@ -200,7 +206,9 @@ class DefaultThreadDetailRepository internal constructor(
 
     override suspend fun getReadingPosition(tid: String): ReadingPositionEntity? {
         val normalizedTid = validatePositiveId(tid) ?: return null
-        return readingPositionDao.get(normalizedTid)
+        return readingPositionMutex.withLock {
+            readingPositionDao.get(normalizedTid)
+        }
     }
 
     override suspend fun saveReadingPosition(
@@ -223,18 +231,22 @@ class DefaultThreadDetailRepository internal constructor(
         } else {
             filterUserName?.trim()?.takeIf { it.isNotEmpty() }
         }
-        readingPositionDao.upsert(
-            ReadingPositionEntity(
-                tid = normalizedTid,
-                page = page.coerceAtLeast(1),
-                pid = pid.trim(),
-                offsetPx = offsetPx.coerceAtLeast(0),
-                filterMode = filterMode,
-                filterUid = normalizedFilterUid,
-                filterUserName = normalizedFilterUserName,
-                updatedAt = clock(),
-            ),
-        )
+        withContext(NonCancellable) {
+            readingPositionMutex.withLock {
+                readingPositionDao.upsert(
+                    ReadingPositionEntity(
+                        tid = normalizedTid,
+                        page = page.coerceAtLeast(1),
+                        pid = pid.trim(),
+                        offsetPx = offsetPx.coerceAtLeast(0),
+                        filterMode = filterMode,
+                        filterUid = normalizedFilterUid,
+                        filterUserName = normalizedFilterUserName,
+                        updatedAt = clock(),
+                    ),
+                )
+            }
+        }
     }
 
     override fun observeFloors(

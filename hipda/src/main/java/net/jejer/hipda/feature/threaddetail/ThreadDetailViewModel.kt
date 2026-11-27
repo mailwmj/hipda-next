@@ -237,6 +237,7 @@ class ThreadDetailViewModel(
     private var boundTid: String? = null
     private var boundTargetPid: String? = null
     private var boundOpenLastPage: Boolean = false
+    private var boundNavSeq: Long = 0L
     private var bindJob: Job? = null
     private var loadJob: Job? = null
     private var prependJob: Job? = null
@@ -318,10 +319,12 @@ class ThreadDetailViewModel(
     ) {
         val incomingPid = args.targetPid?.trim()?.takeIf { it.isNotEmpty() }
         if (boundTid == args.tid) {
+            val isNewNavEvent = args.navSeq != 0L && args.navSeq != boundNavSeq
             when {
-                incomingPid != null && incomingPid != boundTargetPid -> {
+                incomingPid != null && (incomingPid != boundTargetPid || isNewNavEvent) -> {
                     boundTargetPid = incomingPid
                     boundOpenLastPage = args.openLastPage
+                    boundNavSeq = args.navSeq
                     bindJob?.cancel(); bindJob = null
                     jumpToFloor(
                         targetPid = incomingPid,
@@ -329,15 +332,17 @@ class ThreadDetailViewModel(
                         fromAnchor = currentAnchorProvider?.invoke(),
                     )
                 }
-                incomingPid == null && args.openLastPage && !boundOpenLastPage -> {
+                incomingPid == null && args.openLastPage && (!boundOpenLastPage || isNewNavEvent) -> {
                     boundTargetPid = null
                     boundOpenLastPage = true
+                    boundNavSeq = args.navSeq
                     bindJob?.cancel(); bindJob = null
                     jumpToLastPage(fromAnchor = currentAnchorProvider?.invoke())
                 }
                 else -> {
                     if (incomingPid == null) boundTargetPid = null
                     if (!args.openLastPage) boundOpenLastPage = false
+                    boundNavSeq = args.navSeq
                 }
             }
             return
@@ -348,6 +353,7 @@ class ThreadDetailViewModel(
         boundTid = args.tid
         boundTargetPid = incomingPid
         boundOpenLastPage = args.openLastPage
+        boundNavSeq = args.navSeq
         preFilterAnchor = null
         latestObservedAnchor = null
         pendingHydrationSnapshot = null

@@ -21,8 +21,8 @@ internal fun buildSafeForumEndpointUrl(
     val parsed = safeServer.toHttpUrlOrNull() ?: return null
     if (parsed.query != null || parsed.fragment != null) return null
     val isLoopback = parsed.host.equals("localhost", ignoreCase = true) || parsed.host == "127.0.0.1" || parsed.host == "::1"
-    val normalizedServer = if (preferHttps && parsed.scheme == "http" && parsed.port == 80 && !isLoopback) {
-        parsed.newBuilder().scheme("https").port(443).build().toString()
+    val normalizedServer = if (preferHttps && parsed.scheme == "http" && !isLoopback) {
+        parsed.newBuilder().scheme("https").apply { if (parsed.port == 80) port(443) }.build().toString()
     } else {
         parsed.toString()
     }.trimEnd('/')

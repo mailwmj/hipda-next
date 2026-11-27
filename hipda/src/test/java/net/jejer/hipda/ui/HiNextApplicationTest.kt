@@ -99,7 +99,7 @@ class HiNextApplicationTest {
             nowProvider = { Date(1_700_000_000_000L) },
         )
 
-        val simulatedCrash = IllegalStateException("Crash boom uid=987654 cookie=cdb_auth=secret123")
+        val simulatedCrash = IllegalStateException("Crash boom uid=987654 cookie=cdb_auth=secret123 formhash=deadbeef")
         val currentThread = Thread.currentThread()
         handler.uncaughtException(currentThread, simulatedCrash)
 
@@ -111,6 +111,7 @@ class HiNextApplicationTest {
         val rawOnDisk = createdFiles.single().readText()
         assertFalse("On-disk crash log must redact raw uid", rawOnDisk.contains("987654"))
         assertFalse("On-disk crash log must redact cookie secret", rawOnDisk.contains("secret123"))
+        assertFalse("On-disk crash log must redact formhash", rawOnDisk.contains("deadbeef"))
 
         val readBack = AndroidSettingsErrorLogStore(logsDir).readSanitizedLogs()
         assertNotNull(readBack)
@@ -118,5 +119,6 @@ class HiNextApplicationTest {
         assertTrue("Settings error log store must preserve device info header", readBack.contains("TestDevice"))
         assertFalse(readBack.contains("987654"))
         assertFalse(readBack.contains("secret123"))
+        assertFalse(readBack.contains("deadbeef"))
     }
 }

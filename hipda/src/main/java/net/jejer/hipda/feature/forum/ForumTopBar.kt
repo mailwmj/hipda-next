@@ -167,6 +167,10 @@ fun ForumTopBar(
 ) {
     val cs = MaterialTheme.colorScheme
     val showCategoryFilter = source == ForumListSource.Forum(BUY_AND_SELL_FID)
+    val latestIsScrolled by rememberUpdatedState(isScrolled)
+    val canScrollToTop by remember(scrollState) {
+        derivedStateOf { latestIsScrolled() || scrollState.collapseOffsetPx > 0f }
+    }
     Box(modifier = modifier.fillMaxWidth().clipToBounds()) {
         ForumTopBarBackground(glassState, isScrolled, Modifier.matchParentSize().graphicsLayer { translationY = -scrollState.collapseOffsetPx })
         Column(Modifier.fillMaxWidth()) {
@@ -180,6 +184,7 @@ fun ForumTopBar(
                         showSortMenu = source is ForumListSource.Forum,
                         sortByPostTime = sortByPostTime,
                         scrollState = scrollState,
+                        canScrollToTop = canScrollToTop,
                         onSelectTypeId = onSelectTypeId,
                         onNewThreadClick = onNewThreadClick,
                         onSelectSortByPostTime = onSelectSortByPostTime,
@@ -221,6 +226,7 @@ private fun ForumTopBarUpperRow(
     showSortMenu: Boolean,
     sortByPostTime: Boolean,
     scrollState: ForumTopBarScrollState,
+    canScrollToTop: Boolean,
     onSelectTypeId: (String?) -> Unit,
     onNewThreadClick: () -> Unit,
     onSelectSortByPostTime: (Boolean) -> Unit,
@@ -246,7 +252,7 @@ private fun ForumTopBarUpperRow(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop) else Modifier),
+                    .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop, enabled = canScrollToTop) else Modifier),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Text(title, style = MaterialTheme.typography.titleLarge, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -81,7 +81,7 @@ internal fun SearchScreenContent(
     val openLastPageLabel = stringResource(R.string.common_action_open_last_page)
 
     Column(modifier.fillMaxSize().background(cs.surface).semantics { paneTitle = searchPaneTitle; isTraversalGroup = true }) {
-        Column(Modifier.fillMaxWidth().background(topBarColor).hiTopBarTapToScrollTop(scrollToTop)) {
+        Column(Modifier.fillMaxWidth().background(topBarColor).hiTopBarTapToScrollTop(scrollToTop, enabled = isScrolled)) {
             Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
             Row(Modifier.fillMaxWidth().padding(start = if (showBack && onBack != null) 4.dp else 16.dp, end = 16.dp, top = 8.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (showBack && onBack != null) MineIconButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back), onBack, cs.onSurface, 24.dp)

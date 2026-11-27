@@ -96,6 +96,7 @@ class NextAppHostViewModel internal constructor(
     private var releaseNotesPromptDismissed = false
     private var deepLinkResolveJob: Job? = null
     private var deepLinkResolveGen: Long = 0L
+    private var threadNavSeq: Long = 0L
 
     private val _state = MutableStateFlow(NextAppState())
     val state: StateFlow<NextAppState> = _state.asStateFlow()
@@ -326,8 +327,9 @@ class NextAppHostViewModel internal constructor(
 
     private fun commitOpenThread(args: ThreadNavArgs) {
         hasMutatedState = true
+        val stampedArgs = args.copy(navSeq = ++threadNavSeq)
         updateReleasingStaleThreads { cur ->
-            cur.copy(selectedThread = args, selectedSmsConversation = null, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
+            cur.copy(selectedThread = stampedArgs, selectedSmsConversation = null, detailDrilldownStack = emptyList(), hingeShowingMineMenu = false)
         }
     }
 

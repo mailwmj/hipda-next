@@ -115,7 +115,7 @@ class DefaultPostLinkDispatcher(
     private val onOpenThreadLastPage: (tid: String) -> Unit,
     private val onOpenPost: (tid: String?, pid: String) -> Unit,
     private val onOpenUserProfile: (uid: String) -> Unit,
-    private val externalLinkOpener: ExternalLinkOpener,
+    internal val externalLinkOpener: ExternalLinkOpener,
     private val onExternalOpenFailed: (() -> Unit)? = null,
 ) : PostLinkDispatcher {
 
