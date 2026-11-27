@@ -20,6 +20,7 @@ data class UiError(
     @param:StringRes val messageRes: Int,
     val details: String? = null,
     val action: UiErrorAction? = null,
+    val formatArgs: List<Any> = emptyList(),
 )
 
 @Composable

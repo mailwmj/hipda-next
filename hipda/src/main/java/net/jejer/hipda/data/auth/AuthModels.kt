@@ -17,6 +17,14 @@ sealed interface AuthState {
     ) : AuthState
 }
 
+/** Categorized non-credential failure reason for [LoginResult.Failure]. */
+sealed interface LoginFailureReason {
+    data object UnrecognizedSubmitResponse : LoginFailureReason
+    data object SessionNotConfirmed : LoginFailureReason
+    data class HttpStatus(val code: Int) : LoginFailureReason
+    data object Other : LoginFailureReason
+}
+
 /** Result of an explicit interactive login or account switch operation. */
 sealed interface LoginResult {
     data class Success(
@@ -41,6 +49,7 @@ sealed interface LoginResult {
 
     data class Failure(
         val message: String,
+        val reason: LoginFailureReason = LoginFailureReason.Other,
     ) : LoginResult
 }
 

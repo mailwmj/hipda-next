@@ -159,4 +159,77 @@ class LoginParserTest {
         """.trimIndent()
         assertTrue(LoginParser.parseLoginSubmitResponse(commentedUnknownXml) is LoginSubmitResult.UnknownError)
     }
+
+    @Test
+    fun parseLoginSubmitResponse_matchesSuccessInCdataScriptFullHtmlAlertPagesAndRawFailures() {
+        // A-1 ①: CDATA visible welcome + trailing <script>
+        val cdataVisibleWithScript = """
+            <?xml version="1.0" encoding="gbk"?>
+            <root><![CDATA[欢迎您回来，tester。<script type="text/javascript" reload="1">location.href='index.php';</script>]]></root>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Success("欢迎您回来，tester。"),
+            LoginParser.parseLoginSubmitResponse(cdataVisibleWithScript),
+        )
+
+        // A-1 ②: success marker ONLY inside <script> within CDATA (showDialog / succeedhandle)
+        val cdataScriptOnlySuccess = """
+            <?xml version="1.0" encoding="gbk"?>
+            <root><![CDATA[<script type="text/javascript" reload="1">showDialog('欢迎您回来，tester，现在将转入登录前页面。', 'right');setTimeout("location.href='index.php'", 1000);</script>]]></root>
+        """.trimIndent()
+        val scriptSuccess = LoginParser.parseLoginSubmitResponse(cdataScriptOnlySuccess)
+        assertTrue(scriptSuccess is LoginSubmitResult.Success, "Expected Success for script-only CDATA, got $scriptSuccess")
+
+        // A-1 ③: non-XML full HTML alert pages (div.alert_right and div.alert_info)
+        val fullHtmlAlertRight = """
+            <!DOCTYPE html>
+            <html>
+              <head><title>4D4Y 提示信息</title></head>
+              <body>
+                <div id="header"><a href="index.php">4D4Y</a></div>
+                <div class="postbox"><div class="alert_right">
+                  <p>欢迎您回来，tester。现在将转入登录前页面。<script>setTimeout("location.href='index.php'",1000);</script></p>
+                </div></div>
+              </body>
+            </html>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Success("欢迎您回来，tester。现在将转入登录前页面。"),
+            LoginParser.parseLoginSubmitResponse(fullHtmlAlertRight),
+        )
+
+        val fullHtmlAlertInfo = """
+            <!DOCTYPE html>
+            <html>
+              <head><title>4D4Y</title></head>
+              <body>
+                <div id="header">导航</div>
+                <div class="alert_info"><p>欢迎您回来，tester</p></div>
+              </body>
+            </html>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Success("欢迎您回来，tester"),
+            LoginParser.parseLoginSubmitResponse(fullHtmlAlertInfo),
+        )
+
+        // Failure & security question samples in both visible CDATA and CDATA <script>
+        val scriptOnlyFailWithAttempts = """
+            <?xml version="1.0" encoding="gbk"?>
+            <root><![CDATA[<script type="text/javascript" reload="1">showDialog('登录失败，您还可以尝试 3 次');</script>]]></root>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Failed(message = "登录失败，您还可以尝试 3 次", remainingAttempts = 3),
+            LoginParser.parseLoginSubmitResponse(scriptOnlyFailWithAttempts),
+        )
+
+        val securityQuestionFail = """
+            <?xml version="1.0" encoding="gbk"?>
+            <root><![CDATA[登录失败，安全提问回答错误，您还可以尝试 2 次<script>hideWindow('login');</script>]]></root>
+        """.trimIndent()
+        assertEquals(
+            LoginSubmitResult.Failed(message = "登录失败，安全提问回答错误，您还可以尝试 2 次", remainingAttempts = 2),
+            LoginParser.parseLoginSubmitResponse(securityQuestionFail),
+        )
+    }
 }

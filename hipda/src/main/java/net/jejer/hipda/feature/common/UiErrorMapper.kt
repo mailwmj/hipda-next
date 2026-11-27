@@ -45,7 +45,22 @@ object UiErrorMapper {
         )
         is LoginResult.ChallengeRequired -> mapChallenge(result.rejected, false, result.cooldownUntilMs)
         is LoginResult.NetworkError -> UiError(R.string.common_error_network, buildDetails(result.message, result.cause?.let(::formatThrowable)), UiErrorAction.Retry)
-        is LoginResult.Failure -> mapLoadFailed(result.message)
+        is LoginResult.Failure -> when (val reason = result.reason) {
+            LoginFailureReason.UnrecognizedSubmitResponse -> UiError(
+                messageRes = R.string.login_error_unrecognized_response,
+                details = result.message.trim().ifEmpty { null },
+            )
+            LoginFailureReason.SessionNotConfirmed -> UiError(
+                messageRes = R.string.login_error_session_not_confirmed,
+                details = result.message.trim().ifEmpty { null },
+            )
+            is LoginFailureReason.HttpStatus -> UiError(
+                messageRes = R.string.login_error_http_status,
+                details = buildDetails("HTTP ${reason.code}", result.message),
+                formatArgs = listOf(reason.code),
+            )
+            LoginFailureReason.Other -> mapLoadFailed(result.message)
+        }
     }
 
     fun mapAuthRequired(reason: AuthRequiredReason, details: String? = null): UiError = UiError(

@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.AuthState
+import net.jejer.hipda.data.auth.LoginFailureReason
 import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.data.auth.SilentReloginResult
 import net.jejer.hipda.data.network.ChallengeDetector
@@ -578,6 +579,40 @@ class LoginScreenTest {
         assertTrue(bindMethod.isAnnotationPresent(Binds::class.java))
         assertTrue(bindMethod.isAnnotationPresent(Singleton::class.java))
         assertEquals(LoginOverlayRenderer::class.java, bindMethod.returnType)
+    }
+
+    @Test
+    fun loginScreen_rendersDistinctCategorizedLoginFailuresIncludingFormattedHttpStatus() = withAnimatorDurationScale(0f) {
+        val repo = RecordingAuthRepository()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val vm = LoginViewModel(repo, createIdleGateway(scope))
+            setContent {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    LoginScreen(onDismiss = {}, onLoginSuccess = {}, viewModel = vm)
+                }
+            }
+            waitForIdle()
+            onNode(hasSetTextAction() and hasText("用户名")).performTextInput("alice")
+            onNode(hasSetTextAction() and hasText("密码")).performTextInput("pass1234")
+
+            repo.nextLoginResult = LoginResult.Failure("raw", LoginFailureReason.UnrecognizedSubmitResponse)
+            onNodeWithText("登录").performClick()
+            waitForIdle()
+            onNodeWithText("登录失败，站点返回了无法识别的结果").assertIsDisplayed()
+
+            repo.nextLoginResult = LoginResult.Failure("raw", LoginFailureReason.SessionNotConfirmed)
+            onNodeWithText("登录").performClick()
+            waitForIdle()
+            onNodeWithText("登录未完成，请重试").assertIsDisplayed()
+
+            repo.nextLoginResult = LoginResult.Failure("raw", LoginFailureReason.HttpStatus(503))
+            onNodeWithText("登录").performClick()
+            waitForIdle()
+            onNodeWithText("登录失败，站点返回错误 503").assertIsDisplayed()
+        } finally {
+            scope.cancel()
+        }
     }
 
     // endregion

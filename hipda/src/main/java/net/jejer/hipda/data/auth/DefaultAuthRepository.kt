@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import net.jejer.hipda.BuildConfig
 import net.jejer.hipda.data.account.CredentialsStore
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.network.AuthCookieWriteGuard
@@ -159,6 +160,7 @@ class DefaultAuthRepository internal constructor(
 
         data class ServerFailure(
             val message: String,
+            val reason: LoginFailureReason,
         ) : RawLoginOutcome
     }
 
@@ -266,61 +268,51 @@ class DefaultAuthRepository internal constructor(
                     allowDuringManualLogout = true,
                 )
 
-                when (
-                    val raw = executeLoginProtocol(
-                        gateway = siteAccessGateway,
-                        forumServer = forumServer,
-                        username = trimmedUsername,
-                        passwordMd5 = passwordMd5,
-                        securityQuestionId = securityQuestionId,
-                        securityAnswer = normalizedAnswer,
-                        expectedUid = null,
-                        priority = AccessPriority.UserExplicit,
-                        requireSessionVerification = true,
-                        cookieWriteGuard = cookieGuard,
-                    )
-                ) {
-                    is RawLoginOutcome.LoggedIn -> {
-                        val session = raw.session
-                        val resolvedUid = session?.uid?.takeIf { it.isNotBlank() }
-                            ?: return@runExplicitOperation LoginResult.Failure("登录成功但无法确认账号信息")
-                        val canonicalUsername = session.username?.takeIf { it.isNotBlank() } ?: trimmedUsername
-                        val saved = SavedAccount(
-                            uid = resolvedUid,
-                            username = canonicalUsername,
+                withLoginCookieCleanup(forumServer) {
+                    when (
+                        val raw = executeLoginProtocol(
+                            gateway = siteAccessGateway,
+                            forumServer = forumServer,
+                            username = trimmedUsername,
                             passwordMd5 = passwordMd5,
                             securityQuestionId = securityQuestionId,
                             securityAnswer = normalizedAnswer,
-                            lastLoginAt = clock(),
+                            expectedUid = null,
+                            priority = AccessPriority.UserExplicit,
+                            requireSessionVerification = true,
+                            cookieWriteGuard = cookieGuard,
                         )
-                        credentialsStore.upsert(saved)
-                        credentialsStore.setActive(saved.uid)
-                        val refreshed = readPersistentSnapshotFromStore()
-                        synchronized(stateLock) {
-                            currentSessionEpoch++
-                            rejectedCredentialKey = null
-                            runtimeOverlay = RuntimeOverlay.Normal
-                            applyPersistentSnapshotLocked(refreshed)
+                    ) {
+                        is RawLoginOutcome.LoggedIn -> {
+                            val session = raw.session
+                            val resolvedUid = session?.uid?.takeIf { it.isNotBlank() }
+                                ?: return@withLoginCookieCleanup LoginResult.Failure("登录成功但无法确认账号信息", LoginFailureReason.SessionNotConfirmed)
+                            val canonicalUsername = session.username?.takeIf { it.isNotBlank() } ?: trimmedUsername
+                            val saved = SavedAccount(
+                                uid = resolvedUid,
+                                username = canonicalUsername,
+                                passwordMd5 = passwordMd5,
+                                securityQuestionId = securityQuestionId,
+                                securityAnswer = normalizedAnswer,
+                                lastLoginAt = clock(),
+                            )
+                            credentialsStore.upsert(saved)
+                            credentialsStore.setActive(saved.uid)
+                            val refreshed = readPersistentSnapshotFromStore()
+                            synchronized(stateLock) {
+                                currentSessionEpoch++
+                                rejectedCredentialKey = null
+                                runtimeOverlay = RuntimeOverlay.Normal
+                                applyPersistentSnapshotLocked(refreshed)
+                            }
+                            LoginResult.Success(account = saved, message = raw.message)
                         }
-                        LoginResult.Success(account = saved, message = raw.message)
+
+                        is RawLoginOutcome.InvalidCredentials -> LoginResult.InvalidCredentials(raw.message, raw.remainingAttempts)
+                        is RawLoginOutcome.ChallengeBlocked -> LoginResult.ChallengeRequired(raw.cooldownUntilMs, raw.rejected)
+                        is RawLoginOutcome.NetworkFailure -> LoginResult.NetworkError(raw.message, raw.cause)
+                        is RawLoginOutcome.ServerFailure -> LoginResult.Failure(raw.message, raw.reason)
                     }
-
-                    is RawLoginOutcome.InvalidCredentials -> LoginResult.InvalidCredentials(
-                        message = raw.message,
-                        remainingAttempts = raw.remainingAttempts,
-                    )
-
-                    is RawLoginOutcome.ChallengeBlocked -> LoginResult.ChallengeRequired(
-                        cooldownUntilMs = raw.cooldownUntilMs,
-                        rejected = raw.rejected,
-                    )
-
-                    is RawLoginOutcome.NetworkFailure -> LoginResult.NetworkError(
-                        message = raw.message,
-                        cause = raw.cause,
-                    )
-
-                    is RawLoginOutcome.ServerFailure -> LoginResult.Failure(raw.message)
                 }
             }
         }
@@ -353,60 +345,55 @@ class DefaultAuthRepository internal constructor(
                     allowDuringManualLogout = true,
                 )
 
-                val raw = executeLoginProtocol(
-                    gateway = siteAccessGateway,
-                    forumServer = forumServer,
-                    username = targetAccount.username,
-                    passwordMd5 = targetAccount.passwordMd5,
-                    securityQuestionId = targetAccount.securityQuestionId,
-                    securityAnswer = targetAccount.securityAnswer,
-                    expectedUid = targetAccount.uid,
-                    priority = AccessPriority.UserExplicit,
-                    requireSessionVerification = false,
-                    cookieWriteGuard = cookieGuard,
-                )
-
-                when (raw) {
-                    is RawLoginOutcome.LoggedIn -> {
-                        val canonicalUsername = raw.session?.username?.takeIf { it.isNotBlank() }
-                            ?: targetAccount.username
-                        val updatedAccount = targetAccount.copy(
-                            username = canonicalUsername,
-                            lastLoginAt = clock(),
+                withLoginCookieCleanup(forumServer) {
+                    when (
+                        val raw = executeLoginProtocol(
+                            gateway = siteAccessGateway,
+                            forumServer = forumServer,
+                            username = targetAccount.username,
+                            passwordMd5 = targetAccount.passwordMd5,
+                            securityQuestionId = targetAccount.securityQuestionId,
+                            securityAnswer = targetAccount.securityAnswer,
+                            expectedUid = targetAccount.uid,
+                            priority = AccessPriority.UserExplicit,
+                            requireSessionVerification = false,
+                            cookieWriteGuard = cookieGuard,
                         )
-                        credentialsStore.upsert(updatedAccount)
-                        credentialsStore.setActive(updatedAccount.uid)
-                        val refreshed = readPersistentSnapshotFromStore()
-                        synchronized(stateLock) {
-                            currentSessionEpoch++
-                            rejectedCredentialKey = null
-                            runtimeOverlay = RuntimeOverlay.Normal
-                            applyPersistentSnapshotLocked(refreshed)
+                    ) {
+                        is RawLoginOutcome.LoggedIn -> {
+                            val canonicalUsername = raw.session?.username?.takeIf { it.isNotBlank() } ?: targetAccount.username
+                            val updatedAccount = targetAccount.copy(username = canonicalUsername, lastLoginAt = clock())
+                            credentialsStore.upsert(updatedAccount)
+                            credentialsStore.setActive(updatedAccount.uid)
+                            val refreshed = readPersistentSnapshotFromStore()
+                            synchronized(stateLock) {
+                                currentSessionEpoch++
+                                rejectedCredentialKey = null
+                                runtimeOverlay = RuntimeOverlay.Normal
+                                applyPersistentSnapshotLocked(refreshed)
+                            }
+                            LoginResult.Success(account = updatedAccount, message = raw.message)
                         }
-                        LoginResult.Success(account = updatedAccount, message = raw.message)
-                    }
 
-                    is RawLoginOutcome.InvalidCredentials -> {
-                        markSwitchFallback(initialSnapshot.activeAccount, raw.message)
-                        LoginResult.InvalidCredentials(raw.message, raw.remainingAttempts)
-                    }
+                        is RawLoginOutcome.InvalidCredentials -> {
+                            markSwitchFallback(initialSnapshot.activeAccount, raw.message)
+                            LoginResult.InvalidCredentials(raw.message, raw.remainingAttempts)
+                        }
 
-                    is RawLoginOutcome.ChallengeBlocked -> {
-                        markSwitchFallback(initialSnapshot.activeAccount, "安全验证未完成")
-                        LoginResult.ChallengeRequired(
-                            cooldownUntilMs = raw.cooldownUntilMs,
-                            rejected = raw.rejected,
-                        )
-                    }
+                        is RawLoginOutcome.ChallengeBlocked -> {
+                            markSwitchFallback(initialSnapshot.activeAccount, "安全验证未完成")
+                            LoginResult.ChallengeRequired(raw.cooldownUntilMs, raw.rejected)
+                        }
 
-                    is RawLoginOutcome.NetworkFailure -> {
-                        markSwitchFallback(initialSnapshot.activeAccount, raw.message)
-                        LoginResult.NetworkError(raw.message, raw.cause)
-                    }
+                        is RawLoginOutcome.NetworkFailure -> {
+                            markSwitchFallback(initialSnapshot.activeAccount, raw.message)
+                            LoginResult.NetworkError(raw.message, raw.cause)
+                        }
 
-                    is RawLoginOutcome.ServerFailure -> {
-                        markSwitchFallback(initialSnapshot.activeAccount, raw.message)
-                        LoginResult.Failure(raw.message)
+                        is RawLoginOutcome.ServerFailure -> {
+                            markSwitchFallback(initialSnapshot.activeAccount, raw.message)
+                            LoginResult.Failure(raw.message, raw.reason)
+                        }
                     }
                 }
             }
@@ -879,6 +866,12 @@ class DefaultAuthRepository internal constructor(
         flight.deferred.complete(finalResult)
     }
 
+    private data class DecodedLoginResponse(
+        val statusCode: Int,
+        val contentType: String?,
+        val body: String,
+    )
+
     private suspend fun executeLoginProtocol(
         gateway: SiteAccessGateway,
         forumServer: String,
@@ -892,6 +885,11 @@ class DefaultAuthRepository internal constructor(
         cookieWriteGuard: AuthCookieWriteGuard,
     ): RawLoginOutcome {
         return try {
+            val baseSecrets = listOfNotNull(
+                username.takeIf { it.isNotBlank() },
+                passwordMd5.takeIf { it.isNotBlank() },
+                securityAnswer.takeIf { it.isNotBlank() },
+            )
             val loginPageUrl = buildForumUrl(forumServer, LOGIN_PAGE_PATH)
             val formhashOrSession = fetchLoginForm(
                 gateway = gateway,
@@ -901,6 +899,7 @@ class DefaultAuthRepository internal constructor(
                 expectedUid = expectedUid,
                 priority = priority,
                 cookieWriteGuard = cookieWriteGuard,
+                knownSecrets = baseSecrets,
             )
 
             val formhash = when (formhashOrSession) {
@@ -915,6 +914,7 @@ class DefaultAuthRepository internal constructor(
                 is FormFetchStep.Failed -> return formhashOrSession.outcome
             }
 
+            val submitSecrets = baseSecrets + formhash
             val submitUrl = buildForumUrl(forumServer, LOGIN_SUBMIT_PATH)
             val refererUrl = buildForumUrl(forumServer, INDEX_PATH).toString()
             val formFields = listOf(
@@ -933,37 +933,46 @@ class DefaultAuthRepository internal constructor(
                 .post(gbkFormBody(formFields))
                 .build()
 
-            val submitText = executeDecoded(gateway, postRequest, priority)
-            when (val parsedSubmit = LoginParser.parseLoginSubmitResponse(submitText)) {
+            val submitResp = executeDecodedForLogin(gateway, postRequest, priority, LOGIN_STAGE_SUBMIT, submitSecrets)
+            when (val parsedSubmit = LoginParser.parseLoginSubmitResponse(submitResp.body)) {
                 is LoginSubmitResult.Success -> {
                     if (!requireSessionVerification) {
                         RawLoginOutcome.LoggedIn(session = null, message = parsedSubmit.message)
                     } else {
-                        val verifyRequest = Request.Builder()
-                            .url(loginPageUrl)
-                            .tag(AuthCookieWriteGuard::class.java, cookieWriteGuard)
-                            .get()
-                            .build()
-                        val verifyHtml = executeDecoded(
-                            gateway = gateway,
-                            request = verifyRequest,
-                            priority = priority,
-                        )
-                        val session = DiscuzCommonParser.parsePageMeta(verifyHtml).session
-                        if (session.isLoggedIn && !session.uid.isNullOrBlank()) {
-                            RawLoginOutcome.LoggedIn(session = session, message = parsedSubmit.message)
+                        val verifyUrl = buildForumUrl(forumServer, INDEX_PATH)
+                        var confirmedSession: DiscuzSessionInfo? = null
+                        for (attempt in 1..MAX_VERIFY_ATTEMPTS) {
+                            val verifyRequest = Request.Builder()
+                                .url(verifyUrl)
+                                .tag(AuthCookieWriteGuard::class.java, cookieWriteGuard)
+                                .get()
+                                .build()
+                            val verifyResp = executeDecodedForLogin(gateway, verifyRequest, priority, LOGIN_STAGE_VERIFY, submitSecrets)
+                            val session = DiscuzCommonParser.parsePageMeta(verifyResp.body).session
+                            if (session.isLoggedIn && !session.uid.isNullOrBlank()) {
+                                confirmedSession = session
+                                break
+                            }
+                            logLoginDiagnostic(LOGIN_STAGE_VERIFY, verifyResp, submitSecrets)
+                            if (attempt >= MAX_VERIFY_ATTEMPTS || !hasAuthCookiesForUrl(verifyUrl)) break
+                        }
+                        if (confirmedSession != null) {
+                            RawLoginOutcome.LoggedIn(session = confirmedSession, message = parsedSubmit.message)
                         } else {
-                            RawLoginOutcome.ServerFailure("登录成功但未能确认账号会话")
+                            RawLoginOutcome.ServerFailure("登录成功但未能确认账号会话", LoginFailureReason.SessionNotConfirmed)
                         }
                     }
                 }
 
-                is LoginSubmitResult.Failed -> RawLoginOutcome.InvalidCredentials(
-                    message = parsedSubmit.message,
-                    remainingAttempts = parsedSubmit.remainingAttempts,
-                )
+                is LoginSubmitResult.Failed -> {
+                    logLoginDiagnostic(LOGIN_STAGE_SUBMIT, submitResp, submitSecrets)
+                    RawLoginOutcome.InvalidCredentials(parsedSubmit.message, parsedSubmit.remainingAttempts)
+                }
 
-                is LoginSubmitResult.UnknownError -> RawLoginOutcome.ServerFailure("登录失败，服务器返回异常响应")
+                is LoginSubmitResult.UnknownError -> {
+                    logLoginDiagnostic(LOGIN_STAGE_SUBMIT, submitResp, submitSecrets)
+                    RawLoginOutcome.ServerFailure("登录失败，服务器返回异常响应", LoginFailureReason.UnrecognizedSubmitResponse)
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -989,7 +998,10 @@ class DefaultAuthRepository internal constructor(
                 cause = e,
             )
         } catch (e: ForumHttpException) {
-            RawLoginOutcome.ServerFailure("服务器返回异常状态 (${e.statusCode})")
+            RawLoginOutcome.ServerFailure(
+                message = "服务器返回异常状态 (${e.statusCode})",
+                reason = LoginFailureReason.HttpStatus(e.statusCode),
+            )
         } catch (e: IOException) {
             RawLoginOutcome.NetworkFailure("网络连接失败", e)
         }
@@ -1009,6 +1021,7 @@ class DefaultAuthRepository internal constructor(
         expectedUid: String?,
         priority: AccessPriority,
         cookieWriteGuard: AuthCookieWriteGuard,
+        knownSecrets: List<String>,
     ): FormFetchStep {
         var clearedStaleSession = false
         while (true) {
@@ -1017,16 +1030,13 @@ class DefaultAuthRepository internal constructor(
                 .tag(AuthCookieWriteGuard::class.java, cookieWriteGuard)
                 .get()
                 .build()
-            val html = executeDecoded(
-                gateway = gateway,
-                request = request,
-                priority = priority,
-            )
-            when (val parsed = LoginParser.parseLoginPage(html)) {
+            val formResp = executeDecodedForLogin(gateway, request, priority, LOGIN_STAGE_FORM, knownSecrets)
+            when (val parsed = LoginParser.parseLoginPage(formResp.body)) {
                 is LoginFormParseResult.Ready -> return FormFetchStep.Ready(parsed.formhash)
-                is LoginFormParseResult.Error -> return FormFetchStep.Failed(
-                    RawLoginOutcome.ServerFailure(parsed.message),
-                )
+                is LoginFormParseResult.Error -> {
+                    logLoginDiagnostic(LOGIN_STAGE_FORM, formResp, knownSecrets)
+                    return FormFetchStep.Failed(RawLoginOutcome.ServerFailure(parsed.message, LoginFailureReason.Other))
+                }
 
                 is LoginFormParseResult.AlreadyLoggedIn -> {
                     val session = parsed.session
@@ -1040,7 +1050,8 @@ class DefaultAuthRepository internal constructor(
                         return FormFetchStep.AlreadyLoggedIn(session)
                     }
                     if (clearedStaleSession) {
-                        return FormFetchStep.Failed(RawLoginOutcome.ServerFailure("已有冲突会话，无法获取登录表单"))
+                        logLoginDiagnostic(LOGIN_STAGE_FORM, formResp, knownSecrets)
+                        return FormFetchStep.Failed(RawLoginOutcome.ServerFailure("已有冲突会话，无法获取登录表单", LoginFailureReason.Other))
                     }
                     clearedStaleSession = true
                     clearAuthCookiesForServer(forumServer)
@@ -1049,19 +1060,53 @@ class DefaultAuthRepository internal constructor(
         }
     }
 
-    private suspend fun executeDecoded(
+    private suspend fun executeDecodedForLogin(
         gateway: SiteAccessGateway,
         request: Request,
         priority: AccessPriority,
-    ): String {
+        stage: String,
+        knownSecrets: List<String>,
+    ): DecodedLoginResponse {
         gateway.execute(request = request, priority = priority).use { response ->
+            val contentType = response.header("Content-Type") ?: response.body.contentType()?.toString()
             if (!response.isSuccessful) {
+                if (BuildConfig.DEBUG) {
+                    val previewBytes = runCatching { response.peekBody(HTTP_ERROR_PREVIEW_BYTES).bytes() }.getOrElse { ByteArray(0) }
+                    val previewBody = runCatching { decodeBody(previewBytes, contentType) }.getOrDefault("")
+                    LoginDiagnosticLogger.logWarning(stage, response.code, contentType, previewBody, knownSecrets)
+                }
                 throw ForumHttpException(response.code, response.request.url.toString())
             }
-            val bytes = response.body.bytes()
-            val contentType = response.header("Content-Type") ?: response.body.contentType()?.toString()
-            return decodeBody(bytes, contentType)
+            return DecodedLoginResponse(response.code, contentType, decodeBody(response.body.bytes(), contentType))
         }
+    }
+
+    private suspend fun withLoginCookieCleanup(
+        forumServer: String,
+        block: suspend () -> LoginResult,
+    ): LoginResult {
+        var succeeded = false
+        return try {
+            block().also { succeeded = it is LoginResult.Success }
+        } finally {
+            if (!succeeded) {
+                withContext(NonCancellable) {
+                    invalidateAuthCookieWrites()
+                    clearAuthCookiesForServer(forumServer)
+                }
+            }
+        }
+    }
+
+    private fun logLoginDiagnostic(stage: String, resp: DecodedLoginResponse, secrets: List<String>) {
+        if (BuildConfig.DEBUG) LoginDiagnosticLogger.logWarning(stage, resp.statusCode, resp.contentType, resp.body, secrets)
+    }
+
+    private fun hasAuthCookiesForUrl(url: HttpUrl): Boolean =
+        synchronized(cookieWriteLock) { siteCookieStore.loadForRequest(url).any { !isPreservedCloudflareCookie(it.name) } }
+
+    private fun invalidateAuthCookieWrites() {
+        synchronized(cookieWriteLock) { synchronized(stateLock) { authGeneration++ } }
     }
 
     private suspend fun clearAuthCookiesForServer(forumServer: String) {
@@ -1348,6 +1393,11 @@ class DefaultAuthRepository internal constructor(
 
     companion object {
         private const val TAG = "DefaultAuthRepository"
+        private const val LOGIN_STAGE_FORM = "form"
+        private const val LOGIN_STAGE_SUBMIT = "submit"
+        private const val LOGIN_STAGE_VERIFY = "verify"
+        private const val MAX_VERIFY_ATTEMPTS = 2
+        private const val HTTP_ERROR_PREVIEW_BYTES = 4096L
         private const val LOGIN_PAGE_PATH = "logging.php?action=login"
         private const val LOGIN_SUBMIT_PATH = "logging.php?action=login&loginsubmit=yes&inajax=1"
         private const val INDEX_PATH = "index.php"

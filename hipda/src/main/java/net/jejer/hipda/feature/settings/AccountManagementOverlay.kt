@@ -50,6 +50,7 @@ data class AccountManagementUiState(
     val isLoggingOut: Boolean = false,
     val isClearingCredentials: Boolean = false,
     @param:StringRes val errorRes: Int? = null,
+    val errorArgs: List<Any> = emptyList(),
 ) {
     val isBusy: Boolean get() = switchingUid != null || removingUid != null || isLoggingOut || isClearingCredentials
 }
@@ -72,13 +73,21 @@ class AccountManagementViewModel(private val authRepository: AuthRepository) : V
     fun switchAccount(uid: String, snackbar: PaneSnackbarController, switchedTemplate: String, onDone: () -> Unit) {
         val s = _uiState.value
         if (s.isBusy || s.currentAccount?.uid == uid) return
-        _uiState.update { it.copy(switchingUid = uid, errorRes = null) }
+        _uiState.update { it.copy(switchingUid = uid, errorRes = null, errorArgs = emptyList()) }
         viewModelScope.launch {
             val result = try { authRepository.switchAccount(uid) } catch (e: CancellationException) { throw e } catch (_: Exception) { LoginResult.NetworkError("") }
                 .also { _uiState.update { cur -> cur.copy(switchingUid = null) } }
             when (result) {
                 is LoginResult.Success -> { onDone(); snackbar.show(String.format(switchedTemplate, result.account.username), PaneSnackbarTarget.ContentArea) }
-                else -> _uiState.update { it.copy(errorRes = UiErrorMapper.mapLoginResult(result)?.messageRes ?: R.string.common_error_load_failed) }
+                else -> {
+                    val mapped = UiErrorMapper.mapLoginResult(result)
+                    _uiState.update {
+                        it.copy(
+                            errorRes = mapped?.messageRes ?: R.string.common_error_load_failed,
+                            errorArgs = mapped?.formatArgs.orEmpty(),
+                        )
+                    }
+                }
             }
         }
     }
@@ -92,7 +101,7 @@ class AccountManagementViewModel(private val authRepository: AuthRepository) : V
     fun removeSavedAccount(account: SavedAccount, snackbar: PaneSnackbarController, removedTemplate: String) {
         val s = _uiState.value
         if (s.isBusy || s.currentAccount?.uid == account.uid) return
-        _uiState.update { it.copy(removingUid = account.uid, errorRes = null) }
+        _uiState.update { it.copy(removingUid = account.uid, errorRes = null, errorArgs = emptyList()) }
         viewModelScope.launch {
             val ok = try {
                 authRepository.removeAccount(account.uid)
@@ -100,7 +109,7 @@ class AccountManagementViewModel(private val authRepository: AuthRepository) : V
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                _uiState.update { it.copy(errorRes = R.string.common_error_load_failed) }
+                _uiState.update { it.copy(errorRes = R.string.common_error_load_failed, errorArgs = emptyList()) }
                 false
             }.also { _uiState.update { cur -> cur.copy(removingUid = null) } }
             if (ok) snackbar.show(String.format(removedTemplate, account.username), PaneSnackbarTarget.ContentArea)
@@ -109,9 +118,9 @@ class AccountManagementViewModel(private val authRepository: AuthRepository) : V
 
     private fun runAccountAction(markBusy: AccountManagementUiState.(Boolean) -> AccountManagementUiState, snackbar: PaneSnackbarController, doneMessage: String, onDone: () -> Unit, block: suspend () -> Unit) {
         if (_uiState.value.isBusy) return
-        _uiState.update { it.markBusy(true).copy(errorRes = null) }
+        _uiState.update { it.markBusy(true).copy(errorRes = null, errorArgs = emptyList()) }
         viewModelScope.launch {
-            val ok = try { block(); true } catch (e: CancellationException) { throw e } catch (_: Exception) { _uiState.update { it.copy(errorRes = R.string.common_error_load_failed) }; false }
+            val ok = try { block(); true } catch (e: CancellationException) { throw e } catch (_: Exception) { _uiState.update { it.copy(errorRes = R.string.common_error_load_failed, errorArgs = emptyList()) }; false }
                 .also { _uiState.update { it.markBusy(false) } }
             if (ok) { onDone(); snackbar.show(doneMessage, PaneSnackbarTarget.ContentArea) }
         }
@@ -174,7 +183,10 @@ fun AccountManagementContent(
             HorizontalDivider(color = cs.outlineVariant)
             Box(if (isModalCard) Modifier.fillMaxWidth() else Modifier.weight(1f).fillMaxWidth(), Alignment.TopCenter) {
                 Column((if (isModalCard) Modifier else Modifier.widthIn(max = ACCOUNT_MAX_WIDTH)).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    uiState.errorRes?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium, color = cs.error, modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) }
+                    uiState.errorRes?.let { errRes ->
+                        val errText = if (uiState.errorArgs.isEmpty()) stringResource(errRes) else stringResource(errRes, *uiState.errorArgs.toTypedArray())
+                        Text(errText, style = MaterialTheme.typography.bodyMedium, color = cs.error, modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite })
+                    }
                     uiState.savedAccounts.forEach { account ->
                         val isCurrent = account.uid == uiState.currentAccount?.uid
                         Surface(shape = HiShapeTokens.Medium, color = if (isCurrent) cs.secondaryContainer.copy(alpha = 0.55f) else cs.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {

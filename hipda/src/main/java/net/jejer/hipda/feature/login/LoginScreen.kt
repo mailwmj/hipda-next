@@ -291,8 +291,13 @@ private fun LoginFormBody(
         }
 
         uiState.generalErrorRes?.let { errRes ->
+            val errText = if (uiState.generalErrorArgs.isEmpty()) {
+                stringResource(errRes)
+            } else {
+                stringResource(errRes, *uiState.generalErrorArgs.toTypedArray())
+            }
             Text(
-                text = stringResource(errRes),
+                text = errText,
                 style = MaterialTheme.typography.bodyMedium,
                 color = cs.error,
                 modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },

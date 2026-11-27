@@ -17,6 +17,7 @@ import net.jejer.hipda.R
 import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.AuthState
+import net.jejer.hipda.data.auth.LoginFailureReason
 import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.data.auth.SilentReloginResult
 import net.jejer.hipda.data.network.ChallengeDetector
@@ -229,6 +230,43 @@ class LoginViewModelTest {
         assertFalse(state.isSubmitting)
         assertEquals("登录成功后必须立即清空内存中的明文密码", "", state.password)
         assertEquals("登录成功后必须立即清空内存中的安全提问回答", "", state.securityAnswer)
+    }
+
+    @Test
+    fun submit_categorizedFailuresMapToDistinctGeneralErrorResAndNeverFallbackToLoadFailed() = runTest(testDispatcher) {
+        val repo = FakeAuthRepository()
+        val vm = LoginViewModel(repo, createIdleGateway(this))
+        vm.onUsernameChange("alice")
+        vm.onPasswordChange("secret")
+
+        // 1) UnrecognizedSubmitResponse
+        repo.nextLoginResult = LoginResult.Failure("unknown body", LoginFailureReason.UnrecognizedSubmitResponse)
+        vm.submit()
+        advanceUntilIdle()
+        assertEquals(R.string.login_error_unrecognized_response, vm.uiState.value.generalErrorRes)
+        assertTrue(vm.uiState.value.generalErrorArgs.isEmpty())
+        assertTrue(vm.uiState.value.generalErrorRes != R.string.common_error_load_failed)
+
+        // 2) SessionNotConfirmed
+        repo.nextLoginResult = LoginResult.Failure("no umenu", LoginFailureReason.SessionNotConfirmed)
+        vm.submit()
+        advanceUntilIdle()
+        assertEquals(R.string.login_error_session_not_confirmed, vm.uiState.value.generalErrorRes)
+        assertTrue(vm.uiState.value.generalErrorArgs.isEmpty())
+        assertTrue(vm.uiState.value.generalErrorRes != R.string.common_error_load_failed)
+
+        // 3) HttpStatus(code)
+        repo.nextLoginResult = LoginResult.Failure("HTTP 502", LoginFailureReason.HttpStatus(502))
+        vm.submit()
+        advanceUntilIdle()
+        assertEquals(R.string.login_error_http_status, vm.uiState.value.generalErrorRes)
+        assertEquals(listOf(502), vm.uiState.value.generalErrorArgs)
+        assertTrue(vm.uiState.value.generalErrorRes != R.string.common_error_load_failed)
+
+        // Editing input clears both generalErrorRes and generalErrorArgs
+        vm.onPasswordChange("secret2")
+        assertNull(vm.uiState.value.generalErrorRes)
+        assertTrue(vm.uiState.value.generalErrorArgs.isEmpty())
     }
 
     private fun createIdleGateway(scope: TestScope): SiteAccessGateway = SiteAccessGateway(

@@ -9,6 +9,7 @@ import net.jejer.hipda.data.account.SavedAccount
 import net.jejer.hipda.data.auth.AuthRequiredException
 import net.jejer.hipda.data.auth.AuthRequiredReason
 import net.jejer.hipda.data.auth.ForumHttpException
+import net.jejer.hipda.data.auth.LoginFailureReason
 import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.data.network.access.ChallengeAbandonedException
 import net.jejer.hipda.data.network.access.ChallengeIncompleteException
@@ -199,6 +200,31 @@ class UiErrorMapperTest {
                 details!!.contains(throwable::class.java.simpleName) || details.contains("HTTP "),
             )
         }
+    }
+
+    @Test
+    fun mapLoginResult_mapsCategorizedLoginFailureReasonsToDistinctCopy() {
+        val unrecognized = UiErrorMapper.mapLoginResult(
+            LoginResult.Failure("raw unknown", LoginFailureReason.UnrecognizedSubmitResponse),
+        )!!
+        assertEquals("登录失败，站点返回了无法识别的结果", context.getString(unrecognized.messageRes))
+        assertTrue(unrecognized.formatArgs.isEmpty())
+
+        val unconfirmed = UiErrorMapper.mapLoginResult(
+            LoginResult.Failure("raw verify", LoginFailureReason.SessionNotConfirmed),
+        )!!
+        assertEquals("登录未完成，请重试", context.getString(unconfirmed.messageRes))
+        assertTrue(unconfirmed.formatArgs.isEmpty())
+
+        val httpStatus = UiErrorMapper.mapLoginResult(
+            LoginResult.Failure("raw 502", LoginFailureReason.HttpStatus(502)),
+        )!!
+        assertEquals(listOf(502), httpStatus.formatArgs)
+        assertEquals(
+            "登录失败，站点返回错误 502",
+            context.getString(httpStatus.messageRes, *httpStatus.formatArgs.toTypedArray()),
+        )
+        assertTrue(httpStatus.details.orEmpty().contains("HTTP 502"))
     }
 
     private fun assertSafePrimaryMessage(primary: String, forbiddenRaw: String?) {
