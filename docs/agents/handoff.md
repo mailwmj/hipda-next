@@ -94,6 +94,8 @@
 | M7-4a（Baseline Profile 基建与生成、`isShrinkResources = true` 与动态资源 keep 规则） | `card/M7-4a-baseline-profile` | **已合入 `main`（`adaa6c3`）** |
 | M7-4b（R8 规则收紧与清除已删旧类规则） | `card/M7-4b-r8-tighten` | **已合入 `main`（`0916fb1`）** |
 | M7-5（全新安装回归、用户真机验收与发布，**发布/正式签名包须先获用户批准**） | 清单已就绪（`docs/agents/cards/M7-5.md`，依赖 `M7-1`–`M7-4b` 已全部合入 `main @0916fb1`） | **待用户真机验收与批准** |
+| M7-P1（看图收尾：V-E14 HD 超长图 4096 上限、R-M7-G2 S3 图集逐页楼层/作者与坐标键、R-E2b S1 精简 `media/`） | `card/M7-P1-image-polish`（Neon `23ed327c`） | **开发中** |
+| M7-P2（链接/分享/零碎：V-E16、R-M7-G3 S1/S2、R-M7-G1 S3、R-E6 O1、R-E4 N1、R-M7-2 S1） | `card/M7-P2-links-polish`（Neon `a6927ce6`） | **开发中** |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线；流程提速规则已生效（`5bae5ab`）。
