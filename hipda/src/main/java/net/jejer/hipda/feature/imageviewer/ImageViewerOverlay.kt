@@ -13,7 +13,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,12 +37,9 @@ import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
 import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LocalImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
-import net.jejer.hipda.feature.common.NoOpPaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarTarget
-import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.hiFullscreenOverlaySafePadding
-import net.jejer.hipda.ui.designsystem.feedback.HiSnackbarHost
 import net.jejer.hipda.ui.designsystem.feedback.rememberHiHaptics
 import net.jejer.hipda.ui.designsystem.motion.*
 
@@ -97,12 +93,7 @@ fun ImageViewerOverlay(
     val initialPage = args.initialIndex.coerceIn(0, totalPages - 1)
     val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { totalPages })
     val motionScope = rememberHiMotionCoroutineScope()
-    val parentSnackbar = LocalPaneSnackbarController.current
-    val useLocalSnackbarHost = parentSnackbar === NoOpPaneSnackbarController
-    val localSnackbarHostState = remember { SnackbarHostState() }
-    val snackbar = remember(parentSnackbar, useLocalSnackbarHost, localSnackbarHostState) {
-        if (useLocalSnackbarHost) SingleHostPaneSnackbarController(localSnackbarHostState) else parentSnackbar
-    }
+    val snackbar = LocalPaneSnackbarController.current
     val haptics = rememberHiHaptics()
     val reducedMotion = HiTheme.isReducedMotion
     val density = LocalDensity.current
@@ -470,11 +461,6 @@ fun ImageViewerOverlay(
                 onShare = { performShare(currentPage) },
                 onDismiss = { longPressMenuOpen = false },
             )
-        }
-        if (useLocalSnackbarHost) {
-            val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            val snackbarClearance = navBottom + if (showChrome) ImageViewerBottomBarHeight + 8.dp else 16.dp
-            HiSnackbarHost(hostState = localSnackbarHostState, bottomClearance = snackbarClearance)
         }
     }
 }

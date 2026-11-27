@@ -4,9 +4,15 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
@@ -56,6 +62,10 @@ import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.app.offlinePageMeta
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
 import net.jejer.hipda.feature.common.LocalHiImageLoader
+import net.jejer.hipda.feature.common.LocalPaneSnackbarController
+import net.jejer.hipda.feature.common.PaneSnackbarController
+import net.jejer.hipda.feature.common.PaneSnackbarTarget
+import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
 import net.jejer.hipda.parser.threaddetail.ContentBlock
@@ -65,6 +75,7 @@ import net.jejer.hipda.parser.threaddetail.ThreadDetailPage
 import net.jejer.hipda.ui.designsystem.HiColorPresets
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
+import net.jejer.hipda.ui.designsystem.feedback.HiSnackbarHost
 import okhttp3.OkHttpClient
 import okio.Buffer
 import org.junit.After
@@ -107,17 +118,34 @@ class ImageViewerSaveSharePolishTest {
     }
 
     @Test
-    fun aB_standaloneOverlay_saveTrueAndFalse_showsSnackbarStrictlyAboveBottomBar() {
+    fun aB_standaloneOverlay_saveTrueAndFalse_showsSnackbarWithDetailTargetAboveBottomBar() {
         val mediaActions = FakeImageViewerMediaActions(saveResult = true)
+        val recordedTargets = mutableListOf<PaneSnackbarTarget>()
         composeRule.setContent {
-            CompositionLocalProvider(LocalHiImageLoader provides ViewerTestImageLoader.solid(800, 600)) {
+            val hostState = remember { SnackbarHostState() }
+            val delegate = remember(hostState) { SingleHostPaneSnackbarController(hostState) }
+            val controller = remember(delegate) {
+                object : PaneSnackbarController {
+                    override suspend fun show(message: String, target: PaneSnackbarTarget, actionLabel: String?, onAction: (() -> Unit)?) {
+                        recordedTargets += target
+                        delegate.show(message, target, actionLabel, onAction)
+                    }
+                }
+            }
+            CompositionLocalProvider(
+                LocalHiImageLoader provides ViewerTestImageLoader.solid(800, 600),
+                LocalPaneSnackbarController provides controller,
+            ) {
                 HiTheme(themeMode = HiThemeMode.DARK, seed = HiColorPresets.Brand.toSeed()) {
-                    ImageViewerOverlay(
-                        args = ImageViewerLaunchArgs(urls = listOf("https://img.example.invalid/save_standalone.jpg")),
-                        onDismiss = {},
-                        originalDownloader = FakeOriginalImageDownloader(),
-                        mediaActions = mediaActions,
-                    )
+                    Box(Modifier.fillMaxSize()) {
+                        ImageViewerOverlay(
+                            args = ImageViewerLaunchArgs(urls = listOf("https://img.example.invalid/save_standalone.jpg")),
+                            onDismiss = {},
+                            originalDownloader = FakeOriginalImageDownloader(),
+                            mediaActions = mediaActions,
+                        )
+                        HiSnackbarHost(hostState = hostState, bottomClearance = ImageViewerBottomBarHeight + 8.dp)
+                    }
                 }
             }
         }
@@ -125,7 +153,7 @@ class ImageViewerSaveSharePolishTest {
 
         val saveBtnBounds = composeRule.onNodeWithText("保存图片").assertIsDisplayed().fetchSemanticsNode().boundsInWindow
 
-        // 1. 返回 true -> 显示「已保存到相册」，且底缘位于底栏按钮顶缘之上（不被工具栏挡住）
+        // 1. 返回 true -> 显示「已保存到相册」，使用 DetailPane 目标且底缘严格位于底栏按钮之上
         composeRule.onNodeWithText("保存图片").performClick()
         composeRule.waitForIdle()
         val okSnackBounds = composeRule.onNodeWithText("已保存到相册").assertIsDisplayed().fetchSemanticsNode().boundsInWindow
@@ -147,10 +175,21 @@ class ImageViewerSaveSharePolishTest {
             "失败 Snackbar 底缘(${failSnackBounds.bottom})必须严格位于底部工具栏按钮顶缘(${saveBtnBounds.top})之上",
             failSnackBounds.bottom <= saveBtnBounds.top,
         )
+        assertEquals(listOf(PaneSnackbarTarget.DetailPane, PaneSnackbarTarget.DetailPane), recordedTargets)
+    }
+
+    @Test
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun aB_realNextAppRootThreePane_saveTrueAndFalse_showsSnackbarStrictlyAboveImageViewerToolbar() {
+        verifyNextAppRootSaveFeedbackAboveToolbar()
     }
 
     @Test
     fun aB_realNextAppRoot_saveTrueAndFalse_showsSnackbarStrictlyAboveImageViewerToolbar() {
+        verifyNextAppRootSaveFeedbackAboveToolbar()
+    }
+
+    private fun verifyNextAppRootSaveFeedbackAboveToolbar() {
         val imgUrl = "https://img.example.invalid/save_root.jpg"
         val mediaActions = FakeImageViewerMediaActions(saveResult = true)
         val loader = ViewerTestImageLoader { req ->
