@@ -134,7 +134,7 @@ class ImageViewerBoundsRegistry {
     }
 
     fun remove(key: String, coords: LayoutCoordinates?) {
-        if (coords == null || coordsByKey[key] === coords) {
+        if (coords != null && coordsByKey[key] === coords) {
             coordsByKey.remove(key)
         }
     }

@@ -478,6 +478,75 @@ class ImageViewerPolishTest {
     }
 
     @Test
+    fun a3_sameUrlInFloor1AndFloor3_openFloor1AndCloseExitsToFloor1Bounds() {
+        val dupUrl = "https://img.example.invalid/shared_across_floors_f1.jpg"
+        val floors = listOf(
+            floorItem(postId = "p1", floor = 1, author = "alice", urls = listOf(dupUrl)),
+            floorItem(postId = "p2", floor = 2, author = "bob", urls = emptyList()),
+            floorItem(postId = "p3", floor = 3, author = "charlie", urls = listOf(dupUrl)),
+        )
+        val loader = lightweightLoader(width = 800, height = 300)
+        val renderer = ImageViewerRendererImpl(FakeOriginalImageDownloader(), FakeImageViewerMediaActions())
+        var activeArgs by mutableStateOf<ImageViewerLaunchArgs?>(null)
+
+        composeRule.setContent {
+            val registry = remember { ImageViewerBoundsRegistry() }
+            val gallery = remember(floors) { extractThreadGalleryItems(floors) }
+            CompositionLocalProvider(
+                LocalHiImageLoader provides loader,
+                LocalImageViewerBoundsRegistry provides registry,
+                LocalThreadImageGallery provides gallery,
+            ) {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    Box(Modifier.fillMaxSize()) {
+                        val listState = rememberLazyListState()
+                        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(120.dp)) {
+                            PostImageBlock(
+                                image = ContentBlock.Image(dupUrl, dupUrl, 1024L),
+                                floorPostId = "p1",
+                                listState = listState,
+                                onOpenImageViewer = { activeArgs = it },
+                            )
+                            PostImageBlock(
+                                image = ContentBlock.Image(dupUrl, dupUrl, 1024L),
+                                floorPostId = "p3",
+                                listState = listState,
+                                onOpenImageViewer = { activeArgs = it },
+                            )
+                        }
+                        activeArgs?.let { args ->
+                            renderer.Overlay(args = args, onDismiss = { activeArgs = null })
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        val density = composeRule.density.density
+        val thumbs = composeRule.onAllNodes(postThumbMatcher(), useUnmergedTree = true)
+        val floor1Bounds = thumbs[0].fetchSemanticsNode().boundsInWindow
+        val floor3Bounds = thumbs[1].fetchSemanticsNode().boundsInWindow
+        assertTrue(
+            "3 楼缩略图应明显低于 1 楼缩略图：f1=$floor1Bounds, f3=$floor3Bounds",
+            floor3Bounds.top - floor1Bounds.top > 100f * density,
+        )
+
+        // 从 1 楼那张同 URL 图进入并关闭（锁死双向坐标键，防止后写覆盖漏检）
+        thumbs[0].performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("1 / 2").assertIsDisplayed()
+        composeRule.onNodeWithText("第 1 楼 · alice").assertIsDisplayed()
+
+        val finalExitRect = dismissAndCaptureFinalRect("1 / 2")
+        assertRectNear("同 URL 从 1 楼进入直接关闭必须飞回 1 楼缩略图（绝非 3 楼 $floor3Bounds）", floor1Bounds, finalExitRect, density)
+        assertTrue(
+            "退场终态中心必须远离 3 楼缩略图",
+            abs(finalExitRect.top - floor3Bounds.top) > 100f * density,
+        )
+    }
+
+    @Test
     fun a3_sameFloorDuplicateUrls_registerDistinctBoundsKeysAndExitToSecondThumbnail() {
         val dupUrl = "https://img.example.invalid/same_floor_dup.jpg"
         val floors = listOf(
@@ -533,6 +602,13 @@ class ImageViewerPolishTest {
 
         val finalExitRect = dismissAndCaptureFinalRect("2 / 2")
         assertRectNear("同楼层重复 URL 点击第 2 张必须飞回第 2 张缩略图", secondBounds, finalExitRect, density)
+
+        composeRule.waitForIdle()
+        thumbs[0].performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("1 / 2").assertIsDisplayed()
+        val firstExitRect = dismissAndCaptureFinalRect("1 / 2")
+        assertRectNear("同楼层重复 URL 点击第 1 张必须飞回第 1 张缩略图", firstBounds, firstExitRect, density)
     }
 
     // ==================== A4：真实链路 NextAppRoot + ThreadDetailPane + ImageViewerRendererImpl ====================
@@ -662,6 +738,25 @@ class ImageViewerPolishTest {
         assertTrue(
             "退场末帧不得偏向 1 楼缩略图",
             abs(finalExitRect.top - floor1Bounds.top) > 100f * density,
+        )
+
+        // 再从 1 楼缩略图进入并关闭，锁死真实全链路下双向重复 URL 坐标隔离
+        composeRule.waitForIdle()
+        thumbs[0].performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("1 / 2").assertIsDisplayed()
+        composeRule.onNodeWithText("第 1 楼 · 一楼作者").assertIsDisplayed()
+
+        val floor1ExitRect = dismissAndCaptureFinalRect("1 / 2")
+        assertRectNear(
+            "真实 NextAppRoot+ThreadDetailPane+看图浮层链路下，从 1 楼重复 URL 进入直接关闭必须飞回 1 楼缩略图（非 3 楼 $floor3Bounds）",
+            floor1Bounds,
+            floor1ExitRect,
+            density,
+        )
+        assertTrue(
+            "1 楼退场末帧不得偏向 3 楼缩略图",
+            abs(floor1ExitRect.top - floor3Bounds.top) > 100f * density,
         )
     }
 
