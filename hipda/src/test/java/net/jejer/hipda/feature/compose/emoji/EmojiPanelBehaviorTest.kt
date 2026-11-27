@@ -658,7 +658,7 @@ class EmojiPanelBehaviorTest {
         }
         fun assertModalEditorFrame(label: String, expectedBottomDp: Float) {
             val toolbarNode = composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode()
-            val topBarBack = composeRule.onNodeWithContentDescription("返回").fetchSemanticsNode()
+            val topBarBack = composeRule.onNodeWithContentDescription("关闭").fetchSemanticsNode()
             val toolbarBottomDp = with(density) { (toolbarNode.positionInRoot.y + toolbarNode.size.height).toDp().value }
             val bodySpaceDp = with(density) { (toolbarNode.positionInRoot.y - (topBarBack.positionInRoot.y + topBarBack.size.height)).toDp().value }
             assertEquals("$label 工具栏底缘每帧变化不得超过 1dp", expectedBottomDp, toolbarBottomDp, 1.0f)
@@ -988,7 +988,8 @@ class EmojiPanelBehaviorTest {
         }
         fun assertFrame(label: String, expectedBottomDp: Float) {
             val toolbar = composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode()
-            val back = composeRule.onNodeWithContentDescription("返回").fetchSemanticsNode()
+            val navCd = if (placement == FullEditorPlacement.CenteredModal) "关闭" else "返回"
+            val back = composeRule.onNodeWithContentDescription(navCd).fetchSemanticsNode()
             val bottomDp = with(density) { (toolbar.positionInRoot.y + toolbar.size.height).toDp().value }
             val bodySpaceDp = with(density) { (toolbar.positionInRoot.y - (back.positionInRoot.y + back.size.height)).toDp().value }
             assertEquals("$label 工具栏底缘偏移超 1dp", expectedBottomDp, bottomDp, 1.0f)

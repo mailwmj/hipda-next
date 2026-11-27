@@ -534,7 +534,7 @@ class EditAndDeletePostIntegrationTest {
         composeRule.onNodeWithText("编辑").performClick()
         composeRule.waitForIdle()
 
-        val backBounds = composeRule.onAllNodesWithContentDescription("返回").let { nodes ->
+        val backBounds = composeRule.onAllNodesWithContentDescription("关闭").let { nodes ->
             nodes[nodes.fetchSemanticsNodes().lastIndex].fetchSemanticsNode().boundsInRoot
         }
         assertTrue("749dp 编辑页必须居中模态展开", with(composeRule.density) { backBounds.left.toDp().value } in 16f..90f)

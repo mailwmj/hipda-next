@@ -154,7 +154,9 @@ class QuickReplySheetTest {
         composeRule.onNodeWithText("引用回复").performClick()
         composeRule.waitForIdle()
 
-        // 2. 绑定态：三个按钮全部出现且触控区 ≥ 48dp
+        // 2. 绑定态（引用 2 楼）：保留单行上下文（不与输入框重复），输入框占位改为通用「输入回复内容」，三按钮触控区 ≥ 48dp
+        assertEquals("引用态顶部上下文只应出现一次，不得与输入框重复", 1, composeRule.onAllNodesWithText("引用第 2 楼 · geek_reader_2").fetchSemanticsNodes().size)
+        composeRule.onNodeWithText("输入回复内容").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("展开全屏").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
         composeRule.onNodeWithContentDescription("插入图片").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
         composeRule.onNodeWithContentDescription("表情").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
@@ -175,7 +177,7 @@ class QuickReplySheetTest {
         composeRule.waitForIdle()
 
         // 输入文本并设置选区 [2..5]，点「展开全屏」校验完整 FullEditorHandoff 且不弹「已保存草稿」
-        val input = composeRule.onNodeWithContentDescription("引用第 2 楼 · geek_reader_2")
+        val input = composeRule.onNodeWithContentDescription("输入回复内容")
         input.performTextInput("测试展开内容")
         composeRule.waitForIdle()
         input.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 5, false) }
@@ -921,5 +923,88 @@ class QuickReplySheetTest {
         composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
         composeRule.waitForIdle()
         assertEquals("连续中断场景后再次打开并按返回必须正常关闭", 0, composeRule.onAllNodesWithContentDescription("收起回复面板").fetchSemanticsNodes().size)
+    }
+
+    /** U3 验收项 1：ReplyThread 隐藏顶部上下文行并将展开全屏移至底栏左侧、QuotePost/ReplyPost 去重占位为「输入回复内容」、32dp 视觉发送胶囊 + 48dp 触控区、未登录态维持上下文行。 */
+    @Test
+    fun u3_replyThreadHidesContextRowAndMovesExpandToBottomBar_quoteAndReplyPostDeduplicatePlaceholder_and32dpSendPillWith48dpTouch() {
+        val postRepo = FakePostRepository()
+        val authRepo = FakeQuickReplyAuthRepository()
+        val qrVm = QuickReplyViewModel(postRepo, authRepo, clockMs = { 10_000L })
+        qrVm.open(QuickReplyTarget("2606090", 2, mode = QuickReplyMode.ReplyThread, threadAuthor = "linus_hi"))
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    val gs = rememberHiGlassState()
+                    QuickReplySheet(
+                        viewModel = qrVm,
+                        glassState = gs,
+                        onDismissFinished = {},
+                        onOpenLogin = {},
+                        onExpandToFullEditor = {},
+                        emojiPanelSlot = { Box(Modifier.fillMaxSize(), Alignment.Center) { Text("E7") } },
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        val density = composeRule.density
+
+        // 1. ReplyThread（已登录）：无顶部独立上下文行，「回复 linus_hi」仅作为输入框占位出现一次；展开全屏在底栏左侧紧跟图片/表情
+        assertEquals("ReplyThread 空输入时「回复 linus_hi」只应出现在输入框占位一次", 1, composeRule.onAllNodesWithText("回复 linus_hi").fetchSemanticsNodes().size)
+        val handleNode = composeRule.onNodeWithContentDescription("收起回复面板").assertIsDisplayed().fetchSemanticsNode()
+        assertEquals("拖动把手高度保持 32dp", 32f, with(density) { handleNode.size.height.toDp().value }, 1f)
+        val imgNode = composeRule.onNodeWithContentDescription("插入图片").assertIsDisplayed().fetchSemanticsNode()
+        val emojiNode = composeRule.onNodeWithContentDescription("表情").assertIsDisplayed().fetchSemanticsNode()
+        val expandNode = composeRule.onNodeWithContentDescription("展开全屏").assertIsDisplayed().fetchSemanticsNode()
+        val imgMidY = imgNode.positionInRoot.y + imgNode.size.height / 2f
+        val expandMidY = expandNode.positionInRoot.y + expandNode.size.height / 2f
+        assertEquals("ReplyThread「展开全屏」必须位于底栏与「插入图片」同行", imgMidY, expandMidY, with(density) { 2.dp.toPx() })
+        assertTrue("ReplyThread「展开全屏」应紧跟图片/表情按钮右侧", expandNode.positionInRoot.x >= emojiNode.positionInRoot.x + emojiNode.size.width - with(density) { 1.dp.toPx() })
+
+        // 发送按钮空态禁用，外层触控 ≥ 48dp，内层视觉胶囊固定 32dp
+        val emptySendNode = composeRule.onNodeWithContentDescription("发送").assertIsDisplayed().assertIsNotEnabled().fetchSemanticsNode()
+        assertTrue("发送按钮外层触控高必须 ≥ 48dp", with(density) { emptySendNode.size.height.toDp().value } >= 47.5f)
+        assertTrue("发送按钮外层触控宽必须 ≥ 48dp", with(density) { emptySendNode.size.width.toDp().value } >= 47.5f)
+        val emptyPillH = emptySendNode.firstChildLayoutHeightPx()?.let { with(density) { it.toDp().value } }
+        assertEquals("发送按钮视觉胶囊高度必须为 32dp", 32f, emptyPillH ?: -1f, 1f)
+
+        // 输入内容后：无顶部上下文行故全树不再出现「回复 linus_hi」，且发送按钮启用、保持 32dp 视觉高 + 48dp 触控区
+        composeRule.onNodeWithContentDescription("回复 linus_hi").performTextInput("非空回复")
+        composeRule.waitForIdle()
+        assertEquals("ReplyThread 输入后全树不应残留顶部上下文行文字", 0, composeRule.onAllNodesWithText("回复 linus_hi").fetchSemanticsNodes().size)
+        val activeSendNode = composeRule.onNodeWithContentDescription("发送").assertIsEnabled().fetchSemanticsNode()
+        assertTrue(with(density) { activeSendNode.size.height.toDp().value } >= 47.5f)
+        assertEquals(32f, activeSendNode.firstChildLayoutHeightPx()?.let { with(density) { it.toDp().value } } ?: -1f, 1f)
+
+        // 2. QuotePost（已登录）：保留单行顶部上下文「引用第 5 楼 · alice」+ 顶部右侧展开全屏，输入框占位改为「输入回复内容」
+        composeRule.runOnIdle {
+            qrVm.open(QuickReplyTarget("2606091", 2, mode = QuickReplyMode.QuotePost, targetPid = "505", targetAuthor = "alice", targetFloor = 5, threadAuthor = "linus_hi"))
+        }
+        composeRule.waitForIdle()
+        assertEquals("QuotePost 上下文只应显示在顶行一次", 1, composeRule.onAllNodesWithText("引用第 5 楼 · alice").fetchSemanticsNodes().size)
+        composeRule.onNodeWithText("输入回复内容").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("输入回复内容").assertIsDisplayed()
+        val quoteExpandY = composeRule.onNodeWithContentDescription("展开全屏").fetchSemanticsNode().let { it.positionInRoot.y + it.size.height / 2f }
+        val quoteCtxY = composeRule.onNodeWithText("引用第 5 楼 · alice").fetchSemanticsNode().let { it.positionInRoot.y + it.size.height / 2f }
+        assertEquals("QuotePost「展开全屏」应位于顶部上下文行右侧", quoteCtxY, quoteExpandY, with(density) { 4.dp.toPx() })
+
+        // 3. ReplyPost（已登录）：保留单行顶部上下文「回复 bob」，输入框占位为「输入回复内容」，无上下重复
+        composeRule.runOnIdle {
+            qrVm.open(QuickReplyTarget("2606092", 2, mode = QuickReplyMode.ReplyPost, targetPid = "506", targetAuthor = "bob", targetFloor = 6, threadAuthor = "linus_hi"))
+        }
+        composeRule.waitForIdle()
+        assertEquals("ReplyPost 上下文只应显示在顶行一次，不与输入框重复", 1, composeRule.onAllNodesWithText("回复 bob").fetchSemanticsNodes().size)
+        composeRule.onNodeWithText("输入回复内容").assertIsDisplayed()
+
+        // 4. 未登录态：维持现状，展示顶部上下文行与登录引导
+        composeRule.runOnIdle {
+            authRepo.setSignedOut()
+            qrVm.open(QuickReplyTarget("2606093", 2, mode = QuickReplyMode.ReplyThread, threadAuthor = "linus_hi"))
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复 linus_hi").assertIsDisplayed()
+        composeRule.onNodeWithText("登录后即可操作").assertIsDisplayed()
     }
 }

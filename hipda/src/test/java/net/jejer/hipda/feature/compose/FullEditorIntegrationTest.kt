@@ -28,7 +28,9 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertWidthIsAtLeast
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.longClick
@@ -80,6 +82,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * E6 验收项 2 / 3 / 4 / 5 真实 `NextAppRoot` 全链路集成测试：
@@ -154,7 +157,7 @@ class FullEditorIntegrationTest {
         composeRule.onNodeWithText("引用回复").performClick()
         composeRule.waitForIdle()
 
-        val qrInput = composeRule.onNodeWithContentDescription("引用第 2 楼 · 楼层作者2")
+        val qrInput = composeRule.onNodeWithContentDescription("输入回复内容")
         qrInput.performTextInput("交接测试正文内容")
         composeRule.waitForIdle()
         qrInput.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 5, false) }
@@ -370,7 +373,7 @@ class FullEditorIntegrationTest {
             requestBus.open(FullEditorHandoff(tid = "1001", fid = 2, text = "总线触发待存草稿", selectionStart = 8, selectionEnd = 8))
         }
         composeRule.waitForIdle()
-        val backBounds = composeRule.onNodeWithContentDescription("返回").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val backBounds = composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val sendBounds = composeRule.onNodeWithContentDescription("发送").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val modalLeftDp = with(composeRule.density) { backBounds.left.toDp().value }
         val modalRightDp = with(composeRule.density) { sendBounds.right.toDp().value }
@@ -700,6 +703,127 @@ class FullEditorIntegrationTest {
         composeRule.onNodeWithText("回复").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithContentDescription("插入图片").assertIsDisplayed()
+    }
+
+    /** U3 验收项 2：单行标题去重、回复态正文无重复视觉占位（保留无障碍语义）、空态无底发送钮可点触发 ContentTooShort、32dp 视觉胶囊 + 48dp 触控区、模态关闭图标 vs 全屏返回图标。 */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w749dp-h559dp-xhdpi")
+    fun u3_singleLineTopBar_deduplicatedReplyPlaceholder_emptyTransparentSendTriggersValidation_32dpPill48dpTouch_andModalClose() {
+        val postRepo = FakePostRepository()
+        val authRepo = FakeQuickReplyAuthRepository()
+        val vm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+        var isModal by mutableStateOf(false)
+        var capturedPrimaryArgb = 0
+        var capturedSurfaceArgb = 0
+
+        vm.open(FullEditorRequest.fromHandoff(FullEditorHandoff("2609100", 2, "", 0, 0, threadAuthor = "linus_hi")))
+
+        composeRule.setContent {
+            net.jejer.hipda.ui.designsystem.HiTheme(
+                themeMode = net.jejer.hipda.ui.designsystem.HiThemeMode.LIGHT,
+                seed = net.jejer.hipda.ui.designsystem.HiColorPresets.Brand.toSeed(),
+                motionDurationScale = object : androidx.compose.ui.MotionDurationScale { override val scaleFactor: Float = 0f },
+            ) {
+                capturedPrimaryArgb = MaterialTheme.colorScheme.primary.hashCode()
+                capturedSurfaceArgb = MaterialTheme.colorScheme.surface.hashCode()
+                if (isModal) {
+                    FullEditorPlacementFrame(FullEditorPlacement.CenteredModal, 749f, isSubmitting = false, onRequestClose = { vm.requestClose() }) { modalCard ->
+                        FullEditorScreen(viewModel = vm, onOpenLogin = {}, isModalCard = modalCard)
+                    }
+                } else {
+                    FullEditorScreen(viewModel = vm, onOpenLogin = {}, isModalCard = false)
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        val density = composeRule.density
+
+        fun assertSendButtonGeometry(label: String) {
+            val sendNode = composeRule.onNodeWithContentDescription("发送").assertIsDisplayed().assertIsEnabled().fetchSemanticsNode()
+            val touchHDp = with(density) { sendNode.size.height.toDp().value }
+            val touchWDp = with(density) { sendNode.size.width.toDp().value }
+            assertTrue("$label 触控高必须 ≥ 48dp，实测 ${touchHDp}dp", touchHDp >= 47.5f)
+            assertTrue("$label 触控宽必须 ≥ 48dp，实测 ${touchWDp}dp", touchWDp >= 47.5f)
+            val pillHeightPx = sendNode.firstChildLayoutHeightPx()
+            assertNotNull("$label 必须包含独立 32dp 视觉胶囊子层", pillHeightPx)
+            val visualHDp = with(density) { requireNotNull(pillHeightPx).toDp().value }
+            assertEquals("$label 视觉胶囊高度必须为 32dp", 32f, visualHDp, 1f)
+        }
+
+        fun sampleSendPillEdgeRgb(): Int {
+            val img = composeRule.onNodeWithContentDescription("发送").captureToImage()
+            val buf = IntArray(img.width * img.height)
+            img.readPixels(buf)
+            // 在 48dp 节点垂直中线（落入 32dp 视觉胶囊内）、距左缘 4dp 处取底色像素（避开中间文字）
+            val sampleX = with(density) { 6.dp.roundToPx() }.coerceIn(1, img.width - 2)
+            val sampleY = img.height / 2
+            return buf[sampleY * img.width + sampleX]
+        }
+
+        // 1. ReplyThread（全屏态）：单行标题「回复 linus_hi」，无独立「回复」副/主标题重复；正文视觉无占位但无障碍描述保留
+        assertEquals("全屏态左上角应为「返回」", 1, composeRule.onAllNodesWithContentDescription("返回").fetchSemanticsNodes().size)
+        assertEquals("全屏态不应显示「关闭」", 0, composeRule.onAllNodesWithContentDescription("关闭").fetchSemanticsNodes().size)
+        assertEquals("顶栏「回复 linus_hi」只应出现一次，正文不重复视觉占位", 1, composeRule.onAllNodesWithText("回复 linus_hi").fetchSemanticsNodes().size)
+        assertEquals("回复态顶栏不得再拆出单独「回复」行", 0, composeRule.onAllNodesWithText("回复").fetchSemanticsNodes().size)
+        assertEquals("回复态正文不得显示「正文」占位", 0, composeRule.onAllNodesWithText("正文").fetchSemanticsNodes().size)
+        composeRule.onNodeWithContentDescription("回复 linus_hi").assertIsDisplayed()
+
+        // 空态发送按钮：无底色（胶囊底缘与顶栏 surface 同色），32dp 视觉高 + 48dp 触控区，可点击且触发「内容至少 6 个字」
+        assertSendButtonGeometry("ReplyThread 空态发送钮")
+        val emptyPillPixel = sampleSendPillEdgeRgb()
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("内容至少 6 个字").assertIsDisplayed()
+
+        // 输入内容后：视觉胶囊切换为实心 primary 底色（像素显著变化），几何仍为 32dp/48dp
+        composeRule.onNodeWithContentDescription("回复 linus_hi").performTextInput("输入有效回复内容")
+        composeRule.waitForIdle()
+        assertSendButtonGeometry("ReplyThread 有内容发送钮")
+        val filledPillPixel = sampleSendPillEdgeRgb()
+        assertTrue(
+            "有内容后发送胶囊必须从透明无底切换为实心 primary 底色 (empty=0x${emptyPillPixel.toUInt().toString(16)}, filled=0x${filledPillPixel.toUInt().toString(16)})",
+            emptyPillPixel != filledPillPixel,
+        )
+        assertTrue(capturedPrimaryArgb != capturedSurfaceArgb)
+
+        // 2. QuotePost：单行标题「引用第 3 楼 · alice」，无独立「引用回复」行，正文无视觉占位，无障碍描述保留
+        composeRule.runOnIdle {
+            vm.open(FullEditorRequest.fromHandoff(FullEditorHandoff("2609101", 2, "", 0, 0, quotePid = "301", quoteAuthor = "alice", quoteFloor = 3, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+        assertEquals("引用态单行标题只应出现一次", 1, composeRule.onAllNodesWithText("引用第 3 楼 · alice").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("引用回复").fetchSemanticsNodes().size)
+        composeRule.onNodeWithContentDescription("引用第 3 楼 · alice").assertIsDisplayed()
+
+        // QuotePost 缺楼层回退「回复 alice」，缺楼层且缺作者回退「引用回复」
+        composeRule.runOnIdle {
+            vm.open(FullEditorRequest.fromHandoff(FullEditorHandoff("2609102", 2, "", 0, 0, quotePid = "302", quoteAuthor = "alice", quoteFloor = null)))
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复 alice").assertIsDisplayed()
+        composeRule.runOnIdle {
+            vm.open(FullEditorRequest.fromHandoff(FullEditorHandoff("2609103", 2, "", 0, 0, quotePid = "303", quoteAuthor = null, quoteFloor = null)))
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("引用回复").assertIsDisplayed()
+
+        // 3. NewThread：顶栏「发新帖」，正文保留「正文」占位以与标题框区分
+        composeRule.runOnIdle { vm.open(FullEditorRequest.NewThread(initialFid = 2)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("发新帖").assertIsDisplayed()
+        composeRule.onNodeWithText("正文").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("正文").assertIsDisplayed()
+
+        // 4. 居中模态态（isModalCard = true）：左上角为「关闭」（无「返回」），且可点击关闭
+        isModal = true
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+        assertEquals("居中模态卡片左上角不得显示「返回」", 0, composeRule.onAllNodesWithContentDescription("返回").fetchSemanticsNodes().size)
+        assertSendButtonGeometry("CenteredModal 发送钮")
+        composeRule.onNodeWithContentDescription("关闭").performClick()
+        composeRule.waitForIdle()
+        assertFalse("点击模态左上关闭按钮必须关闭编辑器", vm.uiState.value.isOpen)
     }
 
     private fun ownerWithComposeVms(

@@ -518,4 +518,52 @@ class FullEditorViewModelTest {
 
         collectJob.cancel()
     }
+
+    @Test
+    fun u3_hasSendableContent_coversEmptyWhitespaceTextInlineImageAndUploadedAttachments_withoutChangingCanTapSend() = runTest(testDispatcher) {
+        val uploadStream = MutableSharedFlow<ImageUploadProgress>(extraBufferCapacity = 4)
+        val uri = Uri.parse("content://net.jejer.hipda.test/media/u3_sendable.jpg")
+        val uploadRepo = FakeImageUploadRepository { _, _, _, _ -> uploadStream }
+        val postRepo = FakePostRepository()
+        val vm = FullEditorViewModel(postRepo, uploadRepo, FakeQuickReplyAuthRepository(), FakeComposeSettingsRepository()) { 10_000L }
+
+        vm.open(FullEditorRequest.NewThread(initialFid = 2))
+        advanceUntilIdle()
+        assertTrue("空内容发新帖仍应可点发送以触发内联校验", vm.uiState.value.canTapSend)
+        assertFalse("空正文无附件时 hasSendableContent 必须为 false", vm.uiState.value.hasSendableContent)
+
+        // 仅填标题或纯空白正文仍为 false
+        vm.onSubjectChanged("只填标题不填正文")
+        vm.onTextBlockChanged(vm.uiState.value.body.firstTextBlockId, "   \n\t  ", 0, 0)
+        assertTrue(vm.uiState.value.canTapSend)
+        assertFalse("纯空白正文时 hasSendableContent 必须为 false", vm.uiState.value.hasSendableContent)
+
+        // 有效文本 -> true；删空 -> false
+        vm.onTextBlockChanged(vm.uiState.value.body.firstTextBlockId, "有效", 2, 2)
+        assertTrue("有效文本时 hasSendableContent 必须为 true", vm.uiState.value.hasSendableContent)
+        vm.onTextBlockChanged(vm.uiState.value.body.firstTextBlockId, "", 0, 0)
+        assertFalse(vm.uiState.value.hasSendableContent)
+
+        // 上传中/失败不计入可发送内容；上传成功（即使尚未插入正文）-> true；移除后回 false
+        vm.onPickImages(listOf(uri))
+        advanceUntilIdle()
+        assertFalse("压缩/上传中尚未拿到 imageId 时应为 false", vm.uiState.value.hasSendableContent)
+        uploadStream.emit(ImageUploadProgress.Uploading(50L, 100L, 0.5f))
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.hasSendableContent)
+        uploadStream.emit(ImageUploadProgress.Succeeded("88001", 1024L, true))
+        advanceUntilIdle()
+        assertTrue("已上传图片附件时 hasSendableContent 必须为 true", vm.uiState.value.hasSendableContent)
+
+        val localId = vm.uiState.value.uploads.single().localId
+        vm.onInsertUploadedImage(localId)
+        assertTrue("仅含已插入内联图片块时 hasSendableContent 必须为 true", vm.uiState.value.hasSendableContent)
+        vm.removeUpload(localId)
+        assertFalse("移除唯一图片后 hasSendableContent 必须回到 false", vm.uiState.value.hasSendableContent)
+
+        // 回复态仅含内联图片块交接 -> true
+        vm.open(FullEditorRequest.fromHandoff(FullEditorHandoff("2609999", 2, "[attachimg]77001[/attachimg]", 0, 0, threadAuthor = "linus_hi")))
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.hasSendableContent)
+    }
 }

@@ -179,7 +179,7 @@ class QuickReplyLayoutMatrixTest(
                 failures += "$cellTag: input outside sheet [$inputUnclippedTop..$inputUnclippedBottom] vs sheet [$sheetTop..$sheetBottom]"
             }
 
-            // 2. 发送按钮完整在面板内且触控高度 ≥ 48dp
+            // 2. 发送按钮完整在面板内、触控高度 ≥ 48dp，且视觉胶囊严格为 32dp
             val sendNode = composeRule.onNodeWithContentDescription("发送").fetchSemanticsNode()
             val sendTop = sendNode.positionInRoot.y
             val sendBottom = sendTop + sendNode.size.height
@@ -188,8 +188,27 @@ class QuickReplyLayoutMatrixTest(
             if (sendNode.size.height < minTouchPx) {
                 failures += "$cellTag: send height=${sendNode.size.height}px < 48dp"
             }
+            val pillHeightDp = sendNode.firstChildLayoutHeightPx()?.let { with(density) { it.toDp().value } }
+            if (pillHeightDp == null || pillHeightDp !in 31f..33f) {
+                failures += "$cellTag: send visual capsule height=${pillHeightDp}dp != 32dp"
+            }
             if (sendTop < sheetTop - 1.5f || sendBottom > sheetBottom + 1.5f || sendLeft < sheetLeft - 1.5f || sendRight > sheetRight + 1.5f) {
                 failures += "$cellTag: send clipped [$sendLeft,$sendTop..$sendRight,$sendBottom] vs sheet [$sheetLeft,$sheetTop..$sheetRight,$sheetBottom]"
+            }
+            // ReplyThread 已登录不渲染顶部独立上下文行（有输入时全树 0 处，未同步文本时最多仅剩输入框内占位 1 处且位于输入框内）
+            val ctxTextNodes = composeRule.onAllNodesWithText("回复 linus_hi").fetchSemanticsNodes()
+            val maxExpectedCtxText = if (hasRestoredDraft) 0 else 1
+            if (ctxTextNodes.size > maxExpectedCtxText || ctxTextNodes.any { it.positionInRoot.y < inputUnclippedTop - 1.5f }) {
+                failures += "$cellTag: ReplyThread rendered standalone context row above input (found ${ctxTextNodes.size})"
+            }
+            if (slotsBound) {
+                val expandNode = composeRule.onNodeWithContentDescription("展开全屏").fetchSemanticsNode()
+                val imgNode = composeRule.onNodeWithContentDescription("插入图片").fetchSemanticsNode()
+                val expandMidY = expandNode.positionInRoot.y + expandNode.size.height / 2f
+                val imgMidY = imgNode.positionInRoot.y + imgNode.size.height / 2f
+                if (kotlin.math.abs(expandMidY - imgMidY) > with(density) { 2.dp.toPx() }) {
+                    failures += "$cellTag: ReplyThread expand button not in bottom bar (expandY=$expandMidY vs imgY=$imgMidY)"
+                }
             }
 
             // 3. 绑定插槽按钮可达性（或未绑定态严格不渲染）

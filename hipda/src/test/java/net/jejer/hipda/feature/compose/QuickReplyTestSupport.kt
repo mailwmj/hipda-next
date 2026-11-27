@@ -336,3 +336,14 @@ internal class FakeComposeSettingsRepository(
     override suspend fun setSidebarCollapsedPortrait(collapsed: Boolean) = Unit
     override suspend fun setSidebarCollapsedLandscape(collapsed: Boolean) = Unit
 }
+
+internal fun androidx.compose.ui.semantics.SemanticsNode.firstChildLayoutHeightPx(): Int? {
+    val info = layoutInfo
+    val getter = info.javaClass.methods.firstOrNull {
+        (it.name == "getChildren" || it.name.startsWith("getChildren$")) && it.parameterCount == 0
+    }
+    val firstChild = (getter?.invoke(info) as? List<*>)
+        ?.filterIsInstance<androidx.compose.ui.layout.LayoutInfo>()
+        ?.firstOrNull()
+    return firstChild?.height
+}

@@ -130,9 +130,11 @@ fun FullEditorScreen(
                 onClose = { emojiController.close() },
             )
         }
+        val visualBodyPlaceholder = resolveBodyVisualPlaceholder(uiState.mode)
+        val bodyContentDescription = visualBodyPlaceholder ?: titleText
         val editorInterior: @Composable (Modifier) -> Unit = { colModifier ->
             Column(colModifier.semantics { paneTitle = titleText; isTraversalGroup = true }) {
-                FullEditorTopBar(titleText, resolveEditorSubtitle(uiState.mode), isScrolled, !isModalCard, uiState.isSubmitting, uiState.effectiveCooldownSeconds, uiState.canTapSend, uiState.canRestoreOriginal, closeEditor, viewModel::restoreOriginal, viewModel::submit)
+                FullEditorTopBar(titleText, isScrolled, isModalCard, uiState.isSubmitting, uiState.effectiveCooldownSeconds, uiState.canTapSend, uiState.hasSendableContent, uiState.canRestoreOriginal, closeEditor, viewModel::restoreOriginal, viewModel::submit)
                 if (isEditWaitingOriginal) {
                     EditOriginalStatusArea(uiState.isLoadingEditOriginal, uiState.editLoadError, viewModel::retryEditLoad, onOpenLogin, Modifier.weight(1f).fillMaxWidth())
                     return@Column
@@ -148,7 +150,7 @@ fun FullEditorScreen(
                         EditPostMetaSection(uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.validationError, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
                     }
                     ImageUploadStrip(uiState.uploads, uiState.insertedImageIds, uiState.uploadSummaryProgress, viewModel::onInsertUploadedImage, viewModel::retryUpload, viewModel::removeUpload)
-                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, previewUriByImageId, resolveBodyPlaceholder(uiState.mode), viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress)
+                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, previewUriByImageId, visualBodyPlaceholder, bodyContentDescription, viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress)
                     if (uiState.validationError == FullEditorValidationError.ContentTooShort) {
                         Text(stringResource(FullEditorValidationError.ContentTooShort.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
                     }
@@ -175,8 +177,9 @@ fun FullEditorScreen(
                     contentAlignment = if (bottomSlotHeightDp > 0.dp) Alignment.BottomCenter else Alignment.Center,
                 ) {
                     Surface(
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight().heightIn(max = 720.dp).clip(cardShape),
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight().heightIn(max = 720.dp),
                         shape = cardShape, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
+                        border = BorderStroke(0.5.dp, cs.outlineVariant.copy(alpha = 0.5f)),
                     ) { editorInterior(Modifier.fillMaxSize().background(cs.surface)) }
                 }
             } else {
@@ -246,24 +249,23 @@ private fun rememberSyncedTextFieldState(
 
 @Composable
 private fun FullEditorTopBar(
-    title: String, subtitle: String?, isScrolled: Boolean, applyStatusBarInset: Boolean,
-    isSubmitting: Boolean, cooldownSeconds: Int, canTapSend: Boolean, showRestoreOriginal: Boolean,
+    title: String, isScrolled: Boolean, isModalCard: Boolean,
+    isSubmitting: Boolean, cooldownSeconds: Int, canTapSend: Boolean, hasSendableContent: Boolean, showRestoreOriginal: Boolean,
     onBackClick: () -> Unit, onRestoreOriginalClick: () -> Unit, onSendClick: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
     val barBg by animateColorAsState(if (isScrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "FullEditorTopBarColor")
+    val navIcon = if (isModalCard) Icons.Rounded.Close else Icons.AutoMirrored.Rounded.ArrowBack
+    val navCd = stringResource(if (isModalCard) R.string.compose_action_close else R.string.common_action_back)
     Column(Modifier.fillMaxWidth().background(barBg)) {
-        if (applyStatusBarInset) Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
+        if (!isModalCard) Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
         HiCappedFontScale {
             Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 val backInt = remember { MutableInteractionSource() }
                 IconButton(onBackClick, Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(backInt), interactionSource = backInt) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back), tint = cs.onSurface)
+                    Icon(navIcon, navCd, tint = cs.onSurface)
                 }
-                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (!subtitle.isNullOrBlank()) Text(subtitle, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+                Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 4.dp))
                 if (showRestoreOriginal) {
                     val restoreInt = remember { MutableInteractionSource() }
                     TextButton(
@@ -278,7 +280,7 @@ private fun FullEditorTopBar(
                     }
                     Spacer(Modifier.width(4.dp))
                 }
-                EditorSendButton(isSubmitting, cooldownSeconds, canTapSend, onSendClick)
+                EditorSendButton(isSubmitting, cooldownSeconds, canTapSend, hasSendableContent, onSendClick)
             }
         }
         HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
@@ -286,21 +288,8 @@ private fun FullEditorTopBar(
 }
 
 @Composable
-private fun EditorSendButton(isSubmitting: Boolean, cooldownSeconds: Int, enabled: Boolean, onClick: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    val interaction = remember { MutableInteractionSource() }
-    val sendLabel = stringResource(R.string.compose_action_send)
-    val desc = when { isSubmitting -> stringResource(R.string.compose_status_sending); cooldownSeconds > 0 -> stringResource(R.string.compose_cooldown_send_cd, cooldownSeconds); else -> sendLabel }
-    Button(onClick, Modifier.defaultMinSize(72.dp, 48.dp).hiPressScale(interaction).semantics { contentDescription = desc }, enabled, HiShapeTokens.Full, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp), interactionSource = interaction) {
-        if (isSubmitting) HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp, color = cs.onSurface.copy(alpha = 0.72f), trackColor = cs.onSurface.copy(alpha = 0.20f))
-        else AnimatedContent(
-            targetState = cooldownSeconds > 0, contentAlignment = Alignment.Center, label = "FullEditorSendCooldown",
-            transitionSpec = { ((hiScaleIn(HiMotion.spatialFast()) + hiFadeIn(HiMotion.effectsFast())) togetherWith (hiScaleOut(HiMotion.exit(HiMotion.spatialFast())) + hiFadeOut(HiMotion.exit(HiMotion.effectsFast())))).using(null) },
-        ) { cooling ->
-            if (cooling) HiRollingNumber(cooldownSeconds.coerceAtLeast(1), style = MaterialTheme.typography.labelLarge, color = cs.onSurface.copy(alpha = 0.78f))
-            else Text(sendLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
-        }
-    }
+private fun EditorSendButton(isSubmitting: Boolean, cooldownSeconds: Int, enabled: Boolean, hasSendableContent: Boolean, onClick: () -> Unit) {
+    ComposeSendCapsuleButton(isSubmitting = isSubmitting, cooldownSeconds = cooldownSeconds, enabled = enabled, filled = hasSendableContent, onClick = onClick)
 }
 
 @Composable
@@ -385,7 +374,7 @@ private fun EditorSubjectField(subject: String, syncVersion: Long, validationErr
 }
 
 @Composable
-private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Long, focusRequestVersion: Long, previewUriByImageId: Map<String, Uri>, placeholder: String, onTextBlockChanged: (String, String, Int, Int) -> Unit, onTextBlockSelectionChanged: (String, Int, Int) -> Unit, onRemoveInlineImage: (String) -> Unit, onBackspaceAtBlockStart: () -> Unit, onActiveFocusRequester: (FocusRequester) -> Unit = {}, onInputPress: () -> Unit = {}) {
+private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Long, focusRequestVersion: Long, previewUriByImageId: Map<String, Uri>, visualPlaceholder: String?, bodyContentDescription: String, onTextBlockChanged: (String, String, Int, Int) -> Unit, onTextBlockSelectionChanged: (String, Int, Int) -> Unit, onRemoveInlineImage: (String) -> Unit, onBackspaceAtBlockStart: () -> Unit, onActiveFocusRequester: (FocusRequester) -> Unit = {}, onInputPress: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val bodyStyle = HiTheme.typography.postBody.copy(color = cs.onSurface)
     val latestOnBs by rememberUpdatedState(onBackspaceAtBlockStart)
@@ -411,9 +400,9 @@ private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Lon
                             Modifier.fillMaxWidth().heightIn(min = if (isLast) 140.dp else 32.dp).focusRequester(focusRequester)
                                 .onFocusChanged { st -> focused = st.isFocused; if (st.isFocused) { onActiveFocusRequester(focusRequester); onTextBlockSelectionChanged(block.id, fieldState.selection.start, fieldState.selection.end) } }
                                 .onPreviewKeyEvent { ev -> if (hasPrevImg && ev.type == KeyEventType.KeyDown && ev.key == Key.Backspace && fieldState.selection == TextRange(0)) { latestOnBs(); true } else false }
-                                .semantics { contentDescription = placeholder },
+                                .semantics { contentDescription = bodyContentDescription },
                             textStyle = bodyStyle, cursorBrush = SolidColor(cs.primary), interactionSource = blockInteraction, lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = if (isLast) 5 else 1),
-                            decorator = { inner -> Box(Modifier.fillMaxWidth()) { if (document.blocks.size == 1 && fieldState.text.isEmpty()) Text(placeholder, style = bodyStyle, color = cs.onSurfaceVariant); inner() } },
+                            decorator = { inner -> Box(Modifier.fillMaxWidth()) { if (!visualPlaceholder.isNullOrEmpty() && document.blocks.size == 1 && fieldState.text.isEmpty()) Text(visualPlaceholder, style = bodyStyle, color = cs.onSurfaceVariant); inner() } },
                         )
                     }
                     is EditorBodyBlock.Image -> EditorInlineImageBlock(block.imageId, previewUriByImageId[block.imageId], { onRemoveInlineImage(block.id) })
@@ -483,27 +472,28 @@ private fun FullEditorBottomToolbar(hasEmojiSlot: Boolean, isEmojiPanelOpen: Boo
 }
 
 @Composable
-private fun resolveEditorTitle(mode: FullEditorMode): String = stringResource(
-    when (mode) {
-        is FullEditorMode.NewThread -> R.string.compose_title_new_thread
-        is FullEditorMode.QuotePost -> R.string.compose_title_quote_reply
-        is FullEditorMode.Reply -> R.string.compose_title_reply
-        is FullEditorMode.EditPost -> R.string.compose_title_edit_post
-    },
-)
-
-@Composable
-private fun resolveEditorSubtitle(mode: FullEditorMode): String? = when (mode) {
-    is FullEditorMode.NewThread -> null
-    is FullEditorMode.QuotePost -> if (mode.targetFloor != null && !mode.targetAuthor.isNullOrBlank()) stringResource(R.string.compose_quote_placeholder_floor_user, mode.targetFloor, mode.targetAuthor) else mode.targetAuthor?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
-    is FullEditorMode.ReplyPost -> mode.targetAuthor?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
-    is FullEditorMode.ReplyThread -> mode.threadAuthor?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
-    is FullEditorMode.EditPost -> if (mode.floorNumber != null && !mode.author.isNullOrBlank()) stringResource(R.string.thread_detail_floor_title, mode.floorNumber, mode.author) else null
+private fun resolveEditorTitle(mode: FullEditorMode): String = when (mode) {
+    is FullEditorMode.NewThread -> stringResource(R.string.compose_title_new_thread)
+    is FullEditorMode.ReplyThread -> mode.threadAuthor?.takeIf { it.isNotBlank() }
+        ?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
+        ?: stringResource(R.string.compose_title_reply)
+    is FullEditorMode.ReplyPost -> mode.targetAuthor?.takeIf { it.isNotBlank() }
+        ?.let { stringResource(R.string.compose_reply_placeholder_user, it) }
+        ?: stringResource(R.string.compose_title_reply)
+    is FullEditorMode.QuotePost -> when {
+        mode.targetFloor != null && !mode.targetAuthor.isNullOrBlank() ->
+            stringResource(R.string.compose_quote_placeholder_floor_user, mode.targetFloor, mode.targetAuthor)
+        !mode.targetAuthor.isNullOrBlank() ->
+            stringResource(R.string.compose_reply_placeholder_user, mode.targetAuthor)
+        else -> stringResource(R.string.compose_title_quote_reply)
+    }
+    is FullEditorMode.EditPost -> stringResource(R.string.compose_title_edit_post)
 }
 
 @Composable
-private fun resolveBodyPlaceholder(mode: FullEditorMode): String =
-    if (mode is FullEditorMode.EditPost) stringResource(R.string.compose_field_body_hint)
-    else resolveEditorSubtitle(mode) ?: stringResource(R.string.compose_field_body_hint)
+private fun resolveBodyVisualPlaceholder(mode: FullEditorMode): String? = when (mode) {
+    is FullEditorMode.Reply -> null
+    is FullEditorMode.NewThread, is FullEditorMode.EditPost -> stringResource(R.string.compose_field_body_hint)
+}
 
 private val UNSAFE_ERROR_PATTERNS = Regex("""(?:Exception|Throwable|HTTP\s*[45]\d{2}|\[attachimg\])""", RegexOption.IGNORE_CASE)

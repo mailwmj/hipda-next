@@ -6,6 +6,8 @@
     <string name="compose_reply_placeholder_user">回复 %1$s</string>
     <string name="compose_reply_placeholder_default">回复</string>
     <string name="compose_quote_placeholder_floor_user">引用第 %1$d 楼 · %2$s</string>
+    <string name="compose_reply_body_hint">输入回复内容</string>
+    <string name="compose_action_close">关闭</string>
     <string name="compose_action_insert_image">插入图片</string>
     <string name="compose_action_emoji">表情</string>
     <string name="compose_action_keyboard">键盘</string>
