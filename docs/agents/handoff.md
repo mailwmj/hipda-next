@@ -107,7 +107,7 @@
 
 - **BATCH-4 计划（已全部合入收官，归档至 `docs/agents/cards/BATCH-4.md`）**：12 张卡、5 波全部合入 `main`。
 - **BATCH-5 计划（M5 全部完成，归档至 `docs/agents/cards/BATCH-5.md`）**：9 卡 4 波全部合入 `main`（`E0`、`E15`、`E2a`、`E1`、`E2b`、`E2d`、`E3`、`E2c`、`E4 @ 92e1563`，main CI `45758541824` 绿），已出 M5 真机验收包。
-- **M6、编辑器线与 M7 开发全部完成**：**M6、编辑器线（`E5`/`E6`/`E6b`/`E6b-followup`/`E7`）与 `M7-0`～`M7-4c`、`M7-P1`、`M7-P2`（含 `M7-4a` `adaa6c3`、`M7-3` `8a9afe1`、`M7-4b` `0916fb1`、`M7-4c` `b47836b`、`M7-P1` `4922caa`、`M7-P2` `f9862b8`）已全部合入 `main`**（`HEAD` `@f9862b8`，合并态 CI `45956240271` `emulator=true` 全绿，main 推送 CI `45958045820` 待 CI）；下一步进入最终 **`M7-5` 用户真机验收与发布（需用户批准）**。
+- **M6、编辑器线与 M7 开发全部完成**：**M6、编辑器线（`E5`/`E6`/`E6b`/`E6b-followup`/`E7`）与 `M7-0`～`M7-4c`、`M7-P1`、`M7-P2`（含 `M7-4a` `adaa6c3`、`M7-3` `8a9afe1`、`M7-4b` `0916fb1`、`M7-4c` `b47836b`、`M7-P1` `4922caa`、`M7-P2` `f9862b8`）已全部合入 `main`**（`HEAD` `@f9862b8`，合并态 CI `45956240271` `emulator=true` 全绿，main 推送 CI `45958045820` 绿）；下一步进入最终 **`M7-5` 用户真机验收与发布（需用户批准）**。
 - **待观察风险**：
   - **Cloudflare 桌面 UA 下 WebView 过验证尚未在真机触发**：A5c 切换为桌面 Linux Chrome UA + Client Hints（`platform=Linux`、`mobile=false`）后，真机 M1 请求均直接 200 通过、未触发 Cloudflare 人机验证；该 UA 组合下的 WebView 自动/人工过盾与 `cf_clearance` 同步路径尚未经真机实测，列为待观察风险，后续真机首次触发验证时重点核实。
   - **安全提问报错文案格式（`R-E15 S5`）**：若真机 4d4y.com 对安全提问错返回不含 `"登录失败"` 前缀的原文，需记录原文以供 `LoginParser` 补配（已列入 `docs/device-check.md` 第 1 项）。
