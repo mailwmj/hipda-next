@@ -133,6 +133,7 @@ data class FullEditorUiState(
     val deletedEditAttachmentIds: List<String>
         get() = if (!isEditPost) emptyList() else uploadedImageIds.toSet().let { cur -> editOriginal?.imageIds.orEmpty().filter { it !in cur } }
     val canTapSend: Boolean get() = isLoggedIn && !isSubmitting && effectiveCooldownSeconds <= 0 && (!isEditPost || (editOriginal != null && !isLoadingEditOriginal))
+    val hasSendableContent: Boolean get() = !body.isVisuallyEmpty() || uploads.any { it.imageIdOrNull != null }
     val uploadSummaryProgress: Pair<Int, Int>?
         get() = if (!hasActiveUploads) null else maxOf(uploadBatchTotal, uploads.count { it.isInProgress }).takeIf { it > 0 }?.let { (uploadBatchCompleted + 1).coerceIn(1, it) to it }
 }

@@ -105,6 +105,7 @@ internal fun resolveSheetSlotPlan(
     density: Density, maxSheetHeightDp: Dp, isLoggedIn: Boolean, isCompactShortScreen: Boolean,
     canExpandToFullEditor: Boolean, hasDraftBanner: Boolean, hasInlineError: Boolean, inlineErrorHasAction: Boolean,
     bottomBarBottomPaddingDp: Dp, oneLineBodyPx: Int, ctxLinePx: Int, smallLinePx: Int,
+    suppressContextRow: Boolean = false,
 ): SheetSlotPlan = with(density) {
     val maxH = maxSheetHeightDp.roundToPx().coerceAtLeast(0)
     val touch48Px = 48.dp.roundToPx()
@@ -133,8 +134,8 @@ internal fun resolveSheetSlotPlan(
     val compactVPadPx = if (useCompact) ((maxH - compactMinContentPx - if (hasInlineError && compactFitsError) errorPx else 0).coerceAtLeast(0) / 2).coerceAtMost(6.dp.roundToPx()) else 0
     var rem = (maxH - if (useCompact) (compactMinContentPx + compactVPadPx * 2) else (bottomBarPx + minStandardInputPx)).coerceAtLeast(0)
     val showErr = hasInlineError && rem >= errorPx; if (showErr) rem -= errorPx
-    val showFullCtx = !useCompact && canExpandToFullEditor && rem >= fullCtxPx
-    val showCtx = showFullCtx || rem >= slimCtxPx
+    val showFullCtx = !suppressContextRow && !useCompact && canExpandToFullEditor && rem >= fullCtxPx
+    val showCtx = !suppressContextRow && (showFullCtx || rem >= slimCtxPx)
     val ctxH = if (showFullCtx) fullCtxPx else slimCtxPx; if (showCtx) rem -= ctxH
     val showDraft = hasDraftBanner && !isCompactShortScreen && rem >= draftPx; if (showDraft) rem -= draftPx
     val showHandle = !isCompactShortScreen && rem >= handlePx; if (showHandle) rem -= handlePx
@@ -400,11 +401,13 @@ fun QuickReplySheet(
         val bottomOccupiedDp = emojiController.bottomSlotHeightDp
         val metrics = calculateQuickReplyLayoutMetrics(paneHeightDp, statusBarTopDp, bottomOccupiedDp, navBarBottomDp)
         val innerBottomPadding = if (bottomOccupiedDp > 0.dp || isEmojiPanelOpen) 8.dp else (navBarBottomDp + 8.dp)
+        val suppressContextRow = uiState.isLoggedIn && uiState.target.mode == QuickReplyMode.ReplyThread
         val plan = resolveSheetSlotPlan(
             density, metrics.maxSheetHeightDp, uiState.isLoggedIn, metrics.isCompactShortScreen, canExpandToFullEditor,
             uiState.showDraftRestoredBanner, uiState.inlineError != null, uiState.inlineError?.uiError?.action != null,
-            innerBottomPadding, oneLineBodyPx, ctxLinePx, smallLinePx,
+            innerBottomPadding, oneLineBodyPx, ctxLinePx, smallLinePx, suppressContextRow = suppressContextRow,
         )
+        val inputPlaceholder = if (plan.showContext) stringResource(R.string.compose_reply_body_hint) else contextLabel
         LaunchedEffect(uiState.inlineError, plan.shedErrorToSnackbar) {
             val err = uiState.inlineError
             if (err != null && plan.shedErrorToSnackbar) {
@@ -460,7 +463,7 @@ fun QuickReplySheet(
                                     .padding(start = 8.dp, end = 8.dp, top = plan.compactVerticalPaddingDp, bottom = plan.compactVerticalPaddingDp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                QuickReplyInputBox(textFieldState, inputScrollState, contextLabel, inputFocusRequester, 40.dp, 6.dp, inputNestedScroll, inputInteractionSource, Modifier.weight(1f))
+                                QuickReplyInputBox(textFieldState, inputScrollState, inputPlaceholder, inputFocusRequester, 40.dp, 6.dp, inputNestedScroll, inputInteractionSource, Modifier.weight(1f))
                                 if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.InsertImage, stringResource(R.string.compose_action_insert_image)) { requestExpandToFullEditor(true, 0f) }
                                 if (hasEmojiPanel) QuickReplyEmojiToggleButton(isEmojiPanelOpen, onToggleEmoji)
                                 if (canExpandToFullEditor) QuickReplyToolIconButton(ComposeVectorIcons.ExpandFullScreen, stringResource(R.string.compose_action_expand_fullscreen)) { requestExpandToFullEditor(false, 0f) }
@@ -471,7 +474,7 @@ fun QuickReplySheet(
                         else -> {
                             if (plan.topSpacerDp > 0.dp) Spacer(Modifier.height(plan.topSpacerDp))
                             QuickReplyInputBox(
-                                textFieldState, inputScrollState, contextLabel, inputFocusRequester, 44.dp, 10.dp, inputNestedScroll, inputInteractionSource,
+                                textFieldState, inputScrollState, inputPlaceholder, inputFocusRequester, 44.dp, 10.dp, inputNestedScroll, inputInteractionSource,
                                 Modifier.fillMaxWidth().heightIn(min = plan.inputMinHeightDp, max = plan.inputMaxHeightDp).padding(horizontal = 16.dp, vertical = 4.dp),
                             )
                             if (plan.showErrorInline) uiState.inlineError?.let { QuickReplyInlineErrorStrip(it, compact = false, plan.errorHeightDp, viewModel::submit, onOpenLogin) }
@@ -586,8 +589,7 @@ private fun QuickReplyInputBox(
     val textStyle = HiTheme.typography.postBody.copy(color = cs.onSurface)
     Box(
         modifier = modifier.heightIn(min = minHeight).clip(HiShapeTokens.Medium)
-            .background(cs.surfaceContainerHigh.copy(alpha = 0.62f))
-            .border(0.75.dp, cs.outlineVariant.copy(alpha = 0.7f), HiShapeTokens.Medium)
+            .background(cs.surfaceContainerHigh.copy(alpha = 0.72f))
             .nestedScroll(nestedScrollConnection).verticalScroll(scrollState)
             .padding(horizontal = 12.dp, vertical = verticalInnerPadding),
     ) {
@@ -666,6 +668,19 @@ private fun QuickReplyEmojiToggleButton(isEmojiPanelOpen: Boolean, onClick: () -
 
 @Composable
 private fun QuickReplySendButton(isSubmitting: Boolean, cooldownSeconds: Int, enabled: Boolean, onClick: () -> Unit) {
+    ComposeSendCapsuleButton(isSubmitting = isSubmitting, cooldownSeconds = cooldownSeconds, enabled = enabled, filled = true, onClick = onClick)
+}
+
+/** 统一发送胶囊按钮（U3：视觉高度固定 32dp，外层以 `minimumInteractiveComponentSize()` 保证 ≥ 48dp 触控区）。 */
+@Composable
+internal fun ComposeSendCapsuleButton(
+    isSubmitting: Boolean,
+    cooldownSeconds: Int,
+    enabled: Boolean,
+    filled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val cs = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
     val sendLabel = stringResource(R.string.compose_action_send)
@@ -674,20 +689,57 @@ private fun QuickReplySendButton(isSubmitting: Boolean, cooldownSeconds: Int, en
         cooldownSeconds > 0 -> stringResource(R.string.compose_cooldown_send_cd, cooldownSeconds)
         else -> sendLabel
     }
-    Button(
-        onClick = onClick, enabled = enabled, interactionSource = interaction, shape = HiShapeTokens.Full,
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
-        modifier = Modifier.defaultMinSize(72.dp, 48.dp).hiPressScale(interaction).semantics { contentDescription = semanticDesc },
+    val targetContainer = when {
+        !enabled -> cs.onSurface.copy(alpha = 0.12f)
+        filled -> cs.primary
+        else -> Color.Transparent
+    }
+    val targetContent = when {
+        !enabled -> cs.onSurface.copy(alpha = 0.38f)
+        filled -> cs.onPrimary
+        else -> cs.primary
+    }
+    val containerColor by animateColorAsState(targetContainer, HiMotion.effectsFast(), label = "ComposeSendBg")
+    val contentColor by animateColorAsState(targetContent, HiMotion.effectsFast(), label = "ComposeSendFg")
+    Box(
+        modifier = modifier
+            .hiPressScale(interaction)
+            .semantics { contentDescription = semanticDesc }
+            .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .minimumInteractiveComponentSize(),
+        contentAlignment = Alignment.Center,
     ) {
-        if (isSubmitting) {
-            HiLoadingSpinner(Modifier.size(18.dp), strokeWidth = 2.dp, color = cs.onSurface.copy(alpha = 0.72f), trackColor = cs.onSurface.copy(alpha = 0.2f))
-        } else {
-            AnimatedContent(
-                targetState = cooldownSeconds > 0, contentAlignment = Alignment.Center, label = "QuickReplySendCooldown",
-                transitionSpec = { ((hiScaleIn(HiMotion.spatialFast()) + hiFadeIn(HiMotion.effectsFast())) togetherWith (hiScaleOut(HiMotion.exit(HiMotion.spatialFast())) + hiFadeOut(HiMotion.exit(HiMotion.effectsFast())))).using(null) },
-            ) { cooling ->
-                if (cooling) HiRollingNumber(cooldownSeconds.coerceAtLeast(1), style = MaterialTheme.typography.labelLarge, color = cs.onSurface.copy(alpha = 0.78f))
-                else Text(sendLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
+        Surface(
+            shape = HiShapeTokens.Full,
+            color = containerColor,
+            contentColor = contentColor,
+            modifier = Modifier
+                .height(32.dp)
+                .defaultMinSize(minWidth = 56.dp)
+                .clip(HiShapeTokens.Full)
+                .indication(interaction, LocalIndication.current),
+        ) {
+            Row(
+                modifier = Modifier.padding(PaddingValues(horizontal = 14.dp, vertical = 0.dp)),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                if (isSubmitting) {
+                    HiLoadingSpinner(Modifier.size(16.dp), strokeWidth = 2.dp, color = cs.onSurface.copy(alpha = 0.72f), trackColor = cs.onSurface.copy(alpha = 0.2f))
+                } else {
+                    AnimatedContent(
+                        targetState = cooldownSeconds > 0,
+                        contentAlignment = Alignment.Center,
+                        label = "ComposeSendCooldown",
+                        transitionSpec = {
+                            ((hiScaleIn(HiMotion.spatialFast()) + hiFadeIn(HiMotion.effectsFast())) togetherWith
+                                (hiScaleOut(HiMotion.exit(HiMotion.spatialFast())) + hiFadeOut(HiMotion.exit(HiMotion.effectsFast())))).using(null)
+                        },
+                    ) { cooling ->
+                        if (cooling) HiRollingNumber(cooldownSeconds.coerceAtLeast(1), style = MaterialTheme.typography.labelLarge, color = cs.onSurface.copy(alpha = 0.78f))
+                        else Text(sendLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
+                    }
+                }
             }
         }
     }
