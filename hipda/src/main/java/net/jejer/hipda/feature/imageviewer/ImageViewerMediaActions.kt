@@ -14,6 +14,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import coil3.ImageLoader
+import coil3.disk.DiskCache
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
@@ -59,48 +61,60 @@ class AndroidImageViewerMediaActions(
     private val uriProvider: (Context, File) -> Uri = { ctx, file ->
         FileProvider.getUriForFile(ctx, "${ctx.packageName}.provider", file)
     },
+    private val diskCacheProvider: () -> DiskCache? = { null },
 ) : ImageViewerMediaActions {
 
     @Inject
-    constructor(@ApplicationContext context: Context, originalDownloader: OriginalImageDownloader) :
-        this(context, originalDownloader, Dispatchers.IO, Dispatchers.Main)
+    constructor(@ApplicationContext context: Context, originalDownloader: OriginalImageDownloader, imageLoader: ImageLoader) :
+        this(context, originalDownloader, Dispatchers.IO, Dispatchers.Main, diskCacheProvider = { imageLoader.diskCache })
 
     override suspend fun saveImage(url: String, cachedFile: File?): Boolean {
         val safeUrl = sanitizeViewerImageUrl(url) ?: return false
         return withContext(ioDispatcher) {
-            val resolved = resolveLocalSource(safeUrl, cachedFile) ?: return@withContext false
-            val fileName = "HiPDA_${System.currentTimeMillis()}.${extensionForMime(resolved.mimeType)}"
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) saveToMediaStoreQ(resolved.file, fileName, resolved.mimeType)
-            else saveToLegacyPicturesDir(resolved.file, fileName, resolved.mimeType)
+            withLocalSource(safeUrl, cachedFile) { file, mimeType ->
+                val fileName = "HiPDA_${System.currentTimeMillis()}.${extensionForMime(mimeType)}"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) saveToMediaStoreQ(file, fileName, mimeType)
+                else saveToLegacyPicturesDir(file, fileName, mimeType)
+            } ?: false
         }
     }
 
     override suspend fun shareImage(url: String, cachedFile: File?): Boolean {
         val safeUrl = sanitizeViewerImageUrl(url) ?: return false
         val prepared = withContext(ioDispatcher) {
-            val resolved = resolveLocalSource(safeUrl, cachedFile) ?: return@withContext null
-            // 优先使用 externalCacheDir（受 provider_paths external_storage_root 覆盖）并清理过期分享缓存
-            val shareDir = context.externalCacheDir ?: context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: return@withContext null
-            if (!shareDir.exists()) shareDir.mkdirs()
-            shareDir.listFiles { _, name -> name.startsWith(SHARE_FILE_PREFIX) }?.forEach { it.delete() }
-            val dest = File(shareDir, "${SHARE_FILE_PREFIX}${System.currentTimeMillis()}.${extensionForMime(resolved.mimeType)}")
-            runCatching {
-                resolved.file.copyTo(dest, overwrite = true)
-                uriProvider(context, dest) to resolved.mimeType
-            }.getOrNull()
+            withLocalSource(safeUrl, cachedFile) { file, mimeType ->
+                // 优先使用 externalCacheDir（受 provider_paths external_storage_root 覆盖）并清理过期分享缓存
+                val shareDir = context.externalCacheDir ?: context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: return@withLocalSource null
+                if (!shareDir.exists()) shareDir.mkdirs()
+                shareDir.listFiles { _, name -> name.startsWith(SHARE_FILE_PREFIX) }?.forEach { it.delete() }
+                val dest = File(shareDir, "${SHARE_FILE_PREFIX}${System.currentTimeMillis()}.${extensionForMime(mimeType)}")
+                runCatching {
+                    file.copyTo(dest, overwrite = true)
+                    uriProvider(context, dest) to mimeType
+                }.getOrNull()
+            }
         } ?: return false
         return withContext(mainDispatcher) {
             runCatching { context.startActivity(buildShareChooserIntent(context, prepared.first, prepared.second)); true }.getOrDefault(false)
         }
     }
 
-    private suspend fun resolveLocalSource(safeUrl: String, cachedFile: File?): OriginalDownloadState.Completed? {
+    private suspend fun <T> withLocalSource(safeUrl: String, cachedFile: File?, block: (File, String) -> T?): T? {
         if (cachedFile != null && cachedFile.isFile && cachedFile.length() > 0L) {
-            val header = ByteArray(12)
-            val len = runCatching { cachedFile.inputStream().use { it.read(header) }.coerceAtLeast(0) }.getOrDefault(0)
-            return OriginalDownloadState.Completed(cachedFile, detectImageMimeType(null, header, len, safeUrl))
+            return block(cachedFile, detectLocalFileMimeType(cachedFile, safeUrl))
         }
-        return originalDownloader.download(safeUrl).lastOrNull() as? OriginalDownloadState.Completed
+        runCatching { diskCacheProvider()?.openSnapshot(safeUrl) }.getOrNull()?.use { snap ->
+            val file = snap.data.toFile()
+            if (file.isFile && file.length() > 0L) return block(file, detectLocalFileMimeType(file, safeUrl))
+        }
+        val downloaded = originalDownloader.download(safeUrl).lastOrNull() as? OriginalDownloadState.Completed ?: return null
+        return block(downloaded.file, downloaded.mimeType)
+    }
+
+    private fun detectLocalFileMimeType(file: File, safeUrl: String): String {
+        val header = ByteArray(12)
+        val len = runCatching { file.inputStream().use { it.read(header) }.coerceAtLeast(0) }.getOrDefault(0)
+        return detectImageMimeType(null, header, len, safeUrl)
     }
 
     private fun saveToMediaStoreQ(source: File, fileName: String, mimeType: String): Boolean {

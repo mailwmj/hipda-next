@@ -45,13 +45,16 @@ internal data class PaneSnackbarVisuals(
 /** 多栏分区对齐的 [PaneSnackbarController] 实现，保持带按钮时有限时长 `SnackbarDuration.Long`（闭合 R-E0 B2）。 */
 @Stable
 class MultiPaneSnackbarController(val hostState: SnackbarHostState) : PaneSnackbarController {
-    override suspend fun show(
+    override suspend fun show(message: String, target: PaneSnackbarTarget, actionLabel: String?, onAction: (() -> Unit)?) =
+        show(message, target, actionLabel, if (actionLabel != null) SnackbarDuration.Long else SnackbarDuration.Short, onAction)
+
+    suspend fun show(
         message: String,
-        target: PaneSnackbarTarget,
-        actionLabel: String?,
-        onAction: (() -> Unit)?,
+        target: PaneSnackbarTarget = PaneSnackbarTarget.ContentArea,
+        actionLabel: String? = null,
+        duration: SnackbarDuration,
+        onAction: (() -> Unit)? = null,
     ) {
-        val duration = if (actionLabel != null) SnackbarDuration.Long else SnackbarDuration.Short
         val result = hostState.showSnackbar(PaneSnackbarVisuals(message, actionLabel, false, duration, target))
         if (result == SnackbarResult.ActionPerformed) onAction?.invoke()
     }

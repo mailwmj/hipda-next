@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -80,6 +81,7 @@ import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
 import net.jejer.hipda.feature.compose.rememberFullEditorHostController
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
+import net.jejer.hipda.feature.imageviewer.ImageViewerBottomBarHeight
 import net.jejer.hipda.feature.routing.AndroidExternalLinkOpener
 import net.jejer.hipda.feature.routing.AttachmentDownloadResult
 import net.jejer.hipda.feature.routing.AttachmentDownloader
@@ -261,6 +263,7 @@ fun NextAppRoot(
                         message = resources.getString(R.string.routing_deeplink_unsupported_url),
                         target = PaneSnackbarTarget.ContentArea,
                         actionLabel = resources.getString(R.string.routing_action_open_in_browser),
+                        duration = SnackbarDuration.Long,
                     ) {
                         if (!resolvedExternalLinkOpener.open(event.url)) {
                             coroutineScope.launch {
@@ -548,9 +551,12 @@ fun NextAppRoot(
                     is DetailDrilldownEntry.SmsConversation -> true
                     null -> appState.selectedThread != null || appState.selectedSmsConversation != null
                 }
-                val detailToolbarClearanceDp = if (detailTopHasBottomBar && !isImageViewerOpen && !(editorHost.isVisible && (editorHost.isInRightPane || editorHost.isFullScreen))) {
-                    navBarsBottomDp + ThreadBottomToolbarHeight + ThreadBottomToolbarBottomGap
-                } else 0.dp
+                val detailToolbarClearanceDp = when {
+                    isImageViewerOpen -> navBarsBottomDp + ImageViewerBottomBarHeight
+                    detailTopHasBottomBar && !(editorHost.isVisible && (editorHost.isInRightPane || editorHost.isFullScreen)) ->
+                        navBarsBottomDp + ThreadBottomToolbarHeight + ThreadBottomToolbarBottomGap
+                    else -> 0.dp
+                }
                 MultiPaneSnackbarHost(
                     hostState = snackbarHostState,
                     paneLayout = latestPaneLayout,

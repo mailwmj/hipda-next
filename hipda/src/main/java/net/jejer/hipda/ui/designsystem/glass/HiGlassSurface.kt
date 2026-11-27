@@ -51,48 +51,48 @@ object HiGlassTokens {
     /** Kyant `backdrop 2.0.1` `VibrantColorFilter` 的固有饱和度倍率（`colorControlsColorFilter(saturation = 1.5f)`）。 */
     const val VibrancySaturationFactor: Float = 1.5f
 
-    // 导航胶囊默认档（轻透 + 边缘光学折射，product-design.md §5）
-    val BlurRadius: Dp = 10.dp
-    const val LightBlurTintAlpha: Float = 0.45f
-    const val DarkBlurTintAlpha: Float = 0.46f
-    const val BlurSaturation: Float = 1.18f
-    val RefractionHeight: Dp = 16.dp
-    val RefractionAmount: Dp = 24.dp
+    // 导航胶囊默认档（2026-11-27 Z Fold8 真机定稿，四组统一参数，product-design.md §5）
+    val BlurRadius: Dp = 11.9.dp
+    const val LightBlurTintAlpha: Float = 0.66f
+    const val DarkBlurTintAlpha: Float = 0.70f
+    const val BlurSaturation: Float = 1.06f
+    val RefractionHeight: Dp = 8.dp
+    val RefractionAmount: Dp = 16.dp
     const val DepthEffect: Boolean = false
     const val ChromaticAberration: Boolean = false
     const val VibrancyEnabled: Boolean = true
 
-    // 透明液态玻璃顶栏档（论坛吸顶顶栏 / 三栏中栏顶栏 / 详情极简顶栏，护读 + 轻边缘折射）
-    val TopBarBlurRadius: Dp = 14.dp
+    // 透明液态玻璃顶栏档（2026-11-27 Z Fold8 真机定稿，与默认档统一）
+    val TopBarBlurRadius: Dp = 11.9.dp
     const val TopBarLightBlurTintAlpha: Float = 0.66f
     const val TopBarDarkBlurTintAlpha: Float = 0.70f
     const val TopBarBlurSaturation: Float = 1.06f
     val TopBarRefractionHeight: Dp = 8.dp
     val TopBarRefractionAmount: Dp = 16.dp
 
-    // 帖子详情底部三段工具条与内联跳页条档（护读 + 克制折射；浅色 0.62–0.72 / 深色 0.68–0.76）
-    val ToolbarBlurRadius: Dp = 16.dp
-    const val ToolbarLightBlurTintAlpha: Float = 0.64f
-    const val ToolbarDarkBlurTintAlpha: Float = 0.68f
-    const val ToolbarBlurSaturation: Float = 1.08f
-    val ToolbarRefractionHeight: Dp = 12.dp
-    val ToolbarRefractionAmount: Dp = 24.dp
+    // 帖子详情底部三段工具条与内联跳页条档（2026-11-27 Z Fold8 真机定稿，与默认档统一）
+    val ToolbarBlurRadius: Dp = 11.9.dp
+    const val ToolbarLightBlurTintAlpha: Float = 0.66f
+    const val ToolbarDarkBlurTintAlpha: Float = 0.70f
+    const val ToolbarBlurSaturation: Float = 1.06f
+    val ToolbarRefractionHeight: Dp = 8.dp
+    val ToolbarRefractionAmount: Dp = 16.dp
 
-    // 毛玻璃快速回复面板档（高隔离护读：亮 16–18dp / 暗 10–14dp，浅 0.72–0.80 / 深 0.70–0.78，1dp 描边）
-    val SheetBlurRadius: Dp = 18.dp
-    val SheetDarkBlurRadius: Dp = 12.dp
-    const val SheetLightBlurTintAlpha: Float = 0.76f
-    const val SheetDarkBlurTintAlpha: Float = 0.74f
-    const val SheetBlurSaturation: Float = 1.0f
-    val SheetRefractionHeight: Dp = 10.dp
-    val SheetRefractionAmount: Dp = 18.dp
+    // 毛玻璃快速回复面板档（2026-11-27 Z Fold8 真机定稿，亮暗模糊统一 11.9dp）
+    val SheetBlurRadius: Dp = 11.9.dp
+    val SheetDarkBlurRadius: Dp = 11.9.dp
+    const val SheetLightBlurTintAlpha: Float = 0.66f
+    const val SheetDarkBlurTintAlpha: Float = 0.70f
+    const val SheetBlurSaturation: Float = 1.06f
+    val SheetRefractionHeight: Dp = 8.dp
+    val SheetRefractionAmount: Dp = 16.dp
     val SheetBorderWidth: Dp = 1.dp
     const val SheetScrimAlpha: Float = 0.35f
 
     // 降级态（无模糊）
     const val DegradedSurfaceAlpha: Float = 0.94f
 
-    // 描边：激活态为左上→右下渐变高光，浅色先垫 0.5dp 暗轮廓、再叠高光；降级态为 outlineVariant 细线
+    // 描边：激活态高光强度默认 0f（不画描边高光）；降级态始终保留 0.5dp outlineVariant 细线不受此影响
     val BorderWidth: Dp = 0.75.dp
     val DegradedBorderWidth: Dp = 0.5.dp
     const val LightBorderHighlightTopLeftAlpha: Float = 0.85f
@@ -102,7 +102,7 @@ object HiGlassTokens {
     const val DarkBorderHighlightTopLeftAlpha: Float = 0.24f
     const val DarkBorderHighlightMidAlpha: Float = 0.05f
     const val DarkBorderHighlightBottomRightAlpha: Float = 0.12f
-    const val DefaultBorderHighlightStrength: Float = 1f
+    const val DefaultBorderHighlightStrength: Float = 0f
 
     // 导航胶囊半透明选中指示器淡底（≤ 0.12）
     const val IndicatorAlpha: Float = 0.12f
@@ -155,10 +155,10 @@ data class HiGlassStyle(
     val darkBlurRadius: Dp? = null,
 ) {
     companion object {
-        /** 导航胶囊默认档：10dp 模糊、16dp/24dp 折射、vibrancy 活色、0.45/0.46 着色、1.18 饱和度。 */
+        /** 导航胶囊默认档：11.9dp 模糊、8dp/16dp 折射、vibrancy 活色、0.66/0.70 着色、1.06 饱和度、无描边高光。 */
         val Navigation: HiGlassStyle = HiGlassStyle()
 
-        /** 透明液态玻璃顶栏档：14dp 模糊、8dp/16dp 轻边缘折射、vibrancy 活色、0.66/0.70 着色、1.06 饱和度。 */
+        /** 透明液态玻璃顶栏档：11.9dp 模糊、8dp/16dp 折射、vibrancy 活色、0.66/0.70 着色、1.06 饱和度、无描边高光。 */
         val TopBar: HiGlassStyle = HiGlassStyle(
             blurRadius = HiGlassTokens.TopBarBlurRadius,
             lightTintAlpha = HiGlassTokens.TopBarLightBlurTintAlpha,
@@ -168,7 +168,7 @@ data class HiGlassStyle(
             refractionAmount = HiGlassTokens.TopBarRefractionAmount,
         )
 
-        /** 帖子详情底部工具条档：16dp 模糊、12dp/24dp 折射、vibrancy 活色、0.64/0.68 着色、1.08 饱和度。 */
+        /** 帖子详情底部工具条档：11.9dp 模糊、8dp/16dp 折射、vibrancy 活色、0.66/0.70 着色、1.06 饱和度、无描边高光。 */
         val Toolbar: HiGlassStyle = HiGlassStyle(
             blurRadius = HiGlassTokens.ToolbarBlurRadius,
             lightTintAlpha = HiGlassTokens.ToolbarLightBlurTintAlpha,
@@ -178,7 +178,7 @@ data class HiGlassStyle(
             refractionAmount = HiGlassTokens.ToolbarRefractionAmount,
         )
 
-        /** 毛玻璃快速回复面板档：亮 18dp / 暗 12dp 模糊、10dp/18dp 折射、vibrancy 单层活色、0.76/0.74 着色、1dp 描边。 */
+        /** 毛玻璃快速回复面板档：亮/暗 11.9dp 模糊、8dp/16dp 折射、vibrancy 活色、0.66/0.70 着色、1.06 饱和度、无描边高光。 */
         val Sheet: HiGlassStyle = HiGlassStyle(
             blurRadius = HiGlassTokens.SheetBlurRadius,
             lightTintAlpha = HiGlassTokens.SheetLightBlurTintAlpha,
@@ -602,20 +602,20 @@ fun HiGlassSurface(
     }
 
     // Modifier.border 在 drawContent() 之后绘制：链上靠前者最后绘制（位于顶层）。
-    // 浅色激活态将 0.75dp 白渐变高光置于前、0.5dp 暗轮廓置于后，确保暗轮廓垫底、白高光居上。
-    val borderModifier = if (styleSpec.blurEnabled && styleSpec.borderHighlightColors.size >= 2) {
-        val highlightBrush = remember(styleSpec.borderHighlightColors) {
-            Brush.linearGradient(
-                colors = styleSpec.borderHighlightColors,
-                start = Offset.Zero,
-                end = Offset.Infinite,
-            )
-        }
-        val highlightModifier = Modifier.border(styleSpec.borderWidth, highlightBrush, shape)
-        if (styleSpec.borderOutlineColor.alpha > 0f) {
-            highlightModifier.border(HiGlassTokens.DegradedBorderWidth, styleSpec.borderOutlineColor, shape)
-        } else {
-            highlightModifier
+    // 激活态仅在 borderHighlightStrength > 0 时绘制渐变高光/暗轮廓；降级态始终绘制 0.5dp outlineVariant 细描边。
+    val borderModifier = if (styleSpec.blurEnabled) {
+        val hasHighlight = styleSpec.borderHighlightColors.size >= 2 && styleSpec.borderHighlightColors.any { it.alpha > 0f }
+        val hasOutline = styleSpec.borderOutlineColor.alpha > 0f
+        when {
+            hasHighlight -> {
+                val highlightBrush = remember(styleSpec.borderHighlightColors) {
+                    Brush.linearGradient(styleSpec.borderHighlightColors, Offset.Zero, Offset.Infinite)
+                }
+                val highlightModifier = Modifier.border(styleSpec.borderWidth, highlightBrush, shape)
+                if (hasOutline) highlightModifier.border(HiGlassTokens.DegradedBorderWidth, styleSpec.borderOutlineColor, shape) else highlightModifier
+            }
+            hasOutline -> Modifier.border(HiGlassTokens.DegradedBorderWidth, styleSpec.borderOutlineColor, shape)
+            else -> Modifier
         }
     } else {
         Modifier.border(styleSpec.borderWidth, styleSpec.borderColor, shape)
