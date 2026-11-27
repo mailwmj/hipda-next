@@ -98,8 +98,8 @@
 | M7-5（全新安装回归、用户真机验收与发布，**发布/正式签名包须先获用户批准**） | 清单已就绪（`docs/agents/cards/M7-5.md`，依赖 `M7-1`–`M7-4c`、`M7-P1`、`M7-P2` 已全部合入 `main @f9862b8`） | **待用户真机验收与批准** |
 | M7-P1（看图收尾：V-E14 HD 超长图 4096 上限、R-M7-G2 S3 图集逐页楼层/作者与坐标键、R-E2b S1 精简 `media/`） | `card/M7-P1-image-polish` | **已合入 `main`（`4922caa`）** |
 | M7-P2（链接/分享/零碎：V-E16、R-M7-G3 S1/S2、R-M7-G1 S3、R-E6 O1、R-E4 N1、R-M7-2 S1） | `card/M7-P2-links-polish` | **已合入 `main`（`f9862b8`）** |
-| M7-5a（P0：登录成功被误判为「加载失败」、凭据未写入；成功判定对齐旧版、会话确认、失败清 Cookie、失败原因分文案 + debug 脱敏日志 `HxLogin`） | `card/M7-5a-login-fix`，Neon `a5c7511b` | 实现中（复杂档 R + V） |
-| M7-5b（玻璃四组定稿参数、看图保存提示、分享响应、外链 Snackbar Long、CI 上传 `release-apk-testsigned`） | `card/M7-5b-device-polish`，Neon `ad2efc9d` | 实现中（R） |
+| M7-5a（P0：登录成功被误判为「加载失败」、凭据未写入；成功判定对齐旧版、会话确认、失败清 Cookie、失败原因分文案 + debug 脱敏日志 `HxLogin`） | `card/M7-5a-login-fix` | **已合入 `main`（`30ddae7`）**：R-M7-5a APPROVE、V-M7-5a PASS，修复轮 `@99a7808` 负责人核对（变异红/绿） |
+| M7-5b（玻璃四组定稿参数、看图保存提示、分享响应、外链 Snackbar Long、CI 上传 `release-apk-testsigned`） | `card/M7-5b-device-polish` | **已合入 `main`（`3378204`）**：R-M7-5b APPROVE `@5298f4f` |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线；流程提速规则已生效（`5bae5ab`）。
@@ -129,6 +129,7 @@
   - `R-M7-1 S2`：`MainActivity` 为 `launchMode="singleTop"`，外部应用不带 `NEW_TASK` 经 `.ng.IntentActivity` 拉起时留在调用方任务栈（状态按 Activity 隔离，返回回原应用）；`M7-5` 真机验收按用户偏好确认是否需调整。
   - `R-M0-2 R4`：`M7-5` 真机阶段核验 120Hz 帧时间与卡顿率（含三栏 3 块实时液态玻璃）及全新安装回归；**构建正式签名包或发布前必须先获用户批准**。
 - **→ 后续轻修备忘**：
+  - R-M7-5b S1：看图链接白名单后续统一委托 `SafeLinkPolicy`；S2：退出看图时提前取消 `shareJob`。
   - R-M7-4a S2：**不采纳**（负责人 2026-11-27）：`if (resourcesReport.isFile)` 保持条件检查——本地只跑单测时没有 release 产物，CI 先 `assembleRelease` 再跑单测已守住。
   - R-M7-P1 S3：日后改 `PostBodyRenderer.kt` 可直传楼内图片序号 `imageIndexInFloor`，省去 `ImageViewerBoundsRegistry` 的 `duplicateSlots`（约 25 行）。
 
