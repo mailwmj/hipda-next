@@ -100,9 +100,9 @@
 | M7-P2（链接/分享/零碎：V-E16、R-M7-G3 S1/S2、R-M7-G1 S3、R-E6 O1、R-E4 N1、R-M7-2 S1） | `card/M7-P2-links-polish` | **已合入 `main`（`f9862b8`）** |
 | M7-5a（P0：登录成功被误判为「加载失败」、凭据未写入；成功判定对齐旧版、会话确认、失败清 Cookie、失败原因分文案 + debug 脱敏日志 `HxLogin`） | `card/M7-5a-login-fix` | **已合入 `main`（`30ddae7`）**：R-M7-5a APPROVE、V-M7-5a PASS，修复轮 `@99a7808` 负责人核对（变异红/绿） |
 | M7-5b（玻璃四组定稿参数、看图保存提示、分享响应、外链 Snackbar Long、CI 上传 `release-apk-testsigned`） | `card/M7-5b-device-polish` | **已合入 `main`（`3378204`）**：R-M7-5b APPROVE `@5298f4f` |
-| U1（三栏地平线 56dp、左栏与中栏列表克制化：删图、内联新、修作者截断、精简日期、内缩圆角选中与 0.5dp 分隔线） | `card/U1-shell-list-polish` | **已派发（Neon xhigh）** |
-| U2（右栏详情去网页化：56dp 单行顶栏纯图标、楼层号去蓝化、底栏互换伸缩段改弱化 `{N}楼`、单页被动多页展跳页） | `card/U2-detail-deweb-polish` | **已派发（Neon xhigh）** |
-| U3（快速回复与完整编辑器克制化：去文案重复、32dp 发送胶囊保 48dp 热区、空态文字态保校验、模态 `×` + 0.5dp 描边） | `card/U3-compose-polish` | **已派发（Neon xhigh）** |
+| U1（三栏地平线 56dp、左栏与中栏列表克制化：删图、内联新、修作者截断、精简日期、内缩圆角选中与 0.5dp 分隔线） | `card/U1-shell-list-polish` | **已合入 `main`（`3a1f5b1`）**：R-U1 APPROVE `@44810ce`（73 张截图目视），CI `46046699288` 绿 |
+| U2（右栏详情去网页化：56dp 单行顶栏纯图标、楼层号去蓝化、底栏互换伸缩段改弱化 `{N}楼`、单页被动多页展跳页） | `card/U2-detail-deweb-polish` | **已合入 `main`（`47dc302`）**：R-U2 APPROVE `@239a168`（62 张截图目视）、V-U2 PASS（CI `46054726868`），CI `46051574839` 绿 |
+| U3（快速回复与完整编辑器克制化：去文案重复、32dp 发送胶囊保 48dp 热区、空态文字态保校验、模态 `×` + 0.5dp 描边） | `card/U3-compose-polish` | **已合入 `main`（`ed59fb6`）**：R-U3 APPROVE `@fdd73ac`/`@7171380`（含 18 张合并态截图目视）、V-U3 PASS（CI `46050319847`），CI `46057585997` 绿；合并后 `V-U-int` 端到端集成探针 PASS（CI `46061080252`） |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线；流程提速规则已生效（`5bae5ab`）。
@@ -137,6 +137,9 @@
   - R-M7-P1 S3：日后改 `PostBodyRenderer.kt` 可直传楼内图片序号 `imageIndexInFloor`，省去 `ImageViewerBoundsRegistry` 的 `duplicateSlots`（约 25 行）。
   - U2 孤儿令牌清理：中段阅读进度条移除后，`HiGlassTokens` 的 `ProgressFill*` 常量暂保留不动以守住 `HiGlassScreenshotTest` 已拍板玻璃样张，后续统一清理。
   - 按楼层估算跳转（Backlog）：`InlinePageJumpBar` 当前保留按页跳转，日后可评估按估算楼层换算页码并定位楼层。
+  - R-U1 S1/S2：`ThreadListRow.kt` 宽度变化分支可直接赋 `result.hasVisualOverflow` 并在 `remember` 补 `LocalDensity.current`；`ForumScreenshotTest` 可补 1–2 条 `yyyy-M-d HH:mm` 精简日期截图样例。
+  - R-U2 S1/S2：`ThreadDetailTopBar` 未使用形参 `authorName` 后续可随调用方一并清理；`ThreadBottomToolbar` 跨楼层位数边界（`9↔10`/`99↔100`）时 `leftWidth` 可按需与中段同步弹簧。
+  - R-U3 S1/S2：`QuickReplyTestSupport.kt` 可用 `useUnmergedTree` 读子 `Surface` 高度省去 `LayoutInfo` 反射；`FullEditorIntegrationTest.kt` 颜色对照改 `toArgb()`。
 
 ---
 
