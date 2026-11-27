@@ -95,9 +95,9 @@
 | CI-heap | — | 单测 JVM 内存余量：`hipda/build.gradle.kts` `Test` 块设置 `maxHeapSize = "1536m"` + `forkEvery = 400L`，消除测试过千后 Roborazzi 大图 OOM（**已合入 `ed361c2`**，负责人核对 `@822dccb`） | E6 |
 | M7-1 | — | 切换启动入口、`IntentActivity` 和快捷方式到新外壳（保留 `.ng.IntentActivity` 别名）；收口 `R-E16 S1`（`<queries>` + `https://` `BROWSABLE` 探测）与 `R-M7-G2 S2`（**已合入 `846ff3a`**，R APPROVE / V PASS 含 API 36 模拟器冒烟 `@c001dee`） | E1–E16、E6b、M7-G1..G4 |
 | M7-2 | — | 删除旧界面、旧解析器与 24 项旧依赖（EventBus/jobqueue/MaterialDrawer/Calligraphy/`jitpack.io` 等）及 `:emoji` 旧 View；`HiNextApplication` 独立接管前后台计数与脱敏崩溃日志；收口 `C1b#1` 与 `R-D9 S3`；release APK 降幅 `-37.98%`（**已合入 `4c7f6a0`**，R APPROVE / V PASS 含 API 36 模拟器冒烟 `@1c2410b`） | M7-1 |
-| M7-3 | — | targetSdk 升到 36：通知权限、MediaStore 下载、全面屏；测试改 JDK21 launcher（负责人已授权 `build.gradle.kts` `Test` 块与 `android.yml` `setup-java`）（**在途**，高风险 `R + V`） | M7-1、M7-2 |
-| M7-4a | — | Baseline Profile 基建与生成、`isShrinkResources = true` 与动态资源 keep 规则（**在途**，R-M7-4a APPROVE `@85e3de0`，V 进行中；合入 `main` 时须同步清理已删 Iconics 字体断言） | M7-1 |
-| M7-4b | — | 收紧 R8 规则（清除旧 `HiSettingsHelper` 等已删类及泛保留规则，保留经冒烟验证的 `com.kyant.backdrop`/`shapes` 必要规则并复跑 release 冒烟）（**在途**，基于 `4c7f6a0` 开发中，高风险 `R + V`） | M7-2 |
+| M7-3 | — | targetSdk 升到 36：通知权限、MediaStore 下载、全面屏；测试改 JDK21 launcher（负责人已授权 `build.gradle.kts` `Test` 块与 `android.yml` `setup-java`）（**已合入 `8a9afe1`**，R-M7-3 第 2 轮 APPROVE `@3f8bcd6`，V-M7-3 PASS run `45853162043`） | M7-1、M7-2 |
+| M7-4a | — | Baseline Profile 基建与生成、`isShrinkResources = true` 与动态资源 keep 规则（**已合入 `adaa6c3`**，R-M7-4a APPROVE `@85e3de0`，V-M7-4a PASS run `45840636512`；已提前清理 `R-M7-2 S2` Iconics 规则） | M7-1 |
+| M7-4b | — | 收紧 R8 规则（清除旧 `HiSettingsHelper` 等已删类及泛保留规则，保留经冒烟验证的 `com.kyant.backdrop`/`shapes` 必要规则并复跑 release 冒烟）（**已合入 `0916fb1`**，R-M7-4b APPROVE `@49c0876`，V-M7-4b PASS run `45853222271` 含 30 张全屏截图走查） | M7-2 |
 | M7-5 | — | 全新安装的回归测试、真机性能验收与发布（含三栏 3 块实时液态玻璃 120Hz 帧率复验，**需用户设备与用户批准**） | M7-3、M7-4a、M7-4b |
 
 页面卡（E 线）在定稿时按“布局和状态”“交互”“动效”继续检查大小，超过拆分规则的再拆。
@@ -109,7 +109,7 @@
 - E 线：
   - **M5 阅读核心全部完成**（`E0`、`E15`、`E2a`、`E1`、`E2b`、`E2d`、`E3`、`E2c`、`E4 @ 92e1563` 全合入，main CI `45758541824` 绿）；
   - **M6 页面群全部完成**（`E-slots` `4b6c1f0`、`E8` `0883c89`、`E12` `158ac9c`、`E10` `eb1ace1`、`E14` `1cffcd9`、`M6-polish` `0eebc8a`、`E16` `6ff55a9` 均已合入）；
-  - **编辑器线与 M7-0 ~ M7-2 全部完成**：`E5`（`afa3783`）、`M7-0`、`M7-G4`（`fd414a1`）、`M7-G1`（`83484fd`）、`M7-G2`（`f2fbe60`）、`M7-G3`（`bb5a870`）、`E6`（`2739d4d`）、`CI-heap`（`ed361c2`）、`E6b`（`b803846`）、`M7-1`（`846ff3a`）、`E6b-followup`（`08a43a0`）、`M7-2`（`4c7f6a0`）、`E7`（`83e0948`）均已合入；当前 **`M7-3`、`M7-4a`（R APPROVE / V 进行中）、`M7-4b`（开发中）在途**；之后进入 **`M7-5` 用户真机验收与发布（需用户批准）**。
+  - **编辑器线与 M7 开发全部完成**：`E5`（`afa3783`）、`M7-0`、`M7-G4`（`fd414a1`）、`M7-G1`（`83484fd`）、`M7-G2`（`f2fbe60`）、`M7-G3`（`bb5a870`）、`E6`（`2739d4d`）、`CI-heap`（`ed361c2`）、`E6b`（`b803846`）、`M7-1`（`846ff3a`）、`E6b-followup`（`08a43a0`）、`M7-2`（`4c7f6a0`）、`E7`（`83e0948`）、`M7-4a`（`adaa6c3`）、`M7-3`（`8a9afe1`）、`M7-4b`（`0916fb1`）均已合入 `main @0916fb1`（合并态 CI `45920948103` `emulator=true` 与 main 推送 CI `45922502190` 全绿）；下一步进入 **`M7-5` 用户真机验收与发布（需用户批准）**。
 
 ## 用户要做的事
 - B1b 之后，一次做完：在 debug 工具页里登录 → 确认能抓到版块页（这也是 M1 的验收）→ 按清单一键导出样本。

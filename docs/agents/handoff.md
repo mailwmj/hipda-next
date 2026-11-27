@@ -1,4 +1,4 @@
-# 负责人交接说明（2026-11-26 20:42 +07）
+# 负责人交接说明（2026-11-27 09:24 +07）
 
 接手的负责人：先按 `team-lead` skill 的「Session start」读 `docs/agents/DISPATCH.md`、`docs/agents/lesson.md`、`docs/agents/decisions.md`，再读本文件。用中文和用户交流。以 `list_agents`、`list_schedules` 的实际查询结果为准。
 
@@ -7,7 +7,7 @@
 ## 1. 全局进度总览
 
 - 设计与流程文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4；`docs/agents/decisions.md`（`0895b83`）；`docs/agents/DISPATCH.md`、`lesson.md` 与 `docs/agents/cards/_common.md` 已落地站点 scheme 白名单阻断（`00cb3c4`）、**流程提速**（`e735e7a` + `5bae5ab`）、2 条通用新规（`1dc594e`）、“跨卡浮层/返回/玻璃卡必做合入后真实链路探针”（`3617fad`）、“常驻浮层/抽屉 `BackHandler` 条件启用并按打开状态重挂”、“Compose 拖拽态同步 state + `try/finally` 终态”、“单测 JVM 1536m 堆上限 + `forkEvery=400`”、“Roborazzi 截图须由 R 逐张目视”及“基于稳定在审分支提前开工并写清冲突责任方”等经验。另外 **`team-lead` skill 已提交 `5a2fc95`，等待用户确认是否推送**。
-- **已合并进 `main`**（当前代码 `HEAD`：`83e0948`；**M5 / M6 / 编辑器线 / M7-0 ~ M7-2 全部完成；在途 `M7-3`、`M7-4a`、`M7-4b`；之后 `M7-5` 用户真机验收与发布（需用户批准）**；M5 验收包已记录于 `docs/device-check.md`）：
+- **已合并进 `main`**（当前代码 `HEAD`：`0916fb1`，合并态 CI `45920948103`（`emulator=true`）全绿、main 推送 CI `45922502190` 绿并产出 `debug-apk`；**M5 / M6 / 编辑器线 / M7 开发全部完成，下一步 `M7-5` 用户真机验收与发布（需用户批准）**；真机验收包已更新至 `docs/device-check.md`）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
   - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
@@ -74,22 +74,25 @@
     - E6b-followup 闭合 `R-E6b S1/S2`：切号或登出时自动收起已打开删楼确认框且不误发请求，独立末页仅剩单楼被删空时自动回拉前一页（负责人核对 `@e9976d5`）→ `08a43a0`
     - M7-2 删除全部旧 View 界面、旧 Java 解析器（生产 `.java` 归零）与 24 项旧依赖（含移除 `jitpack.io`），`HiNextApplication` 独立接管前后台可见计数与脱敏崩溃日志写入，固化 `C1b#1` 61 组表情四元组单测与 `R-D9 S3` 清理遗留 `"noti_work"`，release APK 体积由 `9.87 MB` 降至 `6.12 MB`（**-37.98%**）（R-M7-2 APPROVE `@1c2410b`；V-M7-2 PASS 含 API 36 模拟器 debug/release 冒烟 `@1c2410b`）→ `4c7f6a0`
     - E7 表情选择面板与键盘等高原地互换（`EmojiPanelSlotBox` 唯一 IME 消费点 + 共享净高缓存防导航栏污染，覆盖快速回复、完整编辑器含居中模态/编辑态及 `M7-0 #11` 短消息输入栏）、§7.4 无记忆限高与外接键盘超时收敛、整枚论坛表情代码回删、闭合 `C1b#3`（`strings_emoji.xml`）与 `R-M7-G4 S2`（纯图片短消息气泡隐藏复制）（R-E7 两轮 APPROVE `@e25e057`；V-E7 首轮检出居中模态底缘位移 → 第 2 轮 29/29 探针 PASS `@e25e057`）→ `83e0948`
+    - M7-4a Baseline Profile 基建与按需生成（`:baselineprofile` 离线回环生成、入库 `baseline-prof.txt`/`startup-prof.txt` 配合 `profileinstaller` 冷启 `FirstContent` 降 `-10.7%`）、开启 `isShrinkResources = true` 并以 `keep.xml` + 守卫测试保住 101 枚表情 PNG 与动态图标且提前清除 `R-M7-2 S2` 旧 Iconics 规则（R-M7-4a APPROVE `@85e3de0`；V-M7-4a PASS 含 API 36 离线冒烟 run `45840636512`）→ `adaa6c3`
+    - M7-3 `targetSdk` 升至 `36`（JDK 21 单测运行器 + Java 17 编译产物、`POST_NOTIFICATIONS` 权限流程与开关/系统撤权双向同步及拒权降级、`MediaStore` 无存储权限下载/保存、全应用含看图/登录/账号/抽屉/编辑器 Edge-to-Edge 安全区与 `enableOnBackInvokedCallback`；R-M7-3 第 2 轮 APPROVE `@3f8bcd6`；V-M7-3 PASS 含 API 28–36 矩阵与 API 36 模拟器冒烟 run `45853162043`）→ `8a9afe1`
+    - M7-4b R8 规则收紧（清除 `net.jejer.hipda.**`/`androidx.**` 过宽通配及已删旧库死规则、定向 `allowobfuscation` 保留 `com.kyant.backdrop`/`shapes` 核心类与行号表、新增 `ProguardRulesGuardTest` 死规则与 Release DEX/mapping 守卫，合并 `M7-4a` 后 Release APK 降至 `4,553,230 B` / 去重 `38,222` 方法；R-M7-4b APPROVE `@49c0876`；V-M7-4b PASS 含 API 36 release 离线全屏 30 张截图走查 run `45853222271`）→ `0916fb1`（**合并态 CI `45920948103`（`emulator=true`）与 main 推送 CI `45922502190` 全绿，M7 开发全部完成**）
 - **阶段验收状态**：
   - **M1 / M2 / M3 / M4**：均已验收通过或全部合入（M4 待用户用真机包调参回写 §5）。
   - **M5 阅读核心全部完成**（9/9 卡全部合入，`main @ 92e1563`，CI `45758541824` 绿；M5 真机验收清单已更新至 `docs/device-check.md`）。
   - **M6 页面群全部完成**（`E-slots` `4b6c1f0`、`E8` `0883c89`、`E12` `158ac9c`、`E10` `eb1ace1`、`E14` `1cffcd9`、`M6-polish` `0eebc8a`、`E16` `6ff55a9` 全部已合入）。
   - **编辑器线全部完成**（`E5` `afa3783`、`E6` `2739d4d`、`E6b` `b803846`、`E6b-followup` `08a43a0`、`E7` `83e0948` 全部已合入）。
-  - **M7-0 ~ M7-2 全部完成**（`M7-0`、`M7-G1..G4`、`CI-heap` `ed361c2`、`M7-1` `846ff3a`、`M7-2` `4c7f6a0` 全部已合入）；**在途 `M7-3`、`M7-4a`、`M7-4b`**；之后进入 **`M7-5` 用户真机验收与发布（需用户批准）**。
-- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `M7-G3`/`R-M7-G3`、`E6`/`R-E6`/`V-E6`、`CI-heap`、`E6b`/`R-E6b`/`V-E6b`、`M7-1`/`R-M7-1`/`V-M7-1`、`M7-2`/`R-M7-2`/`V-M7-2`、`E7`/`R-E7`/`V-E7` 共 36 份卡与报告；`E6b-followup` 为轻量小修无独立卡报，核对记录见 `08a43a0`/`e9976d5`；`E2c`/`E-slots` 卡报位于工作副本待补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`、`_review_common.md`、`_verify_common.md`。
+  - **M7 开发全部完成**（`M7-0`、`M7-G1..G4`、`CI-heap` `ed361c2`、`M7-1` `846ff3a`、`M7-2` `4c7f6a0`、`M7-4a` `adaa6c3`、`M7-3` `8a9afe1`、`M7-4b` `0916fb1` 全部已合入 `main`）；下一步进入 **`M7-5` 用户真机验收与发布（需用户批准）**。
+- 已合并卡的卡片与报告持续归档至 `docs/agents/cards/`、`docs/agents/reports/`（本轮已归档 `M7-3`/`R-M7-3`/`V-M7-3`、`M7-4`/`R-M7-4`/`V-M7-4`/`M7-4a`/`R-M7-4a`/`V-M7-4a`、`M7-4b`/`R-M7-4b`/`V-M7-4b` 与 `M7-5` 清单共 17 份文档，`V-M7-4b-artifacts` 不入仓；`E6b-followup` 为轻量小修无独立卡报，核对记录见 `08a43a0`/`e9976d5`；`E2c`/`E-slots` 卡报位于工作副本待补档）；工作副本位于 `/home/mir/Documents/hipda-next.wt/_cards/`、`_reports/`，通用条款在 `_cards/_common.md`、`_review_common.md`、`_verify_common.md`。
 
 ## 2. 进行中与待派发
 
 | 卡号 | 分支 / worktree | 状态 |
 |---|---|---|
-| M7-3（targetSdk 升至 36：通知权限、MediaStore 下载、全面屏；测试改 JDK21 launcher，负责人已授权改 `build.gradle.kts` `Test` 块与 `.github/workflows/android.yml` `setup-java`） | `card/M7-3-target-sdk-36` | **在途** |
-| M7-4a（Baseline Profile 基建与生成、`isShrinkResources = true` 与动态资源 keep 规则） | `card/M7-4a-baseline-profile` | **在途**（R-M7-4a APPROVE `@85e3de0`，V 进行中） |
-| M7-4b（R8 规则收紧与清除已删旧类规则，基于 `4c7f6a0`） | `card/M7-4b-r8-tighten` | **在途**（开发中） |
-| M7-5（全新安装回归、用户真机验收与发布，**发布/正式签名包须先获用户批准**） | 待派（依赖 `M7-3`、`M7-4a`/`M7-4b`） | **待排期**（需用户批准） |
+| M7-3（targetSdk 升至 36：通知权限、MediaStore 下载、全面屏；测试改 JDK21 launcher） | `card/M7-3-target-sdk-36` | **已合入 `main`（`8a9afe1`）** |
+| M7-4a（Baseline Profile 基建与生成、`isShrinkResources = true` 与动态资源 keep 规则） | `card/M7-4a-baseline-profile` | **已合入 `main`（`adaa6c3`）** |
+| M7-4b（R8 规则收紧与清除已删旧类规则） | `card/M7-4b-r8-tighten` | **已合入 `main`（`0916fb1`）** |
+| M7-5（全新安装回归、用户真机验收与发布，**发布/正式签名包须先获用户批准**） | 清单已就绪（`docs/agents/cards/M7-5.md`，依赖 `M7-1`–`M7-4b` 已全部合入 `main @0916fb1`） | **待用户真机验收与批准** |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线；流程提速规则已生效（`5bae5ab`）。
@@ -99,7 +102,7 @@
 
 - **BATCH-4 计划（已全部合入收官，归档至 `docs/agents/cards/BATCH-4.md`）**：12 张卡、5 波全部合入 `main`。
 - **BATCH-5 计划（M5 全部完成，归档至 `docs/agents/cards/BATCH-5.md`）**：9 卡 4 波全部合入 `main`（`E0`、`E15`、`E2a`、`E1`、`E2b`、`E2d`、`E3`、`E2c`、`E4 @ 92e1563`，main CI `45758541824` 绿），已出 M5 真机验收包。
-- **M6、编辑器线与 M7 主干收尾**：**M6、编辑器线（`E5`/`E6`/`E6b`/`E6b-followup`/`E7`）与 `M7-0`～`M7-2` 已全部合入 `main`**（`HEAD` `@83e0948`）；当前 **`M7-3`（targetSdk 36）、`M7-4a`（Baseline Profile + 资源缩减，R APPROVE / V 进行中）、`M7-4b`（R8 收紧，开发中）在途**；三卡合入后进入最终 **`M7-5` 用户真机验收与发布（需用户批准）**。
+- **M6、编辑器线与 M7 开发全部完成**：**M6、编辑器线（`E5`/`E6`/`E6b`/`E6b-followup`/`E7`）与 `M7-0`～`M7-4b`（含 `M7-4a` `adaa6c3`、`M7-3` `8a9afe1`、`M7-4b` `0916fb1`）已全部合入 `main`**（`HEAD` `@0916fb1`，合并态 CI `45920948103` `emulator=true` 与 main 推送 CI `45922502190` 全绿）；下一步进入最终 **`M7-5` 用户真机验收与发布（需用户批准）**。
 - **待观察风险**：
   - **Cloudflare 桌面 UA 下 WebView 过验证尚未在真机触发**：A5c 切换为桌面 Linux Chrome UA + Client Hints（`platform=Linux`、`mobile=false`）后，真机 M1 请求均直接 200 通过、未触发 Cloudflare 人机验证；该 UA 组合下的 WebView 自动/人工过盾与 `cf_clearance` 同步路径尚未经真机实测，列为待观察风险，后续真机首次触发验证时重点核实。
   - **安全提问报错文案格式（`R-E15 S5`）**：若真机 4d4y.com 对安全提问错返回不含 `"登录失败"` 前缀的原文，需记录原文以供 `LoginParser` 补配（已列入 `docs/device-check.md` 第 1 项）。
@@ -108,30 +111,29 @@
 
 ## 4. 派发后续卡时必须带入的审查遗留建议（尚待处理项）
 
-> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4、B9a/B9b/B8/B7/D1/D2/D4/D5/D6/D7/D8a/D8b/D9/G1/G2/C1b#1/#3/C4c/C4d/C5b/A6/E0/E1/E2a/E2b/E2d/E2c/E3/E4/E5/E6/E6b/E6b-followup/E7/E-slots/E8/E10/E12/E14/E15/E16/D-cleanup/M6-polish/M7-G1/M7-G2/M7-G3/M7-G4/M7-1/M7-2 全部已闭合项）已移除，下面为**进行中或尚未落地**的条目：
+> 已合入闭环的条目（含 R-B1c S1/S2、A1 S4、B9a/B9b/B8/B7/D1/D2/D4/D5/D6/D7/D8a/D8b/D9/G1/G2/C1b#1/#3/C4c/C4d/C5b/A6/E0/E1/E2a/E2b/E2d/E2c/E3/E4/E5/E6/E6b/E6b-followup/E7/E-slots/E8/E10/E12/E14/E15/E16/D-cleanup/M6-polish/M7-G1/M7-G2/M7-G3/M7-G4/M7-1/M7-2/R-M7-2 S2/R-M7-3/R-M7-4a S1/M7-3/M7-4a/M7-4b 全部已闭合项）已移除，下面为**进行中或尚未落地**的条目：
 
 - **→ “毛玻璃定稿”小卡（待用户用真机 debug 实时调参面板给出最终参数后派发）**：
   - 将用户拍板的最终液态玻璃参数与同屏上限 `3` 回写 `docs/design/product-design.md` §5。
 - **→ 真机观察（见 `docs/device-check.md`）**：
   - R-E2b S2：快速惯性滑行（fling）途中首楼越顶图片解码完成触发 `requestScrollToItem` 是否打断惯性顿停；若真机可感知则评估不中断手势的偏移修正策略。
   - R-E15 S5：安全提问回答错误时记录真实站点返回原文，确认是否缺 `"登录失败"` 前缀。
-- **→ M7-4a 合入联动提醒（`R-M7-2 S2`，合并进含 `M7-2` 的 `main` 时必做）**：
-  - `M7-2` 已删除 Android-Iconics 字体库，合入 `M7-4a` 时须同步从 `hipda/src/main/res/raw/keep.xml` 与 `ReleaseResourceAndProfileGuardTest.kt` 移除 `@string/define_font_GoogleMaterial` / `@string/define_font_fontawesome` 的保留规则与断言，避免合并后 CI 单测报红。
-- **→ M7-4b（在途，R8 规则收紧）**：
-  - 收紧 `hipda/proguard-rules.txt`（清除 `R-M7-4a S3` 旧 `HiSettingsHelper` 等已删类及 `TypeToken`/`androidx.**` 泛保留规则，保留经冒烟验证的 `com.kyant.backdrop`/`shapes` 必要规则并跑通 CI `emulator=true` release 冒烟）。
-- **→ M7-3 / M7-5（在途与真机验收备忘）**：
-  - `R-M7-1 S2`：`MainActivity` 为 `launchMode="singleTop"`，外部应用不带 `NEW_TASK` 经 `.ng.IntentActivity` 拉起时留在调用方任务栈（状态按 Activity 隔离，返回回原应用）；`M7-3` / `M7-5` 真机验收按用户偏好确认是否需调整。
+- **→ M7-5（真机验收备忘）**：
+  - `R-M7-1 S2`：`MainActivity` 为 `launchMode="singleTop"`，外部应用不带 `NEW_TASK` 经 `.ng.IntentActivity` 拉起时留在调用方任务栈（状态按 Activity 隔离，返回回原应用）；`M7-5` 真机验收按用户偏好确认是否需调整。
   - `R-M0-2 R4`：`M7-5` 真机阶段核验 120Hz 帧时间与卡顿率（含三栏 3 块实时液态玻璃）及全新安装回归；**构建正式签名包或发布前必须先获用户批准**。
 - **→ 后续轻修备忘**：
   - R-E2b S1：精简 `feature/threaddetail/media/` 约 60–65 行冗余包装与零生产调用重载；V-E14 观察：`ImageViewerPage.kt:178` 直开 HD 超长高图可考虑补 `4096` 上限；R-E4 N1：`DefaultThreadDetailRepository` 可选对 `readingPositionDao` 读写加轻量 `Mutex`；V-E16 观察：`ThreadBottomToolbar.openExternalHttpUrl` 可选统一复用 `AndroidExternalLinkOpener`；R-M7-G1 S3：列表已在顶时 `hiTopBarTapToScrollTop` 可按 `isScrolled` 启用；R-M7-G2 S3：多图横滑跨楼层按页扩展 `floorNumber`/`author` 与重复 URL 坐标键；R-M7-G3 S1/S2：重复点击同 `tid` 原始 URL 链接的 `navSeq` 触发优化与非 80 自定义端口分享 URL 收紧 `https`；R-E6 O1：详情下钻 `UserProfile` 时 `DetailPane` Snackbar 底部抬高余量微调；R-M7-2 S1：`HiNextApplicationTest` 模拟崩溃可补带 `formhash`。
+  - R-M7-4a S2：`ReleaseResourceAndProfileGuardTest.kt:230` 可将 `if (resourcesReport.isFile)` 收紧为 `assertTrue(resourcesReport.isFile)`，使本地手工 `assembleRelease` 后同样强制校验 `resources.txt`。
+  - R-M7-4a S3 / V-M7-4a 观察 / R-M7-4b S1：三卡合入 `main` 后可手动触发一次 `workflow_dispatch -f generate_baseline_profile=true` 刷新 `baseline-prof.txt`/`startup-prof.txt`，自然清除 48 条旧 `HiSettingsHelper` 条目并补入 `MainActivity`、`E7` 表情面板与 `M7-3` 热点。
+  - R-M7-4b S2：删除未引用历史文件 `hipda/proguard-android.txt`，并将 `:baselineprofile` 目录加入 `ProguardRulesGuardTest.collectProjectProguardFiles` 扫描列表。
 
 ---
 
 ## 5. 用户要做的事
 
-1. **M5 验收包真机验证 + 液态玻璃四组调参（最新包 `main` @ `92e1563`，CI `45758541824`；保留旧包 `db52669`/`c0fc15d` 记录）**：按 `docs/device-check.md` 逐项验证阅读位置/位置栈/抽屉返回、三段玻璃工具条与内联跳页条、全屏看图、120Hz 三栏玻璃预算与极端可读性、折叠/铰链、M6 页面浏览与日志脱敏，并用同一包在「HiPDA 预览 → 外壳 → 调参」给出四档最终参数回写 §5（写操作项均已标为可选）。
+1. **M7-5 全新安装回归与真机 120Hz 验收 + 液态玻璃四组调参（最新包 `main` @ `0916fb1`，CI `45922502190` `debug-apk`；旧包 `92e1563`/`db52669`/`c0fc15d` 留作对照）**：按 `docs/agents/cards/M7-5.md` 与 `docs/device-check.md` 验证全新安装、图标与快捷方式、`.ng.IntentActivity` 外链防自环、通知权限、`MediaStore`、全面屏、读帖/发帖链路及 120Hz 三栏 3 块液态玻璃帧率与真实 Android Keystore 下的 Tink 凭据/Cookie 加密读写恢复，并用同一包「HiPDA 预览 → 外壳 → 调参」给出四档最终参数回写 §5（写操作项均为可选）。
 2. **确认 `team-lead` skill（`5a2fc95`）是否推送**。
-3. **阶段验收（M7）**：在折叠屏真机核验全新安装回归、3 块液态玻璃 120Hz 帧率与真实 Android Keystore 下的 Tink 凭据/Cookie 加密读写与恢复。
+3. **正式发布批准门禁**：M7-5 全部通过且性能达标后，决定是否批准构建正式签名 release 包或发布。
 
 ---
 
