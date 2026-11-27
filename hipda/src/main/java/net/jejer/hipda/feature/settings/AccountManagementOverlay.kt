@@ -31,6 +31,7 @@ import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
+import net.jejer.hipda.ui.designsystem.hiFullscreenOverlaySafePadding
 import net.jejer.hipda.ui.designsystem.feedback.hiListItemPressIndication
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.state.HiLoadingSpinner
@@ -231,13 +232,13 @@ fun AccountManagementContent(
     if (isModalCard) {
         Box(modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize().background(cs.scrim.copy(alpha = ACCOUNT_SCRIM_ALPHA)).clickable(remember { MutableInteractionSource() }, null, enabled = !uiState.isBusy, onClick = onDismiss))
-            Surface(Modifier.align(Alignment.Center).systemBarsPadding().padding(24.dp).widthIn(max = ACCOUNT_MAX_WIDTH).fillMaxWidth().semantics { paneTitle = title; isTraversalGroup = true }, shape = HiShapeTokens.Large, color = cs.surfaceContainerHigh, shadowElevation = 6.dp) {
+            Surface(Modifier.align(Alignment.Center).hiFullscreenOverlaySafePadding(includeTop = true, includeBottomNav = true).padding(24.dp).widthIn(max = ACCOUNT_MAX_WIDTH).fillMaxWidth().semantics { paneTitle = title; isTraversalGroup = true }, shape = HiShapeTokens.Large, color = cs.surfaceContainerHigh, shadowElevation = 6.dp) {
                 panel(Modifier.fillMaxWidth())
             }
         }
     } else {
         Surface(modifier.fillMaxSize().semantics { paneTitle = title; isTraversalGroup = true }, color = cs.surface) {
-            panel(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding())
+            panel(Modifier.fillMaxSize().hiFullscreenOverlaySafePadding(includeTop = true, includeBottomNav = true))
         }
     }
 

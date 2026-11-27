@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.hiHorizontalSafeInsets
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
@@ -299,6 +300,12 @@ fun HiAdaptiveShell(
             },
         )
 
+    val horizontalSafeInsets = if (paneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) {
+        Modifier
+    } else {
+        Modifier.windowInsetsPadding(WindowInsets.hiHorizontalSafeInsets)
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -307,6 +314,7 @@ fun HiAdaptiveShell(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .then(horizontalSafeInsets)
                 .then(underlyingInteractionGuard),
         ) {
             Box(

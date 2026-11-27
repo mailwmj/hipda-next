@@ -45,6 +45,7 @@ import net.jejer.hipda.feature.common.ForumListSource
 import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
@@ -140,7 +141,7 @@ fun rememberForumTopBarScrollState(collapsible: Boolean): ForumTopBarScrollState
 @Composable
 internal fun forumTopBarExpandedHeight(showForumTabs: Boolean): Dp {
     val density = LocalDensity.current
-    val statusBar = with(density) { WindowInsets.statusBars.getTop(density).toDp() }
+    val statusBar = with(density) { WindowInsets.hiTopSafeBar.getTop(density).toDp() }
     return statusBar + FORUM_TOP_BAR_TITLE_ROW_HEIGHT + if (showForumTabs) FORUM_TAB_ROW_HEIGHT else 0.dp
 }
 
@@ -169,7 +170,7 @@ fun ForumTopBar(
     Box(modifier = modifier.fillMaxWidth().clipToBounds()) {
         ForumTopBarBackground(glassState, isScrolled, Modifier.matchParentSize().graphicsLayer { translationY = -scrollState.collapseOffsetPx })
         Column(Modifier.fillMaxWidth()) {
-            Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+            Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
             Box(Modifier.fillMaxWidth().clipToBounds()) {
                 Column(Modifier.fillMaxWidth().graphicsLayer { translationY = -scrollState.collapseOffsetPx }) {
                     ForumTopBarUpperRow(

@@ -39,6 +39,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
+import net.jejer.hipda.ui.designsystem.hiFullscreenOverlaySafePadding
 import net.jejer.hipda.ui.designsystem.feedback.HiIconSwitch
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.*
@@ -117,7 +118,7 @@ fun LoginScreenContent(
                     .clickable(scrimInteraction, indication = null, enabled = !uiState.isSubmitting, onClick = onDismiss),
             )
             Surface(
-                modifier = Modifier.align(Alignment.Center).systemBarsPadding().imePadding().padding(24.dp)
+                modifier = Modifier.align(Alignment.Center).hiFullscreenOverlaySafePadding(includeTop = true, includeBottomNav = true, includeIme = true).padding(24.dp)
                     .widthIn(max = LOGIN_MAX_WIDTH).fillMaxWidth()
                     .semantics { paneTitle = title; isTraversalGroup = true },
                 shape = HiShapeTokens.Large,
@@ -136,7 +137,7 @@ fun LoginScreenContent(
             modifier = modifier.fillMaxSize().semantics { paneTitle = title; isTraversalGroup = true },
             color = MaterialTheme.colorScheme.surface,
         ) {
-            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+            Column(Modifier.fillMaxSize().hiFullscreenOverlaySafePadding(includeTop = true, includeBottomNav = true, includeIme = true)) {
                 LoginTopBar(title, isModalCard = false, onDismiss = onDismiss)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {

@@ -25,6 +25,7 @@ import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.feature.mine.*
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.feedback.*
 import net.jejer.hipda.ui.designsystem.motion.*
 import net.jejer.hipda.ui.designsystem.state.HiStateAction
@@ -81,7 +82,7 @@ internal fun SearchScreenContent(
 
     Column(modifier.fillMaxSize().background(cs.surface).semantics { paneTitle = searchPaneTitle; isTraversalGroup = true }) {
         Column(Modifier.fillMaxWidth().background(topBarColor).hiTopBarTapToScrollTop(scrollToTop)) {
-            Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+            Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
             Row(Modifier.fillMaxWidth().padding(start = if (showBack && onBack != null) 4.dp else 16.dp, end = 16.dp, top = 8.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (showBack && onBack != null) MineIconButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.common_action_back), onBack, cs.onSurface, 24.dp)
                 TextField(

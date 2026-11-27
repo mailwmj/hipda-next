@@ -4,7 +4,7 @@ kotlin = "2.4.21"
 ksp = "2.3.14"
 compileSdk = "37"
 compileSdkMinor = "1"
-targetSdk = "30"
+targetSdk = "36"
 minSdk = "26"
 
 # Jetpack Compose & UI

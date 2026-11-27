@@ -61,6 +61,7 @@ import net.jejer.hipda.parser.threaddetail.PostFloor
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.glass.hiGlassSource
 import net.jejer.hipda.ui.designsystem.glass.rememberHiGlassState
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
@@ -676,7 +677,7 @@ fun ThreadDetailPane(
     }
 
     val cs = MaterialTheme.colorScheme
-    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val statusBarTop = WindowInsets.hiTopSafeBar.asPaddingValues().calculateTopPadding()
     val hasActiveFilter = uiState.filter !is ThreadDetailFilterUi.All
     val topClearance = statusBarTop + ThreadDetailTopBarHeight + if (hasActiveFilter) FilterCapsuleBarHeight else 0.dp
     val showChallenge = uiState.floors.isEmpty() && (uiState.challengeState !is ChallengeState.Idle || uiState.challengeFailure != null)

@@ -192,7 +192,7 @@ fun SmsConversationScreen(
             }
 
             if (canShowInputBar) {
-                val inputBarBottomPadding = if (emojiController.bottomSlotHeightDp > 0.dp || isEmojiPanelOpen) 0.dp else contentPadding.calculateBottomPadding()
+                val inputBarBottomPadding = if (isEmojiPanelOpen) 0.dp else (contentPadding.calculateBottomPadding() - emojiController.bottomSlotHeightDp).coerceAtLeast(0.dp)
                 SmsSolidInputBar(
                     inputValue = inputFieldValue,
                     cooldownSeconds = uiState.cooldownSeconds,

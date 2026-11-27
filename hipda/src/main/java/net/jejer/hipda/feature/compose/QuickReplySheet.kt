@@ -384,7 +384,7 @@ fun QuickReplySheet(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val paneHeightDp = maxHeight
-        val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(density).toDp() }
+        val statusBarTopDp = with(density) { WindowInsets.hiTopSafeBar.getTop(density).toDp() }
         val emojiController = rememberEmojiPanelController(
             windowHeightDp = paneHeightDp,
             onShowKeyboard = { runCatching { inputFocusRequester.requestFocus() }; keyboardController?.show() },

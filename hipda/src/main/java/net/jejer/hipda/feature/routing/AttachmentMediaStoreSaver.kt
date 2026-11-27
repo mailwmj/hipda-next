@@ -1,6 +1,7 @@
 package net.jejer.hipda.feature.routing
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
@@ -201,6 +202,7 @@ class AndroidAttachmentMediaStoreSaver(
         }
     }
 
+    @SuppressLint("NewApi")
     private suspend fun saveToMediaStoreQ(
         safeName: String,
         mimeType: String,
@@ -213,7 +215,7 @@ class AndroidAttachmentMediaStoreSaver(
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+        val uri = runCatching { resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) }.getOrNull() ?: return null
         return try {
             val stream = resolver.openOutputStream(uri) ?: run {
                 runCatching { resolver.delete(uri, null, null) }

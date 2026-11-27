@@ -45,6 +45,7 @@ import kotlinx.coroutines.launch
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 
@@ -140,7 +141,7 @@ fun HiSolidTopBar(
     val hasBack = showBack && onBack != null
 
     Column(modifier.fillMaxWidth().background(barColor)) {
-        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
         HiCappedFontScale {
             Row(
                 modifier = Modifier

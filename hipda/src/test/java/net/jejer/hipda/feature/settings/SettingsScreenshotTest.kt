@@ -1,5 +1,6 @@
 package net.jejer.hipda.feature.settings
 
+import android.Manifest
 import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -12,6 +13,7 @@ import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import net.jejer.hipda.data.account.SavedAccount
@@ -25,9 +27,11 @@ import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.HiThemeMode
 import net.jejer.hipda.ui.designsystem.captureHiSnapshot
 import net.jejer.hipda.ui.designsystem.glass.assertGlassSurfaceCountAtMost
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -42,6 +46,11 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(application = Application::class, sdk = [34])
 class SettingsScreenshotTest {
+
+    @Before
+    fun grantNotificationPermission() {
+        shadowOf(ApplicationProvider.getApplicationContext<Application>()).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    }
 
     private val sampleAccounts = listOf(
         SavedAccount("1001", "hipda_veteran", "0123456789abcdef0123456789abcdef", lastLoginAt = 2_000L),

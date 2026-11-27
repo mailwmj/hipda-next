@@ -103,7 +103,7 @@ fun FullEditorScreen(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val windowHeightDp = maxHeight
-        val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(density).toDp() }
+        val statusBarTopDp = with(density) { WindowInsets.hiTopSafeBar.getTop(density).toDp() }
         val emojiController = rememberEmojiPanelController(
             windowHeightDp = windowHeightDp,
             onShowKeyboard = { runCatching { activeBodyFocusRequester?.requestFocus() }; keyboardController?.show() },
@@ -253,7 +253,7 @@ private fun FullEditorTopBar(
     val cs = MaterialTheme.colorScheme
     val barBg by animateColorAsState(if (isScrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "FullEditorTopBarColor")
     Column(Modifier.fillMaxWidth().background(barBg)) {
-        if (applyStatusBarInset) Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        if (applyStatusBarInset) Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
         HiCappedFontScale {
             Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 val backInt = remember { MutableInteractionSource() }

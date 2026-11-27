@@ -93,6 +93,8 @@ import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
 import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarBottomGap
 import net.jejer.hipda.feature.threaddetail.chrome.ThreadBottomToolbarHeight
 import net.jejer.hipda.ui.designsystem.HiTheme
+import net.jejer.hipda.ui.designsystem.SyncHiEdgeToEdge
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
 import net.jejer.hipda.ui.designsystem.state.HiEmptyState
 import net.jejer.hipda.ui.designsystem.state.HiStateAction
@@ -144,7 +146,10 @@ fun NextAppRoot(
 
     val settings = loadedSettings
     if (settings == null) {
-        HiTheme { Box(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) }
+        HiTheme {
+            SyncHiEdgeToEdge(darkTheme = HiTheme.state.darkTheme)
+            Box(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        }
         return
     }
 
@@ -343,6 +348,7 @@ fun NextAppRoot(
     )
 
     HiTheme(themeConfig.themeMode, themeConfig.pureBlack, themeConfig.seed, themeConfig.fontSizeStep, themeConfig.lineHeightPreset) {
+        SyncHiEdgeToEdge(darkTheme = HiTheme.state.darkTheme || isImageViewerOpen)
         CompositionLocalProvider(
             LocalHiImageLoader provides imageLoader,
             LocalPaneSnackbarController provides snackbarController,
@@ -508,7 +514,14 @@ fun NextAppRoot(
                     editorHost.renderInPlacement(editorHost.placement, windowDpSize.width.value)
                 }
 
-                // 兜底拦截：在看图浮层自持 BackHandler 之前注册；真实 E14 浮层在退场动画结束前全程保持启用吞掉重复返回（V-E14 probeM3b / R-E-slots S3）
+                // 看图全屏覆盖期间暂缓挂起登录浮层（保留 loginOverlayMode 待退出看图后恢复），确保任何触发顺序下均严格满足「看图 > 登录」
+                val overlayMode = appState.loginOverlayMode
+                if (overlayMode != null && loginOverlayRenderer != null && !isImageViewerOpen) {
+                    loginOverlayRenderer.Content(overlayMode, hostViewModel::dismissLoginOverlay, hostViewModel::dismissLoginOverlay)
+                }
+
+                // 兜底拦截：位于登录浮层之后确保 LIFO 返回优先级严格满足「看图 > 登录 > 完整编辑器(全屏/模态) > 抽屉 > 表情 > 快速回复 > 位置栈 > 多栏返回栈」；
+                // 在看图浮层自持 BackHandler 之前注册，退场动画结束前全程吞掉重复返回（V-E14 probeM3b / R-E-slots S3）。
                 BackHandler(enabled = isImageViewerOpen) { activeImageViewerArgs = null }
                 if (imageViewerArgs != null && imageViewerRenderer != null) {
                     val liveBoundsResolver = remember(imageViewerArgs) {
@@ -519,11 +532,6 @@ fun NextAppRoot(
                         onDismiss = { activeImageViewerArgs = null },
                         resolveBoundsForIndex = liveBoundsResolver,
                     )
-                }
-
-                val overlayMode = appState.loginOverlayMode
-                if (overlayMode != null && loginOverlayRenderer != null) {
-                    loginOverlayRenderer.Content(overlayMode, hostViewModel::dismissLoginOverlay, hostViewModel::dismissLoginOverlay)
                 }
 
                 if (showReleaseNotesPrompt) {
@@ -576,7 +584,7 @@ private fun UnbuiltEntryPlaceholder(
     contentPadding: PaddingValues,
     action: HiStateAction? = null,
 ) {
-    val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val topInset = WindowInsets.hiTopSafeBar.asPaddingValues().calculateTopPadding()
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Box(Modifier.fillMaxSize().padding(contentPadding)) {
             if (showBack && onBack != null) {

@@ -45,6 +45,8 @@
 
     <!-- 通知与免打扰 -->
     <string name="settings_notifications_title">接收提醒通知</string>
+    <string name="settings_notification_permission_denied">未开启通知权限</string>
+    <string name="settings_action_open_system_settings">打开系统设置</string>
     <string name="settings_notification_sound_title">通知声音与样式</string>
     <string name="settings_notification_sound_summary">在系统设置中调整</string>
     <string name="settings_quiet_hours_title">免打扰时段</string>

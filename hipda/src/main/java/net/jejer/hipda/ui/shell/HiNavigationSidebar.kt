@@ -35,7 +35,8 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
+import net.jejer.hipda.ui.designsystem.hiHorizontalSafeInsets
+import net.jejer.hipda.ui.designsystem.hiTopSafeBar
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -389,6 +390,7 @@ internal fun HiNavigationSidebarModalOverlay(
                         onSelectEntry = { entry -> onDismiss(); onSelectEntry(entry) },
                         onAccountClick = { onDismiss(); onAccountClick() },
                         onManageForumsClick = { onDismiss(); onManageForumsClick() },
+                        modifier = Modifier.windowInsetsPadding(WindowInsets.hiHorizontalSafeInsets.only(WindowInsetsSides.Start)),
                     )
                 }
             }
@@ -417,6 +419,7 @@ private fun SidebarColumnBody(
     onSelectEntry: (ShellSidebarEntry) -> Unit,
     onAccountClick: () -> Unit,
     onManageForumsClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
     val isScrolled by remember(listState) {
@@ -445,14 +448,14 @@ private fun SidebarColumnBody(
     }
     val collapsedDisplays = remember(forums) { resolveCollapsedForumDisplays(forums) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = modifier.fillMaxSize()) {
         // 顶部固定区（48dp，未滚动同为 surfaceContainerLow，滚动后渐变 surfaceContainer + 1dp 底线）
         Column(
             modifier = Modifier
                 .testTag(HiShellTestTags.SidebarTopBar)
                 .fillMaxWidth()
                 .background(topBarBg)
-                .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top)),
+                .windowInsetsPadding(WindowInsets.hiTopSafeBar),
         ) {
             if (expanded) {
                 SidebarExpandedTopBar(state.account, onAccountClick, onToggleSidebar)
