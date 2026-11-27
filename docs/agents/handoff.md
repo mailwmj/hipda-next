@@ -7,7 +7,7 @@
 ## 1. 全局进度总览
 
 - 设计与流程文档（均在 `main`）：`docs/design/{tech-plan,backlog,product-design,copy}.md` v0.4；`docs/agents/decisions.md`（`0895b83`）；`docs/agents/DISPATCH.md`、`lesson.md` 与 `docs/agents/cards/_common.md` 已落地站点 scheme 白名单阻断（`00cb3c4`）、**流程提速**（`e735e7a` + `5bae5ab`）、2 条通用新规（`1dc594e`）、“跨卡浮层/返回/玻璃卡必做合入后真实链路探针”（`3617fad`）、“常驻浮层/抽屉 `BackHandler` 条件启用并按打开状态重挂”、“Compose 拖拽态同步 state + `try/finally` 终态”、“单测 JVM 1536m 堆上限 + `forkEvery=400`”、“Roborazzi 截图须由 R 逐张目视”及“基于稳定在审分支提前开工并写清冲突责任方”等经验。另外 **`team-lead` skill 已提交 `5a2fc95`，等待用户确认是否推送**。
-- **已合并进 `main`**（当前代码 `HEAD`：`0916fb1`，合并态 CI `45920948103`（`emulator=true`）全绿、main 推送 CI `45922502190` 绿并产出 `debug-apk`；**M5 / M6 / 编辑器线 / M7 开发全部完成，下一步 `M7-5` 用户真机验收与发布（需用户批准）**；真机验收包已更新至 `docs/device-check.md`）：
+- **已合并进 `main`**（当前代码 `HEAD`：`b47836b`（M7-4c 刷新 profile 后；真机 debug 验收包仍用 `0916fb1`，功能等同），合并态 CI `45920948103`（`emulator=true`）全绿、main 推送 CI `45922502190` 绿并产出 `debug-apk`；**M5 / M6 / 编辑器线 / M7 开发全部完成，下一步 `M7-5` 用户真机验收与发布（需用户批准）**；真机验收包已更新至 `docs/device-check.md`）：
   - 第一批：M0-1、M0-2、C1b、D3a、A1、D1、C1；
   - 第二批：M0-3、B1a、A2、D3c、C3、C2（联合 CI 45526302892，223/223）；
   - 第三批与 M1/M2/M3(部分)/M4/三栏/kudo 收口：
@@ -77,6 +77,7 @@
     - M7-4a Baseline Profile 基建与按需生成（`:baselineprofile` 离线回环生成、入库 `baseline-prof.txt`/`startup-prof.txt` 配合 `profileinstaller` 冷启 `FirstContent` 降 `-10.7%`）、开启 `isShrinkResources = true` 并以 `keep.xml` + 守卫测试保住 101 枚表情 PNG 与动态图标且提前清除 `R-M7-2 S2` 旧 Iconics 规则（R-M7-4a APPROVE `@85e3de0`；V-M7-4a PASS 含 API 36 离线冒烟 run `45840636512`）→ `adaa6c3`
     - M7-3 `targetSdk` 升至 `36`（JDK 21 单测运行器 + Java 17 编译产物、`POST_NOTIFICATIONS` 权限流程与开关/系统撤权双向同步及拒权降级、`MediaStore` 无存储权限下载/保存、全应用含看图/登录/账号/抽屉/编辑器 Edge-to-Edge 安全区与 `enableOnBackInvokedCallback`；R-M7-3 第 2 轮 APPROVE `@3f8bcd6`；V-M7-3 PASS 含 API 28–36 矩阵与 API 36 模拟器冒烟 run `45853162043`）→ `8a9afe1`
     - M7-4b R8 规则收紧（清除 `net.jejer.hipda.**`/`androidx.**` 过宽通配及已删旧库死规则、定向 `allowobfuscation` 保留 `com.kyant.backdrop`/`shapes` 核心类与行号表、新增 `ProguardRulesGuardTest` 死规则与 Release DEX/mapping 守卫，合并 `M7-4a` 后 Release APK 降至 `4,553,230 B` / 去重 `38,222` 方法；R-M7-4b APPROVE `@49c0876`；V-M7-4b PASS 含 API 36 release 离线全屏 30 张截图走查 run `45853222271`）→ `0916fb1`（**合并态 CI `45920948103`（`emulator=true`）与 main 推送 CI `45922502190` 全绿，M7 开发全部完成**）
+    - M7-4c 按当前 main 由 CI 离线生成刷新 `baseline-prof.txt`/`startup-prof.txt`（清除 48 条已删 `HiSettingsHelper` 规则；生成 run `45928689128`，逐字节导入）、删除未引用的 `hipda/proguard-android.txt`、`ProguardRulesGuardTest` 扫描纳入 `:baselineprofile`，闭合 R-M7-4a S3 / R-M7-4b S1/S2（负责人核对 `@0ccf0e6`，CI `emulator=true` `45930117155` 绿）→ `b47836b`
 - **阶段验收状态**：
   - **M1 / M2 / M3 / M4**：均已验收通过或全部合入（M4 待用户用真机包调参回写 §5）。
   - **M5 阅读核心全部完成**（9/9 卡全部合入，`main @ 92e1563`，CI `45758541824` 绿；M5 真机验收清单已更新至 `docs/device-check.md`）。
@@ -123,9 +124,7 @@
   - `R-M0-2 R4`：`M7-5` 真机阶段核验 120Hz 帧时间与卡顿率（含三栏 3 块实时液态玻璃）及全新安装回归；**构建正式签名包或发布前必须先获用户批准**。
 - **→ 后续轻修备忘**：
   - R-E2b S1：精简 `feature/threaddetail/media/` 约 60–65 行冗余包装与零生产调用重载；V-E14 观察：`ImageViewerPage.kt:178` 直开 HD 超长高图可考虑补 `4096` 上限；R-E4 N1：`DefaultThreadDetailRepository` 可选对 `readingPositionDao` 读写加轻量 `Mutex`；V-E16 观察：`ThreadBottomToolbar.openExternalHttpUrl` 可选统一复用 `AndroidExternalLinkOpener`；R-M7-G1 S3：列表已在顶时 `hiTopBarTapToScrollTop` 可按 `isScrolled` 启用；R-M7-G2 S3：多图横滑跨楼层按页扩展 `floorNumber`/`author` 与重复 URL 坐标键；R-M7-G3 S1/S2：重复点击同 `tid` 原始 URL 链接的 `navSeq` 触发优化与非 80 自定义端口分享 URL 收紧 `https`；R-E6 O1：详情下钻 `UserProfile` 时 `DetailPane` Snackbar 底部抬高余量微调；R-M7-2 S1：`HiNextApplicationTest` 模拟崩溃可补带 `formhash`。
-  - R-M7-4a S2：`ReleaseResourceAndProfileGuardTest.kt:230` 可将 `if (resourcesReport.isFile)` 收紧为 `assertTrue(resourcesReport.isFile)`，使本地手工 `assembleRelease` 后同样强制校验 `resources.txt`。
-  - R-M7-4a S3 / V-M7-4a 观察 / R-M7-4b S1：三卡合入 `main` 后可手动触发一次 `workflow_dispatch -f generate_baseline_profile=true` 刷新 `baseline-prof.txt`/`startup-prof.txt`，自然清除 48 条旧 `HiSettingsHelper` 条目并补入 `MainActivity`、`E7` 表情面板与 `M7-3` 热点。
-  - R-M7-4b S2：删除未引用历史文件 `hipda/proguard-android.txt`，并将 `:baselineprofile` 目录加入 `ProguardRulesGuardTest.collectProjectProguardFiles` 扫描列表。
+  - R-M7-4a S2：**不采纳**（负责人 2026-11-27）：`if (resourcesReport.isFile)` 保持条件检查——本地只跑单测时没有 release 产物，CI 先 `assembleRelease` 再跑单测已守住。
 
 ---
 

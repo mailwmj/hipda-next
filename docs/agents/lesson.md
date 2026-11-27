@@ -19,6 +19,7 @@
 - 本机的 Android SDK 和 JDK 由 mise 安装、不在环境变量里：本地 Gradle 前先 `export ANDROID_HOME=/home/mir/.local/share/mise/installs/android-sdk/21.0 JAVA_HOME=/home/mir/.local/share/mise/installs/java/latest; export PATH="$JAVA_HOME/bin:$PATH"`（不要在 worktree 写 `local.properties`），否则会误报“没有 SDK”。新 Roborazzi 基线用 `:hipda:recordRoborazziDebug --tests <本卡截图测试类>` 在本地按 DISPATCH 第 2 节录制，必须用 `--tests` 限定，以 CI 的 verify 为准。（2026-11-25）
 - 合并推送到 main 后 GitHub 偶发不触发 push 事件，30 秒内 `gh run list` 查不到时用 `gh workflow run "Android CI" --ref main` 补跑。（2026-11-25）
 - 单测 JVM 默认堆不够，测试数过千后 Roborazzi 大图会触发 OOM；已在 `hipda/build.gradle.kts` `Test` 任务设置 `maxHeapSize = "1536m"` 与 `forkEvery = 400L` 守住（`CI-heap` `@822dccb`，耗时反而缩短 12.6%–16.8%）。（2026-11-26）
+- Baseline Profile 由 `:baselineprofile` 经 `nonMinifiedRelease` 专用的 `BaselineProfileHostActivity` 承载真实 `NextAppRoot` 采集，生成结果里不会有 `MainActivity` 的规则，验收时不要要求它；刷新只走 CI `workflow_dispatch -f generate_baseline_profile=true` 并逐字节导入产物（M7-4c）。（2026-11-27）
 
 ## 协作
 - 8 个代理同时用 `gh run watch`（默认每 3 秒查一次）约 40 分钟就耗尽了 GitHub API 每小时 5000 次的额度，所有 `gh` 命令返回 403；规则已写进 DISPATCH §2（`--interval 60`）。（2026-11-24）
