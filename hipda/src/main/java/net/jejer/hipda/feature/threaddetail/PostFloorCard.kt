@@ -135,9 +135,7 @@ internal fun PostFloorCard(
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(floor.author, style = MaterialTheme.typography.labelLarge, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         if (isOp) {
-                            Surface(shape = HiShapeTokens.Small, color = cs.primaryContainer, contentColor = cs.onPrimaryContainer) {
-                                Text(opBadge, style = MaterialTheme.typography.labelSmall, color = cs.onPrimaryContainer, modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp))
-                            }
+                            Text(opBadge, style = MaterialTheme.typography.labelSmall, color = cs.primary, maxLines = 1)
                         }
                     }
                     Text(floor.timePost, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -150,7 +148,10 @@ internal fun PostFloorCard(
                     onClick = { onWarningClick?.invoke(floor) },
                 )
             } else {
-                Text(stringResource(R.string.common_floor_badge, floor.floor), style = MaterialTheme.typography.labelMedium, color = cs.primary, maxLines = 1)
+                val floorNumberStyle = MaterialTheme.typography.labelMedium.let { style ->
+                    remember(style) { style.copy(fontFeatureSettings = "tnum") }
+                }
+                Text(stringResource(R.string.common_floor_badge, floor.floor), style = floorNumberStyle, color = cs.onSurfaceVariant, maxLines = 1)
             }
         }
 

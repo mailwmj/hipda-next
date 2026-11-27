@@ -213,7 +213,8 @@ class ThreadChromeScreenshotTest {
             composeRule.waitForIdle()
         }
         if (expandJumpBar) {
-            composeRule.onNodeWithContentDescription("第 $initialPage 页，共 $lastPage 页，点按展开跳页").performClick()
+            val initialFloor = (initialPage - 1) * 10 + 1
+            composeRule.onNodeWithContentDescription("第 $initialFloor 楼，点按展开跳页").performClick()
             composeRule.waitForIdle()
         }
 

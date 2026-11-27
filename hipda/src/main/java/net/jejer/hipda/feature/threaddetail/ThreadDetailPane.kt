@@ -516,6 +516,15 @@ fun ThreadDetailPane(
             (s.floors.getOrNull(floorIdx)?.floor?.page?.takeIf { it > 0 } ?: s.page).coerceIn(1, s.lastPage.coerceAtLeast(1))
         }
     }
+    val visibleFloor by remember(listState) {
+        derivedStateOf {
+            val s = latestUiState
+            val floorIdx = resolveFloorIndex(firstVisibleFloor(listState), s.floors, if (s.showPrependHeader) 1 else 0)
+            s.floors.getOrNull(floorIdx)?.floor?.floor?.takeIf { it > 0 }
+                ?: s.floors.firstOrNull()?.floor?.floor?.takeIf { it > 0 }
+                ?: 1
+        }
+    }
     LaunchedEffect(visiblePage) { viewModel.onVisiblePageChanged(visiblePage) }
 
     val anchorController = remember(listState, uiState.tid) {
@@ -895,7 +904,11 @@ fun ThreadDetailPane(
                                         onHighlightFinished = viewModel::onHighlightFinished,
                                         pollSlot = floorPollSlot,
                                     )
-                                    HorizontalDivider(Modifier.widthIn(max = PostMaxContentWidth).fillMaxWidth(), color = cs.outlineVariant.copy(alpha = 0.5f))
+                                    HorizontalDivider(
+                                        modifier = Modifier.widthIn(max = PostMaxContentWidth).fillMaxWidth().padding(horizontal = 16.dp),
+                                        thickness = 0.5.dp,
+                                        color = cs.outlineVariant.copy(alpha = 0.5f),
+                                    )
                                 }
                                 val tailFooter = when {
                                     uiState.isAppending -> HiFooterState.Loading
@@ -967,6 +980,7 @@ fun ThreadDetailPane(
                         shareExternalHttpUrl(context, uiState.title.ifBlank { args.title }, buildSafeThreadUrl(uiState.forumServer, uiState.tid, visiblePage), shareChooserTitle)
                     },
                     bottomInset = bottomInset,
+                    currentFloor = visibleFloor,
                 )
             }
 

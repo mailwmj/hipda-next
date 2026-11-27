@@ -221,7 +221,7 @@ class InlinePageJumpBarTest {
         val scrollOffsetBefore = listState.firstVisibleItemScrollOffset
 
         // 展开内联跳页条：验证展开无障碍播报与边界按钮（第 1 页首页禁用、末页可用）
-        composeRule.onNodeWithContentDescription("第 1 页，共 10 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
 
         val expandedAnnouncement = composeRule.onNodeWithContentDescription("已展开跳页，当前第 1 页，共 10 页").fetchSemanticsNode()
@@ -264,16 +264,16 @@ class InlinePageJumpBarTest {
         // 跳转后自动收起并已压入 PositionStack
         assertEquals(7, vm.uiState.value.page)
         assertTrue(vm.uiState.value.canPopPositionStack)
-        composeRule.onNodeWithContentDescription("第 7 页，共 10 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 73 楼，点按展开跳页").assertIsDisplayed()
 
         // 跳至末页（第 10 页）后展开验证：首页可用、末页禁用
-        composeRule.onNodeWithContentDescription("第 7 页，共 10 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 73 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("末页").performClick()
         composeRule.waitForIdle()
         assertEquals(10, vm.uiState.value.page)
 
-        composeRule.onNodeWithContentDescription("第 10 页，共 10 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 109 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("首页").assertIsEnabled()
         composeRule.onNodeWithText("末页").assertIsNotEnabled()
@@ -305,7 +305,7 @@ class InlinePageJumpBarTest {
         // 先滚至第 4 楼偏移 36px，再展开内联跳页条
         composeRule.runOnIdle { listState.requestScrollToItem(index = 3, scrollOffset = 36) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 页，共 8 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 4 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
 
         val floorTopBefore = composeRule.onNodeWithText("第 1 页第 5 楼正文", substring = true).fetchSemanticsNode().boundsInRoot.top
@@ -355,7 +355,7 @@ class InlinePageJumpBarTest {
         composeRule.waitForIdle()
 
         // 1. 点击关闭收起不跳页
-        composeRule.onNodeWithContentDescription("第 1 页，共 6 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithContentDescription("关闭").performClick()
         composeRule.waitForIdle()
@@ -363,15 +363,15 @@ class InlinePageJumpBarTest {
         assertFalse(vm.uiState.value.canPopPositionStack)
 
         // 2. 系统返回收起不跳页
-        composeRule.onNodeWithContentDescription("第 1 页，共 6 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 页，共 6 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
         assertEquals(1, vm.uiState.value.page)
 
         // 3. 输入页码 4 后触发键盘 Go 动作：压栈、跳至第 4 页并自动收起
-        composeRule.onNodeWithContentDescription("第 1 页，共 6 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         val input = composeRule.onNodeWithContentDescription("页码")
         input.performTextClearance()
@@ -381,7 +381,7 @@ class InlinePageJumpBarTest {
 
         assertEquals(4, vm.uiState.value.page)
         assertTrue(vm.uiState.value.canPopPositionStack)
-        composeRule.onNodeWithContentDescription("第 4 页，共 6 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 37 楼，点按展开跳页").assertIsDisplayed()
     }
 
     @Test

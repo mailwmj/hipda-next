@@ -47,8 +47,8 @@
     <string name="thread_detail_toolbar_favorite">收藏</string>
     <string name="thread_detail_toolbar_unfavorite">取消收藏</string>
     <string name="thread_detail_toolbar_more">更多</string>
-    <string name="thread_detail_page_indicator_compact">%1$d/%2$d</string>
-    <string name="thread_detail_page_capsule_description">第 %1$d 页，共 %2$d 页，点按展开跳页</string>
+    <string name="thread_detail_floor_capsule_description_static">第 %1$d 楼</string>
+    <string name="thread_detail_floor_capsule_description_jumpable">第 %1$d 楼，点按展开跳页</string>
     <string name="thread_detail_more_attention">关注</string>
     <string name="thread_detail_more_unattention">取消关注</string>
     <string name="thread_detail_more_copy_link">复制链接</string>

@@ -531,7 +531,7 @@ class EmojiPanelBehaviorTest {
         // 1. 打开帖子并跳末页建立非空 PositionStack（栈底第 1 页）
         composeRule.onNodeWithText("测试帖子标题 1001").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("末页").performClick()
         composeRule.waitForIdle()

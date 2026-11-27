@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -23,13 +25,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.layout.LayoutInfo
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -89,15 +97,20 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.Alignment
 import net.jejer.hipda.feature.app.auditGlassModifiers
 import net.jejer.hipda.feature.common.DetailChromeSpec
+import net.jejer.hipda.feature.common.FullScreenToggle
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
 import net.jejer.hipda.feature.common.LocalPostLinkDispatcher
 import net.jejer.hipda.feature.common.PaneSnackbarController
 import net.jejer.hipda.feature.common.PaneSnackbarTarget
 import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.feature.common.ThreadNavArgs
+import net.jejer.hipda.feature.forum.FORUM_TOP_BAR_TITLE_ROW_HEIGHT
 import net.jejer.hipda.feature.routing.DefaultPostLinkDispatcher
 import net.jejer.hipda.feature.routing.ExternalLinkOpener
+import net.jejer.hipda.feature.threaddetail.PostFloorCard
 import net.jejer.hipda.feature.threaddetail.ThreadDetailPane
+import net.jejer.hipda.feature.threaddetail.ThreadDetailTopBar
+import net.jejer.hipda.feature.threaddetail.ThreadDetailTopBarHeight
 import net.jejer.hipda.feature.threaddetail.ThreadDetailViewModel
 import androidx.compose.ui.test.onRoot
 import net.jejer.hipda.ui.designsystem.glass.LocalHiGlassSuspended
@@ -350,7 +363,65 @@ class ThreadBottomToolbarTest {
     }
 
     @Test
-    fun progressCapsuleColors_all20Presets_lightDarkOled_meetWcag45To1AndNeverUsePrimaryOnLightFill() {
+    fun u2_topBarAligns56dp_hidesAuthorSubtitle_andUsesBorderlessPureIconButtons() {
+        assertEquals("详情顶栏高度必须与论坛顶栏标题行 56.dp 严格相等", FORUM_TOP_BAR_TITLE_ROW_HEIGHT, ThreadDetailTopBarHeight)
+        assertEquals(56.dp, ThreadDetailTopBarHeight)
+
+        var isFullScreen by mutableStateOf(false)
+        var isAuthorOnly by mutableStateOf(false)
+        val scrolledState = mutableStateOf(false)
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                val glassState = rememberHiGlassState()
+                ThreadDetailTopBar(
+                    title = "单行标题校验",
+                    authorName = "楼主大人",
+                    chromeSpec = DetailChromeSpec(
+                        showBack = true,
+                        fullScreenState = FullScreenToggle(isFullScreen = isFullScreen, onToggle = { isFullScreen = !isFullScreen }),
+                    ),
+                    isAuthorOnly = isAuthorOnly,
+                    isScrolledState = scrolledState,
+                    glassState = glassState,
+                    onBack = {},
+                    onToggleAuthorOnly = { isAuthorOnly = !isAuthorOnly },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("单行标题校验").assertIsDisplayed()
+        assertEquals("详情顶栏不得再渲染「楼主 · xxx」副标题", 0, composeRule.onAllNodesWithText("楼主", substring = true).fetchSemanticsNodes().size)
+        assertEquals("详情顶栏不得渲染楼主作者名副标题", 0, composeRule.onAllNodesWithText("楼主大人", substring = true).fetchSemanticsNodes().size)
+
+        for (cd in listOf("返回", "全屏阅读", "只看楼主")) {
+            val node = composeRule.onNodeWithContentDescription(cd)
+                .assertIsDisplayed()
+                .assertWidthIsAtLeast(48.dp)
+                .assertHeightIsAtLeast(48.dp)
+                .fetchSemanticsNode()
+            assertFalse("顶栏动作按钮 [$cd] 不得带圆底背景", hasSubtreeModifierNamed(node.layoutInfo, "Background"))
+            assertFalse("顶栏动作按钮 [$cd] 不得带描边边框", hasSubtreeModifierNamed(node.layoutInfo, "Border"))
+        }
+
+        // 切换激活态后仍无淡底圆或边框
+        composeRule.onNodeWithContentDescription("全屏阅读").performClick()
+        composeRule.onNodeWithContentDescription("只看楼主").performClick()
+        composeRule.waitForIdle()
+        for (cd in listOf("显示列表", "看全部")) {
+            val node = composeRule.onNodeWithContentDescription(cd)
+                .assertIsDisplayed()
+                .assertWidthIsAtLeast(48.dp)
+                .assertHeightIsAtLeast(48.dp)
+                .fetchSemanticsNode()
+            assertFalse("顶栏激活态按钮 [$cd] 不得带淡底圆", hasSubtreeModifierNamed(node.layoutInfo, "Background"))
+            assertFalse("顶栏激活态按钮 [$cd] 不得带描边边框", hasSubtreeModifierNamed(node.layoutInfo, "Border"))
+        }
+    }
+
+    @Test
+    fun u2_floorNumberIsFullOnSurfaceVariantTabular_opBadgeIsBorderlessPrimary_andAll20PresetsMeetWcag45() {
         assertEquals(20, HiColorPresets.ALL.size)
         val modes = listOf(
             Triple("Light", false, false),
@@ -360,46 +431,185 @@ class ThreadBottomToolbarTest {
         for (preset in HiColorPresets.ALL) {
             for ((modeName, darkTheme, pureBlack) in modes) {
                 val cs = hiColorSchemeFromSeed(preset.color, darkTheme = darkTheme, pureBlack = pureBlack)
-                val progress = resolveProgressCapsuleColors(cs, darkTheme)
-
-                val maxAlpha = if (darkTheme) {
-                    HiGlassTokens.ProgressFillContainerDarkMaxAlpha
-                } else {
-                    HiGlassTokens.ProgressFillContainerLightMaxAlpha
+                assertEquals("onSurfaceVariant 必须为完整不透明度（无 alpha 衰减）", 1f, cs.onSurfaceVariant.alpha, 0.0001f)
+                for (bg in listOf(cs.background, cs.surface)) {
+                    assertWcagContrastAtLeast(4.5f, bg, cs.onSurfaceVariant, "${preset.id}/$modeName floorNumber(onSurfaceVariant)")
+                    assertWcagContrastAtLeast(4.5f, bg, cs.primary, "${preset.id}/$modeName opBadge(primary)")
                 }
-                assertTrue(
-                    "${preset.id}/$modeName 填充 alpha ${progress.fillColor.alpha} 超出上限 $maxAlpha",
-                    progress.fillColor.alpha <= maxAlpha + 0.0001f,
-                )
-                assertEquals("${preset.id}/$modeName 前景文字必须使用 onSurface，严禁使用 cs.primary", cs.onSurface, progress.contentColor)
-
-                // (a) 降级态（94% 纯色底，极端纯黑/纯白背板）+ 进度填充条
                 val degradedSpec = resolveHiGlassStyleSpec(cs, darkTheme, GlassRenderTier.SOLID_DEGRADED, style = HiGlassStyle.Toolbar)
                 for (backdrop in listOf(Color.Black, Color.White)) {
                     val glassSurface = degradedSpec.degradedSurfaceColor.compositeOver(backdrop)
-                    val filledSurface = progress.fillColor.compositeOver(glassSurface)
-                    assertWcagContrastAtLeast(
-                        minRatio = 4.5f,
-                        surface = filledSurface,
-                        foreground = progress.contentColor,
-                        label = "${preset.id}/$modeName/Degraded($backdrop)",
-                    )
+                    assertWcagContrastAtLeast(4.5f, glassSurface, cs.onSurfaceVariant, "${preset.id}/$modeName/ToolbarDegraded/onSurfaceVariant")
                 }
-
-                // (b) 模糊激活态（标准主题背板）+ 进度填充条
                 val activeSpec = resolveHiGlassStyleSpec(cs, darkTheme, GlassRenderTier.REFRACTION_AND_BLUR, style = HiGlassStyle.Toolbar)
                 for (backdrop in listOf(cs.background, cs.surface, cs.surfaceContainerLow, cs.surfaceContainer)) {
                     val glassSurface = activeSpec.activeTintColor.compositeOver(backdrop)
-                    val filledSurface = progress.fillColor.compositeOver(glassSurface)
-                    assertWcagContrastAtLeast(
-                        minRatio = 4.5f,
-                        surface = filledSurface,
-                        foreground = progress.contentColor,
-                        label = "${preset.id}/$modeName/Active",
+                    assertWcagContrastAtLeast(4.5f, glassSurface, cs.onSurfaceVariant, "${preset.id}/$modeName/ToolbarActive/onSurfaceVariant")
+                }
+            }
+        }
+
+        var expectedOnSurfaceVariant = Color.Unspecified
+        var expectedPrimary = Color.Unspecified
+        var expectedLabelSmallSize = 0f
+        val opFloor = ThreadDetailFloorItem(
+            floor = PostFloor(
+                postId = "op_1", floor = 1, page = 1, uid = "1001", author = "linus_hi",
+                avatarUrl = null, timePost = "2026-11-28 00:10", isWarned = false,
+                postStatus = null, signature = null, poll = null,
+                blocks = listOf(ContentBlock.Text(listOf(InlineSpan.Plain("首楼克制化视觉验证")))),
+            ),
+            isAuthorBlocked = false,
+        )
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                expectedOnSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+                expectedPrimary = MaterialTheme.colorScheme.primary
+                expectedLabelSmallSize = MaterialTheme.typography.labelSmall.fontSize.value
+                val listState = rememberLazyListState()
+                PostFloorCard(
+                    item = opFloor,
+                    isOp = true,
+                    listState = listState,
+                    onOpenImageViewer = {},
+                    onAuthorClick = { _, _ -> },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        val floorBadgeNode = composeRule.onNodeWithText("1楼", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
+        val floorLayouts = mutableListOf<TextLayoutResult>()
+        floorBadgeNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(floorLayouts)
+        assertTrue("应能读取 1楼 TextLayoutResult", floorLayouts.isNotEmpty())
+        val floorStyle = floorLayouts.first().layoutInput.style
+        assertEquals("楼层号颜色必须为完整 onSurfaceVariant（严禁 primary/alpha）", expectedOnSurfaceVariant, floorStyle.color)
+        assertEquals("楼层号必须启用等宽数字 tnum", "tnum", floorStyle.fontFeatureSettings)
+
+        val opBadgeNode = composeRule.onNodeWithText("楼主", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
+        val opLayouts = mutableListOf<TextLayoutResult>()
+        opBadgeNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(opLayouts)
+        assertTrue("应能读取 楼主 TextLayoutResult", opLayouts.isNotEmpty())
+        val opStyle = opLayouts.first().layoutInput.style
+        assertEquals("楼主徽标必须为纯 primary 文字", expectedPrimary, opStyle.color)
+        assertEquals("楼主徽标字号必须为 labelSmall", expectedLabelSmallSize, opStyle.fontSize.value, 0.01f)
+        assertFalse("楼主徽标不得带容器底色", hasModifierNamed(opBadgeNode.layoutInfo, "Background"))
+        val opParent = opBadgeNode.layoutInfo.parentInfo
+        if (opParent != null) {
+            assertFalse("楼主徽标父容器不得为带底色 Surface", hasModifierNamed(opParent, "Background"))
+        }
+    }
+
+    @Test
+    fun u2_singlePageFloorCapsuleIsPassive_andBecomesClickableWhenRefreshedToMultiPage() {
+        var lastPage by mutableIntStateOf(1)
+        var expanded by mutableStateOf(false)
+        var expandCalls = 0
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                val glassState = rememberHiGlassState()
+                Box(Modifier.fillMaxSize()) {
+                    ThreadBottomToolbar(
+                        page = 1,
+                        lastPage = lastPage,
+                        isFavorited = false,
+                        isAttention = false,
+                        glassState = glassState,
+                        suppressBottomGlass = false,
+                        isJumpBarExpanded = expanded,
+                        onExpandedChange = {
+                            if (it) expandCalls++
+                            expanded = it
+                        },
+                        onReplyClick = {},
+                        onJumpToPage = {},
+                        onToggleFavorite = {},
+                        onRefreshClick = {},
+                        onToggleAttention = {},
+                        onCopyLinkClick = {},
+                        onOpenInBrowserClick = {},
+                        onShareClick = {},
                     )
                 }
             }
         }
+        composeRule.waitForIdle()
+
+        // 1. 单页（lastPage == 1）：被动不可点标签，无 OnClick / Role.Button，无障碍为「第 1 楼」，无页码文本
+        val staticCapsule = composeRule.onNodeWithContentDescription("第 1 楼")
+            .assertIsDisplayed()
+            .assertWidthIsAtLeast(48.dp)
+            .assertHeightIsAtLeast(48.dp)
+            .fetchSemanticsNode()
+        assertFalse("lastPage == 1 时中段胶囊不得暴露 OnClick 语义", SemanticsActions.OnClick in staticCapsule.config)
+        assertFalse("lastPage == 1 时中段胶囊不得声明 Role.Button", SemanticsProperties.Role in staticCapsule.config)
+        assertEquals("lastPage == 1 时不得出现点按展开跳页描述", 0, composeRule.onAllNodesWithContentDescription("第 1 楼，点按展开跳页").fetchSemanticsNodes().size)
+        assertEquals("收起态底栏不得出现页码文字", 0, composeRule.onAllNodesWithText("页", substring = true, useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals("收起态底栏不得出现斜杠页码", 0, composeRule.onAllNodesWithText("/", substring = true, useUnmergedTree = true).fetchSemanticsNodes().size)
+
+        // 2. 模拟刷新后单页变多页（lastPage = 3）：中段自动恢复可点，点击原地展开 InlinePageJumpBar
+        lastPage = 3
+        composeRule.waitForIdle()
+        val jumpableNode = composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页")
+            .assertIsDisplayed()
+            .assertHeightIsAtLeast(48.dp)
+            .fetchSemanticsNode()
+        assertTrue("lastPage > 1 时中段胶囊必须具备 OnClick 语义", SemanticsActions.OnClick in jumpableNode.config)
+        assertEquals("lastPage > 1 时中段胶囊必须为 Role.Button", Role.Button, jumpableNode.config[SemanticsProperties.Role])
+
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, expandCalls)
+        assertTrue("点击多页中段胶囊应展开内联跳页条", expanded)
+        composeRule.onNodeWithText("首页").assertIsDisplayed()
+        composeRule.onNodeWithText("末页").assertIsDisplayed()
+    }
+
+    @Test
+    fun u2_replySlotStretchesLeftAligned_andFloorCapsuleSyncsWithVisibleFloorOnScroll() {
+        val gateway = SiteAccessGateway(OkHttpClient(), ChallengeDetector(), ChallengeSolver { SolveResult.Cancelled })
+        val vm = ThreadDetailViewModel(SimpleDetailRepository(floorCount = 18), gateway)
+        lateinit var listState: androidx.compose.foundation.lazy.LazyListState
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                    listState = rememberLazyListState()
+                    ThreadDetailPane(
+                        args = ThreadNavArgs(tid = "2602998", title = "底栏伸缩与楼层同步测试"),
+                        chromeSpec = DetailChromeSpec(showBack = true),
+                        onBack = {},
+                        onOpenLogin = {},
+                        listState = listState,
+                        viewModel = vm,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 左段回复槽为可伸缩主段（明显宽于中段楼层胶囊，且左对齐图标 + 「回复」）
+        val replyBounds = composeRule.onNodeWithText("回复").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val floorBounds = composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val favBounds = composeRule.onNodeWithContentDescription("收藏").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val replyWidthDp = with(composeRule.density) { replyBounds.width.toDp() }
+        val floorWidthDp = with(composeRule.density) { floorBounds.width.toDp() }
+        assertTrue("411dp 下左段回复槽应为可伸缩主段（>= 160dp），实际 $replyWidthDp", replyWidthDp >= 160.dp)
+        assertTrue("左段回复槽应宽于中段贴合内容楼层胶囊：reply=$replyWidthDp floor=$floorWidthDp", replyWidthDp > floorWidthDp * 2f)
+        assertTrue("三段胶囊从左至右零重叠：reply=${replyBounds.right} floor=${floorBounds.left} fav=${favBounds.left}", replyBounds.right < floorBounds.left && floorBounds.right < favBounds.left)
+        val replyTextBounds = composeRule.onNodeWithText("回复", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "左段「回复」文字应靠左对齐（左半区内），reply=$replyBounds text=$replyTextBounds",
+            replyTextBounds.center.x < replyBounds.center.x,
+        )
+
+        // 滚动至第 6 楼（index = 5）：中段楼层胶囊同步更新为「第 6 楼，点按展开跳页」
+        composeRule.runOnIdle { listState.requestScrollToItem(index = 5, scrollOffset = 0) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 6 楼，点按展开跳页").assertIsDisplayed()
+        assertEquals("同屏玻璃数仍严格 <= 2", 2, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
     }
 
     @Test
@@ -913,14 +1123,15 @@ class ThreadBottomToolbarTest {
     }
 
     @Test
-    @Config(qualifiers = "w340dp-h800dp-xhdpi")
-    fun narrow340dpWith125FontScale_autoShrinksReplyTo48dpIconOnlyAndCompactPageIndicator() {
+    @Config(qualifiers = "w360dp-h800dp-xhdpi")
+    fun narrow340dpAnd360dpWith125FontScale_autoShrinksReplyTo48dpIconOnlyWithoutClipping() {
+        var containerWidthDp by mutableStateOf(340.dp)
         composeRule.setContent {
             val base = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(base.density, fontScale = 1.25f)) {
                 HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                     val glassState = rememberHiGlassState()
-                    Box(Modifier.width(340.dp).fillMaxSize()) {
+                    Box(Modifier.width(containerWidthDp).fillMaxSize()) {
                         ThreadBottomToolbar(
                             page = 12,
                             lastPage = 45,
@@ -938,22 +1149,46 @@ class ThreadBottomToolbarTest {
                             onCopyLinkClick = {},
                             onOpenInBrowserClick = {},
                             onShareClick = {},
+                            currentFloor = 111,
                         )
                     }
                 }
             }
         }
-        composeRule.waitForIdle()
 
-        // 窄容器自动缩为纯图标 48×48dp（无“回复”文字，保留“回复”内容描述）
-        assertEquals("窄容器紧凑态不应渲染“回复”文字", 0, composeRule.onAllNodesWithText("回复").fetchSemanticsNodes().size)
-        composeRule.onNodeWithContentDescription("回复")
-            .assertIsDisplayed()
-            .assertWidthIsAtLeast(48.dp)
-            .assertHeightIsAtLeast(48.dp)
-        composeRule.onNodeWithContentDescription("第 12 页，共 45 页，点按展开跳页")
-            .assertIsDisplayed()
-            .assertHeightIsAtLeast(48.dp)
+        for (widthDp in listOf(340.dp, 360.dp)) {
+            containerWidthDp = widthDp
+            composeRule.waitForIdle()
+            val maxRightPx = with(composeRule.density) { widthDp.toPx() + 1f }
+
+            // 窄容器自动缩为纯图标 48×48dp（无“回复”文字，保留“回复”内容描述）
+            assertEquals("[$widthDp + 1.25×] 窄容器紧凑态不应渲染“回复”文字", 0, composeRule.onAllNodesWithText("回复").fetchSemanticsNodes().size)
+            val replyBounds = composeRule.onNodeWithContentDescription("回复")
+                .assertIsDisplayed()
+                .assertWidthIsAtLeast(48.dp)
+                .assertHeightIsAtLeast(48.dp)
+                .fetchSemanticsNode().boundsInRoot
+            val floorBounds = composeRule.onNodeWithContentDescription("第 111 楼，点按展开跳页")
+                .assertIsDisplayed()
+                .assertWidthIsAtLeast(48.dp)
+                .assertHeightIsAtLeast(48.dp)
+                .fetchSemanticsNode().boundsInRoot
+            val favBounds = composeRule.onNodeWithContentDescription("收藏")
+                .assertIsDisplayed()
+                .assertWidthIsAtLeast(48.dp)
+                .assertHeightIsAtLeast(48.dp)
+                .fetchSemanticsNode().boundsInRoot
+            val moreBounds = composeRule.onNodeWithContentDescription("更多")
+                .assertIsDisplayed()
+                .assertWidthIsAtLeast(48.dp)
+                .assertHeightIsAtLeast(48.dp)
+                .fetchSemanticsNode().boundsInRoot
+
+            assertTrue("[$widthDp] 回复胶囊不得左越界", replyBounds.left >= -0.5f)
+            assertTrue("[$widthDp] 回复与楼层胶囊不得重叠", replyBounds.right <= floorBounds.left + 0.5f)
+            assertTrue("[$widthDp] 楼层与收藏胶囊不得重叠", floorBounds.right <= favBounds.left + 0.5f)
+            assertTrue("[$widthDp] 更多胶囊不得右溢出 $widthDp", moreBounds.right <= maxRightPx)
+        }
     }
 
     /** 闭合 R-C5b 两处遗留：HiPressFeedback detach 复位与 HiCountBadge/HiRollingNumber 无组合体内状态写。 */
@@ -1036,6 +1271,18 @@ class ThreadBottomToolbarTest {
 
     private fun countNodes(matcher: SemanticsMatcher): Int =
         composeRule.onAllNodes(matcher, useUnmergedTree = true).fetchSemanticsNodes().size
+
+    private fun hasModifierNamed(layoutInfo: LayoutInfo, token: String): Boolean =
+        layoutInfo.getModifierInfo().any { it.modifier.javaClass.name.contains(token, ignoreCase = true) }
+
+    private fun hasSubtreeModifierNamed(root: LayoutInfo, token: String): Boolean {
+        if (hasModifierNamed(root, token)) return true
+        val getter = root.javaClass.methods.firstOrNull {
+            (it.name == "getChildren" || it.name.startsWith("getChildren$")) && it.parameterCount == 0
+        }
+        val children = (getter?.invoke(root) as? List<*>).orEmpty()
+        return children.any { child -> child is LayoutInfo && hasSubtreeModifierNamed(child, token) }
+    }
 
     private fun awaitWallCondition(
         timeoutMs: Long,

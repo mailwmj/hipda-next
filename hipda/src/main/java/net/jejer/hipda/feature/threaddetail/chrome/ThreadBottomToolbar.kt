@@ -9,7 +9,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,8 +22,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -34,6 +31,7 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -48,13 +46,11 @@ import net.jejer.hipda.ui.designsystem.HiCappedFontScale
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.feedback.HiIconSwitch
-import net.jejer.hipda.ui.designsystem.feedback.HiRollingNumber
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.glass.HiGlassRegion
 import net.jejer.hipda.ui.designsystem.glass.HiGlassState
 import net.jejer.hipda.ui.designsystem.glass.HiGlassStyle
 import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
-import net.jejer.hipda.ui.designsystem.glass.HiGlassTokens
 import net.jejer.hipda.ui.designsystem.motion.*
 
 /** 帖子详情底部三段工具条基础高度（与触控区最小高对齐）。 */
@@ -70,22 +66,6 @@ private val ToolbarHorizontalMargin: Dp = 16.dp
 private val ToolbarSegmentGap: Dp = 8.dp
 private val ToolbarCollapsedMaxWidth: Dp = 560.dp
 private val RightCapsuleWidth: Dp = 96.dp
-private const val PROGRESS_FILL_LIGHT_ALPHA: Float = 0.48f
-private const val PROGRESS_FILL_DARK_ALPHA: Float = 0.44f
-
-/** 中段阅读进度胶囊的填充色与前景文字色解析结果（遵守 `V-C4d` 对比度契约）。 */
-@Immutable
-data class ProgressCapsuleColors(val fillColor: Color, val contentColor: Color)
-
-/** 解析阅读进度胶囊半透明进度填充色与前景文字色（`V-C4d`：全 20 套预设 × 浅/深/OLED 对比度 ≥ 4.5:1）。 */
-fun resolveProgressCapsuleColors(colorScheme: ColorScheme, darkTheme: Boolean): ProgressCapsuleColors {
-    val fillAlpha = if (darkTheme) {
-        PROGRESS_FILL_DARK_ALPHA.coerceAtMost(HiGlassTokens.ProgressFillContainerDarkMaxAlpha)
-    } else {
-        PROGRESS_FILL_LIGHT_ALPHA.coerceAtMost(HiGlassTokens.ProgressFillContainerLightMaxAlpha)
-    }
-    return ProgressCapsuleColors(colorScheme.primaryContainer.copy(alpha = fillAlpha), colorScheme.onSurface)
-}
 
 /** 外部链接 scheme 安全白名单（`DISPATCH.md` §4）：委托至 [SafeLinkPolicy.sanitizeHttpUrl]，仅允许无 `rawUserInfo` 的 `http`/`https` URL。 */
 fun sanitizeExternalHttpUrl(rawUrl: String?): String? = SafeLinkPolicy.sanitizeHttpUrl(rawUrl)
@@ -167,35 +147,36 @@ fun ThreadBottomToolbar(
     onShareClick: () -> Unit,
     modifier: Modifier = Modifier,
     bottomInset: Dp = 0.dp,
+    currentFloor: Int = 1,
 ) {
     // 闭合 R-BATCH5 B4-E4 ②：suppressBottomGlass=true 时必须整块卸载外层 HiGlassRegion，禁止留在树上仅隐藏子胶囊
     if (suppressBottomGlass) return
 
     val safeLastPage = lastPage.coerceAtLeast(1)
     val safePage = page.coerceIn(1, safeLastPage)
+    val safeFloor = currentFloor.coerceAtLeast(1)
+    val canJumpPage = safeLastPage > 1
+    val effectiveJumpBarExpanded = isJumpBarExpanded && canJumpPage
     var moreMenuExpanded by remember { mutableStateOf(false) }
-    LaunchedEffect(isJumpBarExpanded) { if (isJumpBarExpanded) moreMenuExpanded = false }
-    BackHandler(enabled = isJumpBarExpanded) { onExpandedChange(false) }
+    LaunchedEffect(effectiveJumpBarExpanded) { if (effectiveJumpBarExpanded) moreMenuExpanded = false }
+    LaunchedEffect(canJumpPage, isJumpBarExpanded) { if (!canJumpPage && isJumpBarExpanded) onExpandedChange(false) }
+    BackHandler(enabled = effectiveJumpBarExpanded) { onExpandedChange(false) }
 
     val cs = MaterialTheme.colorScheme
-    val darkTheme = HiTheme.state.darkTheme
-    val progressColors = remember(cs, darkTheme) { resolveProgressCapsuleColors(cs, darkTheme) }
-    val progressFractionState = animateFloatAsState(
-        targetValue = (safePage.toFloat() / safeLastPage.toFloat()).coerceIn(0f, 1f),
-        animationSpec = HiMotion.effectsDefault(),
-        label = "ThreadProgressFill",
-    )
-
     val replyLabel = stringResource(R.string.thread_detail_toolbar_reply)
     val favoriteDesc = stringResource(if (isFavorited) R.string.thread_detail_toolbar_unfavorite else R.string.thread_detail_toolbar_favorite)
     val moreDesc = stringResource(R.string.thread_detail_toolbar_more)
-    val capsuleDesc = stringResource(R.string.thread_detail_page_capsule_description, safePage, safeLastPage)
-    val fullPageMeasureSample = stringResource(R.string.common_page_indicator, safeLastPage, safeLastPage)
-    val compactPageMeasureSample = stringResource(R.string.thread_detail_page_indicator_compact, safeLastPage, safeLastPage)
+    val floorLabel = stringResource(R.string.common_floor_badge, safeFloor)
+    val capsuleDesc = if (canJumpPage) {
+        stringResource(R.string.thread_detail_floor_capsule_description_jumpable, safeFloor)
+    } else {
+        stringResource(R.string.thread_detail_floor_capsule_description_static, safeFloor)
+    }
+    val replyTextStyle = MaterialTheme.typography.labelLarge
     val tabularLabelStyle = MaterialTheme.typography.labelLarge.let { style -> remember(style) { style.copy(fontFeatureSettings = "tnum") } }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (isJumpBarExpanded) {
+        if (effectiveJumpBarExpanded) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -220,35 +201,34 @@ fun ThreadBottomToolbar(
                     val density = LocalDensity.current
                     val textMeasurer = rememberTextMeasurer()
 
-                    val replyTextWidthDp = remember(replyLabel, tabularLabelStyle, density) {
-                        with(density) { textMeasurer.measure(replyLabel, style = tabularLabelStyle, maxLines = 1).size.width.toDp() }
+                    val replyTextWidthDp = remember(replyLabel, replyTextStyle, density) {
+                        with(density) { textMeasurer.measure(replyLabel, style = replyTextStyle, maxLines = 1).size.width.toDp() }
                     }
-                    val fullPageTextWidthDp = remember(fullPageMeasureSample, tabularLabelStyle, density) {
-                        with(density) { textMeasurer.measure(fullPageMeasureSample, style = tabularLabelStyle, maxLines = 1).size.width.toDp() }
-                    }
-                    val compactPageTextWidthDp = remember(compactPageMeasureSample, tabularLabelStyle, density) {
-                        with(density) { textMeasurer.measure(compactPageMeasureSample, style = tabularLabelStyle, maxLines = 1).size.width.toDp() }
+                    val floorTextWidthDp = remember(floorLabel, tabularLabelStyle, density) {
+                        with(density) { textMeasurer.measure(floorLabel, style = tabularLabelStyle, maxLines = 1).size.width.toDp() }
                     }
 
-                    val fullReplyWidth = (18.dp + 6.dp + replyTextWidthDp + 32.dp).coerceAtLeast(88.dp)
-                    val fullMiddleMinWidth = (fullPageTextWidthDp + 40.dp).coerceAtLeast((124f * density.fontScale).dp)
-                    val compactMiddleMinWidth = (compactPageTextWidthDp + 24.dp).coerceAtLeast(64.dp)
-                    val isCompact = fullReplyWidth + ToolbarSegmentGap + fullMiddleMinWidth + ToolbarSegmentGap + RightCapsuleWidth > availableWidth
-
-                    val leftWidth = if (isCompact) ThreadBottomToolbarHeight else fullReplyWidth
                     val collapsedBarWidth = availableWidth.coerceAtMost(ToolbarCollapsedMaxWidth)
-                    val collapsedMiddleWidth = (collapsedBarWidth - leftWidth - RightCapsuleWidth - ToolbarSegmentGap * 2).coerceAtLeast(compactMiddleMinWidth)
-                    val groupStart = ((availableWidth - collapsedBarWidth) / 2f).coerceAtLeast(0.dp)
+                    val maxMiddleWidth = (collapsedBarWidth - ThreadBottomToolbarHeight - RightCapsuleWidth - ToolbarSegmentGap * 2)
+                        .coerceAtLeast(ThreadBottomToolbarHeight)
+                    val collapsedMiddleWidth = (floorTextWidthDp + 28.dp).coerceIn(ThreadBottomToolbarHeight, maxMiddleWidth)
+                    val minFullReplyWidth = (18.dp + 8.dp + replyTextWidthDp + 32.dp).coerceAtLeast((136f * density.fontScale).dp)
+                    val remainingReplyWidth = collapsedBarWidth - collapsedMiddleWidth - RightCapsuleWidth - ToolbarSegmentGap * 2
+                    val isCompact = remainingReplyWidth < minFullReplyWidth
+
+                    val leftWidth = if (isCompact) ThreadBottomToolbarHeight else remainingReplyWidth
+                    val actualBarWidth = leftWidth + ToolbarSegmentGap + collapsedMiddleWidth + ToolbarSegmentGap + RightCapsuleWidth
+                    val groupStart = ((availableWidth - actualBarWidth) / 2f).coerceAtLeast(0.dp)
                     val collapsedMiddleStart = groupStart + leftWidth + ToolbarSegmentGap
                     val rightStart = collapsedMiddleStart + collapsedMiddleWidth + ToolbarSegmentGap
 
                     val reducedMotion = HiTheme.isReducedMotion
                     val isCompactJumpBar = containerWidth < InlinePageJumpCompactBreakpoint
                     val expandedJumpHeight = if (isCompactJumpBar) InlinePageJumpTwoRowHeight else InlinePageJumpSingleRowHeight
-                    val targetMiddleWidth = if (isJumpBarExpanded) availableWidth else collapsedMiddleWidth
-                    val targetMiddleOffsetX = if (isJumpBarExpanded) 0.dp else collapsedMiddleStart
-                    val targetMiddleHeight = if (isJumpBarExpanded) expandedJumpHeight else ThreadBottomToolbarHeight
-                    val widthSpec = if (isJumpBarExpanded) HiMotion.spatialDefault(Dp.VisibilityThreshold) else HiMotion.exit(HiMotion.spatialDefault(Dp.VisibilityThreshold))
+                    val targetMiddleWidth = if (effectiveJumpBarExpanded) availableWidth else collapsedMiddleWidth
+                    val targetMiddleOffsetX = if (effectiveJumpBarExpanded) 0.dp else collapsedMiddleStart
+                    val targetMiddleHeight = if (effectiveJumpBarExpanded) expandedJumpHeight else ThreadBottomToolbarHeight
+                    val widthSpec = if (effectiveJumpBarExpanded) HiMotion.spatialDefault(Dp.VisibilityThreshold) else HiMotion.exit(HiMotion.spatialDefault(Dp.VisibilityThreshold))
                     val animatedMiddleWidth by animateDpAsState(targetMiddleWidth, widthSpec, label = "ThreadToolbarMiddleWidth")
                     val animatedMiddleOffsetX by animateDpAsState(targetMiddleOffsetX, widthSpec, label = "ThreadToolbarMiddleOffsetX")
                     val animatedMiddleHeight by animateDpAsState(targetMiddleHeight, widthSpec, label = "ThreadToolbarMiddleHeight")
@@ -259,9 +239,9 @@ fun ThreadBottomToolbar(
                     // 整块底部工具条（三段胶囊及展开态内联跳页条）共用 1 个 HiGlassRegion（1 个 HiGlassMarker）
                     HiGlassRegion(modifier = Modifier.fillMaxWidth()) {
                         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomStart) {
-                            // 1. 左段：回复胶囊
+                            // 1. 左段：可伸缩轻输入回复槽（极窄紧凑态自动缩为 48dp 纯图标）
                             AnimatedVisibility(
-                                visible = !isJumpBarExpanded,
+                                visible = !effectiveJumpBarExpanded,
                                 modifier = Modifier.offset { IntOffset(groupStart.roundToPx(), 0) },
                                 enter = hiFadeIn(HiMotion.effectsFast()) + hiSlideInHorizontally(HiMotion.spatialFast()) { -it / 2 },
                                 exit = hiFadeOut(HiMotion.exit(HiMotion.effectsFast())) + hiSlideOutHorizontally(HiMotion.exit(HiMotion.spatialFast())) { -it / 2 },
@@ -276,14 +256,14 @@ fun ThreadBottomToolbar(
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .clickable(replyInteraction, LocalIndication.current, role = Role.Button, onClick = onReplyClick)
-                                            .padding(horizontal = if (isCompact) 0.dp else 14.dp),
+                                            .padding(horizontal = if (isCompact) 0.dp else 16.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.Center,
+                                        horizontalArrangement = if (isCompact) Arrangement.Center else Arrangement.Start,
                                     ) {
                                         Icon(Icons.Rounded.Edit, contentDescription = if (isCompact) replyLabel else null, tint = cs.onSurface, modifier = Modifier.size(18.dp))
                                         if (!isCompact) {
-                                            Spacer(Modifier.width(6.dp))
-                                            Text(replyLabel, style = tabularLabelStyle, color = cs.onSurface, maxLines = 1, softWrap = false)
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(replyLabel, style = replyTextStyle, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
                                         }
                                     }
                                 }
@@ -291,7 +271,7 @@ fun ThreadBottomToolbar(
 
                             // 2. 右段：收藏 + 更多双操作胶囊
                             AnimatedVisibility(
-                                visible = !isJumpBarExpanded,
+                                visible = !effectiveJumpBarExpanded,
                                 modifier = Modifier.offset { IntOffset(rightStart.roundToPx(), 0) },
                                 enter = hiFadeIn(HiMotion.effectsFast()) + hiSlideInHorizontally(HiMotion.spatialFast()) { it / 2 },
                                 exit = hiFadeOut(HiMotion.exit(HiMotion.effectsFast())) + hiSlideOutHorizontally(HiMotion.exit(HiMotion.spatialFast())) { it / 2 },
@@ -342,18 +322,18 @@ fun ThreadBottomToolbar(
                                 }
                             }
 
-                            // 3. 中段：阅读进度胶囊 ↔ 原地展开内联跳页条
+                            // 3. 中段：弱化楼层胶囊（单页被动不可点 / 多页原地展开内联跳页条）
                             HiGlassSurface(
                                 state = glassState,
                                 style = HiGlassStyle.Toolbar,
-                                shape = if (isJumpBarExpanded && isCompactJumpBar) HiShapeTokens.Large else HiShapeTokens.Full,
+                                shape = if (effectiveJumpBarExpanded && isCompactJumpBar) HiShapeTokens.Large else HiShapeTokens.Full,
                                 floating = true,
                                 modifier = Modifier
                                     .offset { IntOffset(effectiveMiddleOffsetX.roundToPx(), 0) }
                                     .width(effectiveMiddleWidth)
                                     .height(effectiveMiddleHeight),
                             ) {
-                                if (isJumpBarExpanded) {
+                                if (effectiveJumpBarExpanded) {
                                     Box(Modifier.requiredSize(availableWidth, expandedJumpHeight), contentAlignment = Alignment.Center) {
                                         InlinePageJumpBar(
                                             currentPage = safePage, lastPage = safeLastPage, containerWidth = containerWidth,
@@ -362,30 +342,29 @@ fun ThreadBottomToolbar(
                                         )
                                     }
                                 } else {
-                                    val progressInteraction = remember { MutableInteractionSource() }
-                                    Box(
-                                        modifier = Modifier
+                                    val middleModifier = if (canJumpPage) {
+                                        val floorInteraction = remember { MutableInteractionSource() }
+                                        Modifier
                                             .fillMaxWidth()
                                             .height(ThreadBottomToolbarHeight)
-                                            .hiPressScale(progressInteraction)
-                                            .drawBehind {
-                                                val fraction = progressFractionState.value.coerceIn(0f, 1f)
-                                                if (fraction > 0f) drawRect(progressColors.fillColor, size = Size(size.width * fraction, size.height))
-                                            }
-                                            .clickable(progressInteraction, LocalIndication.current, role = Role.Button) { onExpandedChange(true) }
-                                            .semantics(mergeDescendants = true) { contentDescription = capsuleDesc },
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                                            if (isCompact) {
-                                                HiRollingNumber(safePage, style = tabularLabelStyle, color = progressColors.contentColor)
-                                                Text("/$safeLastPage", style = tabularLabelStyle, color = progressColors.contentColor, maxLines = 1, softWrap = false)
-                                            } else {
-                                                Text("第 ", style = tabularLabelStyle, color = progressColors.contentColor, maxLines = 1, softWrap = false)
-                                                HiRollingNumber(safePage, style = tabularLabelStyle, color = progressColors.contentColor)
-                                                Text(" / $safeLastPage 页", style = tabularLabelStyle, color = progressColors.contentColor, maxLines = 1, softWrap = false)
-                                            }
-                                        }
+                                            .hiPressScale(floorInteraction)
+                                            .clickable(floorInteraction, LocalIndication.current, role = Role.Button) { onExpandedChange(true) }
+                                            .semantics(mergeDescendants = true) { contentDescription = capsuleDesc }
+                                    } else {
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(ThreadBottomToolbarHeight)
+                                            .semantics(mergeDescendants = true) { contentDescription = capsuleDesc }
+                                    }
+                                    Box(modifier = middleModifier, contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = floorLabel,
+                                            style = tabularLabelStyle,
+                                            color = cs.onSurfaceVariant,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            modifier = Modifier.clearAndSetSemantics {},
+                                        )
                                     }
                                 }
                             }
