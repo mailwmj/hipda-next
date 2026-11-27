@@ -98,6 +98,8 @@
 | M7-5（全新安装回归、用户真机验收与发布，**发布/正式签名包须先获用户批准**） | 清单已就绪（`docs/agents/cards/M7-5.md`，依赖 `M7-1`–`M7-4c`、`M7-P1`、`M7-P2` 已全部合入 `main @f9862b8`） | **待用户真机验收与批准** |
 | M7-P1（看图收尾：V-E14 HD 超长图 4096 上限、R-M7-G2 S3 图集逐页楼层/作者与坐标键、R-E2b S1 精简 `media/`） | `card/M7-P1-image-polish` | **已合入 `main`（`4922caa`）** |
 | M7-P2（链接/分享/零碎：V-E16、R-M7-G3 S1/S2、R-M7-G1 S3、R-E6 O1、R-E4 N1、R-M7-2 S1） | `card/M7-P2-links-polish` | **已合入 `main`（`f9862b8`）** |
+| M7-5a（P0：登录成功被误判为「加载失败」、凭据未写入；成功判定对齐旧版、会话确认、失败清 Cookie、失败原因分文案 + debug 脱敏日志 `HxLogin`） | `card/M7-5a-login-fix`，Neon `a5c7511b` | 实现中（复杂档 R + V） |
+| M7-5b（玻璃四组定稿参数、看图保存提示、分享响应、外链 Snackbar Long、CI 上传 `release-apk-testsigned`） | `card/M7-5b-device-polish`，Neon `ad2efc9d` | 实现中（R） |
 | OPS-1 负责人助理（文档维护 / 起草卡片 / 核对修改轮） | 主目录 `main`（纯文档） | 常驻复用中 |
 
 - 本机有 Android SDK（mise 安装，见 `lesson.md`），可本地串行录制 Roborazzi 基线；流程提速规则已生效（`5bae5ab`）。
