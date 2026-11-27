@@ -288,6 +288,14 @@ jobs:
           "$BUILD_TOOLS_DIR/apksigner" verify --verbose artifacts/release/hipda-ng-release-signed.apk
           rm -f /tmp/ci-debug.keystore /tmp/hipda-ng-release-aligned.apk
 
+      - name: Upload test-signed release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-apk-testsigned
+          path: artifacts/release/hipda-ng-release-signed.apk
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Enable KVM group permissions
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

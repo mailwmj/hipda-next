@@ -43,8 +43,8 @@ class GlassTuningPanelTest {
             Locale.setDefault(Locale.FRANCE)
             val defaultLine = formatGlassStyleParams(HiGlassStyle.Navigation)
             assertEquals(
-                "blur=10.0dp refractH=16.0dp refractAmt=24.0dp depth=off ca=off vibrancy=on " +
-                    "lightTint=0.45 darkTint=0.46 sat=1.18 border=1.00 indicator=0.12",
+                "blur=11.9dp refractH=8.0dp refractAmt=16.0dp depth=off ca=off vibrancy=on " +
+                    "lightTint=0.66 darkTint=0.70 sat=1.06 border=0.00 indicator=0.12",
                 defaultLine,
             )
             assertFalse("输出应为单行文本", defaultLine.contains('\n'))
@@ -264,7 +264,7 @@ class GlassTuningPanelTest {
         composeRule.onNodeWithText("快速回复面板（Sheet 档）").assertIsDisplayed()
 
         val sheetFormatted = formatGlassStyleParams(HiGlassStyle.Sheet)
-        assertTrue("Sheet 参数单行应包含 darkBlur=12.0dp：$sheetFormatted", "darkBlur=12.0dp" in sheetFormatted)
+        assertTrue("Sheet 参数单行应包含 darkBlur=11.9dp：$sheetFormatted", "darkBlur=11.9dp" in sheetFormatted)
         assertFalse("Sheet 参数应为单行文本", sheetFormatted.contains('\n'))
 
         composeRule.onNodeWithContentDescription("深色模糊半径")

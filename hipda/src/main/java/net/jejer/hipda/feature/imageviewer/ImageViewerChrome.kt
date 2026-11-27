@@ -26,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
@@ -33,6 +34,9 @@ import net.jejer.hipda.ui.designsystem.hiFullscreenOverlaySafePadding
 import net.jejer.hipda.ui.designsystem.feedback.hiPressScale
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.state.HiLoadingSpinner
+
+/** 看图底栏扣除导航栏安全区后的占位高度（0.5dp 线 + 上下 8dp + ≥48dp 胶囊按钮），供 Snackbar 避让底栏不重叠。 */
+internal val ImageViewerBottomBarHeight: Dp = 68.dp
 
 /** 看图浮层专用纯色半透明暗底（严格零 `HiGlassSurface`）。 */
 internal object ImageViewerPalette {
@@ -98,6 +102,7 @@ internal fun ImageViewerBottomBar(
     downloadState: OriginalDownloadState,
     actionsEnabled: Boolean,
     isSaving: Boolean,
+    isSharing: Boolean,
     onOriginalClick: () -> Unit,
     onSaveClick: () -> Unit,
     onShareClick: () -> Unit,
@@ -146,9 +151,15 @@ internal fun ImageViewerBottomBar(
                 Icon(ImageViewerIcons.Download, null, tint = fg, modifier = Modifier.size(18.dp))
                 Text(stringResource(R.string.image_viewer_action_save), style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
             }
-            ViewerPillButton(actionsEnabled, onShareClick) {
-                Icon(Icons.Rounded.Share, null, tint = fg, modifier = Modifier.size(18.dp))
-                Text(stringResource(R.string.image_viewer_action_share), style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
+            val shareEnabled = actionsEnabled && !isSharing
+            val shareFg = if (shareEnabled) ImageViewerPalette.ForegroundPrimary else ImageViewerPalette.ForegroundDisabled
+            ViewerPillButton(shareEnabled, onShareClick) {
+                if (isSharing) {
+                    HiLoadingSpinner(Modifier.size(18.dp), 2.dp, ImageViewerPalette.AccentProgress, ImageViewerPalette.ProgressTrack)
+                } else {
+                    Icon(Icons.Rounded.Share, null, tint = shareFg, modifier = Modifier.size(18.dp))
+                }
+                Text(stringResource(R.string.image_viewer_action_share), style = MaterialTheme.typography.labelLarge, color = shareFg, maxLines = 1)
             }
         }
     }

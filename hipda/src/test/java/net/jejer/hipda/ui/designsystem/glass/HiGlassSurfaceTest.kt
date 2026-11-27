@@ -47,70 +47,72 @@ class HiGlassSurfaceTest {
 
     @Test
     fun defaultTokensAndPresets_matchBackdropLiquidGlassConfig() {
-        assertEquals(10.dp, HiGlassTokens.BlurRadius)
-        assertEquals(0.45f, HiGlassTokens.LightBlurTintAlpha, 0.0001f)
-        assertEquals(0.46f, HiGlassTokens.DarkBlurTintAlpha, 0.0001f)
-        assertEquals(1.18f, HiGlassTokens.BlurSaturation, 0.0001f)
-        assertEquals(16.dp, HiGlassTokens.RefractionHeight)
-        assertEquals(24.dp, HiGlassTokens.RefractionAmount)
+        // 2026-11-27 Z Fold8 真机定稿：四组统一用同一组参数，同屏实时玻璃上限维持 3
+        assertEquals(11.9.dp, HiGlassTokens.BlurRadius)
+        assertEquals(0.66f, HiGlassTokens.LightBlurTintAlpha, 0.0001f)
+        assertEquals(0.70f, HiGlassTokens.DarkBlurTintAlpha, 0.0001f)
+        assertEquals(1.06f, HiGlassTokens.BlurSaturation, 0.0001f)
+        assertEquals(8.dp, HiGlassTokens.RefractionHeight)
+        assertEquals(16.dp, HiGlassTokens.RefractionAmount)
         assertFalse(HiGlassTokens.DepthEffect)
         assertFalse(HiGlassTokens.ChromaticAberration)
         assertTrue(HiGlassTokens.VibrancyEnabled)
+        assertEquals(0f, HiGlassTokens.DefaultBorderHighlightStrength, 0.0001f)
         assertEquals(0.07f, HiGlassTokens.LightShadowAlpha, 0.0001f)
         assertEquals(0.18f, HiGlassTokens.DarkShadowAlpha, 0.0001f)
         assertEquals(0.12f, HiGlassTokens.IndicatorAlpha, 0.0001f)
         assertEquals(0.94f, HiGlassTokens.DegradedSurfaceAlpha, 0.0001f)
+        assertEquals(0.5.dp, HiGlassTokens.DegradedBorderWidth)
         assertEquals(3, HiGlassTokens.MaxGlassSurfacesOnScreen)
 
-        assertEquals(10.dp, HiGlassStyle.Navigation.blurRadius)
-        assertEquals(0.45f, HiGlassStyle.Navigation.lightTintAlpha, 0.0001f)
-        assertEquals(0.46f, HiGlassStyle.Navigation.darkTintAlpha, 0.0001f)
-        assertEquals(1.18f, HiGlassStyle.Navigation.saturation, 0.0001f)
-        assertEquals(16.dp, HiGlassStyle.Navigation.refractionHeight)
-        assertEquals(24.dp, HiGlassStyle.Navigation.refractionAmount)
-        assertFalse(HiGlassStyle.Navigation.depthEffect)
-        assertFalse(HiGlassStyle.Navigation.chromaticAberration)
-        assertTrue(HiGlassStyle.Navigation.vibrancyEnabled)
-        assertEquals(0.12f, HiGlassStyle.Navigation.indicatorAlpha, 0.0001f)
+        assertEquals(11.9.dp, HiGlassTokens.TopBarBlurRadius)
+        assertEquals(0.66f, HiGlassTokens.TopBarLightBlurTintAlpha, 0.0001f)
+        assertEquals(0.70f, HiGlassTokens.TopBarDarkBlurTintAlpha, 0.0001f)
+        assertEquals(1.06f, HiGlassTokens.TopBarBlurSaturation, 0.0001f)
+        assertEquals(8.dp, HiGlassTokens.TopBarRefractionHeight)
+        assertEquals(16.dp, HiGlassTokens.TopBarRefractionAmount)
 
-        assertEquals(14.dp, HiGlassStyle.TopBar.blurRadius)
-        assertNull(HiGlassStyle.TopBar.darkBlurRadius)
-        assertEquals(0.66f, HiGlassStyle.TopBar.lightTintAlpha, 0.0001f)
-        assertEquals(0.70f, HiGlassStyle.TopBar.darkTintAlpha, 0.0001f)
-        assertTrue(HiGlassStyle.TopBar.lightTintAlpha in 0.64f..0.72f)
-        assertTrue(HiGlassStyle.TopBar.darkTintAlpha in 0.68f..0.76f)
-        assertEquals(1.06f, HiGlassStyle.TopBar.saturation, 0.0001f)
-        assertEquals(8.dp, HiGlassStyle.TopBar.refractionHeight)
-        assertEquals(16.dp, HiGlassStyle.TopBar.refractionAmount)
-        assertFalse(HiGlassStyle.TopBar.depthEffect)
-        assertFalse(HiGlassStyle.TopBar.chromaticAberration)
-        assertTrue(HiGlassStyle.TopBar.vibrancyEnabled)
+        assertEquals(11.9.dp, HiGlassTokens.ToolbarBlurRadius)
+        assertEquals(0.66f, HiGlassTokens.ToolbarLightBlurTintAlpha, 0.0001f)
+        assertEquals(0.70f, HiGlassTokens.ToolbarDarkBlurTintAlpha, 0.0001f)
+        assertEquals(1.06f, HiGlassTokens.ToolbarBlurSaturation, 0.0001f)
+        assertEquals(8.dp, HiGlassTokens.ToolbarRefractionHeight)
+        assertEquals(16.dp, HiGlassTokens.ToolbarRefractionAmount)
 
-        assertEquals(16.dp, HiGlassStyle.Toolbar.blurRadius)
-        assertEquals(0.64f, HiGlassStyle.Toolbar.lightTintAlpha, 0.0001f)
-        assertEquals(0.68f, HiGlassStyle.Toolbar.darkTintAlpha, 0.0001f)
-        assertTrue(HiGlassStyle.Toolbar.lightTintAlpha in 0.62f..0.72f)
-        assertTrue(HiGlassStyle.Toolbar.darkTintAlpha in 0.68f..0.76f)
-        assertEquals(1.08f, HiGlassStyle.Toolbar.saturation, 0.0001f)
-        assertEquals(12.dp, HiGlassStyle.Toolbar.refractionHeight)
-        assertEquals(24.dp, HiGlassStyle.Toolbar.refractionAmount)
-        assertFalse(HiGlassStyle.Toolbar.depthEffect)
-        assertFalse(HiGlassStyle.Toolbar.chromaticAberration)
-        assertTrue(HiGlassStyle.Toolbar.vibrancyEnabled)
-
-        assertEquals(18.dp, HiGlassStyle.Sheet.blurRadius)
-        assertEquals(12.dp, HiGlassStyle.Sheet.darkBlurRadius)
-        assertEquals(0.76f, HiGlassStyle.Sheet.lightTintAlpha, 0.0001f)
-        assertEquals(0.74f, HiGlassStyle.Sheet.darkTintAlpha, 0.0001f)
-        assertTrue(HiGlassStyle.Sheet.lightTintAlpha in 0.72f..0.80f)
-        assertTrue(HiGlassStyle.Sheet.darkTintAlpha in 0.70f..0.78f)
-        assertEquals(1.0f, HiGlassStyle.Sheet.saturation, 0.0001f)
-        assertEquals(10.dp, HiGlassStyle.Sheet.refractionHeight)
-        assertEquals(18.dp, HiGlassStyle.Sheet.refractionAmount)
-        assertEquals(1.dp, HiGlassStyle.Sheet.borderWidth)
+        assertEquals(11.9.dp, HiGlassTokens.SheetBlurRadius)
+        assertEquals(11.9.dp, HiGlassTokens.SheetDarkBlurRadius)
+        assertEquals(0.66f, HiGlassTokens.SheetLightBlurTintAlpha, 0.0001f)
+        assertEquals(0.70f, HiGlassTokens.SheetDarkBlurTintAlpha, 0.0001f)
+        assertEquals(1.06f, HiGlassTokens.SheetBlurSaturation, 0.0001f)
+        assertEquals(8.dp, HiGlassTokens.SheetRefractionHeight)
+        assertEquals(16.dp, HiGlassTokens.SheetRefractionAmount)
+        assertEquals(1.dp, HiGlassTokens.SheetBorderWidth)
         assertEquals(0.35f, HiGlassTokens.SheetScrimAlpha, 0.0001f)
         assertTrue(HiGlassTokens.SheetScrimAlpha in 0.32f..0.38f)
-        assertTrue(HiGlassStyle.Sheet.vibrancyEnabled)
+
+        listOf(
+            "Navigation" to HiGlassStyle.Navigation,
+            "TopBar" to HiGlassStyle.TopBar,
+            "Toolbar" to HiGlassStyle.Toolbar,
+            "Sheet" to HiGlassStyle.Sheet,
+        ).forEach { (name, style) ->
+            assertEquals("$name blurRadius", 11.9.dp, style.blurRadius)
+            assertEquals("$name refractionHeight", 8.dp, style.refractionHeight)
+            assertEquals("$name refractionAmount", 16.dp, style.refractionAmount)
+            assertFalse("$name depthEffect", style.depthEffect)
+            assertFalse("$name chromaticAberration", style.chromaticAberration)
+            assertTrue("$name vibrancyEnabled", style.vibrancyEnabled)
+            assertEquals("$name lightTintAlpha", 0.66f, style.lightTintAlpha, 0.0001f)
+            assertEquals("$name darkTintAlpha", 0.70f, style.darkTintAlpha, 0.0001f)
+            assertEquals("$name saturation", 1.06f, style.saturation, 0.0001f)
+            assertEquals("$name borderHighlightStrength", 0f, style.borderHighlightStrength, 0.0001f)
+            assertEquals("$name indicatorAlpha", 0.12f, style.indicatorAlpha, 0.0001f)
+        }
+        assertNull(HiGlassStyle.Navigation.darkBlurRadius)
+        assertNull(HiGlassStyle.TopBar.darkBlurRadius)
+        assertNull(HiGlassStyle.Toolbar.darkBlurRadius)
+        assertEquals(11.9.dp, HiGlassStyle.Sheet.darkBlurRadius)
+        assertEquals(1.dp, HiGlassStyle.Sheet.borderWidth)
 
         // 叠加层峰值 alpha 令牌区间校验（§5 L230–232, L271–274）
         assertTrue(HiGlassTokens.TabHighlighterContainerLightMaxAlpha <= 0.55f)
@@ -142,26 +144,38 @@ class HiGlassSurfaceTest {
         assertEquals(GlassRenderTier.REFRACTION_AND_BLUR, lightRefraction.renderTier)
         assertTrue(lightRefraction.blurEnabled)
         assertTrue(lightRefraction.refractionEnabled)
-        assertEquals(10.dp, lightRefraction.blurRadius)
-        assertEquals(16.dp, lightRefraction.refractionHeight)
-        assertEquals(24.dp, lightRefraction.refractionAmount)
+        assertEquals(11.9.dp, lightRefraction.blurRadius)
+        assertEquals(8.dp, lightRefraction.refractionHeight)
+        assertEquals(16.dp, lightRefraction.refractionAmount)
         assertTrue(lightRefraction.vibrancyEnabled)
-        assertEquals(1.18f, lightRefraction.saturation, 0.0001f)
+        assertEquals(1.06f, lightRefraction.saturation, 0.0001f)
         assertEquals(lightScheme.surfaceContainerLowest, lightRefraction.surfaceColor)
-        assertEquals(lightScheme.surfaceContainerLowest.copy(alpha = 0.45f), lightRefraction.activeTintColor)
+        assertEquals(lightScheme.surfaceContainerLowest.copy(alpha = 0.66f), lightRefraction.activeTintColor)
         assertEquals(lightScheme.surface.copy(alpha = 0.94f), lightRefraction.degradedSurfaceColor)
         assertEquals(HiGlassTokens.BorderWidth, lightRefraction.borderWidth)
+        assertTrue(
+            "默认 borderHighlightStrength == 0f 时激活态高光描边 alpha 必须全为 0",
+            lightRefraction.borderHighlightColors.all { it.alpha == 0f },
+        )
+        assertEquals(Color.Transparent, lightRefraction.borderOutlineColor)
+        assertEquals(HiGlassTokens.FloatingShadowElevation, lightRefraction.shadowElevation)
+        assertEquals(Color.Black.copy(alpha = 0.07f), lightRefraction.shadowColor)
+
+        val lightExplicitBorder = resolveHiGlassStyleSpec(
+            colorScheme = lightScheme,
+            darkTheme = false,
+            renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
+            style = HiGlassStyle.Navigation.copy(borderHighlightStrength = 1f),
+        )
         assertEquals(
             listOf(
                 Color.White.copy(alpha = HiGlassTokens.LightBorderHighlightTopLeftAlpha),
                 Color.White.copy(alpha = HiGlassTokens.LightBorderHighlightMidAlpha),
                 Color.White.copy(alpha = HiGlassTokens.LightBorderHighlightBottomRightAlpha),
             ),
-            lightRefraction.borderHighlightColors,
+            lightExplicitBorder.borderHighlightColors,
         )
-        assertEquals(Color.Black.copy(alpha = HiGlassTokens.LightBorderOutlineAlpha), lightRefraction.borderOutlineColor)
-        assertEquals(HiGlassTokens.FloatingShadowElevation, lightRefraction.shadowElevation)
-        assertEquals(Color.Black.copy(alpha = 0.07f), lightRefraction.shadowColor)
+        assertEquals(Color.Black.copy(alpha = HiGlassTokens.LightBorderOutlineAlpha), lightExplicitBorder.borderOutlineColor)
 
         val darkBlurOnly = resolveHiGlassStyleSpec(
             colorScheme = darkScheme,
@@ -172,17 +186,10 @@ class HiGlassSurfaceTest {
         assertEquals(GlassRenderTier.BLUR_ONLY, darkBlurOnly.renderTier)
         assertTrue(darkBlurOnly.blurEnabled)
         assertFalse(darkBlurOnly.refractionEnabled)
-        assertEquals(10.dp, darkBlurOnly.blurRadius)
+        assertEquals(11.9.dp, darkBlurOnly.blurRadius)
         assertEquals(darkScheme.surfaceContainer, darkBlurOnly.surfaceColor)
-        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.46f), darkBlurOnly.activeTintColor)
-        assertEquals(
-            listOf(
-                Color.White.copy(alpha = HiGlassTokens.DarkBorderHighlightTopLeftAlpha),
-                Color.White.copy(alpha = HiGlassTokens.DarkBorderHighlightMidAlpha),
-                Color.White.copy(alpha = HiGlassTokens.DarkBorderHighlightBottomRightAlpha),
-            ),
-            darkBlurOnly.borderHighlightColors,
-        )
+        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.70f), darkBlurOnly.activeTintColor)
+        assertTrue(darkBlurOnly.borderHighlightColors.all { it.alpha == 0f })
         assertEquals(Color.Transparent, darkBlurOnly.borderOutlineColor)
         assertEquals(0.dp, darkBlurOnly.shadowElevation)
         assertEquals(Color.Black.copy(alpha = 0.18f), darkBlurOnly.shadowColor)
@@ -209,30 +216,46 @@ class HiGlassSurfaceTest {
             scaledBorderSpec.borderHighlightColors.first(),
         )
 
-        val lightDegraded = resolveHiGlassStyleSpec(
-            colorScheme = lightScheme,
-            darkTheme = false,
-            renderTier = GlassRenderTier.SOLID_DEGRADED,
-            floating = true,
-        )
-        assertFalse(lightDegraded.blurEnabled)
-        assertFalse(lightDegraded.refractionEnabled)
-        assertEquals(lightScheme.surface.copy(alpha = 0.94f), lightDegraded.degradedSurfaceColor)
-        assertEquals(HiGlassTokens.DegradedBorderWidth, lightDegraded.borderWidth)
-        assertEquals(lightScheme.outlineVariant, lightDegraded.borderColor)
-        assertTrue(lightDegraded.borderHighlightColors.isEmpty())
-        assertEquals(Color.Transparent, lightDegraded.borderOutlineColor)
+        // 降级路径（94% 纯色 + 0.5dp outlineVariant 描边）不受 borderHighlightStrength == 0f 影响
+        listOf(
+            "Navigation" to HiGlassStyle.Navigation,
+            "TopBar" to HiGlassStyle.TopBar,
+            "Toolbar" to HiGlassStyle.Toolbar,
+            "Sheet" to HiGlassStyle.Sheet,
+        ).forEach { (presetName, presetStyle) ->
+            listOf(
+                Triple("light", lightScheme, false),
+                Triple("dark", darkScheme, true),
+                Triple("pureBlack", pureBlackScheme, true),
+            ).forEach { (mode, scheme, isDark) ->
+                val degraded = resolveHiGlassStyleSpec(
+                    colorScheme = scheme,
+                    darkTheme = isDark,
+                    renderTier = GlassRenderTier.SOLID_DEGRADED,
+                    floating = true,
+                    style = presetStyle,
+                )
+                assertFalse("$presetName/$mode degraded blurEnabled", degraded.blurEnabled)
+                assertFalse("$presetName/$mode degraded refractionEnabled", degraded.refractionEnabled)
+                assertEquals("$presetName/$mode degradedSurfaceColor", scheme.surface.copy(alpha = 0.94f), degraded.degradedSurfaceColor)
+                assertEquals("$presetName/$mode degraded borderWidth", HiGlassTokens.DegradedBorderWidth, degraded.borderWidth)
+                assertEquals("$presetName/$mode degraded borderColor", scheme.outlineVariant, degraded.borderColor)
+                assertTrue("$presetName/$mode degraded borderColor alpha > 0", degraded.borderColor.alpha > 0f)
+                assertTrue("$presetName/$mode degraded borderHighlightColors empty", degraded.borderHighlightColors.isEmpty())
+                assertEquals("$presetName/$mode degraded borderOutlineColor", Color.Transparent, degraded.borderOutlineColor)
+            }
+        }
 
-        // Sheet 档位亮/暗独立模糊半径（18dp / 12dp）与 1dp 描边
+        // Sheet 档位亮/暗模糊统一为 11.9dp 与 0.66/0.70 着色
         val lightSheet = resolveHiGlassStyleSpec(
             colorScheme = lightScheme,
             darkTheme = false,
             renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
             style = HiGlassStyle.Sheet,
         )
-        assertEquals(18.dp, lightSheet.blurRadius)
+        assertEquals(11.9.dp, lightSheet.blurRadius)
         assertEquals(1.dp, lightSheet.borderWidth)
-        assertEquals(lightScheme.surfaceContainerLowest.copy(alpha = 0.76f), lightSheet.activeTintColor)
+        assertEquals(lightScheme.surfaceContainerLowest.copy(alpha = 0.66f), lightSheet.activeTintColor)
 
         val darkSheet = resolveHiGlassStyleSpec(
             colorScheme = darkScheme,
@@ -240,9 +263,9 @@ class HiGlassSurfaceTest {
             renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
             style = HiGlassStyle.Sheet,
         )
-        assertEquals(12.dp, darkSheet.blurRadius)
+        assertEquals(11.9.dp, darkSheet.blurRadius)
         assertEquals(1.dp, darkSheet.borderWidth)
-        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.74f), darkSheet.activeTintColor)
+        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.70f), darkSheet.activeTintColor)
     }
 
     @Test
@@ -250,7 +273,7 @@ class HiGlassSurfaceTest {
         val lightScheme = hiColorSchemeFromSeed(HiColorPresets.Brand.color, darkTheme = false)
         val darkScheme = hiColorSchemeFromSeed(HiColorPresets.Brand.color, darkTheme = true)
 
-        // 1) API 33+ 导航默认档（折射 + 模糊 + vibrancy）
+        // 1) API 33+ 导航默认档（11.9dp 模糊、8/16dp 折射、vibrancy + 1.06 饱和）
         val navSpec = resolveHiGlassStyleSpec(
             colorScheme = lightScheme,
             darkTheme = false,
@@ -261,25 +284,25 @@ class HiGlassSurfaceTest {
         assertEquals(GlassRenderTier.REFRACTION_AND_BLUR, navRefraction.renderTier)
         assertTrue(navRefraction.backdropEnabled)
         assertTrue(navRefraction.refractionEnabled)
-        assertEquals(10.dp, navRefraction.blurRadius)
-        assertEquals(16.dp, navRefraction.refractionHeight)
-        assertEquals(24.dp, navRefraction.refractionAmount)
+        assertEquals(11.9.dp, navRefraction.blurRadius)
+        assertEquals(8.dp, navRefraction.refractionHeight)
+        assertEquals(16.dp, navRefraction.refractionAmount)
         assertFalse(navRefraction.depthEffect)
         assertFalse(navRefraction.chromaticAberration)
         assertTrue(navRefraction.vibrancyEnabled)
-        assertEquals(1.18f, navRefraction.saturation, 0.0001f)
-        assertEquals(1.5f * 1.18f, navRefraction.effectiveSaturation, 0.0001f)
+        assertEquals(1.06f, navRefraction.saturation, 0.0001f)
+        assertEquals(1.5f * 1.06f, navRefraction.effectiveSaturation, 0.0001f)
         assertEquals(navSpec.activeTintColor, navRefraction.tintColor)
         assertEquals(navSpec.degradedSurfaceColor, navRefraction.fallbackColor)
 
-        // 1b) TopBar 与 Sheet 合并单层有效饱和度（Sheet 复用 VibrantColorFilter 单例 1.5x）
+        // 1b) TopBar 与 Sheet 使用统一定稿参数（亮/暗均为 11.9dp / 1.06 饱和）
         val topBarConfig = resolveHiGlassStyleSpec(
             colorScheme = lightScheme,
             darkTheme = false,
             renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
             style = HiGlassStyle.TopBar,
         ).toBackdropConfig()
-        assertEquals(14.dp, topBarConfig.blurRadius)
+        assertEquals(11.9.dp, topBarConfig.blurRadius)
         assertEquals(8.dp, topBarConfig.refractionHeight)
         assertEquals(16.dp, topBarConfig.refractionAmount)
         assertEquals(1.5f * 1.06f, topBarConfig.effectiveSaturation, 0.0001f)
@@ -290,9 +313,9 @@ class HiGlassSurfaceTest {
             renderTier = GlassRenderTier.REFRACTION_AND_BLUR,
             style = HiGlassStyle.Sheet,
         ).toBackdropConfig()
-        assertEquals(12.dp, darkSheetConfig.blurRadius)
-        assertEquals(1.0f, darkSheetConfig.saturation, 0.0001f)
-        assertEquals(1.5f, darkSheetConfig.effectiveSaturation, 0.0001f)
+        assertEquals(11.9.dp, darkSheetConfig.blurRadius)
+        assertEquals(1.06f, darkSheetConfig.saturation, 0.0001f)
+        assertEquals(1.5f * 1.06f, darkSheetConfig.effectiveSaturation, 0.0001f)
 
         // 2) API 33+ 自定义景深与色散开关（工具条档）
         val customToolbarSpec = resolveHiGlassStyleSpec(
@@ -308,27 +331,27 @@ class HiGlassSurfaceTest {
             ),
         )
         val customToolbarConfig = customToolbarSpec.toBackdropConfig(GlassRenderTier.REFRACTION_AND_BLUR)
-        assertEquals(16.dp, customToolbarConfig.blurRadius)
+        assertEquals(11.9.dp, customToolbarConfig.blurRadius)
         assertEquals(20.dp, customToolbarConfig.refractionHeight)
         assertEquals(36.dp, customToolbarConfig.refractionAmount)
         assertTrue(customToolbarConfig.depthEffect)
         assertTrue(customToolbarConfig.chromaticAberration)
         assertFalse(customToolbarConfig.vibrancyEnabled)
-        assertEquals(1.08f, customToolbarConfig.saturation, 0.0001f)
-        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.68f), customToolbarConfig.tintColor)
+        assertEquals(1.06f, customToolbarConfig.saturation, 0.0001f)
+        assertEquals(darkScheme.surfaceContainer.copy(alpha = 0.70f), customToolbarConfig.tintColor)
 
         // 3) API 31–32 仅模糊档：严禁开启 lens 折射（高度/强度/景深/色散均归零关闭）
         val blurOnlyConfig = customToolbarSpec.toBackdropConfig(GlassRenderTier.BLUR_ONLY)
         assertEquals(GlassRenderTier.BLUR_ONLY, blurOnlyConfig.renderTier)
         assertTrue(blurOnlyConfig.backdropEnabled)
         assertFalse("API 31–32 BLUR_ONLY must never enable lens refraction", blurOnlyConfig.refractionEnabled)
-        assertEquals(16.dp, blurOnlyConfig.blurRadius)
+        assertEquals(11.9.dp, blurOnlyConfig.blurRadius)
         assertEquals(0.dp, blurOnlyConfig.refractionHeight)
         assertEquals(0.dp, blurOnlyConfig.refractionAmount)
         assertFalse(blurOnlyConfig.depthEffect)
         assertFalse(blurOnlyConfig.chromaticAberration)
         assertFalse(blurOnlyConfig.vibrancyEnabled)
-        assertEquals(1.08f, blurOnlyConfig.saturation, 0.0001f)
+        assertEquals(1.06f, blurOnlyConfig.saturation, 0.0001f)
         assertEquals(customToolbarSpec.activeTintColor, blurOnlyConfig.tintColor)
         assertEquals(customToolbarSpec.degradedSurfaceColor, blurOnlyConfig.fallbackColor)
 
@@ -785,8 +808,8 @@ class HiGlassSurfaceTest {
             afterUnrelatedRecomp,
         )
 
-        // 切换档位改变 backdropConfig 后，应重建为新的 DrawBackdropElement
-        style = HiGlassStyle.TopBar
+        // 修改模糊参数改变 backdropConfig 后，应重建为新的 DrawBackdropElement
+        style = HiGlassStyle.Navigation.copy(blurRadius = 16.dp)
         composeRule.waitForIdle()
         val afterStyleChange = findDrawBackdropElement()
         assertNotSame(
@@ -794,5 +817,58 @@ class HiGlassSurfaceTest {
             initialElement,
             afterStyleChange,
         )
+    }
+
+    @Test
+    fun degradedSurface_stillAttachesBorderModifierWhenBorderHighlightStrengthIsZero() {
+        var envState by mutableStateOf(GlassEnvironmentState.RefractionAndBlur)
+        var style by mutableStateOf(HiGlassStyle.Navigation)
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                ProvideGlassEnvironment(state = envState) {
+                    val glassState = rememberHiGlassState()
+                    Box(modifier = Modifier.size(220.dp, 120.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .hiGlassSource(glassState)
+                                .background(Color.Cyan),
+                        )
+                        HiGlassSurface(
+                            state = glassState,
+                            modifier = Modifier.size(180.dp, 64.dp),
+                            style = style,
+                        ) {
+                            Text("描边检测")
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        fun countBorderModifiers(): Int {
+            val node = composeRule.onAllNodes(
+                matcher = SemanticsMatcher.keyIsDefined(HiGlassBlurActive),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().single()
+            return node.layoutInfo.getModifierInfo()
+                .count { it.modifier.javaClass.name.contains("Border") }
+        }
+
+        // 1) 激活态默认 borderHighlightStrength == 0f：不绘制描边高光
+        assertEquals("激活态 border=0f 时不应绘制描边高光", 0, countBorderModifiers())
+
+        // 2) 降级态（即使 borderHighlightStrength == 0f）：仍必须保留 0.5dp outlineVariant 描边
+        envState = GlassEnvironmentState(setOf(GlassDegradationReason.POWER_SAVE_MODE))
+        composeRule.waitForIdle()
+        assertEquals("降级态不受 border=0f 影响，必须继续绘制描边", 1, countBorderModifiers())
+
+        // 3) 激活态显式调高 borderHighlightStrength > 0f：恢复绘制描边高光（浅色含高光+暗轮廓）
+        envState = GlassEnvironmentState.RefractionAndBlur
+        style = HiGlassStyle.Navigation.copy(borderHighlightStrength = 1f)
+        composeRule.waitForIdle()
+        assertTrue("显式开启 borderHighlightStrength > 0 时应绘制描边", countBorderModifiers() >= 1)
     }
 }

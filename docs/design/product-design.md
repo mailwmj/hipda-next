@@ -261,11 +261,11 @@
     - **Android 13+（API 33+）且系统允许模糊（液态玻璃档）**：启用实时模糊 + `vibrancy()` / `colorControls()` 色彩保真（去脏灰，护读档按需收敛极暗/极亮背景穿透）+ AGSL 光学边缘透镜折射 `lens()`（仅适度边界折射，护读顶栏/工具条/面板抑制中心畸变与过强色散）+ 中性容器色罩（浅色 `surfaceContainerLowest`，深色/纯黑 `surfaceContainer`）+ 方向高光描边；
     - **Android 12 / 12L（API 31–32）且系统允许模糊（纯模糊档）**：关闭 `lens()` 光学折射，保留实时模糊 + 色彩增强 + 中性容器色罩 + 左上→右下方向渐变高光描边；
     - **Android 11 及以下（API ≤ 30）或 4 路系统信号任一命中**（API ≤ 30、省电模式、系统“降低透明度/禁用窗口模糊”、高对比度文字/高色彩对比度）：完全停用 `drawBackdrop` 并释放 `layerBackdrop` 离屏录制，改为**不透明度 94% 的纯色表面**（回复面板高隔离态 94%–96%）+ `0.5dp` `outlineVariant` 细描边。
-  - **四档预设参数起点（`Navigation` / `Toolbar` 由 `G2` 落地，`TopBar` / `Sheet` 由 `C4d` 补齐；M4/G2 与 M5 真机校准后回写本文，均以 HiPDA M3 中性色为基底，不用 kudo `#FFB003`）**：
-    - `Navigation`（底部导航胶囊，轻透）：模糊 `8–10dp`，着色 `surfaceContainerLowest @ 0.42–0.50`（浅）/ `surfaceContainer @ 0.44–0.52`（深），提饱和 `vibrancy()`，API 33+ 边缘 `lens()`；
-    - `TopBar`（论坛/列表吸顶顶栏、三栏中栏顶栏、详情透明顶栏，护读）：模糊 `12–16dp`，着色 **`0.64–0.72`（浅）/ `0.68–0.76`（深）**（**严禁照抄 kudo 的 `4dp + 20%`**；在 0.72 浅色叠纯黑及 0.70–0.76 深色叠纯白下具备极端背景可读余量），提饱和 `vibrancy()` + `colorControls()`，API 33+ 轻边缘 `lens()`；
-    - `Toolbar`（帖子详情底部三段工具条与内联跳页条，护读）：模糊 `14–16dp`，着色 **`0.62–0.72`（浅）/ `0.68–0.76`（深）**，提饱和 `vibrancy()` + `colorControls()`，API 33+ 边缘 `lens()`；
-    - `Sheet`（毛玻璃快速回复面板，高隔离护读）：模糊 `16–18dp`（暗 `10–14dp`），着色 **`0.72–0.80`（浅）/ `0.70–0.78`（深）**，`20dp` 顶部圆角，`1dp` 高光/边界描边，背后叠淡暗罩（`scrim @ 0.32–0.38`）。
+  - **四档预设最终参数（2026-11-27 Z Fold8 真机定稿；同屏活跃实时玻璃上限保持 `3` 块，均以 HiPDA M3 中性色为基底，不用 kudo `#FFB003`）**：
+    - 四组（`Navigation` 底部胶囊/默认、`TopBar` 透明顶栏、`Toolbar` 帖子详情底部工具条与内联跳页条、`Sheet` 毛玻璃快速回复面板）统一使用同一组实时液态玻璃参数（含 `Sheet` 深色模糊 `11.9dp`）：
+      `blur=11.9dp refractH=8.0dp refractAmt=16.0dp depth=off ca=off vibrancy=on lightTint=0.66 darkTint=0.70 sat=1.06 border=0.00 indicator=0.12`
+    - 对应令牌：模糊半径 `11.9dp`（`Sheet` 亮/暗同为 `11.9dp`），边缘折射高度 `8.0dp` / 强度 `16.0dp`（API 33+ `lens()`，`depthEffect = false`、`chromaticAberration = false`），活色增强 `vibrancyEnabled = true`，着色不透明度浅色 `surfaceContainerLowest @ 0.66` / 深色与纯黑 `surfaceContainer @ 0.70`，饱和度 `1.06`，激活态描边高光强度 `borderHighlightStrength = 0f`（关闭亮暗渐变描边高光），导航胶囊选中指示器 `indicatorAlpha = 0.12`；`Sheet` 保持 `20dp` 顶部圆角与背后淡暗罩（`scrim @ 0.35`）。
+    - 降级路径（API ≤ 30 或省电/降低透明度/高对比度）不受 `border=0.00` 影响，仍绘制 `94%` 纯色表面 + `0.5dp` `outlineVariant` 细描边。
   - **可读性三层可验收契约（替代笼统口号，数学可达且分工明确）**：
     1. **CI 单测 (a) — 94% 纯色降级态（极端纯黑 `#000000` / 纯白 `#FFFFFF` 背景）**：全 20 套主题预设 × 浅色/深色/OLED 纯黑，降级表面上全部前景角色（`onSurface`、`onSurfaceVariant`、`primary`）WCAG 2.1 对比度均 **`≥ 4.5:1`**；
     2. **CI 单测 (b) — 模糊激活态（标准主题背景）+ 叠加层峰值 alpha 硬上限**：全 20 套主题预设 × 浅色/深色/纯黑，在标准主题背景（`background` / `surface` / `surfaceContainerLow` / `surfaceContainer`）下，四档激活态表面及其叠加层全部前景文字对比度均 **`≥ 4.5:1`**，并强制锁定叠加层峰值不透明度上限：

@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,8 +38,12 @@ import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
 import net.jejer.hipda.feature.common.ImageViewerRenderer
 import net.jejer.hipda.feature.common.LocalImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.LocalPaneSnackbarController
+import net.jejer.hipda.feature.common.NoOpPaneSnackbarController
+import net.jejer.hipda.feature.common.PaneSnackbarTarget
+import net.jejer.hipda.feature.common.SingleHostPaneSnackbarController
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.hiFullscreenOverlaySafePadding
+import net.jejer.hipda.ui.designsystem.feedback.HiSnackbarHost
 import net.jejer.hipda.ui.designsystem.feedback.rememberHiHaptics
 import net.jejer.hipda.ui.designsystem.motion.*
 
@@ -92,7 +97,12 @@ fun ImageViewerOverlay(
     val initialPage = args.initialIndex.coerceIn(0, totalPages - 1)
     val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { totalPages })
     val motionScope = rememberHiMotionCoroutineScope()
-    val snackbar = LocalPaneSnackbarController.current
+    val parentSnackbar = LocalPaneSnackbarController.current
+    val useLocalSnackbarHost = parentSnackbar === NoOpPaneSnackbarController
+    val localSnackbarHostState = remember { SnackbarHostState() }
+    val snackbar = remember(parentSnackbar, useLocalSnackbarHost, localSnackbarHostState) {
+        if (useLocalSnackbarHost) SingleHostPaneSnackbarController(localSnackbarHostState) else parentSnackbar
+    }
     val haptics = rememberHiHaptics()
     val reducedMotion = HiTheme.isReducedMotion
     val density = LocalDensity.current
@@ -116,6 +126,7 @@ fun ImageViewerOverlay(
     var chromeVisible by remember(args) { mutableStateOf(true) }
     var longPressMenuOpen by remember(args) { mutableStateOf(false) }
     var isSaving by remember(args) { mutableStateOf(false) }
+    var isSharing by remember(args) { mutableStateOf(false) }
     var pendingPermSavePage by remember(args) { mutableStateOf<Int?>(null) }
     var activeZoomScale by remember { mutableFloatStateOf(1f) }
     var activeZoomPan by remember { mutableStateOf(Offset.Zero) }
@@ -123,16 +134,24 @@ fun ImageViewerOverlay(
 
     fun stateOf(page: Int): PageViewerState = pageStates[page] ?: PageViewerState()
     fun updatePage(page: Int, transform: (PageViewerState) -> PageViewerState) { pageStates[page] = transform(stateOf(page)) }
+    fun cachedFileFor(page: Int) = (stateOf(page).downloadState as? OriginalDownloadState.Completed)?.file ?: stateOf(page).pendingOriginal?.file
 
     fun executeSave(page: Int) {
         val safeUrl = sanitizeViewerImageUrl(args.urls.getOrNull(page)) ?: return
         if (isSaving) return
-        val cached = (stateOf(page).downloadState as? OriginalDownloadState.Completed)?.file
+        val cached = cachedFileFor(page)
         isSaving = true
         motionScope.launch {
-            val ok = runCatching { mediaActions.saveImage(safeUrl, cached) }.getOrDefault(false)
-            isSaving = false
-            snackbar.show(if (ok) savedMsg else saveFailedMsg)
+            val ok = try {
+                mediaActions.saveImage(safeUrl, cached)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                false
+            } finally {
+                isSaving = false
+            }
+            snackbar.show(if (ok) savedMsg else saveFailedMsg, PaneSnackbarTarget.DetailPane)
         }
     }
 
@@ -140,7 +159,7 @@ fun ImageViewerOverlay(
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             val targetPage = pendingPermSavePage ?: return@rememberLauncherForActivityResult
             pendingPermSavePage = null
-            if (granted) executeSave(targetPage) else motionScope.launch { snackbar.show(saveFailedMsg) }
+            if (granted) executeSave(targetPage) else motionScope.launch { snackbar.show(saveFailedMsg, PaneSnackbarTarget.DetailPane) }
         }
     } else null
 
@@ -153,7 +172,7 @@ fun ImageViewerOverlay(
                 pendingPermSavePage = page
                 storagePermLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             } else {
-                motionScope.launch { snackbar.show(saveFailedMsg) }
+                motionScope.launch { snackbar.show(saveFailedMsg, PaneSnackbarTarget.DetailPane) }
             }
             return
         }
@@ -345,8 +364,20 @@ fun ImageViewerOverlay(
 
         fun performShare(page: Int) {
             val safeUrl = sanitizeViewerImageUrl(args.urls.getOrNull(page)) ?: return
-            val cached = (stateOf(page).downloadState as? OriginalDownloadState.Completed)?.file
-            motionScope.launch { runCatching { mediaActions.shareImage(safeUrl, cached) } }
+            if (isSharing) return
+            val cached = cachedFileFor(page)
+            isSharing = true
+            motionScope.launch {
+                try {
+                    mediaActions.shareImage(safeUrl, cached)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    // ignore share failure
+                } finally {
+                    isSharing = false
+                }
+            }
         }
 
         HorizontalPager(pagerState, Modifier.fillMaxSize(), userScrollEnabled = phase == ViewerTransitionPhase.Settled && !longPressMenuOpen) { page ->
@@ -373,7 +404,7 @@ fun ImageViewerOverlay(
                     if (ok && completed != null) {
                         updatePage(page) { it.copy(imageSize = if (sz != null && sz.width > 0 && sz.height > 0) sz else it.imageSize, isGif = it.isGif || anim, downloadState = completed) }
                         if (!wasAlreadyCompleted) {
-                            motionScope.launch { snackbar.show(originalLoadedMsg) }
+                            motionScope.launch { snackbar.show(originalLoadedMsg, PaneSnackbarTarget.DetailPane) }
                         }
                     } else {
                         updatePage(page) { it.copy(downloadState = OriginalDownloadState.Failed, pendingOriginal = null) }
@@ -426,7 +457,7 @@ fun ImageViewerOverlay(
         }
         AnimatedVisibility(showChrome, Modifier.align(Alignment.BottomCenter), hiFadeIn(HiMotion.effectsFast()), hiFadeOut(HiMotion.exit(HiMotion.effectsFast()))) {
             ImageViewerBottomBar(
-                currentState.downloadState, currentSafeUrl != null, isSaving,
+                currentState.downloadState, currentSafeUrl != null, isSaving, isSharing,
                 onOriginalClick = { toggleOriginalDownload(currentPage) },
                 onSaveClick = { performSave(currentPage) },
                 onShareClick = { performShare(currentPage) },
@@ -439,6 +470,11 @@ fun ImageViewerOverlay(
                 onShare = { performShare(currentPage) },
                 onDismiss = { longPressMenuOpen = false },
             )
+        }
+        if (useLocalSnackbarHost) {
+            val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val snackbarClearance = navBottom + if (showChrome) ImageViewerBottomBarHeight + 8.dp else 16.dp
+            HiSnackbarHost(hostState = localSnackbarHostState, bottomClearance = snackbarClearance)
         }
     }
 }
