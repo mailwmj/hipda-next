@@ -11,7 +11,6 @@ internal object LoginDiagnosticLogger {
     private const val REDACTED = "***"
 
     private val COOKIE_HEADER_REGEX = Regex("""(?i)\b(set-cookie|cookie)\s*:\s*[^\r\n<]+""")
-    private val COOKIE_ASSIGN_REGEX = Regex("""(?i)\b(set-cookie|cookie)\s*(?:=|%3d)\s*(?:"[^"]*"|'[^']*'|[^\s;&,"'<>)]+)""")
     private val INPUT_NAME_BEFORE_VALUE_REGEX = Regex(
         """(?i)(<input\b[^>]*\b(?:name|id)\s*=\s*["']?(?:m_formhash|formhash|password|answer|username)["']?[^>]*\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'/>]+)""",
     )
@@ -19,7 +18,7 @@ internal object LoginDiagnosticLogger {
         """(?i)(<input\b[^>]*\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'/>]+)([^>]*\b(?:name|id)\s*=\s*["']?(?:m_formhash|formhash|password|answer|username)["']?)""",
     )
     private val SECRET_KV_REGEX = Regex(
-        """(?i)\b(m_formhash|formhash|password|answer|username|[a-z0-9_-]*(?:auth|sid))\s*(?:=|%3d)\s*(?:"[^"]*"|'[^']*'|[^\s;&,"'<>)]+)""",
+        """(?i)\b(set-cookie|cookie|m_formhash|formhash|password|answer|username|[a-z0-9_-]*(?:auth|sid))\s*(?:=|%3d)\s*(?:"[^"]*"|'[^']*'|[^\s;&,"'<>)]+)""",
     )
     private val SECRET_JSON_REGEX = Regex(
         """(?i)(["']?(?:m_formhash|formhash|password|answer|username|[a-z0-9_-]*(?:auth|sid))["']?\s*:\s*)(?:"[^"]*"|'[^']*'|[^\s,}\r\n<>]+)""",
@@ -52,7 +51,6 @@ internal object LoginDiagnosticLogger {
     internal fun redact(raw: String, knownSecrets: Collection<String> = emptyList()): String {
         if (raw.isEmpty()) return raw
         var out = COOKIE_HEADER_REGEX.replace(raw, "$1: $REDACTED")
-        out = COOKIE_ASSIGN_REGEX.replace(out, "$1=$REDACTED")
         out = INPUT_NAME_BEFORE_VALUE_REGEX.replace(out, "$1\"$REDACTED\"")
         out = INPUT_VALUE_BEFORE_NAME_REGEX.replace(out, "$1\"$REDACTED\"$2")
         out = SECRET_KV_REGEX.replace(out, "$1=$REDACTED")

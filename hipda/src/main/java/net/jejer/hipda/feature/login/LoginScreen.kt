@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import net.jejer.hipda.R
+import net.jejer.hipda.feature.common.asString
 import net.jejer.hipda.ui.challenge.ChallengeStatusView
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.hiFullscreenOverlaySafePadding
@@ -290,14 +291,9 @@ private fun LoginFormBody(
             )
         }
 
-        uiState.generalErrorRes?.let { errRes ->
-            val errText = if (uiState.generalErrorArgs.isEmpty()) {
-                stringResource(errRes)
-            } else {
-                stringResource(errRes, *uiState.generalErrorArgs.toTypedArray())
-            }
+        uiState.generalError?.let { err ->
             Text(
-                text = errText,
+                text = err.asString(),
                 style = MaterialTheme.typography.bodyMedium,
                 color = cs.error,
                 modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },

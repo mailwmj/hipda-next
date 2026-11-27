@@ -24,6 +24,10 @@ data class UiError(
 )
 
 @Composable
+fun UiError.asString(): String =
+    if (formatArgs.isEmpty()) stringResource(messageRes) else stringResource(messageRes, *formatArgs.toTypedArray())
+
+@Composable
 fun UiError.toStateAction(onRetry: (AccessPriority) -> Unit, onLogin: () -> Unit): HiStateAction? =
     action?.let { act ->
         HiStateAction(stringResource(act.labelRes)) {

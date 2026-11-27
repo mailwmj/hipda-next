@@ -17,6 +17,7 @@ import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.LoginResult
 import net.jejer.hipda.data.network.access.ChallengeState
 import net.jejer.hipda.data.network.access.SiteAccessGateway
+import net.jejer.hipda.feature.common.UiError
 import net.jejer.hipda.feature.common.UiErrorMapper
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
 
@@ -51,14 +52,15 @@ data class LoginUiState(
     val securityAnswer: String = "",
     val isSubmitting: Boolean = false,
     val fieldError: LoginFieldError? = null,
-    @param:StringRes val generalErrorRes: Int? = null,
-    val generalErrorArgs: List<Any> = emptyList(),
+    val generalError: UiError? = null,
     val challengeState: ChallengeState = ChallengeState.Idle,
     val challengeFailure: ChallengeFailureKind? = null,
     val focusRequest: LoginFocusRequest? = null,
     val loginSuccessEventId: Long = 0L,
 ) {
     val showSecurityAnswer: Boolean get() = securityQuestionId != SavedAccount.NO_SECURITY_QUESTION
+    @get:StringRes val generalErrorRes: Int? get() = generalError?.messageRes
+    val generalErrorArgs: List<Any> get() = generalError?.formatArgs.orEmpty()
 
     override fun toString(): String =
         "LoginUiState(username=$username, password=***, securityQuestionId=$securityQuestionId, " +
@@ -102,8 +104,7 @@ class LoginViewModel @Inject constructor(
                 securityQuestionId = validId,
                 securityAnswer = if (validId == SavedAccount.NO_SECURITY_QUESTION) "" else cur.securityAnswer,
                 fieldError = cur.fieldError?.takeUnless { it.field == LoginField.SecurityAnswer },
-                generalErrorRes = null,
-                generalErrorArgs = emptyList(),
+                generalError = null,
             )
         }
     }
@@ -112,8 +113,7 @@ class LoginViewModel @Inject constructor(
         cur.copy(
             securityAnswer = value,
             fieldError = cur.fieldError?.takeUnless { it.field == LoginField.SecurityAnswer },
-            generalErrorRes = null,
-            generalErrorArgs = emptyList(),
+            generalError = null,
         )
     }
 
@@ -138,7 +138,7 @@ class LoginViewModel @Inject constructor(
                 return reportFieldError(LoginField.SecurityAnswer, R.string.common_error_login_security_answer)
         }
         _uiState.update {
-            it.copy(securityAnswer = sanitizedAnswer, isSubmitting = true, fieldError = null, generalErrorRes = null, generalErrorArgs = emptyList(), challengeFailure = null, focusRequest = null)
+            it.copy(securityAnswer = sanitizedAnswer, isSubmitting = true, fieldError = null, generalError = null, challengeFailure = null, focusRequest = null)
         }
         submitJob = viewModelScope.launch {
             val result = try {
@@ -154,7 +154,7 @@ class LoginViewModel @Inject constructor(
 
     private fun updateCredentialInput(transform: LoginUiState.() -> LoginUiState) = _uiState.update { cur ->
         val clearCred = cur.fieldError?.field == LoginField.Username || cur.fieldError?.field == LoginField.Password
-        cur.transform().copy(fieldError = if (clearCred) null else cur.fieldError, generalErrorRes = null, generalErrorArgs = emptyList())
+        cur.transform().copy(fieldError = if (clearCred) null else cur.fieldError, generalError = null)
     }
 
     private fun handleLoginResult(result: LoginResult) = when (result) {
@@ -164,8 +164,7 @@ class LoginViewModel @Inject constructor(
                 securityAnswer = "",
                 isSubmitting = false,
                 fieldError = null,
-                generalErrorRes = null,
-                generalErrorArgs = emptyList(),
+                generalError = null,
                 challengeFailure = null,
                 loginSuccessEventId = eventIdGen.incrementAndGet(),
             )
@@ -183,22 +182,15 @@ class LoginViewModel @Inject constructor(
             it.copy(isSubmitting = false, challengeFailure = if (result.rejected) ChallengeFailureKind.Rejected else ChallengeFailureKind.Incomplete)
         }
         is LoginResult.NetworkError -> _uiState.update {
-            it.copy(isSubmitting = false, generalErrorRes = R.string.login_error_network, generalErrorArgs = emptyList())
+            it.copy(isSubmitting = false, generalError = UiError(R.string.login_error_network))
         }
-        is LoginResult.Failure -> {
-            val mapped = UiErrorMapper.mapLoginResult(result)
-            _uiState.update {
-                it.copy(
-                    isSubmitting = false,
-                    generalErrorRes = mapped?.messageRes ?: R.string.common_error_load_failed,
-                    generalErrorArgs = mapped?.formatArgs.orEmpty(),
-                )
-            }
+        is LoginResult.Failure -> _uiState.update {
+            it.copy(isSubmitting = false, generalError = UiErrorMapper.mapLoginResult(result) ?: UiError(R.string.common_error_load_failed))
         }
     }
 
     private fun reportFieldError(field: LoginField, @StringRes messageRes: Int) = _uiState.update {
-        it.copy(isSubmitting = false, fieldError = LoginFieldError(field, messageRes), generalErrorRes = null, generalErrorArgs = emptyList(), focusRequest = LoginFocusRequest(field, eventIdGen.incrementAndGet()))
+        it.copy(isSubmitting = false, fieldError = LoginFieldError(field, messageRes), generalError = null, focusRequest = LoginFocusRequest(field, eventIdGen.incrementAndGet()))
     }
 
     private companion object {

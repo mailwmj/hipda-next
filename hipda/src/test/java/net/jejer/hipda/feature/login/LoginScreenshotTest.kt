@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.FeatureScreenshotQualifiers
+import net.jejer.hipda.feature.common.UiError
 import net.jejer.hipda.testing.withAnimatorDurationScale
 import net.jejer.hipda.ui.challenge.ChallengePanelOverlay
 import net.jejer.hipda.ui.designsystem.HiColorPresets
@@ -117,7 +118,7 @@ class LoginScreenshotTest {
         uiState = LoginUiState(
             username = "hipda_user",
             password = "secret_password",
-            generalErrorRes = R.string.login_error_network,
+            generalError = UiError(R.string.login_error_network),
         ),
         withBackdrop = true,
     )

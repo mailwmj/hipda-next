@@ -520,6 +520,10 @@ class AuthRepositoryTest {
         server.enqueue(
             gbkXmlResponse(
                 """<?xml version="1.0" encoding="gbk"?><root><![CDATA[登录失败，您还可以尝试 3 次]]></root>""",
+                headers = listOf(
+                    "Set-Cookie" to "cdb_auth=bob_partial; Path=/",
+                    "Set-Cookie" to "cdb_sid=bob_partial_sid; Path=/forum",
+                ),
             ),
         )
 
@@ -533,6 +537,8 @@ class AuthRepositoryTest {
 
         val cookiesAfterFail = cookieStore.loadForRequest(mockForumUrl)
         assertFalse(cookiesAfterFail.any { it.name == "cdb_auth" })
+        assertFalse("Partial cdb_sid written by failed switch POST must be cleared", cookiesAfterFail.any { it.name == "cdb_sid" })
+        assertFalse("Partial bob_partial cookie must not survive in store snapshot", cookieStore.snapshot().any { it.value == "bob_partial" || it.value == "bob_partial_sid" })
         assertTrue(cookiesAfterFail.any { it.name == "cf_clearance" && it.value == "cf_keep_on_fail" })
     }
 
@@ -2466,10 +2472,23 @@ class AuthRepositoryTest {
     @Test
     fun login_verifyFailsTwice_returnsSessionNotConfirmedAndClearsScopedAuthCookiesPreservingCloudflare() = runBlocking {
         ShadowLog.clear()
-        val repo = createRepository()
         val forumUrl = server.url("/forum/")
         val host = forumUrl.host
         val expires = futureHttpDate(3_600L)
+        var webViewSyncedDuringVerify = false
+        val primaryClient = createPrimaryClient(
+            transportDelegate = okhttp3.Interceptor { chain ->
+                val req = chain.request()
+                val resp = chain.proceed(req)
+                if (req.url.encodedPath.endsWith("/forum/index.php") && !webViewSyncedDuringVerify) {
+                    webViewSyncedDuringVerify = true
+                    webViewCookieAccess.seedCookie(forumUrl, "cdb_auth=mid_sync_wv_auth; Path=/; Expires=$expires")
+                    webViewCookieAccess.seedCookie(forumUrl, "cdb_sid=mid_sync_wv_sid; Path=/forum; Expires=$expires")
+                }
+                resp
+            },
+        )
+        val repo = createRepository(primaryClient = primaryClient)
         cookieStore.saveFromResponse(
             forumUrl,
             listOf(
@@ -2514,7 +2533,10 @@ class AuthRepositoryTest {
         assertTrue("cf_clearance must be preserved", remainingStore.any { it.name == "cf_clearance" && it.value == "cf_a3_keep" })
         assertTrue("__cf_bm must be preserved", remainingStore.any { it.name == "__cf_bm" && it.value == "cf_bm_a3_keep" })
 
+        assertTrue("Precondition: mid-login WebView auth cookie should have been injected", webViewSyncedDuringVerify)
         val remainingWebView = webViewCookieAccess.storedRawHeaders(forumUrl)
+        assertFalse("WebView cdb_auth must be cleared on verify failure, got $remainingWebView", remainingWebView.any { it.startsWith("cdb_auth=") })
+        assertFalse("WebView cdb_sid must be cleared on verify failure, got $remainingWebView", remainingWebView.any { it.startsWith("cdb_sid=") })
         assertTrue(remainingWebView.any { it.startsWith("cf_clearance=cf_a3_keep") })
         assertTrue(remainingWebView.any { it.startsWith("__cf_bm=cf_bm_a3_keep") })
 
@@ -2650,6 +2672,68 @@ class AuthRepositoryTest {
         assertTrue(httpLogMsg.contains("status=503"))
         assertFalse(httpLogMsg.contains("fh_a4_503"))
         assertFalse(httpLogMsg.contains("err_503_tok"))
+    }
+
+    @Test
+    fun s1_login_cancelDuringCredentialCommit_completesPersistenceAndKeepsAuthCookiesAndSignedIn() = runBlocking {
+        val setActiveEntered = CompletableDeferred<Unit>()
+        val allowSetActive = CompletableDeferred<Unit>()
+        val gatedCredentialsStore = object : CredentialsStore by credentialsStore {
+            override suspend fun setActive(uid: String) {
+                setActiveEntered.complete(Unit)
+                allowSetActive.await()
+                credentialsStore.setActive(uid)
+            }
+        }
+        val primaryClient = createPrimaryClient()
+        val recoveryClient = createRecoveryClient(primaryClient)
+        val detector = ChallengeDetector()
+        val solver = ChallengeSolver { SolveResult.Failed(IllegalStateException("Unexpected challenge")) }
+        val repo = DefaultAuthRepository(
+            credentialsStore = gatedCredentialsStore,
+            siteCookieStore = cookieStore,
+            settingsRepository = settingsRepository,
+            siteAccessGateway = SiteAccessGateway(primaryClient, detector, solver, { nowMs.get() }, scope, 5.seconds),
+            recoveryGateway = SiteAccessGateway(recoveryClient, detector, solver, { nowMs.get() }, scope, 5.seconds),
+            clock = { nowMs.get() },
+            scope = scope,
+            webViewCookieAccess = webViewCookieAccess,
+            cookieDispatcher = cookieDispatcher,
+        )
+
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loginFormHtml("fh_s1_commit")))
+        server.enqueue(
+            gbkXmlResponse(
+                """<?xml version="1.0" encoding="gbk"?><root><![CDATA[欢迎您回来，CommitUser]]></root>""",
+                headers = listOf("Set-Cookie" to "cdb_auth=commit_cancel_auth; Path=/"),
+            ),
+        )
+        server.enqueue(gbkHtmlResponse(AuthTestFixtures.loggedInPageHtml("50005", "CommitUser")))
+
+        val loginJob = async(Dispatchers.Default) {
+            repo.login(username = "CommitUser", passwordOrMd5 = "CommitPass123")
+        }
+
+        // Wait until credential commit has begun (upsert succeeded, now suspended in setActive)
+        withTimeout(5.seconds) { setActiveEntered.await() }
+        // Cancel the caller coroutine mid-commit, then release the persistence gate
+        loginJob.cancel()
+        allowSetActive.complete(Unit)
+        withTimeout(5.seconds) { loginJob.join() }
+
+        val savedAccounts = credentialsStore.accountsSnapshot()
+        assertEquals("Committed account must be persisted despite caller cancellation", 1, savedAccounts.size)
+        val saved = savedAccounts.single()
+        assertEquals("50005", saved.uid)
+        assertEquals("CommitUser", saved.username)
+        assertEquals("activeUid must be persisted despite caller cancellation", "50005", credentialsStore.currentActiveUid())
+        assertFalse(credentialsStore.currentManuallyLoggedOut())
+        assertEquals("authState must reach SignedIn despite caller cancellation", AuthState.SignedIn(saved), repo.authState.value)
+        assertEquals(saved, repo.currentAccount.value)
+        assertTrue(
+            "Valid auth cookie must NOT be cleared once credential commit finishes",
+            cookieStore.loadForRequest(server.url("/forum/")).any { it.name == "cdb_auth" && it.value == "commit_cancel_auth" },
+        )
     }
 
     companion object {

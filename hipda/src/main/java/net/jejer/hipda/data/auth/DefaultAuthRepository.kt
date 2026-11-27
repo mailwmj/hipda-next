@@ -268,7 +268,7 @@ class DefaultAuthRepository internal constructor(
                     allowDuringManualLogout = true,
                 )
 
-                withLoginCookieCleanup(forumServer) {
+                withLoginCookieCleanup(forumServer) { markCommitted ->
                     when (
                         val raw = executeLoginProtocol(
                             gateway = siteAccessGateway,
@@ -296,15 +296,7 @@ class DefaultAuthRepository internal constructor(
                                 securityAnswer = normalizedAnswer,
                                 lastLoginAt = clock(),
                             )
-                            credentialsStore.upsert(saved)
-                            credentialsStore.setActive(saved.uid)
-                            val refreshed = readPersistentSnapshotFromStore()
-                            synchronized(stateLock) {
-                                currentSessionEpoch++
-                                rejectedCredentialKey = null
-                                runtimeOverlay = RuntimeOverlay.Normal
-                                applyPersistentSnapshotLocked(refreshed)
-                            }
+                            commitLoggedInAccount(saved, markCommitted)
                             LoginResult.Success(account = saved, message = raw.message)
                         }
 
@@ -345,7 +337,7 @@ class DefaultAuthRepository internal constructor(
                     allowDuringManualLogout = true,
                 )
 
-                withLoginCookieCleanup(forumServer) {
+                withLoginCookieCleanup(forumServer) { markCommitted ->
                     when (
                         val raw = executeLoginProtocol(
                             gateway = siteAccessGateway,
@@ -363,15 +355,7 @@ class DefaultAuthRepository internal constructor(
                         is RawLoginOutcome.LoggedIn -> {
                             val canonicalUsername = raw.session?.username?.takeIf { it.isNotBlank() } ?: targetAccount.username
                             val updatedAccount = targetAccount.copy(username = canonicalUsername, lastLoginAt = clock())
-                            credentialsStore.upsert(updatedAccount)
-                            credentialsStore.setActive(updatedAccount.uid)
-                            val refreshed = readPersistentSnapshotFromStore()
-                            synchronized(stateLock) {
-                                currentSessionEpoch++
-                                rejectedCredentialKey = null
-                                runtimeOverlay = RuntimeOverlay.Normal
-                                applyPersistentSnapshotLocked(refreshed)
-                            }
+                            commitLoggedInAccount(updatedAccount, markCommitted)
                             LoginResult.Success(account = updatedAccount, message = raw.message)
                         }
 
@@ -885,11 +869,15 @@ class DefaultAuthRepository internal constructor(
         cookieWriteGuard: AuthCookieWriteGuard,
     ): RawLoginOutcome {
         return try {
-            val baseSecrets = listOfNotNull(
-                username.takeIf { it.isNotBlank() },
-                passwordMd5.takeIf { it.isNotBlank() },
-                securityAnswer.takeIf { it.isNotBlank() },
-            )
+            val baseSecrets = if (BuildConfig.DEBUG) {
+                listOfNotNull(
+                    username.takeIf { it.isNotBlank() },
+                    passwordMd5.takeIf { it.isNotBlank() },
+                    securityAnswer.takeIf { it.isNotBlank() },
+                )
+            } else {
+                emptyList()
+            }
             val loginPageUrl = buildForumUrl(forumServer, LOGIN_PAGE_PATH)
             val formhashOrSession = fetchLoginForm(
                 gateway = gateway,
@@ -914,7 +902,7 @@ class DefaultAuthRepository internal constructor(
                 is FormFetchStep.Failed -> return formhashOrSession.outcome
             }
 
-            val submitSecrets = baseSecrets + formhash
+            val submitSecrets = if (BuildConfig.DEBUG) baseSecrets + formhash else emptyList()
             val submitUrl = buildForumUrl(forumServer, LOGIN_SUBMIT_PATH)
             val refererUrl = buildForumUrl(forumServer, INDEX_PATH).toString()
             val formFields = listOf(
@@ -1081,15 +1069,33 @@ class DefaultAuthRepository internal constructor(
         }
     }
 
+    private suspend fun commitLoggedInAccount(
+        account: SavedAccount,
+        markCommitted: () -> Unit,
+    ) {
+        withContext(NonCancellable) {
+            credentialsStore.upsert(account)
+            credentialsStore.setActive(account.uid)
+            val refreshed = readPersistentSnapshotFromStore()
+            synchronized(stateLock) {
+                currentSessionEpoch++
+                rejectedCredentialKey = null
+                runtimeOverlay = RuntimeOverlay.Normal
+                applyPersistentSnapshotLocked(refreshed)
+            }
+            markCommitted()
+        }
+    }
+
     private suspend fun withLoginCookieCleanup(
         forumServer: String,
-        block: suspend () -> LoginResult,
+        block: suspend (markCommitted: () -> Unit) -> LoginResult,
     ): LoginResult {
-        var succeeded = false
+        var committed = false
         return try {
-            block().also { succeeded = it is LoginResult.Success }
+            block { committed = true }
         } finally {
-            if (!succeeded) {
+            if (!committed) {
                 withContext(NonCancellable) {
                     invalidateAuthCookieWrites()
                     clearAuthCookiesForServer(forumServer)

@@ -18,6 +18,7 @@ class LoginDiagnosticLoggerTest {
             m_formhash=mfh_789&username=RealAlice99&password=SuperSecretPw!88&answer=MySecretAnswer77
             {"username":"JsonUser66","password":"JsonPw55","answer":"JsonAns44","formhash":"JsonFh33","cdb_auth":"JsonAuth22"}
             cdb_auth=raw_auth_token_11; cdb_sid=raw_sid_token_00
+            document.cookie = "cdb_auth=js_cookie_secret_99; path=/"
             欢迎您回来，RealAlice99。
         """.trimIndent()
 
@@ -44,6 +45,7 @@ class LoginDiagnosticLoggerTest {
             "JsonAuth22",
             "raw_auth_token_11",
             "raw_sid_token_00",
+            "js_cookie_secret_99",
         )
         for (secret in forbidden) {
             assertFalse("Redacted output leaked '$secret':\n$redacted", redacted.contains(secret, ignoreCase = true))
