@@ -12,7 +12,7 @@ import org.junit.Test
 
 /**
  * M7-4b R8 / ProGuard 规则与 Release DEX 守卫测试：
- * 1. 验证 `hipda/proguard-rules.txt`（及 `:emoji`/`:core-parser` 的 consumer-rules，如有）中引用的
+ * 1. 验证 `hipda/proguard-rules.txt`（及 `:emoji`/`:core-parser`/`:baselineprofile` 的规则文件，如有）中引用的
  *    每个类与包均真实存在于项目主源码或运行时依赖中，杜绝死规则；
  * 2. 禁止残留已删旧依赖（Gson/CookieStore/Glide/Iconics/jobqueue/EventBus/Matisse 等）、已删旧类
  *    （`HiSettingsHelper`/`HiApplication`/`MainFrameActivity` 等）及无理由的全包通配 `-keep`；
@@ -616,7 +616,7 @@ class ProguardRulesGuardTest {
             val result = mutableListOf<File>()
             val mainRules = File(repoRoot, "hipda/proguard-rules.txt")
             if (mainRules.isFile) result += mainRules
-            for (moduleName in listOf("emoji", "core-parser")) {
+            for (moduleName in listOf("emoji", "core-parser", "baselineprofile")) {
                 val moduleDir = File(repoRoot, moduleName)
                 if (!moduleDir.isDirectory) continue
                 moduleDir.walkTopDown()
