@@ -15,24 +15,16 @@ class ImageAspectRatioCache(
     private val entries = LinkedHashMap<String, Float>(32, 0.75f, true)
 
     @Synchronized
-    fun get(url: String): Float? = entries[normalizeKey(url)]
-
-    @Synchronized
     fun put(url: String, width: Int, height: Int): Float? {
         if (width <= 0 || height <= 0) return null
-        return put(url, width.toFloat() / height.toFloat())
-    }
-
-    @Synchronized
-    fun put(url: String, aspectRatio: Float): Float? {
-        if (!aspectRatio.isFinite() || aspectRatio <= 0f) return null
+        val ratio = width.toFloat() / height.toFloat()
+        if (!ratio.isFinite() || ratio <= 0f) return null
         val key = normalizeKey(url)
         if (key.isEmpty()) return null
-        val clamped = clampAspectRatio(aspectRatio)
+        val clamped = ratio.coerceIn(MIN_ASPECT_RATIO, MAX_ASPECT_RATIO)
         entries[key] = clamped
         while (entries.size > maxEntries) {
-            val eldest = entries.entries.iterator().next().key
-            entries.remove(eldest)
+            entries.remove(entries.entries.iterator().next().key)
         }
         return clamped
     }
@@ -49,9 +41,6 @@ class ImageAspectRatioCache(
         entries.clear()
     }
 
-    val size: Int
-        @Synchronized get() = entries.size
-
     private fun normalizeKey(url: String): String = sanitizeImageUrl(url) ?: url.trim()
 
     companion object {
@@ -61,8 +50,5 @@ class ImageAspectRatioCache(
         const val DEFAULT_MAX_ENTRIES: Int = 512
 
         val Default: ImageAspectRatioCache = ImageAspectRatioCache()
-
-        fun clampAspectRatio(ratio: Float): Float =
-            if (!ratio.isFinite() || ratio <= 0f) DEFAULT_ASPECT_RATIO else ratio.coerceIn(MIN_ASPECT_RATIO, MAX_ASPECT_RATIO)
     }
 }

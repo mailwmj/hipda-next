@@ -53,41 +53,42 @@ class ImageLoadingPolicyTest {
         assertEquals(ImageLoadMode.AutoLoad, ImageLoadingPolicy.resolveLoadMode(isMetered = true, isDataSaverEnabled = false))
         assertEquals(ImageLoadMode.AutoLoad, ImageLoadingPolicy.resolveLoadMode(isMetered = false, isDataSaverEnabled = true))
         assertEquals(ImageLoadMode.ClickToLoad, ImageLoadingPolicy.resolveLoadMode(isMetered = true, isDataSaverEnabled = true))
-
-        assertEquals(
-            ImageLoadMode.ClickToLoad,
-            ImageLoadingPolicy.resolveLoadMode(ImageNetworkState(isMetered = true, isDataSaverEnabled = true)),
-        )
     }
 
     @Test
-    fun readNetworkState_readsAllFourConnectivityManagerCombinationsAndWhitelistedStatus() {
+    fun resolveForContext_readsAllFourConnectivityManagerCombinationsAndWhitelistedStatus() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        val cm = context.getSystemService(ConnectivityManager::class.java)!!
         val original = captureTestNetworkState(context)
         try {
             // 1. 非计费 + 流量节省关闭 -> AutoLoad
             configureTestNetworkState(context, metered = false, restrictStatus = ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED)
-            assertEquals(ImageNetworkState(isMetered = false, isDataSaverEnabled = false), ImageLoadingPolicy.readNetworkState(context))
+            assertEquals(false, cm.isActiveNetworkMetered)
+            assertEquals(ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED, cm.restrictBackgroundStatus)
             assertEquals(ImageLoadMode.AutoLoad, ImageLoadingPolicy.resolveForContext(context))
 
             // 2. 计费 + 流量节省关闭 -> AutoLoad
             configureTestNetworkState(context, metered = true, restrictStatus = ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED)
-            assertEquals(ImageNetworkState(isMetered = true, isDataSaverEnabled = false), ImageLoadingPolicy.readNetworkState(context))
+            assertEquals(true, cm.isActiveNetworkMetered)
+            assertEquals(ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED, cm.restrictBackgroundStatus)
             assertEquals(ImageLoadMode.AutoLoad, ImageLoadingPolicy.resolveForContext(context))
 
             // 3. 非计费 + 流量节省开启 -> AutoLoad
             configureTestNetworkState(context, metered = false, restrictStatus = ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED)
-            assertEquals(ImageNetworkState(isMetered = false, isDataSaverEnabled = true), ImageLoadingPolicy.readNetworkState(context))
+            assertEquals(false, cm.isActiveNetworkMetered)
+            assertEquals(ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED, cm.restrictBackgroundStatus)
             assertEquals(ImageLoadMode.AutoLoad, ImageLoadingPolicy.resolveForContext(context))
 
             // 4. 计费 + 流量节省开启 -> ClickToLoad
             configureTestNetworkState(context, metered = true, restrictStatus = ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED)
-            assertEquals(ImageNetworkState(isMetered = true, isDataSaverEnabled = true), ImageLoadingPolicy.readNetworkState(context))
+            assertEquals(true, cm.isActiveNetworkMetered)
+            assertEquals(ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED, cm.restrictBackgroundStatus)
             assertEquals(ImageLoadMode.ClickToLoad, ImageLoadingPolicy.resolveForContext(context))
 
             // 5. 计费 + 应用在流量节省白名单（WHITELISTED）-> AutoLoad
             configureTestNetworkState(context, metered = true, restrictStatus = ConnectivityManager.RESTRICT_BACKGROUND_STATUS_WHITELISTED)
-            assertEquals(ImageNetworkState(isMetered = true, isDataSaverEnabled = false), ImageLoadingPolicy.readNetworkState(context))
+            assertEquals(true, cm.isActiveNetworkMetered)
+            assertEquals(ConnectivityManager.RESTRICT_BACKGROUND_STATUS_WHITELISTED, cm.restrictBackgroundStatus)
             assertEquals(ImageLoadMode.AutoLoad, ImageLoadingPolicy.resolveForContext(context))
         } finally {
             restoreTestNetworkState(context, original)
@@ -222,22 +223,34 @@ class ImageLoadingPolicyTest {
 
         val tallClamped = cache.put("HTTP://EXAMPLE.COM/tall.jpg", width = 100, height = 10_000)
         assertEquals(ImageAspectRatioCache.MIN_ASPECT_RATIO, tallClamped!!, 0.0001f)
-        assertEquals(ImageAspectRatioCache.MIN_ASPECT_RATIO, cache.get("http://example.com/tall.jpg")!!, 0.0001f)
+        assertEquals(ImageAspectRatioCache.MIN_ASPECT_RATIO, cache.resolveInitialAspectRatio("http://example.com/tall.jpg"), 0.0001f)
+        assertEquals(
+            ImageAspectRatioCache.MIN_ASPECT_RATIO,
+            cache.resolveInitialAspectRatio("https://example.com/miss.jpg", fallbackUrl = "http://example.com/tall.jpg"),
+            0.0001f,
+        )
 
         val wideClamped = cache.put("https://example.com/wide.jpg", width = 10_000, height = 100)
         assertEquals(ImageAspectRatioCache.MAX_ASPECT_RATIO, wideClamped!!, 0.0001f)
+        assertEquals(ImageAspectRatioCache.MAX_ASPECT_RATIO, cache.resolveInitialAspectRatio("https://example.com/wide.jpg"), 0.0001f)
 
-        // Touch tall.jpg so wide.jpg becomes LRU
-        assertTrue(cache.get("http://example.com/tall.jpg") != null)
+        // Touch tall.jpg via production lookup so wide.jpg becomes LRU
+        assertEquals(ImageAspectRatioCache.MIN_ASPECT_RATIO, cache.resolveInitialAspectRatio("http://example.com/tall.jpg"), 0.0001f)
         cache.put("https://example.com/normal.jpg", width = 400, height = 1200)
 
-        assertEquals(2, cache.size)
-        assertNull("LRU 条目 wide.jpg 应被淘汰", cache.get("https://example.com/wide.jpg"))
-        assertEquals(ImageAspectRatioCache.MIN_ASPECT_RATIO, cache.get("http://example.com/tall.jpg")!!, 0.0001f)
-        assertEquals(1f / 3f, cache.get("https://example.com/normal.jpg")!!, 0.0001f)
+        assertEquals(
+            "LRU 条目 wide.jpg 应被淘汰并回退默认 4:3",
+            ImageAspectRatioCache.DEFAULT_ASPECT_RATIO,
+            cache.resolveInitialAspectRatio("https://example.com/wide.jpg"),
+            0.0001f,
+        )
+        assertEquals(ImageAspectRatioCache.MIN_ASPECT_RATIO, cache.resolveInitialAspectRatio("http://example.com/tall.jpg"), 0.0001f)
+        assertEquals(1f / 3f, cache.resolveInitialAspectRatio("https://example.com/normal.jpg"), 0.0001f)
 
         assertNull(cache.put("https://example.com/invalid.jpg", width = 0, height = 100))
-        assertNull(cache.put("https://example.com/nan.jpg", Float.NaN))
+        assertNull(cache.put("https://example.com/invalid_h.jpg", width = 100, height = 0))
+        assertNull(cache.put("https://example.com/invalid_neg.jpg", width = -10, height = 100))
+        assertNull(cache.put("   ", width = 400, height = 300))
     }
 }
 

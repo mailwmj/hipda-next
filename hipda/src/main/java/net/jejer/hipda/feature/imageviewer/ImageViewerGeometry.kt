@@ -22,11 +22,27 @@ object ImageViewerMotionSpec {
     const val MAX_ORIGINAL_DECODE_DIMENSION_PX: Int = 4096
 }
 
-/** 原图经 Coil 解码的安全最大像素边界：按视口 2× 保留缩放清晰度并硬封顶 4096px，防止超大位图触发 Canvas too large（R-E14 S1）。 */
-fun computeOriginalDecodeBounds(viewportWidthPx: Int, viewportHeightPx: Int): IntSize = IntSize(
-    width = (viewportWidthPx.coerceAtLeast(1) * 2).coerceAtMost(ImageViewerMotionSpec.MAX_ORIGINAL_DECODE_DIMENSION_PX),
-    height = (viewportHeightPx.coerceAtLeast(1) * 2).coerceAtMost(ImageViewerMotionSpec.MAX_ORIGINAL_DECODE_DIMENSION_PX),
-)
+/**
+ * 经 Coil 解码的安全最大像素边界：按给定视口倍率计算目标尺寸并统一硬封顶
+ * `MAX_ORIGINAL_DECODE_DIMENSION_PX = 4096`，供 HD 直开与原图阶段共用，防止超大/超长位图触发 Canvas too large（R-E14 S1 / V-E14）。
+ */
+fun computeOriginalDecodeBounds(
+    viewportWidthPx: Int,
+    viewportHeightPx: Int,
+    widthMultiplier: Int = 2,
+    heightMultiplier: Int = 2,
+    minHeightWidthMultiplier: Int = 0,
+): IntSize {
+    val safeW = viewportWidthPx.coerceAtLeast(1).toLong()
+    val safeH = viewportHeightPx.coerceAtLeast(1).toLong()
+    val maxDim = ImageViewerMotionSpec.MAX_ORIGINAL_DECODE_DIMENSION_PX.toLong()
+    return IntSize(
+        width = (safeW * widthMultiplier.coerceAtLeast(1)).coerceAtMost(maxDim).toInt(),
+        height = maxOf(safeH * heightMultiplier.coerceAtLeast(1), safeW * minHeightWidthMultiplier.coerceAtLeast(0))
+            .coerceAtMost(maxDim)
+            .toInt(),
+    )
+}
 
 /** 下拉关闭跟手阶段的瞬时缩放与背景遮罩不透明度。 */
 @Immutable

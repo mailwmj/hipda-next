@@ -51,6 +51,7 @@ import net.jejer.hipda.R
 import net.jejer.hipda.feature.common.ImageViewerLaunchArgs
 import net.jejer.hipda.feature.common.LocalImageViewerBoundsRegistry
 import net.jejer.hipda.feature.common.currentHiImageLoader
+import net.jejer.hipda.feature.common.imageViewerBoundsKey
 import net.jejer.hipda.parser.threaddetail.ContentBlock
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
@@ -63,7 +64,7 @@ private sealed interface PostImageLoadState {
     data object TapToLoad : PostImageLoadState
     data class Loading(val userInitiated: Boolean) : PostImageLoadState
     data class Loaded(val image: CoilImage, val instant: Boolean) : PostImageLoadState
-    data object Failed : PostImageLoadState
+    data class Failed(val canRetry: Boolean) : PostImageLoadState
 }
 
 /** 图片高度变化时的三分支滚动补偿策略（闭合 `R-BATCH5 B4-E2b`）。 */
@@ -124,23 +125,21 @@ internal fun computeImageBottomInViewport(
     val beforePadding = layoutInfo.beforeContentPadding.toFloat()
     val expectedItemTop = beforePadding + floorItem.offset
 
+    var fallbackViewportParent: LayoutCoordinates? = null
     var child: LayoutCoordinates = imageCoords
     var parent: LayoutCoordinates? = imageCoords.parentLayoutCoordinates
     while (parent != null) {
-        if (parent.size == viewportSize && abs(parent.localPositionOf(child, Offset.Zero).y - expectedItemTop) <= 2f) {
-            return parent.localPositionOf(imageCoords, Offset.Zero).y + imageCoords.size.height - beforePadding
+        if (parent.size == viewportSize) {
+            if (abs(parent.localPositionOf(child, Offset.Zero).y - expectedItemTop) <= 2f) {
+                return parent.localPositionOf(imageCoords, Offset.Zero).y + imageCoords.size.height - beforePadding
+            }
+            if (fallbackViewportParent == null) fallbackViewportParent = parent
         }
         child = parent
         parent = parent.parentLayoutCoordinates
     }
-    parent = imageCoords.parentLayoutCoordinates
-    while (parent != null) {
-        if (parent.size == viewportSize) {
-            return parent.localPositionOf(imageCoords, Offset.Zero).y + imageCoords.size.height - beforePadding
-        }
-        parent = parent.parentLayoutCoordinates
-    }
-    return imageCoords.positionInRoot().y + imageCoords.size.height - beforePadding
+    val baseY = fallbackViewportParent?.localPositionOf(imageCoords, Offset.Zero)?.y ?: imageCoords.positionInRoot().y
+    return baseY + imageCoords.size.height - beforePadding
 }
 
 /**
@@ -159,46 +158,44 @@ fun PostImageBlock(
     modifier: Modifier = Modifier,
 ) {
     val resolvedUrls = remember(image.thumbUrl, image.fullUrl) { resolveImageUrls(image) }
-    if (resolvedUrls == null) {
-        InvalidImagePlaceholder(modifier)
-        return
-    }
-
-    val context = LocalContext.current
-    val imageLoader = currentHiImageLoader()
-    val boundsRegistry = LocalImageViewerBoundsRegistry.current
-    val scrollAuthority by rememberUpdatedState(LocalAboveViewportHeightCompensationAuthority.current)
-    val threadGallery by rememberUpdatedState(LocalThreadImageGallery.current)
-    val reducedMotion = HiTheme.isReducedMotion
-    val displayUrl = resolvedUrls.displayUrl
-    val viewerUrl = resolvedUrls.viewerUrl
+    val displayUrl = resolvedUrls?.displayUrl
+    val viewerUrl = resolvedUrls?.viewerUrl
     val verifiedViewerUrl = remember(viewerUrl) { sanitizeImageUrl(viewerUrl) }
 
-    val initialMode = remember(context, displayUrl) { ImageLoadingPolicy.resolveForContext(context) }
+    val context = LocalContext.current
+    val imageLoader = if (displayUrl != null) currentHiImageLoader() else null
+    val boundsRegistry = LocalImageViewerBoundsRegistry.current
+    val scrollAuthority by rememberUpdatedState(LocalAboveViewportHeightCompensationAuthority.current)
+    val threadGallery = LocalThreadImageGallery.current
+    val latestThreadGallery by rememberUpdatedState(threadGallery)
+    val reducedMotion = HiTheme.isReducedMotion
+
+    val initialMode = remember(context, displayUrl) {
+        if (displayUrl == null) ImageLoadMode.ClickToLoad else ImageLoadingPolicy.resolveForContext(context)
+    }
     val initialRatio = remember(displayUrl, viewerUrl) {
-        ImageAspectRatioCache.Default.resolveInitialAspectRatio(displayUrl, viewerUrl)
+        if (displayUrl == null) ImageAspectRatioCache.DEFAULT_ASPECT_RATIO
+        else ImageAspectRatioCache.Default.resolveInitialAspectRatio(displayUrl, viewerUrl)
     }
     val aspectRatioAnim = remember(displayUrl) { Animatable(initialRatio) }
     val layoutTracker = remember(displayUrl) { PostImageLayoutTracker() }
     var containerWidthPx by remember(displayUrl) { mutableIntStateOf(0) }
-    var activeLoadId by remember(displayUrl) { mutableIntStateOf(if (initialMode == ImageLoadMode.AutoLoad) 1 else 0) }
-    var nextLoadId by remember(displayUrl) { mutableIntStateOf(2) }
+    var loadToken by remember(displayUrl) {
+        mutableIntStateOf(if (displayUrl != null && initialMode == ImageLoadMode.AutoLoad) 1 else 0)
+    }
     var loadState by remember(displayUrl) {
         mutableStateOf<PostImageLoadState>(
-            if (initialMode == ImageLoadMode.AutoLoad) {
-                PostImageLoadState.Loading(userInitiated = false)
-            } else {
-                PostImageLoadState.TapToLoad
+            when {
+                displayUrl == null -> PostImageLoadState.Failed(canRetry = false)
+                initialMode == ImageLoadMode.AutoLoad -> PostImageLoadState.Loading(userInitiated = false)
+                else -> PostImageLoadState.TapToLoad
             },
         )
     }
 
     val hasMeasuredWidth = containerWidthPx > 0
-    val loadTrigger = remember(displayUrl, activeLoadId, imageLoader) {
-        Triple(displayUrl, activeLoadId, imageLoader)
-    }
-    LaunchedEffect(loadTrigger, hasMeasuredWidth) {
-        if (activeLoadId == 0 || !hasMeasuredWidth) return@LaunchedEffect
+    LaunchedEffect(displayUrl, loadToken, imageLoader, hasMeasuredWidth) {
+        if (displayUrl == null || imageLoader == null || loadToken <= 0 || !hasMeasuredWidth) return@LaunchedEffect
         val widthPx = containerWidthPx
         if (widthPx <= 0) return@LaunchedEffect
         val maxDecodeHeightPx = (widthPx / ImageAspectRatioCache.MIN_ASPECT_RATIO)
@@ -220,8 +217,8 @@ fun PostImageBlock(
         }
 
         if (result !is SuccessResult) {
-            activeLoadId = 0
-            loadState = PostImageLoadState.Failed
+            loadToken = -abs(loadToken)
+            loadState = PostImageLoadState.Failed(canRetry = true)
             return@LaunchedEffect
         }
 
@@ -266,6 +263,29 @@ fun PostImageBlock(
         }
     }
 
+    val matchingGallery = remember(threadGallery, floorPostId, verifiedViewerUrl) {
+        if (verifiedViewerUrl == null) emptyList()
+        else threadGallery.filter { it.floorPostId == floorPostId && it.url == verifiedViewerUrl }
+    }
+    val dupGroup = if (matchingGallery.size > 1 && verifiedViewerUrl != null) "$floorPostId|$verifiedViewerUrl" else null
+    var dupSlot by remember(dupGroup, boundsRegistry) { mutableIntStateOf(if (dupGroup != null && boundsRegistry != null) -1 else 0) }
+    DisposableEffect(boundsRegistry, dupGroup) {
+        if (boundsRegistry != null && dupGroup != null) dupSlot = boundsRegistry.registerOccurrence(dupGroup, layoutTracker)
+        onDispose { if (boundsRegistry != null && dupGroup != null) boundsRegistry.unregisterOccurrence(dupGroup, layoutTracker) }
+    }
+    val matchedItem = if (dupSlot >= 0) matchingGallery.getOrNull(dupSlot) ?: matchingGallery.firstOrNull() else null
+    val boundsKey = when {
+        verifiedViewerUrl == null || (dupGroup != null && boundsRegistry != null && dupSlot < 0) -> null
+        matchedItem != null -> imageViewerBoundsKey(floorPostId, matchedItem.imageIndexInFloor)
+        else -> "$floorPostId#$verifiedViewerUrl"
+    }
+    val latestBoundsKey by rememberUpdatedState(boundsKey)
+    val latestMatchedIndex by rememberUpdatedState(matchedItem?.imageIndexInFloor)
+    DisposableEffect(boundsRegistry, boundsKey) {
+        if (boundsRegistry != null && boundsKey != null) layoutTracker.coords?.let { boundsRegistry.update(boundsKey, it) }
+        onDispose { if (boundsRegistry != null && boundsKey != null) boundsRegistry.remove(boundsKey, layoutTracker.coords) }
+    }
+
     val loaded = loadState as? PostImageLoadState.Loaded
     val animatedAlpha by animateFloatAsState(
         targetValue = if (loaded != null) 1f else 0f,
@@ -273,10 +293,6 @@ fun PostImageBlock(
         label = "postImageFadeIn",
     )
     val cs = MaterialTheme.colorScheme
-    DisposableEffect(boundsRegistry, verifiedViewerUrl) {
-        onDispose { verifiedViewerUrl?.let { boundsRegistry?.remove(it, layoutTracker.coords) } }
-    }
-
     val containerModifier = modifier
         .fillMaxWidth()
         .aspectRatio(aspectRatioAnim.value)
@@ -287,7 +303,7 @@ fun PostImageBlock(
             if (w > 0 && containerWidthPx != w) containerWidthPx = w
             val topLeft = coords.positionInWindow()
             layoutTracker.boundsInWindow = Rect(topLeft, Size(w.toFloat(), coords.size.height.toFloat()))
-            verifiedViewerUrl?.let { boundsRegistry?.update(it, coords) }
+            latestBoundsKey?.let { boundsRegistry?.update(it, coords) }
         }
 
     Surface(
@@ -314,8 +330,10 @@ fun PostImageBlock(
                                     buildGalleryLaunchArgs(
                                         clickedUrl = url,
                                         floorPostId = floorPostId,
-                                        gallery = threadGallery,
+                                        gallery = latestThreadGallery,
                                         sourceBoundsInWindow = layoutTracker.boundsInWindow,
+                                        imageIndexInFloor = latestMatchedIndex,
+                                        fallbackBoundsKey = latestBoundsKey,
                                     ),
                                 )
                             },
@@ -333,44 +351,25 @@ fun PostImageBlock(
                 fileSizeBytes = image.fileSizeBytes,
                 onTapLoad = {
                     loadState = PostImageLoadState.Loading(userInitiated = true)
-                    activeLoadId = nextLoadId++
+                    loadToken = abs(loadToken) + 1
                 },
             )
             is PostImageLoadState.Loading -> if (current.userInitiated) {
                 CancellableLoadingContent(
                     onCancel = {
-                        activeLoadId = 0
+                        loadToken = -abs(loadToken)
                         loadState = PostImageLoadState.TapToLoad
                     },
                 )
             } else {
                 Box(Modifier.fillMaxSize().hiSkeleton(shape = HiShapeTokens.Medium))
             }
-            PostImageLoadState.Failed -> FailedImageContent(
+            is PostImageLoadState.Failed -> FailedImageContent(
+                canRetry = current.canRetry,
                 onRetry = {
                     loadState = PostImageLoadState.Loading(userInitiated = initialMode == ImageLoadMode.ClickToLoad)
-                    activeLoadId = nextLoadId++
+                    loadToken = abs(loadToken) + 1
                 },
-            )
-        }
-    }
-}
-
-@Composable
-private fun InvalidImagePlaceholder(modifier: Modifier) {
-    val cs = MaterialTheme.colorScheme
-    Surface(
-        modifier = modifier.fillMaxWidth().aspectRatio(ImageAspectRatioCache.DEFAULT_ASPECT_RATIO),
-        shape = HiShapeTokens.Medium,
-        color = cs.surfaceContainerLow,
-        border = BorderStroke(0.5.dp, cs.outlineVariant),
-    ) {
-        Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-            Text(
-                text = stringResource(R.string.thread_media_load_failed),
-                style = MaterialTheme.typography.bodyMedium,
-                color = cs.onSurfaceVariant,
-                textAlign = TextAlign.Center,
             )
         }
     }
@@ -429,9 +428,8 @@ private fun CancellableLoadingContent(onCancel: () -> Unit) {
 }
 
 @Composable
-private fun FailedImageContent(onRetry: () -> Unit) {
+private fun FailedImageContent(canRetry: Boolean, onRetry: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val retryInteraction = remember { MutableInteractionSource() }
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -443,14 +441,17 @@ private fun FailedImageContent(onRetry: () -> Unit) {
             color = cs.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(12.dp))
-        FilledTonalButton(
-            onClick = onRetry,
-            interactionSource = retryInteraction,
-            shape = HiShapeTokens.Small,
-            modifier = Modifier.defaultMinSize(minWidth = 88.dp, minHeight = 48.dp).hiPressScale(retryInteraction),
-        ) {
-            Text(stringResource(R.string.common_action_retry))
+        if (canRetry) {
+            val retryInteraction = remember { MutableInteractionSource() }
+            Spacer(Modifier.height(12.dp))
+            FilledTonalButton(
+                onClick = onRetry,
+                interactionSource = retryInteraction,
+                shape = HiShapeTokens.Small,
+                modifier = Modifier.defaultMinSize(minWidth = 88.dp, minHeight = 48.dp).hiPressScale(retryInteraction),
+            ) {
+                Text(stringResource(R.string.common_action_retry))
+            }
         }
     }
 }

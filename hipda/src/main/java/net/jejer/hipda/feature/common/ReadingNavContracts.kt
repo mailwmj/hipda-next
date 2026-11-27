@@ -60,13 +60,30 @@ data class DetailChromeSpec(
 )
 
 @Immutable
+data class ImageViewerPageMeta(
+    val floorNumber: Int? = null,
+    val author: String? = null,
+    val boundsKey: String? = null,
+)
+
+@Immutable
 data class ImageViewerLaunchArgs(
     val urls: List<String>,
     val initialIndex: Int = 0,
     val sourceBoundsInWindow: Rect? = null,
     val floorNumber: Int? = null,
     val author: String? = null,
-)
+    val pageMeta: List<ImageViewerPageMeta> = emptyList(),
+) {
+    fun floorNumberForPage(page: Int): Int? =
+        if (page in pageMeta.indices) pageMeta[page].floorNumber else floorNumber
+
+    fun authorForPage(page: Int): String? =
+        if (page in pageMeta.indices) pageMeta[page].author else author
+
+    fun boundsKeyForPage(page: Int): String? =
+        pageMeta.getOrNull(page)?.boundsKey
+}
 
 @Immutable
 data class ReplyRequest(
