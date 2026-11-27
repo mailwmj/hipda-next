@@ -146,19 +146,27 @@ fun ForumPane(
                     modifier = Modifier.fillMaxSize(),
                     indicator = { PullToRefreshDefaults.Indicator(pullState, uiState.isRefreshing, Modifier.align(Alignment.TopCenter).padding(top = topBarExpandedHeight)) },
                 ) {
+                    val dividerStartIndent = if (compactRow) 12.dp else 68.dp
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize().then(glassSourceModifier), contentPadding = listContentPadding) {
-                        items(items = uiState.items, key = { it.tid }) { item ->
+                        itemsIndexed(items = uiState.items, key = { _, item -> item.tid }) { index, item ->
                             Column(Modifier.animateItem(HiMotion.effectsDefault(), HiMotion.spatialDefault(), HiMotion.exit(HiMotion.effectsDefault()))) {
                                 val fid = (uiState.source as? ForumListSource.Forum)?.fid ?: 0
                                 val navArgs = ThreadNavArgs(item.tid, item.summary.title, fid, if (fid > 0) headerTitle else item.summary.typeName, item.summary.author)
+                                val isSelected = item.tid == selectedTid
+                                val nextIsSelected = selectedTid != null && uiState.items.getOrNull(index + 1)?.tid == selectedTid
                                 ThreadListRow(
                                     item = item,
-                                    selected = item.tid == selectedTid,
+                                    selected = isSelected,
                                     compactLayout = compactRow,
+                                    referenceDate = uiState.referenceDate,
                                     onClick = { onOpenThread(navArgs) },
                                     onLongClick = { onOpenThread(navArgs.copy(openLastPage = true)) },
                                 )
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+                                if (!isSelected && !nextIsSelected) {
+                                    HorizontalDivider(Modifier.padding(start = dividerStartIndent), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+                                } else {
+                                    Spacer(Modifier.height(0.5.dp))
+                                }
                             }
                         }
                         item(key = "forum_footer") {

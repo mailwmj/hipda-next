@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
@@ -31,6 +32,9 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.text.TextLayoutResult
+import java.time.LocalDate
+import kotlin.math.abs
 import net.jejer.hipda.feature.common.ThreadNavArgs
 import androidx.compose.ui.unit.dp
 import java.util.concurrent.atomic.AtomicInteger
@@ -227,21 +231,209 @@ class ForumListBehaviorTest {
         }
         composeRule.waitForIdle()
 
-        val compactTitleBounds = composeRule.onNodeWithText(sample.summary.title, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val compactTitleBounds = composeRule.onNodeWithText(sample.summary.title, substring = true, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val compactMetaTime = composeRule.onNodeWithText("5分钟前", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val compactPanePx = with(composeRule.density) { 274.dp.toPx() }
         val compactTitleLeftDp = with(composeRule.density) { compactTitleBounds.left.toDp() }
         assertTrue("274dp 窄中栏下标题左侧不应有 40dp 大头像列占位，实际 left=$compactTitleLeftDp", compactTitleLeftDp <= 16.dp)
         assertTrue("274dp 窄中栏下时间标签不得溢出右边界", compactMetaTime.right <= compactPanePx + 1f)
-        composeRule.onNodeWithText("42/1280", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("42", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("42/1280", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithText("图", useUnmergedTree = true).assertDoesNotExist()
 
-        // 切到 380dp 标准宽：左侧应出现 40dp 独立头像列，标题起始位置显著右移
+        // 切到 380dp 标准宽：左侧应出现 40dp 独立头像列，标题起始位置显著右移，且恢复 reply/view 显示
         paneWidthDp = 380.dp
         composeRule.waitForIdle()
         val wideTitleLeftDp = with(composeRule.density) {
-            composeRule.onNodeWithText(sample.summary.title, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.left.toDp()
+            composeRule.onNodeWithText(sample.summary.title, substring = true, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.left.toDp()
         }
         assertTrue("380dp 标准宽下标题应让出左侧 40dp 头像列，实际 left=$wideTitleLeftDp", wideTitleLeftDp >= 60.dp)
+        composeRule.onNodeWithText("42/1280", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    /** U1 验收 3：去「图」标与徽标行、置顶内联图钉、投票/分类入元信息行、短标题内联「新」/2 行溢出「新」回落元信息行首、作者吃满剩余宽。 */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun threadListRow_denoisedBadges_inlineStickyAndNewOverflowFallback_andFullWidthAuthor() {
+        val refDate = LocalDate.of(2026, 11, 28)
+        val shortNewItem = ThreadListItem(
+            summary = ThreadSummary(
+                tid = "801",
+                title = "短标题新帖测试",
+                titleColor = null,
+                typeName = "手机",
+                isSticky = true,
+                isNew = true,
+                isPoll = true,
+                author = "long_author_1",
+                authorId = "1",
+                avatarUrl = null,
+                timeCreate = "2026-11-28 09:05",
+                timeUpdate = "2026-11-28 09:05",
+                lastPostAuthor = "回复者",
+                replyCountText = "8",
+                viewCountText = "120",
+                withPic = true,
+                maxPage = 1,
+            ),
+            isVisited = false,
+        )
+        val longOverflowNewItem = ThreadListItem(
+            summary = shortNewItem.summary.copy(
+                tid = "802",
+                title = "这是一条非常非常长的测试帖子标题用于触发两行省略截断并验证尾部新字徽标自动回落到下方元信息行首完整可见不被裁切",
+                isSticky = false,
+                isPoll = false,
+                typeName = null,
+                author = "long_author_1",
+            ),
+            isVisited = false,
+        )
+        val dupPollItem = ThreadListItem(
+            summary = shortNewItem.summary.copy(
+                tid = "803",
+                title = "投票分类去重测试",
+                isSticky = false,
+                isNew = false,
+                isPoll = true,
+                typeName = "投票",
+                author = "poll_host",
+            ),
+            isVisited = false,
+        )
+        var currentItem by mutableStateOf(shortNewItem)
+        var paneWidthDp by mutableStateOf(274.dp)
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                Box(Modifier.width(paneWidthDp)) {
+                    ThreadListRow(
+                        item = currentItem,
+                        selected = false,
+                        compactLayout = paneWidthDp < FORUM_COMPACT_ROW_WIDTH_THRESHOLD,
+                        referenceDate = refDate,
+                        onClick = {},
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. withPic=true 不渲染「图」；isSticky=true 内联图钉且无独立「置顶」文本；isPoll + typeName 合入元信息行；绝对时间今日输出 HH:mm
+        composeRule.onNodeWithText("图", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithText("置顶", useUnmergedTree = true).assertDoesNotExist()
+        val pinNode = composeRule.onNodeWithContentDescription("置顶", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
+        val shortTitleNode = composeRule.onNodeWithText("短标题新帖测试", substring = true, useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
+        assertTrue("置顶图钉应内联在标题首行垂直范围内", pinNode.boundsInRoot.top >= shortTitleNode.boundsInRoot.top - 2f && pinNode.boundsInRoot.bottom <= shortTitleNode.boundsInRoot.bottom + 2f)
+        // 短标题 isNew=true：「新」内联在标题末尾，元信息行不重复渲染单独「新」节点
+        val shortTitleText = shortTitleNode.config[SemanticsProperties.Text].joinToString("") { it.text }
+        assertTrue("短标题应把「新」内联在末尾，实际=$shortTitleText", shortTitleText.endsWith("新"))
+        composeRule.onNodeWithText("新", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithText("投票 · 手机 · long_author_1", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("09:05", useUnmergedTree = true).assertIsDisplayed()
+
+        // 2. 超长 2 行截断标题 + isNew=true：标题发生 hasVisualOverflow，「新」自动回落到元信息行首完整可见；作者名不因 Spacer 被腰斩
+        currentItem = longOverflowNewItem
+        composeRule.waitForIdle()
+        val longTitleNode = composeRule.onNodeWithText("这是一条非常非常长", substring = true, useUnmergedTree = true).fetchSemanticsNode()
+        val titleLayouts = mutableListOf<TextLayoutResult>()
+        longTitleNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(titleLayouts)
+        assertTrue("超长标题在 274dp 下必须触发 2 行视觉溢出", titleLayouts.single().hasVisualOverflow)
+        val fallbackNewBounds = composeRule.onNodeWithText("新", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val authorNode = composeRule.onNodeWithText("long_author_1", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
+        val authorLayouts = mutableListOf<TextLayoutResult>()
+        authorNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(authorLayouts)
+        assertTrue("回落后的「新」应位于标题下方元信息行", fallbackNewBounds.top >= longTitleNode.boundsInRoot.bottom - 2f)
+        assertTrue("回落后的「新」应位于作者名左侧", fallbackNewBounds.right <= authorNode.boundsInRoot.left + 2f)
+        assertFalse("去掉 Spacer(weight(1f)) 后，13 字符作者名在 274dp 窄中栏应完整显示不截断", authorLayouts.single().hasVisualOverflow)
+
+        // 3. 投票 + 同名分类「投票」去重，不出现「投票 · 投票」
+        currentItem = dupPollItem
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("投票 · poll_host", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    /** U1 验收 3：选中行具 8dp 水平内缩圆角底且紧邻上下分隔线隐藏，普通分隔线缩进至标题起点（标准 68dp / 紧凑 12dp）。 */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun forumPane_selectedRowInsetRoundedPill_hidesAdjacentDividers_andIndentsNormalDividers() {
+        val harness = UiHarness()
+        var paneWidthDp by mutableStateOf(411.dp)
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                Box(Modifier.width(paneWidthDp).background(MaterialTheme.colorScheme.surface)) {
+                    ForumPane(
+                        source = ForumListSource.Forum(2),
+                        chromeSpec = ForumChromeSpec(showForumTabs = false, useGlassTopBar = false),
+                        selectedTid = "1002",
+                        onSelectSource = {},
+                        onOpenThread = {},
+                        onOpenLogin = {},
+                        viewModel = harness.viewModel,
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        fun pixelDelta(a: Int, b: Int): Int = maxOf(
+            abs(android.graphics.Color.red(a) - android.graphics.Color.red(b)),
+            abs(android.graphics.Color.green(a) - android.graphics.Color.green(b)),
+            abs(android.graphics.Color.blue(a) - android.graphics.Color.blue(b)),
+        )
+
+        fun maxDeltaAcrossBand(bmp: Bitmap, xPx: Int, yStart: Int, yEnd: Int, bg: Int): Int {
+            var best = 0
+            for (y in yStart.coerceIn(0, bmp.height - 1)..yEnd.coerceIn(0, bmp.height - 1)) {
+                val d = pixelDelta(bmp.getPixel(xPx.coerceIn(0, bmp.width - 1), y), bg)
+                if (d > best) best = d
+            }
+            return best
+        }
+
+        // 标准宽 411dp（缩进 68dp）
+        val bmpWide = composeRule.onRoot().captureToImage().asAndroidBitmap()
+        val densityPx = composeRule.density.density
+        val row1 = composeRule.onNodeWithText("论坛列表测试帖 1").fetchSemanticsNode().boundsInRoot
+        val row2 = composeRule.onNodeWithText("论坛列表测试帖 2").fetchSemanticsNode().boundsInRoot
+        val row3 = composeRule.onNodeWithText("论坛列表测试帖 3").fetchSemanticsNode().boundsInRoot
+        val row4 = composeRule.onNodeWithText("论坛列表测试帖 4").fetchSemanticsNode().boundsInRoot
+
+        val surfaceBg = bmpWide.getPixel((2 * densityPx).roundToInt(), row1.center.y.roundToInt())
+        val selectedOuterMarginPixel = bmpWide.getPixel((2 * densityPx).roundToInt(), row2.center.y.roundToInt())
+        val selectedPillInteriorPixel = bmpWide.getPixel((14 * densityPx).roundToInt(), (row2.top + 8 * densityPx).roundToInt())
+        assertEquals("选中行外侧 8dp 缩进区应保持纯 surface 底色", 0, pixelDelta(selectedOuterMarginPixel, surfaceBg))
+        assertTrue("选中行内缩胶囊内部应呈 secondaryContainer 着色底", pixelDelta(selectedPillInteriorPixel, surfaceBg) >= 6)
+
+        // 选中行上方（row1-row2 交界）与下方（row2-row3 交界）分隔线必须隐藏
+        val xDividerZone = (200 * densityPx).roundToInt()
+        val aboveSelectedDelta = maxDeltaAcrossBand(bmpWide, xDividerZone, (row1.bottom - 1).roundToInt(), (row2.top - 1).roundToInt(), surfaceBg)
+        val belowSelectedDelta = maxDeltaAcrossBand(bmpWide, xDividerZone, (row2.bottom + 1).roundToInt(), (row3.top - 1).roundToInt(), surfaceBg)
+        assertEquals("选中行上一行下方分隔线应隐藏", 0, aboveSelectedDelta)
+        assertEquals("选中行自身下方分隔线应隐藏", 0, belowSelectedDelta)
+
+        // 普通行（row3-row4 交界）分隔线存在且左侧缩进 68dp（x=24dp 无分隔线，x=200dp 有分隔线）
+        val normalSeamStart = (row3.bottom - 1).roundToInt()
+        val normalSeamEnd = (row4.top + 1).roundToInt()
+        val normalBeforeIndent = maxDeltaAcrossBand(bmpWide, (24 * densityPx).roundToInt(), normalSeamStart, normalSeamEnd, surfaceBg)
+        val normalAfterIndent = maxDeltaAcrossBand(bmpWide, xDividerZone, normalSeamStart, normalSeamEnd, surfaceBg)
+        assertEquals("标准宽普通分隔线在 68dp 缩进左侧不得绘制", 0, normalBeforeIndent)
+        assertTrue("标准宽普通分隔线在 68dp 缩进右侧必须可见（delta=$normalAfterIndent）", normalAfterIndent >= 8)
+
+        // 切至紧凑宽 274dp（缩进 12dp）
+        paneWidthDp = 274.dp
+        composeRule.waitForIdle()
+        val bmpCompact = composeRule.onRoot().captureToImage().asAndroidBitmap()
+        val cRow3 = composeRule.onNodeWithText("论坛列表测试帖 3").fetchSemanticsNode().boundsInRoot
+        val cRow4 = composeRule.onNodeWithText("论坛列表测试帖 4").fetchSemanticsNode().boundsInRoot
+        val cSurfaceBg = bmpCompact.getPixel((2 * densityPx).roundToInt(), cRow3.center.y.roundToInt())
+        val cSeamStart = (cRow3.bottom - 1).roundToInt()
+        val cSeamEnd = (cRow4.top + 1).roundToInt()
+        assertEquals("紧凑宽普通分隔线在 12dp 缩进左侧不得绘制", 0, maxDeltaAcrossBand(bmpCompact, (4 * densityPx).roundToInt(), cSeamStart, cSeamEnd, cSurfaceBg))
+        assertTrue("紧凑宽普通分隔线在 12dp 缩进右侧必须可见", maxDeltaAcrossBand(bmpCompact, (100 * densityPx).roundToInt(), cSeamStart, cSeamEnd, cSurfaceBg) >= 8)
     }
 
     /** 验收 4：更多排序菜单读写 SettingsRepository，今日新帖下不展示排序菜单；发新帖/管理版块回调正常触发。 */

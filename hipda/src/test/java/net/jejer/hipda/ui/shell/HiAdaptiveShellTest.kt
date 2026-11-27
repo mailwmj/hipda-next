@@ -846,16 +846,20 @@ class HiAdaptiveShellTest {
 
         val rootBounds = onRoot().fetchSemanticsNode().boundsInRoot
         val sidebarBounds = onNodeWithTag(HiShellTestTags.NavigationSidebar).fetchSemanticsNode().boundsInRoot
+        val topBarBounds = onNodeWithTag(HiShellTestTags.SidebarTopBar).fetchSemanticsNode().boundsInRoot
         val listBounds = onNodeWithTag(HiShellTestTags.SidebarList).fetchSemanticsNode().boundsInRoot
+        val bottomAccountBounds = onNodeWithTag(HiShellTestTags.SidebarAccountRow).fetchSemanticsNode().boundsInRoot
         assertEquals("749dp 下左侧栏应贴左", 0f, sidebarBounds.left, 1f)
         assertEquals("749dp 下左侧栏宽应为 64dp", 64f, with(density) { sidebarBounds.width.toDp().value }, 1f)
+        assertEquals("64dp 图标轨顶部栏（含 24dp 状态栏）应精确为 80dp（顶栏净高 56dp）", 80f, with(density) { topBarBounds.height.toDp().value }, 1f)
 
-        // 断言默认 3 个关注版块（Discovery=2, Buy & Sell=6, Geek Talks=7）全部完整位于可视区与列表区内
+        // 断言默认 3 个关注版块（Discovery=2, Buy & Sell=6, Geek Talks=7）全部完整位于可视区、列表区内且严格位于底栏之上
         listOf(2, 6, 7).forEach { fid ->
             val node = onNodeWithTag(HiShellTestTags.sidebarEntry(ShellSidebarEntry.Forum(fid))).fetchSemanticsNode()
             val b = node.boundsInRoot
             assertTrue("版块 $fid 应完整在窗口内：top=${b.top}, bottom=${b.bottom}, root=$rootBounds", b.top >= rootBounds.top && b.bottom <= rootBounds.bottom)
             assertTrue("版块 $fid 应完整在列表可视区内：top=${b.top}, bottom=${b.bottom}, list=$listBounds", b.top >= listBounds.top - 1f && b.bottom <= listBounds.bottom + 1f)
+            assertTrue("版块 $fid 必须严格位于底部固定栏上方：bottom=${b.bottom}, bottomBar.top=${bottomAccountBounds.top}", b.bottom <= bottomAccountBounds.top + 1f)
             assertTrue("版块 $fid 触摸宽应 ≥ 48dp", with(density) { b.width.toDp() } >= 47.5.dp)
             assertTrue("版块 $fid 触摸高应 ≥ 48dp", with(density) { b.height.toDp() } >= 47.5.dp)
         }
@@ -1005,6 +1009,41 @@ class HiAdaptiveShellTest {
         onNodeWithTag(HiShellTestTags.SidebarMineGroup).performClick()
         waitForIdle()
         onNodeWithTag(HiShellTestTags.sidebarEntry(ShellSidebarEntry.FavoritesAndAttention)).assertDoesNotExist()
+    }
+
+    /** U1 验收 1：展开态左侧栏与 64dp 收起态左侧栏顶部栏高度严格统一为 56dp（与中栏论坛顶栏 56dp 对齐）。 */
+    @Test
+    @Config(qualifiers = "w933dp-h696dp-xhdpi")
+    fun sidebarTopBar_expandedAndCollapsed_alignAt56dpHorizon() = withAnimatorDurationScale(0f) {
+        setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                HiAdaptiveShell(
+                    selected = ShellDestination.Forum,
+                    onSelect = {},
+                    sidebarState = HiSidebarState(
+                        selectedEntry = ShellSidebarEntry.Forum(2),
+                        account = HiSidebarAccount(username = "HiPDA"),
+                    ),
+                ) { _, _ ->
+                    Box(Modifier.fillMaxSize())
+                }
+            }
+        }
+        waitForIdle()
+
+        val expandedTopBar = onNodeWithTag(HiShellTestTags.SidebarTopBar).fetchSemanticsNode().boundsInRoot
+        val expandedToggle = onNodeWithTag(HiShellTestTags.SidebarToggleButton).fetchSemanticsNode().boundsInRoot
+        assertEquals("展开态左栏顶栏高度必须为 56dp", 56f, with(density) { expandedTopBar.height.toDp().value }, 0.5f)
+        assertEquals("展开态收起按钮垂直居中于 56dp 顶栏", expandedTopBar.center.y, expandedToggle.center.y, 1.5f)
+
+        // 切换至 64dp 收起态
+        onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        waitForIdle()
+
+        val collapsedTopBar = onNodeWithTag(HiShellTestTags.SidebarTopBar).fetchSemanticsNode().boundsInRoot
+        val collapsedToggle = onNodeWithTag(HiShellTestTags.SidebarToggleButton).fetchSemanticsNode().boundsInRoot
+        assertEquals("64dp 收起态左栏顶栏高度必须为 56dp", 56f, with(density) { collapsedTopBar.height.toDp().value }, 0.5f)
+        assertEquals("收起态展开按钮垂直居中于 56dp 顶栏", collapsedTopBar.center.y, collapsedToggle.center.y, 1.5f)
     }
 
     @Test

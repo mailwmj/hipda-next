@@ -205,7 +205,14 @@ internal class MultiPaneTestHarness(
     val searchRepo = OfflineSearchRepository()
     val threadDetailRepo = OfflineThreadDetailRepository(richSampleContent)
     val hostViewModel = NextAppHostViewModel(settingsRepo)
-    val forumViewModel = ForumViewModel(threadListRepo, searchRepo, settingsRepo, authRepo, gateway)
+    val forumViewModel = ForumViewModel(
+        threadListRepo,
+        searchRepo,
+        settingsRepo,
+        authRepo,
+        gateway,
+        todayProvider = { java.time.LocalDate.of(2026, 11, 25) },
+    )
 
     val createdDetailVms = mutableListOf<ThreadDetailViewModel>()
     val clearedDetailVms = mutableListOf<ThreadDetailViewModel>()

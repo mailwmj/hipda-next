@@ -51,7 +51,7 @@ import net.jejer.hipda.ui.shell.HiShellTestTags
 
 internal val PANE_DIVIDER_HIT_WIDTH: Dp = 48.dp
 private val PANE_DIVIDER_A11Y_HEIGHT: Dp = 96.dp
-private val PANE_DIVIDER_LINE_WIDTH: Dp = 1.dp
+private val PANE_DIVIDER_LINE_WIDTH: Dp = 0.5.dp
 private val PANE_DIVIDER_ACTIVE_LINE_WIDTH: Dp = 2.dp
 private val PANE_DIVIDER_GRIP_WIDTH: Dp = 4.dp
 private val PANE_DIVIDER_GRIP_HEIGHT: Dp = 32.dp
@@ -149,7 +149,7 @@ private fun settleDividerWithVelocity(
     }
 }
 
-/** 三栏中右 1dp 视觉分隔细线（无指针输入与语义，不阻挡任何点击/滚动）。 */
+/** 三栏中右 0.5dp 视觉分隔细线（无指针输入与语义，不阻挡任何点击/滚动）。 */
 @Composable
 internal fun PaneDividerLine(active: Boolean, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme

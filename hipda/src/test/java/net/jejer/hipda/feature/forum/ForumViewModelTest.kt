@@ -741,6 +741,38 @@ class ForumViewModelTest {
         collector.cancel()
     }
 
+    /** U1 验收 4：可注入 todayProvider 决定 referenceDate，并在刷新与切换源时同步读取最新日期。 */
+    @Test
+    fun referenceDate_usesInjectedTodayProviderAndUpdatesOnRefreshAndSourceSwitch() = runTest {
+        var fakeToday = java.time.LocalDate.of(2026, 11, 26)
+        val threadRepo = TestThreadListRepository { query ->
+            successBatch(query, listOf(summary("${query.fid}01", "时钟验证帖")))
+        }
+        val vm = ForumViewModel(
+            threadListRepository = threadRepo,
+            searchRepository = TestSearchRepository(),
+            settingsRepository = TestSettingsRepository(),
+            authRepository = TestAuthRepository(),
+            siteAccessGateway = idleGateway(),
+            todayProvider = { fakeToday },
+        )
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
+        advanceUntilIdle()
+        assertEquals(java.time.LocalDate.of(2026, 11, 26), vm.uiState.value.referenceDate)
+
+        fakeToday = java.time.LocalDate.of(2026, 11, 27)
+        vm.refresh()
+        advanceUntilIdle()
+        assertEquals(java.time.LocalDate.of(2026, 11, 27), vm.uiState.value.referenceDate)
+
+        fakeToday = java.time.LocalDate.of(2026, 11, 28)
+        vm.bindSource(ForumListSource.Forum(6))
+        advanceUntilIdle()
+        assertEquals(java.time.LocalDate.of(2026, 11, 28), vm.uiState.value.referenceDate)
+
+        collector.cancel()
+    }
+
     // ---- Test Fakes ----
 
     private class TestAuthRepository(
