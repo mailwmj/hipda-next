@@ -409,18 +409,20 @@ class ReadingPositionAndStackTest {
         composeRule.waitForIdle()
         assertEquals("1001", harness.hostViewModel.state.value.selectedThread?.tid)
 
-        // 2. 通过中段进度胶囊展开跳页条并跳到末页（压入 PositionStack）
-        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").performClick()
+        // 2. 通过中段楼层胶囊展开跳页条并跳到末页（压入 PositionStack）
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("末页").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 3 页，共 3 页，点按展开跳页").assertIsDisplayed()
+        assertEquals(3, harness.createdDetailVms.single().uiState.value.page)
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
 
         // 3. 第一次系统返回：仅从 PositionStack 回到第 1 页，右栏帖子仍保持打开
         composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
         composeRule.waitForIdle()
         assertEquals("PositionStack 非空时返回不得关闭右栏", "1001", harness.hostViewModel.state.value.selectedThread?.tid)
-        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
+        assertEquals(1, harness.createdDetailVms.single().uiState.value.page)
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
 
         // 4. 第二次系统返回：PositionStack 已空，按 E3 既有优先级清空右栏回到空占位
         composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
@@ -448,7 +450,7 @@ class ReadingPositionAndStackTest {
         // 1. 打开帖子 1001 并经内联跳页条跳至第 3 页建立非空 PositionStack（栈底第 1 页）
         composeRule.onNodeWithText("测试帖子标题 1001").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("末页").performClick()
         composeRule.waitForIdle()

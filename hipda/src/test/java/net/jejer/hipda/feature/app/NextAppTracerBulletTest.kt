@@ -855,7 +855,9 @@ class NextAppTracerBulletTest {
                     node.config[SemanticsProperties.Text].any { it.text.startsWith(prefix) }
             },
             useUnmergedTree = true,
-        ).fetchSemanticsNodes().first().config[SemanticsProperties.Text].first { it.text.startsWith(prefix) }.text
+        ).fetchSemanticsNodes()
+            .first { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+            .config[SemanticsProperties.Text].first { it.text.startsWith(prefix) }.text
     }
 
     private fun countLayerBackdrops(root: LayoutInfo): Int {

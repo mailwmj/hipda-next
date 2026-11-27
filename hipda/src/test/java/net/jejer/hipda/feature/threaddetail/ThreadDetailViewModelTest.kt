@@ -307,11 +307,11 @@ class ThreadDetailViewModelTest {
         }
         composeRule.waitForIdle()
 
-        // 1. 经底部进度胶囊确认第 1 页并翻到第 2 页，再滚至第 8 楼（index=7, offset=36）
-        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
+        // 1. 经底部楼层胶囊确认第 1 页并翻到第 2 页，再滚至第 8 楼（index=7, offset=36）
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
         composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 21 楼，点按展开跳页").assertIsDisplayed()
 
         composeRule.runOnIdle { listState.requestScrollToItem(index = 7, scrollOffset = 36) }
         composeRule.waitForIdle()
@@ -341,11 +341,11 @@ class ThreadDetailViewModelTest {
         composeRule.onNodeWithContentDescription("退出只看").assertDoesNotExist()
 
         // 4. 展开内联跳页条并点击“首页”回到第 1 页
-        composeRule.onNodeWithContentDescription("第 2 页，共 3 页，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 28 楼，点按展开跳页").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("首页").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 页，共 3 页，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
 
         // 5. 过滤结果为空展示“没有符合条件的楼层”+“看全部”，点击后恢复全帖
         detailRepo.returnEmptyForFilter = true
