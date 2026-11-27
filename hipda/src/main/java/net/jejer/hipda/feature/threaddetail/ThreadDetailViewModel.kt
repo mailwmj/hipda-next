@@ -383,9 +383,10 @@ class ThreadDetailViewModel(
                 forumServer = prev.forumServer,
             )
         }
-        if (incomingPid != null) {
+        val isRestoredInitialBind = !isRebind && args.navSeq == 0L
+        if (!isRestoredInitialBind && incomingPid != null) {
             loadByPostIdInternal(incomingPid, highlight = true)
-        } else if (args.openLastPage) {
+        } else if (!isRestoredInitialBind && args.openLastPage) {
             loadLastPageInternal()
         } else {
             bindJob = viewModelScope.launch {
@@ -407,6 +408,10 @@ class ThreadDetailViewModel(
                         scrollToTop = false,
                         restoreAnchor = restoreAnchor,
                     )
+                } else if (incomingPid != null) {
+                    loadByPostIdInternal(incomingPid, highlight = true)
+                } else if (args.openLastPage) {
+                    loadLastPageInternal()
                 } else {
                     loadInternal(
                         page = 1,
