@@ -298,7 +298,7 @@ class ThreadInteractFrameAnchorTest {
             assertNotNull("必须观测到第 2 页数据合入帧", mergeFrameIndex)
             assertTrue("必须观测到目标楼层高亮可见", highlightSeen)
             assertTrue("目标楼层上方图片应被加载并完成变高", imageReleased)
-            assertEquals(1f / 3f, ImageAspectRatioCache.Default.get(tallImgUrl)!!, 0.001f)
+            assertEquals(1f / 3f, ImageAspectRatioCache.Default.resolveInitialAspectRatio(tallImgUrl), 0.001f)
             assertNotNull("最终目标楼层仍在视口预期位置", landedOffsetPx)
         } finally {
             composeRule.mainClock.autoAdvance = true

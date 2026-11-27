@@ -183,7 +183,7 @@ class ImageScrollCompensationTest {
             "分支① 补偿后滚动偏移应显著增加（before=$offsetBeforeBranch1, after=${listState.firstVisibleItemScrollOffset}）",
             listState.firstVisibleItemScrollOffset > offsetBeforeBranch1 + (400f * density).toInt(),
         )
-        assertEquals(1f / 3f, ImageAspectRatioCache.Default.get(aboveUrl)!!, 0.001f)
+        assertEquals(1f / 3f, ImageAspectRatioCache.Default.resolveInitialAspectRatio(aboveUrl), 0.001f)
 
         // ========== 分支 ②：首楼自身未越顶 + 首楼下方图片由 4:3 变 1:3 -> 首楼距顶偏差严格 == 0dp（0 误滚） ==========
         composeRule.runOnIdle { listState.requestScrollToItem(index = 1, scrollOffset = 0) }

@@ -102,11 +102,6 @@ fun ImageViewerOverlay(
     val originalLoadedMsg = stringResource(R.string.image_viewer_original_loaded)
     val savedMsg = stringResource(R.string.image_viewer_saved_to_gallery)
     val saveFailedMsg = stringResource(R.string.image_viewer_save_failed)
-    val topTitle = when {
-        args.floorNumber != null && !args.author.isNullOrBlank() -> stringResource(R.string.image_viewer_title_floor_author, args.floorNumber, args.author)
-        !args.author.isNullOrBlank() -> args.author
-        else -> null
-    }
 
     val latestOnDismiss by rememberUpdatedState(onDismiss)
     val latestResolveBounds by rememberUpdatedState(resolveBoundsForIndex)
@@ -316,6 +311,14 @@ fun ImageViewerOverlay(
         val currentSafeUrl = remember(args.urls, currentPage) { sanitizeViewerImageUrl(args.urls.getOrNull(currentPage)) }
         val currentState = stateOf(currentPage)
         val currentGifPlaying = currentState.isGifPlaying ?: !reducedMotion
+        val currentFloorNumber = args.floorNumberForPage(currentPage)
+        val currentAuthor = args.authorForPage(currentPage)
+        val topTitle = when {
+            currentFloorNumber != null && !currentAuthor.isNullOrBlank() ->
+                stringResource(R.string.image_viewer_title_floor_author, currentFloorNumber, currentAuthor)
+            !currentAuthor.isNullOrBlank() -> currentAuthor
+            else -> null
+        }
 
         fun toggleOriginalDownload(page: Int) {
             val safeUrl = sanitizeViewerImageUrl(args.urls.getOrNull(page)) ?: return

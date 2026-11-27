@@ -1103,7 +1103,7 @@ class ContinuousPagingAnchorTest {
         assertEquals(1, vm.uiState.value.firstLoadedPage)
         assertEquals(16, listState.firstVisibleItemIndex)
         assertEquals("跨楼层变高严禁过度补偿 p202 滚动偏移", offsetPx, listState.firstVisibleItemScrollOffset)
-        assertEquals(0.5f, ImageAspectRatioCache.Default.get(tallImageUrl)!!, 0.001f)
+        assertEquals(0.5f, ImageAspectRatioCache.Default.resolveInitialAspectRatio(tallImageUrl), 0.001f)
     }
 
     private fun runE2bE2dFirstVisibleFloorImageMergeProbe(
@@ -1245,7 +1245,7 @@ class ContinuousPagingAnchorTest {
             "[$label] 终态滚动偏移必须包含越顶长图高度补偿（before=$scrollOffsetBefore, now=${listState.firstVisibleItemScrollOffset}）",
             listState.firstVisibleItemScrollOffset > scrollOffsetBefore + (400f * density).toInt(),
         )
-        assertEquals(0.5f, ImageAspectRatioCache.Default.get(tallImageUrl)!!, 0.001f)
+        assertEquals(0.5f, ImageAspectRatioCache.Default.resolveInitialAspectRatio(tallImageUrl), 0.001f)
     }
 
     /**

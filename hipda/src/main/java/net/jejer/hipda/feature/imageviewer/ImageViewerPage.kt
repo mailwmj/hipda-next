@@ -165,7 +165,8 @@ internal fun ImageViewerPage(
 
     LaunchedEffect(safeThumbUrl, safeUrl, imageLoader) {
         if (safeUrl == null || safeThumbUrl == null || safeThumbUrl == safeUrl || thumbImage != null) return@LaunchedEffect
-        val res = executeBoundedImage(context, imageLoader, safeThumbUrl, viewportW, viewportH) ?: return@LaunchedEffect
+        val thumbBounds = computeOriginalDecodeBounds(viewportW, viewportH, widthMultiplier = 1, heightMultiplier = 1)
+        val res = executeBoundedImage(context, imageLoader, safeThumbUrl, thumbBounds.width, thumbBounds.height) ?: return@LaunchedEffect
         thumbImage = res.image
         if (hdImage == null && res.image.width > 0 && res.image.height > 0) {
             refs.onDecoded(IntSize(res.image.width, res.image.height), (res.image as? DrawableImage)?.drawable is Animatable)
@@ -175,7 +176,10 @@ internal fun ImageViewerPage(
     LaunchedEffect(safeUrl, retryToken, imageLoader) {
         if (safeUrl == null) { loadStatus = PageLoadStatus.InvalidUrl; return@LaunchedEffect }
         loadStatus = PageLoadStatus.Loading
-        val res = executeBoundedImage(context, imageLoader, safeUrl, viewportW, (viewportW * 6).coerceAtLeast(viewportH))
+        val hdBounds = computeOriginalDecodeBounds(
+            viewportW, viewportH, widthMultiplier = 1, heightMultiplier = 1, minHeightWidthMultiplier = 6,
+        )
+        val res = executeBoundedImage(context, imageLoader, safeUrl, hdBounds.width, hdBounds.height)
         if (res != null) {
             hdImage = res.image
             hdInstant = reducedMotion || (thumbImage == null && res.dataSource == DataSource.MEMORY_CACHE)

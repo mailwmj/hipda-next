@@ -47,34 +47,17 @@ enum class ImageLoadMode {
     ClickToLoad,
 }
 
-/** 系统网络计费与流量节省状态快照。 */
-@Immutable
-data class ImageNetworkState(
-    val isMetered: Boolean,
-    val isDataSaverEnabled: Boolean,
-)
-
 /** 自动流量节省判定：仅当系统“流量节省程序”开启且当前为计费网络时切点击加载，其余默认自动加载。 */
 object ImageLoadingPolicy {
     fun resolveLoadMode(isMetered: Boolean, isDataSaverEnabled: Boolean): ImageLoadMode =
         if (isMetered && isDataSaverEnabled) ImageLoadMode.ClickToLoad else ImageLoadMode.AutoLoad
 
-    fun resolveLoadMode(networkState: ImageNetworkState): ImageLoadMode =
-        resolveLoadMode(networkState.isMetered, networkState.isDataSaverEnabled)
-
-    fun readNetworkState(context: Context): ImageNetworkState {
-        val cm = context.getSystemService(ConnectivityManager::class.java)
-            ?: return ImageNetworkState(isMetered = false, isDataSaverEnabled = false)
-        return readNetworkState(cm)
-    }
-
-    fun readNetworkState(connectivityManager: ConnectivityManager): ImageNetworkState {
-        val metered = runCatching { connectivityManager.isActiveNetworkMetered }.getOrDefault(false)
+    fun resolveForContext(context: Context): ImageLoadMode {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return ImageLoadMode.AutoLoad
+        val metered = runCatching { cm.isActiveNetworkMetered }.getOrDefault(false)
         val dataSaver = runCatching {
-            connectivityManager.restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+            cm.restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
         }.getOrDefault(false)
-        return ImageNetworkState(isMetered = metered, isDataSaverEnabled = dataSaver)
+        return resolveLoadMode(isMetered = metered, isDataSaverEnabled = dataSaver)
     }
-
-    fun resolveForContext(context: Context): ImageLoadMode = resolveLoadMode(readNetworkState(context))
 }
