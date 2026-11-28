@@ -29,6 +29,7 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -536,8 +537,7 @@ class FullEditorIntegrationTest {
         composeRule.waitForIdle()
 
         val bodyField = composeRule.onNodeWithContentDescription("回复 楼层作者1")
-        bodyField.performSemanticsAction(SemanticsActions.RequestFocus)
-        composeRule.waitForIdle()
+        bodyField.assertIsFocused()
         bodyField.performTextInput("前段后段")
         composeRule.waitForIdle()
         bodyField.performTextInputSelection(TextRange(2, 2))
@@ -568,7 +568,11 @@ class FullEditorIntegrationTest {
         composeRule.onNodeWithContentDescription("已插入图片").assertIsDisplayed()
     }
 
-    /** 移植自 V-E6 `probe4b`：749dp 收起中栏右栏展开编辑器且同时打开 240dp 模态抽屉，经 `StateRestorationTester` 重建后按返回必须优先关抽屉而非编辑器。 */
+    /**
+     * U5a 更新（原 V-E6 `probe4b`）：
+     * - 749×559 收起中栏后仍保持居中模态（与正常三栏一致）：先点 `SidebarToggleButton` 打开 `SidebarModalDrawer`，再经 `FullEditorRequestBus` 打开完整编辑器（模态盖在抽屉上），经 `StateRestorationTester` 重建后两次返回依次关闭编辑器、抽屉；
+     * - 1280×800 收起中栏后仍为 `RightPane`，经 `StateRestorationTester` 重建后保持 `RightPane`。
+     */
     @Test
     @Config(qualifiers = "w749dp-h559dp-xhdpi")
     fun probe4b_drawerAboveRightPaneEditor_backPriorityPreservedAcrossStateRestoration() {
@@ -577,6 +581,7 @@ class FullEditorIntegrationTest {
         val postRepo = FakePostRepository()
         val uploadRepo = FakeImageUploadRepository()
         val editorVm = FullEditorViewModel(postRepo, uploadRepo, harness.authRepo, harness.settingsRepo) { 10_000L }
+        val requestBus = FullEditorRequestBus()
         val preservedStore = harness.parentOwner.viewModelStore
         val owner = ownerWithComposeVms(harness, postRepo, editorVm)
         var backDispatcher: OnBackPressedDispatcher? = null
@@ -595,6 +600,7 @@ class FullEditorIntegrationTest {
                                 hostViewModel = harness.hostViewModel,
                                 forumViewModel = harness.forumViewModel,
                                 fullEditorViewModel = editorVm,
+                                fullEditorRequestBus = requestBus,
                             )
                         }
                     }
@@ -603,7 +609,75 @@ class FullEditorIntegrationTest {
         }
         composeRule.waitForIdle()
 
-        // 进帖子并收起中栏，右栏 685dp >= 560dp -> RightPane 展开编辑器，再展开 240dp 模态侧栏抽屉
+        // 进帖子并收起中栏：749dp 下参考右栏宽 411 < 560 -> 保持 CenteredModal；先开抽屉，再经总线开居中模态编辑器（模态盖在抽屉之上）
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { harness.settingsRepo.updateSettings { it.copy(paneSplitLandscape = PaneSplit.COLLAPSED) } }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+
+        composeRule.runOnIdle {
+            requestBus.open(FullEditorHandoff(tid = "1001", fid = 2, text = "收起中栏模态正文", selectionStart = 8, selectionEnd = 8))
+        }
+        composeRule.waitForIdle()
+        assertTrue(editorVm.uiState.value.isOpen)
+        composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed()
+        assertEquals("749×559 COLLAPSED 下应为居中模态而非 RightPane", 0, composeRule.onAllNodesWithContentDescription("返回").fetchSemanticsNodes().size)
+
+        // 重建后抽屉与居中模态编辑器同时恢复打开，两次返回依次关闭编辑器、抽屉
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed()
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+        assertTrue(editorVm.uiState.value.isOpen)
+
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertFalse("第一次返回应先关闭盖在抽屉上的居中模态编辑器", editorVm.uiState.value.isOpen)
+        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
+
+        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
+        composeRule.waitForIdle()
+        assertTrue(
+            "第二次返回应关闭模态侧栏抽屉",
+            composeRule.onAllNodesWithTag(HiShellTestTags.SidebarModalDrawer).fetchSemanticsNodes().isEmpty(),
+        )
+        assertNotNull(preservedStore)
+    }
+
+    /** U5a 验收 2：1280×800 收起中栏（COLLAPSED）下完整编辑器保持 RightPane，且经 StateRestorationTester 重建后仍为 RightPane。 */
+    @Test
+    @Config(qualifiers = "w1280dp-h800dp-xhdpi")
+    fun probe4b_tablet1280Collapsed_rightPaneEditorPreservedAcrossStateRestoration() {
+        val restorationTester = StateRestorationTester(composeRule)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val owner = ownerWithComposeVms(harness, postRepo, editorVm)
+
+        restorationTester.setContent {
+            Box(Modifier.requiredSize(DpSize(1280.dp, 800.dp))) {
+                MultiPaneResizableWindowHost(DpSize(1280.dp, 800.dp)) {
+                    CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                        ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                            NextAppRoot(
+                                settingsFlow = harness.settingsRepo.settings,
+                                currentAccountFlow = harness.authRepo.currentAccount,
+                                smsUnreadCountFlow = harness.smsUnread,
+                                notifyUnreadCountFlow = harness.notifyUnread,
+                                hostViewModel = harness.hostViewModel,
+                                forumViewModel = harness.forumViewModel,
+                                fullEditorViewModel = editorVm,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
         composeRule.onNodeWithText("测试帖子标题 1001").performClick()
         composeRule.waitForIdle()
         composeRule.runOnIdle { harness.settingsRepo.updateSettings { it.copy(paneSplitLandscape = PaneSplit.COLLAPSED) } }
@@ -612,31 +686,16 @@ class FullEditorIntegrationTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithContentDescription("展开全屏").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
-        assertTrue(editorVm.uiState.value.isOpen)
 
-        // 重建后抽屉与右栏编辑器同时恢复打开，按返回 1 必须优先关闭抽屉，保留右栏编辑器
+        assertTrue(editorVm.uiState.value.isOpen)
+        composeRule.onNodeWithContentDescription("返回").assertIsDisplayed()
+        assertEquals("1280×800 COLLAPSED 下应为 RightPane（无关闭按钮）", 0, composeRule.onAllNodesWithContentDescription("关闭").fetchSemanticsNodes().size)
+
         restorationTester.emulateSavedInstanceStateRestore()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag(HiShellTestTags.SidebarModalDrawer).assertIsDisplayed()
         assertTrue(editorVm.uiState.value.isOpen)
-
-        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
-        composeRule.waitForIdle()
-        val remainingDrawers = composeRule.onAllNodesWithTag(HiShellTestTags.SidebarModalDrawer).fetchSemanticsNodes()
-        assertTrue(
-            "按返回应优先关闭抽屉，但抽屉仍存在(${remainingDrawers.size})，底层编辑器 open=${editorVm.uiState.value.isOpen}",
-            remainingDrawers.isEmpty(),
-        )
-        assertTrue("关闭抽屉后，完整编辑器应保持打开", editorVm.uiState.value.isOpen)
-
-        // 按返回 2 再关闭完整编辑器
-        composeRule.runOnIdle { requireNotNull(backDispatcher).onBackPressed() }
-        composeRule.waitForIdle()
-        assertFalse("第二次返回应关闭完整编辑器", editorVm.uiState.value.isOpen)
-        assertNotNull(preservedStore)
+        composeRule.onNodeWithContentDescription("返回").assertIsDisplayed()
+        assertEquals("1280×800 COLLAPSED 重建后仍必须为 RightPane", 0, composeRule.onAllNodesWithContentDescription("关闭").fetchSemanticsNodes().size)
     }
 
     /** 移植自 V-E6 `probe9`：`FullEditorRequestBus` 单例总线消费 + 退出保存草稿时「已保存草稿」Snackbar 必须避开底部「回复」工具条且可立即点击「回复」。 */

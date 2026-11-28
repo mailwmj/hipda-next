@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,6 +79,7 @@ import net.jejer.hipda.feature.compose.FullEditorRequestBus
 import net.jejer.hipda.feature.compose.FullEditorViewModel
 import net.jejer.hipda.feature.compose.LocalFullEditorReplyResults
 import net.jejer.hipda.feature.compose.QuickReplyEmojiPanelHost
+import net.jejer.hipda.feature.compose.referenceRightPaneWidthDp
 import net.jejer.hipda.feature.compose.rememberFullEditorHostController
 import net.jejer.hipda.feature.forum.ForumPane
 import net.jejer.hipda.feature.forum.ForumViewModel
@@ -335,10 +337,26 @@ fun NextAppRoot(
         )
     }
 
+    val effectiveMiddleForRef = if (appState.isFullScreenReading) 0.dp else latestMiddleWidthDp
+    val constrainQuickReplySheet = latestPaneLayout.hasDetailPane &&
+        (appState.isFullScreenReading || (latestPaneLayout.isThreePane && latestMiddleWidthDp <= 0.5.dp))
+    val quickReplyMaxWidthDp = if (constrainQuickReplySheet) {
+        referenceRightPaneWidthDp(latestPaneLayout, effectiveMiddleForRef, persistedSplit)
+    } else {
+        Dp.Unspecified
+    }
+    val quickReplyAlignment = if (constrainQuickReplySheet && latestPaneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) {
+        Alignment.BottomEnd
+    } else {
+        Alignment.BottomCenter
+    }
+    val currentQuickReplyMaxWidthDp = rememberUpdatedState(quickReplyMaxWidthDp)
+    val currentQuickReplyAlignment = rememberUpdatedState(quickReplyAlignment)
+
     val editorHost = rememberFullEditorHostController(
         paneLayout = latestPaneLayout,
         windowHeightDp = windowDpSize.height.value,
-        effectiveMiddleWidthDp = latestMiddleWidthDp,
+        effectiveMiddleWidthDp = effectiveMiddleForRef,
         selectedThreadTid = appState.selectedThread?.tid,
         snackbarController = snackbarController,
         coroutineScope = coroutineScope,
@@ -348,6 +366,7 @@ fun NextAppRoot(
         injectedViewModel = fullEditorViewModel,
         injectedRequestBus = fullEditorRequestBus,
         emojiPanelSlot = emojiPanelSlot,
+        persistedSplit = persistedSplit,
     )
 
     HiTheme(themeConfig.themeMode, themeConfig.pureBlack, themeConfig.seed, themeConfig.fontSizeStep, themeConfig.lineHeightPreset) {
@@ -434,6 +453,8 @@ fun NextAppRoot(
                                 onOpenUserProfile = hostViewModel::pushUserProfile,
                                 onExpandToFullEditor = { handoff -> editorHost.open(FullEditorRequest.fromHandoff(handoff)) },
                                 emojiPanelSlot = emojiPanelSlot,
+                                quickReplyMaxWidthDp = currentQuickReplyMaxWidthDp.value,
+                                quickReplyAlignment = currentQuickReplyAlignment.value,
                             )
                         },
                         secondaryListContent = { entry, showBack, onBack, padding, listState ->

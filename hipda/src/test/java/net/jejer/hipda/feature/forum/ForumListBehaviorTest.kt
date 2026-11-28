@@ -351,6 +351,134 @@ class ForumListBehaviorTest {
         composeRule.onNodeWithText("投票 · poll_host", useUnmergedTree = true).assertIsDisplayed()
     }
 
+    /** U5a 验收 4：回复数前 14dp 气泡图标 + 2dp 间距、无「·」且与时间间距 8dp、今日新帖空回复数不显示图标、窄栏 < 300dp 只显示回复数带图标无截断。 */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun u5a_threadListRow_replyCountHas14dpBubbleIcon_noDotBeforeTime_hidesIconWhenEmpty_andNarrowPaneNoClip() {
+        val refDate = LocalDate.of(2026, 11, 28)
+        val normalItem = ThreadListItem(
+            summary = ThreadSummary(
+                tid = "851",
+                title = "回复数图标与间距校验帖",
+                titleColor = null,
+                typeName = "讨论",
+                isSticky = false,
+                isNew = false,
+                isPoll = true,
+                author = "linus_hi",
+                authorId = "1",
+                avatarUrl = null,
+                timeCreate = "2026-11-28 09:05",
+                timeUpdate = "2026-11-28 09:05",
+                lastPostAuthor = "回复者",
+                replyCountText = "42",
+                viewCountText = "1280",
+                withPic = false,
+                maxPage = 1,
+            ),
+            isVisited = false,
+        )
+        val todayNewItem = ThreadListItem(
+            summary = normalItem.summary.copy(
+                tid = "852",
+                title = "今日新帖空回复数校验",
+                replyCountText = "",
+                viewCountText = "",
+            ),
+            isVisited = false,
+        )
+        var currentItem by mutableStateOf(normalItem)
+        var paneWidthDp by mutableStateOf(411.dp)
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                Box(Modifier.width(paneWidthDp).background(MaterialTheme.colorScheme.surface)) {
+                    ThreadListRow(
+                        item = currentItem,
+                        selected = false,
+                        compactLayout = paneWidthDp < FORUM_COMPACT_ROW_WIDTH_THRESHOLD,
+                        referenceDate = refDate,
+                        onClick = {},
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+        val density = composeRule.density
+
+        fun hasNonBgPixels(bmp: Bitmap, leftPx: Int, topPx: Int, rightPx: Int, bottomPx: Int, bg: Int): Boolean {
+            for (y in topPx.coerceIn(0, bmp.height - 1) until bottomPx.coerceIn(1, bmp.height)) {
+                for (x in leftPx.coerceIn(0, bmp.width - 1) until rightPx.coerceIn(1, bmp.width)) {
+                    val p = bmp.getPixel(x, y)
+                    val d = maxOf(
+                        abs(android.graphics.Color.red(p) - android.graphics.Color.red(bg)),
+                        abs(android.graphics.Color.green(p) - android.graphics.Color.green(bg)),
+                        abs(android.graphics.Color.blue(p) - android.graphics.Color.blue(bg)),
+                    )
+                    if (d >= 12) return true
+                }
+            }
+            return false
+        }
+
+        // 1. 常规宽 411dp：有回复数 → 左侧 14dp 气泡图标 + 2dp 间距，无「·」文本节点，与时间间距 8dp，作者行仍保留「 · 」
+        composeRule.onNodeWithText("投票 · 讨论 · linus_hi", useUnmergedTree = true).assertIsDisplayed()
+        assertEquals("回复数与时间之间不得存在「·」文本节点", 0, composeRule.onAllNodesWithText("·", useUnmergedTree = true).fetchSemanticsNodes().size)
+        val countBounds = composeRule.onNodeWithText("42/1280", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val timeBounds = composeRule.onNodeWithText("09:05", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val countToTimeGapDp = with(density) { (timeBounds.left - countBounds.right).toDp().value }
+        assertEquals("回复数与时间之间间距必须为 8dp", 8f, countToTimeGapDp, 1.0f)
+
+        val bmpNormal = composeRule.onRoot().captureToImage().asAndroidBitmap()
+        val surfaceBg = bmpNormal.getPixel(2, 2)
+        val iconWidthPx = with(density) { 14.dp.toPx() }
+        val iconGapPx = with(density) { 2.dp.toPx() }
+        val iconRightPx = (countBounds.left - iconGapPx).roundToInt()
+        val iconLeftPx = (iconRightPx - iconWidthPx).roundToInt()
+        val iconTopPx = (countBounds.center.y - iconWidthPx / 2f).roundToInt()
+        val iconBottomPx = (countBounds.center.y + iconWidthPx / 2f).roundToInt()
+        assertTrue(
+            "回复数左侧 14dp 区域必须渲染气泡图标像素",
+            hasNonBgPixels(bmpNormal, iconLeftPx, iconTopPx, iconRightPx, iconBottomPx, surfaceBg),
+        )
+
+        // 2. 今日新帖（回复数为空）：不渲染气泡图标、无「·」
+        currentItem = todayNewItem
+        composeRule.waitForIdle()
+        assertEquals(0, composeRule.onAllNodesWithText("·", useUnmergedTree = true).fetchSemanticsNodes().size)
+        val todayTimeBounds = composeRule.onNodeWithText("09:05", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val bmpToday = composeRule.onRoot().captureToImage().asAndroidBitmap()
+        val todayBg = bmpToday.getPixel(2, 2)
+        val emptyLeftCheckRight = (todayTimeBounds.left - iconGapPx).roundToInt()
+        val emptyLeftCheckLeft = (emptyLeftCheckRight - iconWidthPx).roundToInt()
+        assertFalse(
+            "今日新帖回复数为空时，时间左侧不得显示气泡图标",
+            hasNonBgPixels(bmpToday, emptyLeftCheckLeft, iconTopPx, emptyLeftCheckRight, iconBottomPx, todayBg),
+        )
+
+        // 3. 窄栏 274dp (< 300dp)：只显示回复数「42」+ 14dp 气泡图标 + 8dp 间距 + 时间，不截断不溢出
+        currentItem = normalItem
+        paneWidthDp = 274.dp
+        composeRule.waitForIdle()
+        assertEquals(0, composeRule.onAllNodesWithText("·", useUnmergedTree = true).fetchSemanticsNodes().size)
+        composeRule.onNodeWithText("42/1280", useUnmergedTree = true).assertDoesNotExist()
+        val narrowCountBounds = composeRule.onNodeWithText("42", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val narrowTimeBounds = composeRule.onNodeWithText("09:05", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertEquals(8f, with(density) { (narrowTimeBounds.left - narrowCountBounds.right).toDp().value }, 1.0f)
+        assertTrue("窄栏下时间不得溢出 274dp 右边界", narrowTimeBounds.right <= with(density) { 274.dp.toPx() } + 1f)
+        val bmpNarrow = composeRule.onRoot().captureToImage().asAndroidBitmap()
+        val narrowBg = bmpNarrow.getPixel(2, 2)
+        val nIconRight = (narrowCountBounds.left - iconGapPx).roundToInt()
+        val nIconLeft = (nIconRight - iconWidthPx).roundToInt()
+        val nIconTop = (narrowCountBounds.center.y - iconWidthPx / 2f).roundToInt()
+        val nIconBottom = (narrowCountBounds.center.y + iconWidthPx / 2f).roundToInt()
+        assertTrue(
+            "窄栏 274dp 下回复数左侧仍必须渲染 14dp 气泡图标",
+            hasNonBgPixels(bmpNarrow, nIconLeft, nIconTop, nIconRight, nIconBottom, narrowBg),
+        )
+    }
+
     /** U1 验收 3：选中行具 8dp 水平内缩圆角底且紧邻上下分隔线隐藏，普通分隔线缩进至标题起点（标准 68dp / 紧凑 12dp）。 */
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)

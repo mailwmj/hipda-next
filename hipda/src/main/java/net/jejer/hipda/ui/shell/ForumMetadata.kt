@@ -146,7 +146,7 @@ object ForumMetadataRegistry {
     ): List<ForumMetadata> = fids.map { fid -> resolve(fid, customNames[fid]) }
 }
 
-private object ForumVectorIcons {
+internal object ForumVectorIcons {
     private val tint = SolidColor(Color.Black)
 
     private fun stroked(name: String, draw: PathBuilder.() -> Unit): ImageVector =

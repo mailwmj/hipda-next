@@ -175,6 +175,8 @@ fun QuickReplySheet(
     onExpandToFullEditor: ((FullEditorHandoff) -> Unit)? = null,
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
     onOccupiedBottomChanged: (occupiedBottomDp: Dp, shouldLiftList: Boolean) -> Unit = { _, _ -> },
+    maxSheetWidthDp: Dp = Dp.Unspecified,
+    sheetAlignment: Alignment = Alignment.BottomCenter,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val slots = rememberResolvedComposeSlots(onExpandToFullEditor, emojiPanelSlot)
@@ -197,6 +199,7 @@ fun QuickReplySheet(
     val latestReducedMotion by rememberUpdatedState(reducedMotion)
     val latestCanExpand by rememberUpdatedState(canExpandToFullEditor)
     val latestOnOccupiedChanged by rememberUpdatedState(onOccupiedBottomChanged)
+    val latestKeyboardController by rememberUpdatedState(keyboardController)
 
     val fallbackHeightPx = with(density) { DefaultSheetFallbackHeight.toPx() }
     var phase by remember { mutableStateOf(SheetMotionPhase.Entering) }
@@ -249,7 +252,7 @@ fun QuickReplySheet(
         { targetPhase, targetY, spec, velocity, onComplete ->
             phase = targetPhase
             closeEmojiPanelAction.value()
-            keyboardController?.hide()
+            if (targetPhase != SheetMotionPhase.Expanding) latestKeyboardController?.hide()
             val startY = if (isDragging) dragOffsetYPx else offsetYPx.value
             if (latestReducedMotion) {
                 isDragging = false; dragOffsetYPx = 0f
@@ -440,7 +443,9 @@ fun QuickReplySheet(
 
         Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter).fillMaxWidth()
+                .align(sheetAlignment)
+                .then(if (maxSheetWidthDp.isSpecified) Modifier.widthIn(max = maxSheetWidthDp) else Modifier)
+                .fillMaxWidth()
                 .graphicsLayer { translationY = effectiveOffsetYPx }
                 .semantics { paneTitle = contextLabel; isTraversalGroup = true },
         ) {

@@ -598,10 +598,12 @@ class FullEditorViewModel internal constructor(
             val applyBody = !overwriteOnlyIfEmpty || cur.body.isVisuallyEmpty()
             val body = if (applyBody) EditorBodyDocument.parse(draft.content) else cur.body
             val extra = toUploadedItems((draft.attachments + body.insertedImageIds()).distinct().filterNot { it in cur.uploadedImageIds })
+            val filledDraftSubject = applySub && draft.subject.isNotBlank()
             cur.copy(
                 subject = if (applySub) draft.subject else cur.subject,
                 selectedTypeId = if (applySub && draft.typeId.isNotBlank()) draft.typeId else cur.selectedTypeId,
                 body = body, bodySyncVersion = if (applyBody) cur.bodySyncVersion + 1L else cur.bodySyncVersion,
+                focusRequestVersion = if (cur.isLoggedIn && filledDraftSubject) cur.focusRequestVersion + 1L else cur.focusRequestVersion,
                 uploads = cur.uploads + extra, hadPersistedDraft = true, showDraftRestoredBanner = applySub || applyBody || extra.isNotEmpty(),
             )
         }
@@ -653,6 +655,7 @@ class FullEditorViewModel internal constructor(
                 cur.copy(
                     prePostInfo = info, typeOptions = info.typeOptions, editOriginal = original,
                     subject = restored?.subject ?: original.subject, selectedTypeId = typeId, body = doc, bodySyncVersion = cur.bodySyncVersion + 1L,
+                    focusRequestVersion = if (cur.isLoggedIn) cur.focusRequestVersion + 1L else cur.focusRequestVersion,
                     uploads = toUploadedItems(images), hadPersistedDraft = restored != null, showDraftRestoredBanner = restored != null,
                     isLoadingEditOriginal = false, isPrefetchingPrePost = false, editLoadError = null,
                 )
@@ -670,7 +673,9 @@ class FullEditorViewModel internal constructor(
         val nextReset = if (resetSnackbar) ++snackbarResetSeq else cur.snackbarResetSeq
         cur.copy(
             isOpen = isOpen, sessionId = sessionId, mode = mode, selectedFid = selectedFid, typeOptions = emptyMap(), selectedTypeId = selectedTypeId,
-            subject = subject, body = body, bodySyncVersion = cur.bodySyncVersion + 1L, uploads = uploads, uploadBatchTotal = 0, uploadBatchCompleted = 0,
+            subject = subject, body = body, bodySyncVersion = cur.bodySyncVersion + 1L,
+            focusRequestVersion = if (isOpen && cur.isLoggedIn) cur.focusRequestVersion + 1L else cur.focusRequestVersion,
+            uploads = uploads, uploadBatchTotal = 0, uploadBatchCompleted = 0,
             prePostInfo = null, isPrefetchingPrePost = false, isSubmitting = false,
             cooldownSeconds = cooldownSeconds ?: maxOf(cur.cooldownSeconds, postRepository.getRemainingCooldownSeconds().coerceAtLeast(0)),
             hadPersistedDraft = hadPersistedDraft, showDraftRestoredBanner = showDraftBanner, validationError = null, inlineError = null,
