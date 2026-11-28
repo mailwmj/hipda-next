@@ -123,23 +123,23 @@ class InlinePageJumpBarTest {
         }
         composeRule.waitForIdle()
 
-        // < 480dp：首页/末页与预览在第 1 行，滑块与输入框在第 2 行
-        val firstBoundsCompact = composeRule.onNodeWithText("首页").fetchSemanticsNode().boundsInRoot
+        // < 480dp：顶楼/最新回复与预览在第 1 行，滑块与输入框在第 2 行
+        val firstBoundsCompact = composeRule.onNodeWithText("顶楼").fetchSemanticsNode().boundsInRoot
         val sliderBoundsCompact = composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress)).fetchSemanticsNode().boundsInRoot
         composeRule.onNodeWithText("第 3 / 12 页").assertIsDisplayed()
         assertTrue(
-            "< 480dp 应采用双行排布（首页位于滑块上方）：first=${firstBoundsCompact.bottom} slider=${sliderBoundsCompact.top}",
+            "< 480dp 应采用双行排布（顶楼位于滑块上方）：first=${firstBoundsCompact.bottom} slider=${sliderBoundsCompact.top}",
             firstBoundsCompact.center.y < sliderBoundsCompact.top,
         )
 
         // ≥ 480dp（先切宽再复测）
         containerWidthDp = 520.dp
         composeRule.waitForIdle()
-        val firstBoundsWide = composeRule.onNodeWithText("首页").fetchSemanticsNode().boundsInRoot
+        val firstBoundsWide = composeRule.onNodeWithText("顶楼").fetchSemanticsNode().boundsInRoot
         val sliderBoundsWide = composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress)).fetchSemanticsNode().boundsInRoot
         val closeBoundsWide = composeRule.onNodeWithContentDescription("关闭").fetchSemanticsNode().boundsInRoot
         assertTrue(
-            "≥ 480dp 应采用单行排布（首页、滑块、关闭垂直居中对齐）",
+            "≥ 480dp 应采用单行排布（顶楼、滑块、关闭垂直居中对齐）",
             abs(firstBoundsWide.center.y - sliderBoundsWide.center.y) < 12f &&
                 abs(sliderBoundsWide.center.y - closeBoundsWide.center.y) < 12f,
         )
@@ -181,8 +181,8 @@ class InlinePageJumpBarTest {
         val density = composeRule.density
         val maxRightPx = with(density) { 340.dp.toPx() + 1f }
 
-        val firstNode = composeRule.onNodeWithText("首页").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
-        val lastNode = composeRule.onNodeWithText("末页").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
+        val firstNode = composeRule.onNodeWithText("顶楼").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
+        val lastNode = composeRule.onNodeWithText("最新回复").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
         val sliderNode = composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress)).assertIsDisplayed().assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
         val inputNode = composeRule.onNodeWithContentDescription("页码").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
         val closeNode = composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
@@ -190,7 +190,7 @@ class InlinePageJumpBarTest {
         // R-Dkudo：滑块无硬编码最小宽，在 340dp + 1.25× 下仍保有充裕自适应宽度且同行零重叠/零越界
         val sliderWidthDp = with(density) { sliderNode.boundsInRoot.width.toDp() }
         assertTrue("340dp + 1.25× 下滑块自适应宽度应充裕（> 60dp），实际 $sliderWidthDp", sliderWidthDp > 60.dp)
-        assertTrue("首页与末页不得重叠：first=${firstNode.boundsInRoot} last=${lastNode.boundsInRoot}", firstNode.boundsInRoot.right <= lastNode.boundsInRoot.left)
+        assertTrue("顶楼与最新回复不得重叠：first=${firstNode.boundsInRoot} last=${lastNode.boundsInRoot}", firstNode.boundsInRoot.right <= lastNode.boundsInRoot.left)
         assertTrue("滑块与输入框不得重叠：slider=${sliderNode.boundsInRoot} input=${inputNode.boundsInRoot}", sliderNode.boundsInRoot.right <= inputNode.boundsInRoot.left + 1f)
         assertTrue("输入框与关闭按钮不得重叠：input=${inputNode.boundsInRoot} close=${closeNode.boundsInRoot}", inputNode.boundsInRoot.right <= closeNode.boundsInRoot.left + 1f)
         assertTrue("关闭按钮右缘不得溢出 340dp 容器：${closeNode.boundsInRoot.right} > $maxRightPx", closeNode.boundsInRoot.right <= maxRightPx)
@@ -220,8 +220,8 @@ class InlinePageJumpBarTest {
         val scrollIndexBefore = listState.firstVisibleItemIndex
         val scrollOffsetBefore = listState.firstVisibleItemScrollOffset
 
-        // 展开内联跳页条：验证展开无障碍播报与边界按钮（第 1 页首页禁用、末页可用）
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        // 展开内联跳页条：验证展开无障碍播报与边界按钮（第 1 页顶楼禁用、最新回复可用）
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
 
         val expandedAnnouncement = composeRule.onNodeWithContentDescription("已展开跳页，当前第 1 页，共 10 页").fetchSemanticsNode()
@@ -230,8 +230,8 @@ class InlinePageJumpBarTest {
             "R-E4 S2：无障碍播报节点不得为 0.dp 尺寸，实际 bounds=${expandedAnnouncement.boundsInRoot}",
             expandedAnnouncement.boundsInRoot.width > 0f && expandedAnnouncement.boundsInRoot.height > 0f,
         )
-        composeRule.onNodeWithText("首页").assertIsNotEnabled()
-        composeRule.onNodeWithText("末页").assertIsEnabled()
+        composeRule.onNodeWithText("顶楼").assertIsNotEnabled()
+        composeRule.onNodeWithText("最新回复").assertIsEnabled()
         composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed()
 
         // 拖动滑块至第 6 页：仅更新本地预览、无障碍 stateDescription 与输入框，零滚屏、零发网，动作按钮切为「跳转」
@@ -264,19 +264,88 @@ class InlinePageJumpBarTest {
         // 跳转后自动收起并已压入 PositionStack
         assertEquals(7, vm.uiState.value.page)
         assertTrue(vm.uiState.value.canPopPositionStack)
-        composeRule.onNodeWithContentDescription("第 73 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 73 楼，点按展开楼层跳转").assertIsDisplayed()
 
-        // 跳至末页（第 10 页）后展开验证：首页可用、末页禁用
-        composeRule.onNodeWithContentDescription("第 73 楼，点按展开跳页").performClick()
+        // 点击「最新回复」跳至末页末楼（第 10 页第 120 楼）后展开验证：顶楼可用、最新回复禁用
+        composeRule.onNodeWithContentDescription("第 73 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("末页").performClick()
+        composeRule.onNodeWithText("最新回复").performClick()
         composeRule.waitForIdle()
         assertEquals(10, vm.uiState.value.page)
+        assertTrue("点击最新回复应落位至末页最新楼层 floor:jp10_12", listState.layoutInfo.visibleItemsInfo.any { it.key == "floor:jp10_12" })
 
-        composeRule.onNodeWithContentDescription("第 109 楼，点按展开跳页").performClick()
+        composeRule.onNode(
+            SemanticsMatcher("floorJumpTrigger") { node ->
+                node.config.contains(SemanticsProperties.ContentDescription) &&
+                    node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开楼层跳转") }
+            },
+        ).performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("首页").assertIsEnabled()
-        composeRule.onNodeWithText("末页").assertIsNotEnabled()
+        composeRule.onNodeWithText("顶楼").assertIsEnabled()
+        composeRule.onNodeWithText("最新回复").assertIsNotEnabled()
+    }
+
+    @Test
+    fun singlePageThread_floorJumpBarSupportsTopLatestAndFloorSwitchInPlace() {
+        val repo = JumpTestRepository(totalPages = 1)
+        val vm = ThreadDetailViewModel(repo, createIdleGateway())
+        lateinit var listState: LazyListState
+
+        composeRule.setContent {
+            HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                listState = rememberLazyListState()
+                ThreadDetailPane(
+                    args = ThreadNavArgs(tid = "8109", title = "单页楼层跳转测试"),
+                    chromeSpec = DetailChromeSpec(showBack = true),
+                    onBack = {},
+                    onOpenLogin = {},
+                    listState = listState,
+                    viewModel = vm,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        assertEquals(1, repo.requestedPages.size)
+
+        // 1. 单页展开楼层跳转条：顶楼禁用、最新回复可用、展示「第 1 / 12 楼」并可按楼层输入直达第 9 楼（零发网、压栈）
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("顶楼").assertIsNotEnabled()
+        composeRule.onNodeWithText("最新回复").assertIsEnabled()
+        composeRule.onNodeWithText("第 1 / 12 楼").assertIsDisplayed()
+
+        val floorInput = composeRule.onNodeWithContentDescription("楼层")
+        floorInput.performTextClearance()
+        floorInput.performTextInput("9")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("跳转").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        assertEquals("单页跳楼严禁触发额外网络请求", 1, repo.requestedPages.size)
+        assertTrue("单页跳楼应压入 PositionStack", vm.uiState.value.canPopPositionStack)
+        assertTrue("应落位至第 9 楼", listState.layoutInfo.visibleItemsInfo.any { it.key == "floor:jp1_9" })
+
+        // 2. 从第 9 楼再展开：点「顶楼」原地回到第 1 楼（零发网）
+        composeRule.onNode(
+            SemanticsMatcher("floorJumpTrigger") { node ->
+                node.config.contains(SemanticsProperties.ContentDescription) &&
+                    node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开楼层跳转") }
+            },
+        ).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("顶楼").assertIsEnabled().performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, repo.requestedPages.size)
+        assertEquals(0, listState.firstVisibleItemIndex)
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").assertIsDisplayed()
+
+        // 3. 点「最新回复」原地跳到第 12 楼（零发网）
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("最新回复").assertIsEnabled().performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, repo.requestedPages.size)
+        assertTrue("点击最新回复应落位至最后一条 floor:jp1_12", listState.layoutInfo.visibleItemsInfo.any { it.key == "floor:jp1_12" })
     }
 
     @Test
@@ -305,7 +374,7 @@ class InlinePageJumpBarTest {
         // 先滚至第 4 楼偏移 36px，再展开内联跳页条
         composeRule.runOnIdle { listState.requestScrollToItem(index = 3, scrollOffset = 36) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 4 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 4 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
 
         val floorTopBefore = composeRule.onNodeWithText("第 1 页第 5 楼正文", substring = true).fetchSemanticsNode().boundsInRoot.top
@@ -355,7 +424,7 @@ class InlinePageJumpBarTest {
         composeRule.waitForIdle()
 
         // 1. 点击关闭收起不跳页
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithContentDescription("关闭").performClick()
         composeRule.waitForIdle()
@@ -363,15 +432,15 @@ class InlinePageJumpBarTest {
         assertFalse(vm.uiState.value.canPopPositionStack)
 
         // 2. 系统返回收起不跳页
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
         composeRule.runOnIdle { requireNotNull(hostBackDispatcher).onBackPressed() }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").assertIsDisplayed()
         assertEquals(1, vm.uiState.value.page)
 
         // 3. 输入页码 4 后触发键盘 Go 动作：压栈、跳至第 4 页并自动收起
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
         val input = composeRule.onNodeWithContentDescription("页码")
         input.performTextClearance()
@@ -381,7 +450,7 @@ class InlinePageJumpBarTest {
 
         assertEquals(4, vm.uiState.value.page)
         assertTrue(vm.uiState.value.canPopPositionStack)
-        composeRule.onNodeWithContentDescription("第 37 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 37 楼，点按展开楼层跳转").assertIsDisplayed()
     }
 
     @Test
@@ -412,7 +481,7 @@ class InlinePageJumpBarTest {
             Snapshot.sendApplyNotifications()
             mainClock.advanceTimeByFrame()
             onNodeWithContentDescription("关闭").assertIsDisplayed()
-            onNodeWithText("首页").assertIsDisplayed()
+            onNodeWithText("顶楼").assertIsDisplayed()
         }
 
         // 2. 展开中途反向点击收起：中段胶囊位置逐帧连续可打断，平滑弹回原位

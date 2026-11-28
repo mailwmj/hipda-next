@@ -592,8 +592,10 @@ class FloorActionsAndDetailWiringTest {
         assertEquals(1, fullScreenToggles)
         assertEquals("点击返回/全屏圆钮不得误滚顶", 12, listState.firstVisibleItemIndex)
 
-        // 点击「只看楼主」圆钮触发过滤而不是滚顶原列表，再退出恢复
-        composeRule.onNodeWithContentDescription("只看楼主").performClick()
+        // 从底部「更多」菜单点击「只看楼主」触发过滤而不是滚顶原列表，再退出恢复
+        composeRule.onNodeWithContentDescription("更多").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("只看楼主").performClick()
         composeRule.waitForIdle()
         assertTrue("只看楼主按钮应正常切入 AuthorOnly", repo.loadCalls.last().filter is ThreadDetailFilter.AuthorOnly)
         composeRule.onNodeWithContentDescription("退出只看").performClick()

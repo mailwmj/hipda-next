@@ -925,26 +925,34 @@ fun ThreadDetailPane(
                 }
             }
 
+            val isAtTop by remember(listState) {
+                derivedStateOf { latestUiState.firstLoadedPage == 1 && !isScrolledState.value }
+            }
+            val isAtBottom by remember(listState) {
+                derivedStateOf {
+                    val s = latestUiState
+                    s.lastLoadedPage >= s.lastPage && !listState.canScrollForward
+                }
+            }
+            val totalLoadedFloors = (uiState.floors.lastOrNull()?.floor?.floor ?: uiState.floors.size)
+                .coerceAtLeast(uiState.floors.size)
+                .coerceAtLeast(1)
+
             // 严格兄弟节点 2：透明液态玻璃顶栏（HiGlassMarker == 1）+ 过滤胶囊
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
                 ThreadDetailTopBar(
                     title = uiState.title.ifBlank { args.title },
                     authorName = uiState.threadAuthorName ?: args.author,
                     chromeSpec = chromeSpec,
-                    isAuthorOnly = uiState.filter is ThreadDetailFilterUi.AuthorOnly,
                     isScrolledState = isScrolledState,
                     glassState = detailGlassState,
                     onBack = onBack,
-                    onToggleAuthorOnly = {
-                        val anchor = resolveViewportAnchor(uiState, listState, fallbackToFirst = true)
-                        viewModel.toggleAuthorOnly(anchor?.postId, anchor?.scrollOffsetPx ?: listState.firstVisibleItemScrollOffset)
-                    },
                     onScrollToTop = if (bodySlot == DetailBodySlot.CONTENT) onTopBarScrollToTop else null,
                 )
                 FilterCapsuleBar(uiState.filter, viewModel::clearFilter)
             }
 
-            // 严格兄弟节点 3：底部三段式液态玻璃工具条与内联跳页条（快速回复面板展开或 suppressBottomGlass == true 时整块卸载 HiGlassRegion）
+            // 严格兄弟节点 3：底部一整条液态玻璃工具条与内联楼层/跳页条（快速回复面板展开或 suppressBottomGlass == true 时整块卸载 HiGlassRegion）
             if (!effectiveSuppressBottomGlass && bodySlot == DetailBodySlot.CONTENT) {
                 ThreadBottomToolbar(
                     page = visiblePage, lastPage = uiState.lastPage, isFavorited = uiState.isFavorited, isAttention = uiState.isAttention,
@@ -981,6 +989,23 @@ fun ThreadDetailPane(
                     },
                     bottomInset = bottomInset,
                     currentFloor = visibleFloor,
+                    totalFloors = totalLoadedFloors,
+                    isAuthorOnly = uiState.filter is ThreadDetailFilterUi.AuthorOnly,
+                    isAtTop = isAtTop,
+                    isAtBottom = isAtBottom,
+                    onToggleAuthorOnly = {
+                        val anchor = resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true)
+                        viewModel.toggleAuthorOnly(anchor?.postId, anchor?.scrollOffsetPx ?: listState.firstVisibleItemScrollOffset)
+                    },
+                    onJumpToFirstFloor = {
+                        viewModel.jumpToFirstFloor(resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true))
+                    },
+                    onJumpToLatestReply = {
+                        viewModel.jumpToLastPage(resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true))
+                    },
+                    onJumpToFloorNumber = { targetFloor ->
+                        viewModel.jumpToFloorNumber(targetFloor, resolveViewportAnchor(latestUiState, listState, fallbackToFirst = true))
+                    },
                 )
             }
 

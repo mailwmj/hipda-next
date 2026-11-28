@@ -133,9 +133,9 @@ class QuickReplyIntegrationBackPriorityTest {
         // 1. 打开帖子 1001 并经内联跳页跳至末页建立非空 PositionStack（栈底第 1 页）
         composeRule.onNodeWithText("测试帖子标题 1001").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("末页").performClick()
+        composeRule.onNodeWithText("最新回复").performClick()
         composeRule.waitForIdle()
         val detailVm = harness.createdDetailVms.single()
         assertEquals(3, detailVm.uiState.value.page)
@@ -288,9 +288,9 @@ class QuickReplyIntegrationBackPriorityTest {
         composeRule.waitForIdle()
 
         // 1. 跳至第 3 页建立非空 PositionStack，展开快速回复面板并输入草稿
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("末页").performClick()
+        composeRule.onNodeWithText("最新回复").performClick()
         composeRule.waitForIdle()
         assertEquals(3, detailVm.uiState.value.page)
         assertTrue(detailVm.uiState.value.canPopPositionStack)

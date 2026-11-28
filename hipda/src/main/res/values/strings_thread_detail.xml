@@ -42,28 +42,31 @@
     <string name="thread_detail_poll_max_choices">最多选 %1$d 项</string>
     <string name="thread_detail_poll_submitting">正在投票…</string>
 
-    <!-- 底部三段式液态玻璃工具条与帖子“更多”菜单（逐字取自 docs/design/copy.md，0 豁免） -->
+    <!-- 底部一整条液态玻璃工具条与帖子“更多”菜单（逐字取自 docs/design/copy.md，0 豁免） -->
     <string name="thread_detail_toolbar_reply">回复</string>
     <string name="thread_detail_toolbar_favorite">收藏</string>
     <string name="thread_detail_toolbar_unfavorite">取消收藏</string>
     <string name="thread_detail_toolbar_more">更多</string>
-    <string name="thread_detail_floor_capsule_description_static">第 %1$d 楼</string>
-    <string name="thread_detail_floor_capsule_description_jumpable">第 %1$d 楼，点按展开跳页</string>
+    <string name="thread_detail_floor_capsule_description_jumpable">第 %1$d 楼，点按展开楼层跳转</string>
     <string name="thread_detail_more_attention">关注</string>
     <string name="thread_detail_more_unattention">取消关注</string>
     <string name="thread_detail_more_copy_link">复制链接</string>
     <string name="thread_detail_more_open_in_browser">在浏览器中打开</string>
     <string name="thread_detail_more_share">分享</string>
 
-    <!-- 内联跳页条文案与无障碍播报（逐字取自 docs/design/copy.md） -->
+    <!-- 内联楼层/跳页条文案与无障碍播报（逐字取自 docs/design/copy.md） -->
     <string name="thread_detail_jump_input_hint">页码</string>
+    <string name="thread_detail_jump_floor_input_hint">楼层</string>
     <string name="thread_detail_jump_total_suffix">/ %1$d</string>
-    <string name="thread_detail_jump_first_page">首页</string>
-    <string name="thread_detail_jump_last_page">末页</string>
+    <string name="thread_detail_jump_first_floor">顶楼</string>
+    <string name="thread_detail_jump_latest_reply">最新回复</string>
     <string name="thread_detail_jump_action_close">关闭</string>
     <string name="thread_detail_jump_action_go">跳转</string>
     <string name="thread_detail_jump_preview_page">第 %1$d / %2$d 页</string>
+    <string name="thread_detail_jump_preview_floor">第 %1$d / %2$d 楼</string>
+    <string name="thread_detail_jump_single_floor">第 %1$d 楼</string>
     <string name="thread_detail_jump_expanded_announcement">已展开跳页，当前第 %1$d 页，共 %2$d 页</string>
+    <string name="thread_detail_jump_expanded_floor_announcement">已展开楼层跳转，当前第 %1$d 楼，共 %2$d 楼</string>
 
     <!-- 收藏、关注、复制链接与撤销 Snackbar（逐字取自 docs/design/copy.md） -->
     <string name="thread_detail_action_undo">撤销</string>

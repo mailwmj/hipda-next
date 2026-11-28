@@ -361,9 +361,9 @@ class FullEditorIntegrationTest {
         // 1. 打开帖子并建立 PositionStack（第 1 页 -> 末页）
         composeRule.onNodeWithText("测试帖子标题 1001").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("末页").performClick()
+        composeRule.onNodeWithText("最新回复").performClick()
         composeRule.waitForIdle()
         val detailVm = harness.createdDetailVms.single()
         assertTrue(detailVm.uiState.value.canPopPositionStack)

@@ -54,8 +54,11 @@ internal val InlinePageJumpSingleRowHeight: Dp = 56.dp
 private const val MAX_PAGE_DIGITS = 6
 
 /**
- * 帖子详情底部原地展开内联跳页条（`< 480dp` 紧凑双行 / `≥ 480dp` 单行，滑块 `Modifier.weight(1f)` 无硬编码最小宽）：
- * 单一 `TextFieldState` 驱动页码输入与动态 `关闭`/`跳转` 按钮，拖动滑块仅本地实时预览（零滚屏、零发网）。
+ * 帖子详情底部原地展开内联楼层/跳页条（`< 480dp` 紧凑双行 / `≥ 480dp` 单行，滑块 `Modifier.weight(1f)` 无硬编码最小宽）：
+ * - 多页帖（`lastPage > 1`）：`顶楼` / `最新回复` + 按页滑块与页码输入；
+ * - 单页多楼帖（`lastPage == 1 && totalFloors > 1`）：`顶楼` / `最新回复` + 按楼层滑块与楼层输入；
+ * - 单页单楼帖（`lastPage == 1 && totalFloors <= 1`）：极简单行 `顶楼` / `第 1 楼` / `最新回复` / `关闭`。
+ * 单一 `TextFieldState` 驱动数字输入与动态 `关闭`/`跳转` 按钮，拖动滑块仅本地实时预览（零滚屏、零发网）。
  */
 @Composable
 fun InlinePageJumpBar(
@@ -65,38 +68,67 @@ fun InlinePageJumpBar(
     onJumpToPage: (Int) -> Unit,
     onCollapse: () -> Unit,
     modifier: Modifier = Modifier,
+    currentFloor: Int = 1,
+    totalFloors: Int = currentFloor.coerceAtLeast(1),
+    isAtTop: Boolean = currentPage <= 1 && currentFloor <= 1,
+    isAtBottom: Boolean = if (lastPage > 1) currentPage >= lastPage else currentFloor >= totalFloors.coerceAtLeast(1),
+    onJumpToFirstFloor: () -> Unit = { onJumpToPage(1) },
+    onJumpToLatestReply: () -> Unit = { onJumpToPage(lastPage.coerceAtLeast(1)) },
+    onJumpToFloorNumber: (Int) -> Unit = {},
 ) {
     val safeLastPage = lastPage.coerceAtLeast(1)
-    val safeCurrentPage = currentPage.coerceIn(1, safeLastPage)
-    var sliderPreviewPage by remember(safeCurrentPage, safeLastPage) { mutableIntStateOf(safeCurrentPage) }
-    var sliderInteracted by remember(safeCurrentPage, safeLastPage) { mutableStateOf(false) }
-    val textFieldState = rememberTextFieldState(initialText = safeCurrentPage.toString())
-    LaunchedEffect(safeCurrentPage, safeLastPage) {
-        val targetText = safeCurrentPage.toString()
+    val isPageMode = safeLastPage > 1
+    val safeTotalFloors = totalFloors.coerceAtLeast(1)
+    val safeMaxValue = if (isPageMode) safeLastPage else safeTotalFloors
+    val safeCurrentValue = if (isPageMode) {
+        currentPage.coerceIn(1, safeLastPage)
+    } else {
+        currentFloor.coerceIn(1, safeTotalFloors)
+    }
+    val hasRangeSlider = safeMaxValue > 1
+
+    var sliderPreviewValue by remember(isPageMode, safeCurrentValue, safeMaxValue) { mutableIntStateOf(safeCurrentValue) }
+    var sliderInteracted by remember(isPageMode, safeCurrentValue, safeMaxValue) { mutableStateOf(false) }
+    val textFieldState = rememberTextFieldState(initialText = safeCurrentValue.toString())
+    LaunchedEffect(isPageMode, safeCurrentValue, safeMaxValue) {
+        val targetText = safeCurrentValue.toString()
         if (textFieldState.text.toString() != targetText) textFieldState.setTextAndPlaceCursorAtEnd(targetText)
     }
 
     val parsedInput = textFieldState.text.toString().toIntOrNull()
-    val previewPage = parsedInput?.takeIf { it in 1..safeLastPage } ?: sliderPreviewPage
-    val validChangedTarget = parsedInput?.takeIf { it in 1..safeLastPage && it != safeCurrentPage }
-    val canJump = validChangedTarget != null
+    val previewValue = parsedInput?.takeIf { it in 1..safeMaxValue } ?: sliderPreviewValue
+    val validChangedTarget = parsedInput?.takeIf { it in 1..safeMaxValue && it != safeCurrentValue }
+    val canJump = hasRangeSlider && validChangedTarget != null
 
-    val firstPageLabel = stringResource(R.string.thread_detail_jump_first_page)
-    val lastPageLabel = stringResource(R.string.thread_detail_jump_last_page)
-    val inputHint = stringResource(R.string.thread_detail_jump_input_hint)
-    val totalSuffix = stringResource(R.string.thread_detail_jump_total_suffix, safeLastPage)
+    val firstFloorLabel = stringResource(R.string.thread_detail_jump_first_floor)
+    val latestReplyLabel = stringResource(R.string.thread_detail_jump_latest_reply)
+    val inputHint = stringResource(if (isPageMode) R.string.thread_detail_jump_input_hint else R.string.thread_detail_jump_floor_input_hint)
+    val totalSuffix = stringResource(R.string.thread_detail_jump_total_suffix, safeMaxValue)
     val closeDesc = stringResource(R.string.thread_detail_jump_action_close)
     val goDesc = stringResource(R.string.thread_detail_jump_action_go)
-    val previewLabel = stringResource(R.string.thread_detail_jump_preview_page, previewPage, safeLastPage)
-    val expandedAnnouncement = stringResource(R.string.thread_detail_jump_expanded_announcement, safeCurrentPage, safeLastPage)
+    val previewLabel = when {
+        isPageMode -> stringResource(R.string.thread_detail_jump_preview_page, previewValue, safeMaxValue)
+        hasRangeSlider -> stringResource(R.string.thread_detail_jump_preview_floor, previewValue, safeMaxValue)
+        else -> stringResource(R.string.thread_detail_jump_single_floor, safeCurrentValue)
+    }
+    val expandedAnnouncement = if (isPageMode) {
+        stringResource(R.string.thread_detail_jump_expanded_announcement, safeCurrentValue, safeMaxValue)
+    } else {
+        stringResource(R.string.thread_detail_jump_expanded_floor_announcement, safeCurrentValue, safeMaxValue)
+    }
     val liveAnnouncement = if (sliderInteracted) previewLabel else expandedAnnouncement
 
     val submitIfValid: () -> Unit = {
-        if (validChangedTarget != null) onJumpToPage(validChangedTarget) else onCollapse()
+        val target = validChangedTarget
+        if (hasRangeSlider && target != null) {
+            if (isPageMode) onJumpToPage(target) else onJumpToFloorNumber(target)
+        } else {
+            onCollapse()
+        }
     }
     val onSliderChange: (Float) -> Unit = { raw ->
-        val next = raw.roundToInt().coerceIn(1, safeLastPage)
-        sliderPreviewPage = next
+        val next = raw.roundToInt().coerceIn(1, safeMaxValue)
+        sliderPreviewValue = next
         sliderInteracted = true
         val nextText = next.toString()
         if (textFieldState.text.toString() != nextText) textFieldState.setTextAndPlaceCursorAtEnd(nextText)
@@ -119,32 +151,51 @@ fun InlinePageJumpBar(
                     },
             )
 
-            if (containerWidth < InlinePageJumpCompactBreakpoint) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        QuickPageJumpButton(firstPageLabel, enabled = safeCurrentPage > 1) { onJumpToPage(1) }
+            when {
+                !hasRangeSlider -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        QuickPageJumpButton(firstFloorLabel, enabled = !isAtTop, onClick = onJumpToFirstFloor)
                         Text(
-                            text = previewLabel, style = tabularLabelStyle, color = cs.onSurface,
+                            text = previewLabel, style = tabularLabelStyle, color = cs.onSurfaceVariant,
                             textAlign = TextAlign.Center, maxLines = 1, softWrap = false,
                             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
                         )
-                        QuickPageJumpButton(lastPageLabel, enabled = safeCurrentPage < safeLastPage) { onJumpToPage(safeLastPage) }
-                    }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        PageJumpSlider(previewPage, safeLastPage, previewLabel, onSliderChange, Modifier.weight(1f))
-                        PageJumpTailControls(textFieldState, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, submitIfValid)
+                        QuickPageJumpButton(latestReplyLabel, enabled = !isAtBottom, onClick = onJumpToLatestReply)
+                        DynamicJumpActionButton(canJump = false, closeDescription = closeDesc, goDescription = goDesc, onClick = onCollapse)
                     }
                 }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    QuickPageJumpButton(firstPageLabel, enabled = safeCurrentPage > 1) { onJumpToPage(1) }
-                    PageJumpSlider(previewPage, safeLastPage, previewLabel, onSliderChange, Modifier.weight(1f))
-                    QuickPageJumpButton(lastPageLabel, enabled = safeCurrentPage < safeLastPage) { onJumpToPage(safeLastPage) }
-                    PageJumpTailControls(textFieldState, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, submitIfValid)
+                containerWidth < InlinePageJumpCompactBreakpoint -> {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            QuickPageJumpButton(firstFloorLabel, enabled = !isAtTop, onClick = onJumpToFirstFloor)
+                            Text(
+                                text = previewLabel, style = tabularLabelStyle, color = cs.onSurface,
+                                textAlign = TextAlign.Center, maxLines = 1, softWrap = false,
+                                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                            )
+                            QuickPageJumpButton(latestReplyLabel, enabled = !isAtBottom, onClick = onJumpToLatestReply)
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            PageJumpSlider(previewValue, safeMaxValue, previewLabel, onSliderChange, Modifier.weight(1f))
+                            PageJumpTailControls(textFieldState, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, submitIfValid)
+                        }
+                    }
+                }
+                else -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        QuickPageJumpButton(firstFloorLabel, enabled = !isAtTop, onClick = onJumpToFirstFloor)
+                        PageJumpSlider(previewValue, safeMaxValue, previewLabel, onSliderChange, Modifier.weight(1f))
+                        QuickPageJumpButton(latestReplyLabel, enabled = !isAtBottom, onClick = onJumpToLatestReply)
+                        PageJumpTailControls(textFieldState, inputHint, totalSuffix, canJump, closeDesc, goDesc, tabularLabelStyle, submitIfValid)
+                    }
                 }
             }
         }

@@ -1001,23 +1001,12 @@ private fun SidebarCollapsedForumItem(
         onClick = onClick,
     ) {
         when (display) {
-            is CollapsedForumDisplay.IconWithShortLabel -> Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(display.icon, contentDescription = null, tint = contentTint, modifier = Modifier.size(18.dp))
-                Text(
-                    text = display.shortLabel,
-                    fontSize = 10.sp,
-                    lineHeight = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = contentTint,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.clearAndSetSemantics {},
-                )
-            }
+            is CollapsedForumDisplay.IconOnly -> Icon(
+                imageVector = display.icon,
+                contentDescription = null,
+                tint = contentTint,
+                modifier = Modifier.size(22.dp),
+            )
 
             is CollapsedForumDisplay.MonogramBadge -> Box(
                 modifier = Modifier

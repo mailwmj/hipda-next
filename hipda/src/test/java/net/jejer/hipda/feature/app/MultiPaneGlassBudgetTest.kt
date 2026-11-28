@@ -150,7 +150,7 @@ class MultiPaneGlassBudgetTest {
         val audit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
         assertTrue("独立 LayerBackdrop 采样源必须 ≤ 2，实际=${audit.layerBackdropCount}", audit.layerBackdropCount <= 2)
         assertEquals("严禁父子嵌套 LayerBackdrop", 0, audit.nestedLayerBackdropCount)
-        assertEquals("满编三栏静止 drawBackdrop pass 必须 ≤ 5（1+1+3=5）", 5, audit.drawBackdropCount)
+        assertEquals("满编三栏一体化底栏静止 drawBackdrop pass 为 3（中顶栏 1 + 右顶栏 1 + 右一体化底栏 1）", 3, audit.drawBackdropCount)
     }
 
     @Test
@@ -451,7 +451,7 @@ class MultiPaneGlassBudgetTest {
             composeRule.onAllNodes(
                 SemanticsMatcher("pageCapsule") { node ->
                     node.config.contains(SemanticsProperties.ContentDescription) &&
-                        node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开跳页") }
+                        node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开楼层跳转") }
                 },
             ).fetchSemanticsNodes().size,
         )
@@ -547,7 +547,7 @@ class MultiPaneGlassBudgetTest {
             composeRule.onAllNodes(
                 SemanticsMatcher("pageCapsule") { node ->
                     node.config.contains(SemanticsProperties.ContentDescription) &&
-                        node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开跳页") }
+                        node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开楼层跳转") }
                 },
             ).fetchSemanticsNodes().size,
         )
