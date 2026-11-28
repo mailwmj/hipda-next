@@ -153,3 +153,15 @@
 
 ## 6. 空闲的历史会话
 第一至三批的实现、审查、验证与方案会话均已空闲，可按需复用做小修（ID 见 git 历史中本文件的早期版本 `6a8d5dd`）。
+
+---
+
+## 2026-11-28 U5 批次（真机三轮反馈 5 条）
+
+- 已合入：U5a（`fae7e2b`：完整编辑器自动聚焦、只剩右栏浮层与正常三栏一致、顶栏 48dp、帖子行回复数气泡图标；R-U5a APPROVE、V-U5a 修复轮 1–2 后 PASS，main CI `46126754890` 绿）；U5b（`a0a2021`：论坛列表区左右滑动切相邻版块；R-U5b APPROVE、V-U5b 合并态 PASS）。决定见 `decisions.md` 2026-11-28 真机三轮反馈。
+- 待办（V-U5a 基线对照确认为**既有**问题，非 U5 引入）：
+  1. 完整编辑器因旋转跨形态（FullScreen/CenteredModal/RightPane）移动后，标题/正文焦点丢失（基线 `2d1311a` 同样）。
+  2. `1280→411` 旋转时表情面板关闭（基线同样，`NextAppRoot` 形态切换滞后 1 帧）。
+  3. `EditPostMockWebServerAndDraftTest:319` `events.single()` 竞态，偶发失败。
+- 建议（未做）：R-U5b 建议补测顶栏完全折叠态下吸顶标签行横滑忽略；点标签时同步 `bindSource` 省 1 帧空占位。
+- OPS 归档：把 `_cards/U5a.md`、`U5b.md`、`R-plan-U5`/`R-U5a`/`R-U5b`/`V-U5a`/`V-U5b` 卡与报告、`_reports/U5-0.md` 同步到 `docs/agents/cards|reports/`；`docs/design/product-design.md` 中顶栏 `56dp` 描述随 2026-11-28 (c) 改为 `48dp`。
