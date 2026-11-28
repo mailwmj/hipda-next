@@ -197,13 +197,6 @@ internal fun FullEditorScreenContent(
             }
         }
 
-        val latestEditorInterior by rememberUpdatedState(editorInterior)
-        val movableInterior = remember {
-            movableContentOf { colModifier: Modifier ->
-                latestEditorInterior(colModifier)
-            }
-        }
-
         Column(Modifier.fillMaxSize()) {
             if (isModalCard) {
                 val cardShape = if (bottomSlotHeightDp > 0.dp) HiShapeTokens.Large.copy(bottomStart = CornerSize(0.dp), bottomEnd = CornerSize(0.dp)) else HiShapeTokens.Large
@@ -218,10 +211,10 @@ internal fun FullEditorScreenContent(
                         modifier = Modifier.fillMaxWidth().fillMaxHeight().heightIn(max = 720.dp),
                         shape = cardShape, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
                         border = BorderStroke(0.5.dp, cs.outlineVariant.copy(alpha = 0.5f)),
-                    ) { movableInterior(Modifier.fillMaxSize().background(cs.surface)) }
+                    ) { editorInterior(Modifier.fillMaxSize().background(cs.surface)) }
                 }
             } else {
-                movableInterior(Modifier.weight(1f).fillMaxWidth().background(cs.surface))
+                editorInterior(Modifier.weight(1f).fillMaxWidth().background(cs.surface))
             }
             if (!isEditWaitingOriginal) {
                 EmojiPanelSlotBox(

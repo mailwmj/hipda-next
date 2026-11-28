@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.SoftwareKeyboardController
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
@@ -31,6 +32,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.click
@@ -146,6 +148,10 @@ class U5aFocusAndOverlayTest {
 
     private fun isNodeFocused(matcher: SemanticsMatcher): Boolean =
         composeRule.onNode(matcher).fetchSemanticsNode().config.getOrNull(SemanticsProperties.Focused) == true
+
+    private fun selectionOf(matcher: SemanticsMatcher): TextRange? =
+        composeRule.onNode(matcher).fetchSemanticsNode().config
+            .let { if (SemanticsProperties.TextSelectionRange in it) it[SemanticsProperties.TextSelectionRange] else null }
 
     /** 验收 1(a)：快速回复输入「abc」点「展开全屏」→ 完整编辑器正文自动获得焦点、内容「abc」光标在末尾且触发 show()；覆盖全屏/居中模态/右栏三种形态。 */
     @Test
@@ -922,6 +928,102 @@ class U5aFocusAndOverlayTest {
         composeRule.waitForIdle()
         assertTrue("访客态回复原地登录后应自动聚焦正文", isNodeFocused(hasSetTextAction() and hasText("guest reply")))
         assertTrue("访客态回复原地登录后应调 show()", kb.showCalls.get() >= 1)
+    }
+
+    /** 修复轮 2 回归（移植自 V-U5a probe5d 选区部分）：411→749→1280→749→411→1280→411 跨形态旋转与 StateRestorationTester 恢复全程保持 TextRange(2,4)、单实例且不重调 show()。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun regressionFix2_rotationAndStateRestoration_preservesSelectionAndSingleInstance() {
+        val restorationTester = StateRestorationTester(composeRule)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val owner = ownerWithComposeVms(harness, postRepo, editorVm)
+        val keyboardSpy = RecordingKeyboardController()
+        var winSize by mutableStateOf(DpSize(411.dp, 891.dp))
+
+        restorationTester.setContent {
+            MultiPaneResizableWindowHost(winSize) {
+                CompositionLocalProvider(
+                    LocalViewModelStoreOwner provides owner,
+                    LocalSoftwareKeyboardController provides keyboardSpy,
+                ) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = harness.authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            emojiPanelSlot = emojiSlot,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.Reply(FullEditorHandoff("1001", 2, "", 0, 0, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+
+        val bodyMatcher = hasSetTextAction() and hasText("移动保活选区")
+        composeRule.onNode(hasSetTextAction()).performTextInput("移动保活选区")
+        composeRule.waitForIdle()
+        composeRule.onNode(bodyMatcher).performSemanticsAction(SemanticsActions.SetSelection) { it(2, 4, false) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("表情").performClick()
+        composeRule.waitForIdle()
+
+        val failures = mutableListOf<String>()
+        fun checkStage(stage: String) {
+            val insertBtnCount = composeRule.onAllNodesWithContentDescription("插入图片").fetchSemanticsNodes().size
+            val textFieldCount = composeRule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size
+            val bodyDoc = editorVm.uiState.value.body
+            val bodyText = bodyDoc.serialize()
+            val vmSel = TextRange(bodyDoc.activeSelectionStart, bodyDoc.activeSelectionEnd)
+            val bodyNodes = composeRule.onAllNodes(bodyMatcher).fetchSemanticsNodes()
+            val currentSel = if (bodyNodes.size == 1) selectionOf(bodyMatcher) else null
+
+            if (insertBtnCount != 1) failures += "$stage: 插入图片按钮数=$insertBtnCount (expected 1)"
+            if (textFieldCount != 1) failures += "$stage: 输入框数=$textFieldCount (expected 1)"
+            if (bodyText != "移动保活选区") failures += "$stage: 输入内容='$bodyText' (expected '移动保活选区')"
+            if (bodyNodes.size != 1) failures += "$stage: 正文节点数=${bodyNodes.size}"
+            if (vmSel != TextRange(2, 4)) failures += "$stage: VM 选区=$vmSel (expected TextRange(2, 4))"
+            if (currentSel != TextRange(2, 4)) failures += "$stage: UI 选区=$currentSel (expected TextRange(2, 4))"
+        }
+
+        checkStage("FullScreen(411x891)")
+        keyboardSpy.reset()
+
+        for ((stage, nextSize) in listOf(
+            "FullScreen->CenteredModal(749x559)" to DpSize(749.dp, 559.dp),
+            "CenteredModal->RightPane(1280x800)" to DpSize(1280.dp, 800.dp),
+            "RightPane->CenteredModal(749x559)" to DpSize(749.dp, 559.dp),
+            "CenteredModal->FullScreen(411x891)" to DpSize(411.dp, 891.dp),
+            "FullScreen->RightPane(1280x800)" to DpSize(1280.dp, 800.dp),
+            "RightPane->FullScreen(411x891)" to DpSize(411.dp, 891.dp),
+        )) {
+            winSize = nextSize
+            composeRule.waitForIdle()
+            checkStage(stage)
+        }
+        if (keyboardSpy.showCalls.get() != 0) {
+            failures += "跨形态旋转期间不得重调 show(): showCalls=${keyboardSpy.showCalls.get()}"
+        }
+
+        keyboardSpy.reset()
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+        checkStage("StateRestoration(411x891)")
+        if (keyboardSpy.showCalls.get() != 0) {
+            failures += "状态恢复后不得重调 show(): showCalls=${keyboardSpy.showCalls.get()}"
+        }
+
+        assertTrue("修复轮 2 选区与单实例检查失败项:\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
     private fun ownerWithComposeVms(
