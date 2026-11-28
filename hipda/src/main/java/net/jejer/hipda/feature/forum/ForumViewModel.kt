@@ -25,6 +25,7 @@ import net.jejer.hipda.parser.threadlist.ThreadSummary
 import net.jejer.hipda.ui.challenge.ChallengeFailureKind
 
 internal const val BUY_AND_SELL_FID: Int = 6
+internal data class ForumSwipeHandoff(val targetSource: ForumListSource, val enterFromSign: Float)
 
 @Immutable
 data class ForumUiState(
@@ -95,6 +96,7 @@ class ForumViewModel internal constructor(
     private val auxState = MutableStateFlow(ForumAuxState(referenceDate = todayProvider()))
     private val _refreshErrors = MutableSharedFlow<UiError>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private var activeRefreshJob: Job? = null
+    private var pendingSwipeHandoff: ForumSwipeHandoff? = null
 
     val refreshErrors: SharedFlow<UiError> = _refreshErrors.asSharedFlow()
 
@@ -170,6 +172,10 @@ class ForumViewModel internal constructor(
     }
 
     fun bindSource(source: ForumListSource) { if (activeSource.value != source) { syncReferenceDate(); activeSource.value = source } }
+
+    internal fun armSwipeHandoff(targetSource: ForumListSource, enterFromSign: Float) { pendingSwipeHandoff = ForumSwipeHandoff(targetSource, enterFromSign) }
+    internal fun consumeSwipeHandoff(source: ForumListSource): Float? = pendingSwipeHandoff?.also { pendingSwipeHandoff = null }?.takeIf { it.targetSource == source }?.enterFromSign
+    internal fun clearSwipeHandoff() { pendingSwipeHandoff = null }
 
     fun setSortByPostTime(sortByPostTime: Boolean) {
         val src = activeSource.value as? ForumListSource.Forum ?: return
@@ -281,6 +287,7 @@ class ForumViewModel internal constructor(
 
     private fun resetForAuthChange(uidChanged: Boolean) {
         activeRefreshJob?.cancel()
+        pendingSwipeHandoff = null
         initializedQueries.clear(); todayNewInitialized = false
         if (uidChanged) todayNewState.value = TodayNewState()
         auxState.update {
