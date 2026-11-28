@@ -732,63 +732,71 @@ class ContinuousPagingAnchorTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed().performClick()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("首页").assertIsNotEnabled()
-        composeRule.onNodeWithText("末页").assertIsEnabled()
+        composeRule.onNodeWithText("顶楼").assertIsNotEnabled()
+        composeRule.onNodeWithText("最新回复").assertIsEnabled()
         composeRule.onNodeWithContentDescription("关闭").performClick()
         composeRule.waitForIdle()
 
-        // 向下滚动预取第 2 页：首可见楼层仍在第 1 页（11 楼）时，中段楼层胶囊同步显示 11 楼且仍在第 1 页
+        // 向下滚动预取第 2 页：首可见楼层仍在第 1 页（11 楼）时，底部楼层入口同步显示 11 楼且仍在第 1 页
         composeRule.runOnIdle { listState.requestScrollToItem(index = 10, scrollOffset = 0) }
         composeRule.waitForIdle()
         assertEquals(2, vm.uiState.value.lastLoadedPage)
         assertEquals(1, vm.uiState.value.page)
-        composeRule.onNodeWithContentDescription("第 11 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 11 楼，点按展开楼层跳转").assertIsDisplayed()
 
-        // 继续滚入第 2 页楼层（index=22 为第 2 页第 3 楼即 23 楼）：中段胶囊切换为 23 楼且“首页”“末页”均可用
+        // 继续滚入第 2 页楼层（index=22 为第 2 页第 3 楼即 23 楼）：楼层入口切换为 23 楼且“顶楼”“最新回复”均可用
         composeRule.runOnIdle { listState.requestScrollToItem(index = 22, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 23 楼，点按展开跳页").assertIsDisplayed().performClick()
+        composeRule.onNodeWithContentDescription("第 23 楼，点按展开楼层跳转").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
         assertEquals(2, vm.uiState.value.page)
-        composeRule.onNodeWithText("首页").assertIsEnabled()
-        composeRule.onNodeWithText("末页").assertIsEnabled()
+        composeRule.onNodeWithText("顶楼").assertIsEnabled()
+        composeRule.onNodeWithText("最新回复").assertIsEnabled()
         composeRule.onNodeWithContentDescription("关闭").performClick()
         composeRule.waitForIdle()
 
-        // 滚至第 2 页末尾预取第 3 页并滚入第 3 页楼层（43 楼）：中段胶囊切换为 43 楼且“末页”禁用
+        // 滚至第 2 页末尾预取第 3 页并滚入第 3 页末尾：楼层入口同步更新且触底后“最新回复”禁用
         composeRule.runOnIdle { listState.requestScrollToItem(index = 31, scrollOffset = 0) }
         composeRule.waitForIdle()
         composeRule.runOnIdle { listState.requestScrollToItem(index = 42, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 43 楼，点按展开跳页").assertIsDisplayed().performClick()
-        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 43 楼，点按展开楼层跳转").assertIsDisplayed()
         assertEquals(3, vm.uiState.value.page)
-        composeRule.onNodeWithText("首页").assertIsEnabled()
-        composeRule.onNodeWithText("末页").assertIsNotEnabled()
+        composeRule.runOnIdle { listState.requestScrollToItem(index = listState.layoutInfo.totalItemsCount - 1, scrollOffset = 0) }
+        composeRule.waitForIdle()
+        composeRule.onNode(
+            SemanticsMatcher("floorJumpTrigger") { node ->
+                node.config.contains(SemanticsProperties.ContentDescription) &&
+                    node.config[SemanticsProperties.ContentDescription].any { it.contains("点按展开楼层跳转") }
+            },
+        ).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("顶楼").assertIsEnabled()
+        composeRule.onNodeWithText("最新回复").assertIsNotEnabled()
         composeRule.onNodeWithContentDescription("关闭").performClick()
         composeRule.waitForIdle()
 
-        // 向上滚回第 1 页楼层（2 楼）：中段胶囊切回 2 楼且 page 切回第 1 页
+        // 向上滚回第 1 页楼层（2 楼）：楼层入口切回 2 楼且 page 切回第 1 页
         composeRule.runOnIdle { listState.requestScrollToItem(index = 1, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 2 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 2 楼，点按展开楼层跳转").assertIsDisplayed()
         assertEquals(1, vm.uiState.value.page)
 
-        // 从第 2 页向上预取第 1 页后：停留在第 2 页楼层（21 楼）时中段胶囊仍显示 21 楼，滚入第 1 页（3 楼）后切为 3 楼
+        // 从第 2 页向上预取第 1 页后：停留在第 2 页楼层（21 楼）时楼层入口仍显示 21 楼，滚入第 1 页（3 楼）后切为 3 楼
         composeRule.runOnIdle { vm.loadPage(2) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 21 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 21 楼，点按展开楼层跳转").assertIsDisplayed()
         composeRule.runOnIdle { vm.loadPreviousPage() }
         composeRule.waitForIdle()
         assertEquals(1, vm.uiState.value.firstLoadedPage)
         assertEquals(2, vm.uiState.value.page)
-        composeRule.onNodeWithContentDescription("第 21 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 21 楼，点按展开楼层跳转").assertIsDisplayed()
 
         composeRule.runOnIdle { listState.requestScrollToItem(index = 2, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 3 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 3 楼，点按展开楼层跳转").assertIsDisplayed()
         assertEquals(1, vm.uiState.value.page)
     }
 
@@ -889,10 +897,12 @@ class ContinuousPagingAnchorTest {
         assertTrue(vm.uiState.value.floors.all { it.floor.page == 4 })
         assertFalse(vm.uiState.value.isAppending)
 
-        // 滚到第 4 页某楼层后开启“只看楼主”，重置连续区间；退出后恢复第 4 页并定位回原楼
+        // 滚到第 4 页某楼层后从底部「更多」菜单开启“只看楼主”，重置连续区间；退出后恢复第 4 页并定位回原楼
         composeRule.runOnIdle { listState.requestScrollToItem(index = 4, scrollOffset = 20) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("只看楼主").performClick()
+        composeRule.onNodeWithContentDescription("更多").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("只看楼主").performClick()
         composeRule.waitForIdle()
         assertEquals(1, vm.uiState.value.firstLoadedPage)
         assertEquals(1, vm.uiState.value.lastLoadedPage)
@@ -1153,7 +1163,7 @@ class ContinuousPagingAnchorTest {
 
         composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 16 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 16 楼，点按展开楼层跳转").assertIsDisplayed()
 
         // 滚过 p201 顶部 4:3 图片，使图片底缘越过视口顶边且 p201 尾段与 p202 可见
         val scrollPx = (410f * density).toInt()

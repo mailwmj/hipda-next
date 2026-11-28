@@ -211,11 +211,11 @@ class ThreadBottomToolbarTest {
         assertEquals(0, countNodes(SemanticsMatcher.keyIsDefined(HiGlassBlurActive)))
         assertFalse("suppressBottomGlass=true 且无其他消费者时 hasSourceDemand 必须为 false", glassState.hasSourceDemand)
 
-        // 恢复显示：整体仅 1 个 HiGlassMarker、内部 3 枚 Toolbar 胶囊、激活采样源需求
+        // 恢复显示：整体仅 1 个 HiGlassMarker、内部合并为 1 枚一体化 Toolbar 玻璃胶囊、激活采样源需求
         suppress = false
         composeRule.waitForIdle()
-        assertEquals("正常态三段工具条仅记 1 个 HiGlassMarker", 1, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
-        assertEquals("正常态三段工具条应有 3 枚 HiGlassSurface", 3, countNodes(SemanticsMatcher.keyIsDefined(HiGlassBlurActive)))
+        assertEquals("正常态一体化工具条仅记 1 个 HiGlassMarker", 1, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
+        assertEquals("正常态一体化工具条应恰有 1 枚 HiGlassSurface", 1, countNodes(SemanticsMatcher.keyIsDefined(HiGlassBlurActive)))
         assertTrue("正常态应持有 glassState 采样源需求", glassState.hasSourceDemand)
 
         // 再次抑制：必须再次彻底卸载并归零采样源需求
@@ -312,9 +312,9 @@ class ThreadBottomToolbarTest {
         }
         composeRule.waitForIdle()
 
-        // 1. 独立工具条收起态：正常态 1 Marker + 3 激活模糊 + 有采样需求；暂停后全部归零
+        // 1. 独立工具条收起态：正常态 1 Marker + 1 激活模糊 + 有采样需求；暂停后全部归零
         assertEquals(1, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
-        assertEquals(3, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
+        assertEquals(1, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
         assertTrue(toolbarGlassState.hasSourceDemand)
 
         suspended = true
@@ -335,16 +335,16 @@ class ThreadBottomToolbarTest {
         suspended = false
         composeRule.waitForIdle()
         assertEquals(1, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
-        assertEquals(3, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
+        assertEquals(1, countNodes(SemanticsMatcher.expectValue(HiGlassBlurActive, true)))
         assertTrue(toolbarGlassState.hasSourceDemand)
 
-        // 2. 完整 ThreadDetailPane（顶栏 + 底部三段工具条 + LazyColumn.hiGlassSource）：暂停时全树 0 玻璃 / 0 LayerBackdrop / 0 DrawBackdrop
+        // 2. 完整 ThreadDetailPane（顶栏 + 底部一体化工具条 + LazyColumn.hiGlassSource）：暂停时全树 0 玻璃 / 0 LayerBackdrop / 0 DrawBackdrop
         showDetailPane = true
         composeRule.waitForIdle()
         val activeAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
         assertEquals(2, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
         assertEquals(1, activeAudit.layerBackdropCount)
-        assertEquals(4, activeAudit.drawBackdropCount)
+        assertEquals(2, activeAudit.drawBackdropCount)
 
         suspended = true
         composeRule.waitForIdle()
@@ -359,7 +359,7 @@ class ThreadBottomToolbarTest {
         val restoredAudit = auditGlassModifiers(composeRule.onRoot().fetchSemanticsNode().layoutInfo)
         assertEquals(2, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
         assertEquals(1, restoredAudit.layerBackdropCount)
-        assertEquals(4, restoredAudit.drawBackdropCount)
+        assertEquals(2, restoredAudit.drawBackdropCount)
     }
 
     @Test
@@ -368,7 +368,6 @@ class ThreadBottomToolbarTest {
         assertEquals(56.dp, ThreadDetailTopBarHeight)
 
         var isFullScreen by mutableStateOf(false)
-        var isAuthorOnly by mutableStateOf(false)
         val scrolledState = mutableStateOf(false)
 
         composeRule.setContent {
@@ -381,11 +380,9 @@ class ThreadBottomToolbarTest {
                         showBack = true,
                         fullScreenState = FullScreenToggle(isFullScreen = isFullScreen, onToggle = { isFullScreen = !isFullScreen }),
                     ),
-                    isAuthorOnly = isAuthorOnly,
                     isScrolledState = scrolledState,
                     glassState = glassState,
                     onBack = {},
-                    onToggleAuthorOnly = { isAuthorOnly = !isAuthorOnly },
                 )
             }
         }
@@ -394,8 +391,9 @@ class ThreadBottomToolbarTest {
         composeRule.onNodeWithText("单行标题校验").assertIsDisplayed()
         assertEquals("详情顶栏不得再渲染「楼主 · xxx」副标题", 0, composeRule.onAllNodesWithText("楼主", substring = true).fetchSemanticsNodes().size)
         assertEquals("详情顶栏不得渲染楼主作者名副标题", 0, composeRule.onAllNodesWithText("楼主大人", substring = true).fetchSemanticsNodes().size)
+        assertEquals("详情顶栏不得再放「只看楼主」裸图标", 0, composeRule.onAllNodesWithContentDescription("只看楼主").fetchSemanticsNodes().size)
 
-        for (cd in listOf("返回", "全屏阅读", "只看楼主")) {
+        for (cd in listOf("返回", "全屏阅读")) {
             val node = composeRule.onNodeWithContentDescription(cd)
                 .assertIsDisplayed()
                 .assertWidthIsAtLeast(48.dp)
@@ -407,17 +405,14 @@ class ThreadBottomToolbarTest {
 
         // 切换激活态后仍无淡底圆或边框
         composeRule.onNodeWithContentDescription("全屏阅读").performClick()
-        composeRule.onNodeWithContentDescription("只看楼主").performClick()
         composeRule.waitForIdle()
-        for (cd in listOf("显示列表", "看全部")) {
-            val node = composeRule.onNodeWithContentDescription(cd)
-                .assertIsDisplayed()
-                .assertWidthIsAtLeast(48.dp)
-                .assertHeightIsAtLeast(48.dp)
-                .fetchSemanticsNode()
-            assertFalse("顶栏激活态按钮 [$cd] 不得带淡底圆", hasSubtreeModifierNamed(node.layoutInfo, "Background"))
-            assertFalse("顶栏激活态按钮 [$cd] 不得带描边边框", hasSubtreeModifierNamed(node.layoutInfo, "Border"))
-        }
+        val showListNode = composeRule.onNodeWithContentDescription("显示列表")
+            .assertIsDisplayed()
+            .assertWidthIsAtLeast(48.dp)
+            .assertHeightIsAtLeast(48.dp)
+            .fetchSemanticsNode()
+        assertFalse("顶栏激活态按钮 [显示列表] 不得带淡底圆", hasSubtreeModifierNamed(showListNode.layoutInfo, "Background"))
+        assertFalse("顶栏激活态按钮 [显示列表] 不得带描边边框", hasSubtreeModifierNamed(showListNode.layoutInfo, "Border"))
     }
 
     @Test
@@ -437,14 +432,19 @@ class ThreadBottomToolbarTest {
                     assertWcagContrastAtLeast(4.5f, bg, cs.primary, "${preset.id}/$modeName opBadge(primary)")
                 }
                 val degradedSpec = resolveHiGlassStyleSpec(cs, darkTheme, GlassRenderTier.SOLID_DEGRADED, style = HiGlassStyle.Toolbar)
+                val replySlotTint = resolveReplySlotBackground(cs, darkTheme)
                 for (backdrop in listOf(Color.Black, Color.White)) {
                     val glassSurface = degradedSpec.degradedSurfaceColor.compositeOver(backdrop)
                     assertWcagContrastAtLeast(4.5f, glassSurface, cs.onSurfaceVariant, "${preset.id}/$modeName/ToolbarDegraded/onSurfaceVariant")
+                    val replySurface = replySlotTint.compositeOver(glassSurface)
+                    assertWcagContrastAtLeast(4.5f, replySurface, cs.onSurfaceVariant, "${preset.id}/$modeName/ToolbarDegraded/replySlot")
                 }
                 val activeSpec = resolveHiGlassStyleSpec(cs, darkTheme, GlassRenderTier.REFRACTION_AND_BLUR, style = HiGlassStyle.Toolbar)
                 for (backdrop in listOf(cs.background, cs.surface, cs.surfaceContainerLow, cs.surfaceContainer)) {
                     val glassSurface = activeSpec.activeTintColor.compositeOver(backdrop)
                     assertWcagContrastAtLeast(4.5f, glassSurface, cs.onSurfaceVariant, "${preset.id}/$modeName/ToolbarActive/onSurfaceVariant")
+                    val replySurface = replySlotTint.compositeOver(glassSurface)
+                    assertWcagContrastAtLeast(4.5f, replySurface, cs.onSurfaceVariant, "${preset.id}/$modeName/ToolbarActive/replySlot")
                 }
             }
         }
@@ -502,7 +502,7 @@ class ThreadBottomToolbarTest {
     }
 
     @Test
-    fun u2_singlePageFloorCapsuleIsPassive_andBecomesClickableWhenRefreshedToMultiPage() {
+    fun floorButtonAlwaysClickable_singlePageExpandsFloorJumpAndMultiPageExpandsPageJump() {
         var lastPage by mutableIntStateOf(1)
         var expanded by mutableStateOf(false)
         var expandCalls = 0
@@ -531,40 +531,45 @@ class ThreadBottomToolbarTest {
                         onCopyLinkClick = {},
                         onOpenInBrowserClick = {},
                         onShareClick = {},
+                        currentFloor = 5,
+                        totalFloors = 20,
                     )
                 }
             }
         }
         composeRule.waitForIdle()
 
-        // 1. 单页（lastPage == 1）：被动不可点标签，无 OnClick / Role.Button，无障碍为「第 1 楼」，无页码文本
-        val staticCapsule = composeRule.onNodeWithContentDescription("第 1 楼")
+        // 1. 单页（lastPage == 1）：当前楼层入口恒可点击，收起态仅显示当前楼层无页码文字，点按原地展开「顶楼 / 最新回复 / 楼层切换」
+        val singleFloorNode = composeRule.onNodeWithContentDescription("第 5 楼，点按展开楼层跳转")
             .assertIsDisplayed()
             .assertWidthIsAtLeast(48.dp)
             .assertHeightIsAtLeast(48.dp)
             .fetchSemanticsNode()
-        assertFalse("lastPage == 1 时中段胶囊不得暴露 OnClick 语义", SemanticsActions.OnClick in staticCapsule.config)
-        assertFalse("lastPage == 1 时中段胶囊不得声明 Role.Button", SemanticsProperties.Role in staticCapsule.config)
-        assertEquals("lastPage == 1 时不得出现点按展开跳页描述", 0, composeRule.onAllNodesWithContentDescription("第 1 楼，点按展开跳页").fetchSemanticsNodes().size)
+        assertTrue("单页时当前楼层入口必须可点", SemanticsActions.OnClick in singleFloorNode.config)
+        assertEquals("单页时当前楼层入口必须为 Role.Button", Role.Button, singleFloorNode.config[SemanticsProperties.Role])
         assertEquals("收起态底栏不得出现页码文字", 0, composeRule.onAllNodesWithText("页", substring = true, useUnmergedTree = true).fetchSemanticsNodes().size)
         assertEquals("收起态底栏不得出现斜杠页码", 0, composeRule.onAllNodesWithText("/", substring = true, useUnmergedTree = true).fetchSemanticsNodes().size)
 
-        // 2. 模拟刷新后单页变多页（lastPage = 3）：中段自动恢复可点，点击原地展开 InlinePageJumpBar
-        lastPage = 3
-        composeRule.waitForIdle()
-        val jumpableNode = composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页")
-            .assertIsDisplayed()
-            .assertHeightIsAtLeast(48.dp)
-            .fetchSemanticsNode()
-        assertTrue("lastPage > 1 时中段胶囊必须具备 OnClick 语义", SemanticsActions.OnClick in jumpableNode.config)
-        assertEquals("lastPage > 1 时中段胶囊必须为 Role.Button", Role.Button, jumpableNode.config[SemanticsProperties.Role])
-
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").performClick()
+        composeRule.onNodeWithContentDescription("第 5 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
         assertEquals(1, expandCalls)
-        assertTrue("点击多页中段胶囊应展开内联跳页条", expanded)
-        composeRule.onNodeWithText("首页").assertIsDisplayed()
-        composeRule.onNodeWithText("末页").assertIsDisplayed()
+        assertTrue("点击单页楼层入口应展开楼层跳转条", expanded)
+        composeRule.onNodeWithText("顶楼").assertIsDisplayed()
+        composeRule.onNodeWithText("最新回复").assertIsDisplayed()
+        composeRule.onNodeWithText("第 5 / 20 楼").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("关闭").performClick()
+        composeRule.waitForIdle()
+
+        // 2. 多页（lastPage = 3）：同样点击当前楼层入口原地展开「顶楼 / 最新回复 / 页码切换」
+        lastPage = 3
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("第 5 楼，点按展开楼层跳转").performClick()
+        composeRule.waitForIdle()
+        assertEquals(2, expandCalls)
+        assertTrue("点击多页楼层入口应展开跳页条", expanded)
+        composeRule.onNodeWithText("顶楼").assertIsDisplayed()
+        composeRule.onNodeWithText("最新回复").assertIsDisplayed()
+        composeRule.onNodeWithText("第 1 / 3 页").assertIsDisplayed()
     }
 
     @Test
@@ -590,25 +595,25 @@ class ThreadBottomToolbarTest {
         }
         composeRule.waitForIdle()
 
-        // 左段回复槽为可伸缩主段（明显宽于中段楼层胶囊，且左对齐图标 + 「回复」）
+        // 左侧回复槽为可伸缩主段（明显宽于楼层入口，且左对齐图标 + 「回复」）
         val replyBounds = composeRule.onNodeWithText("回复").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        val floorBounds = composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val floorBounds = composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val favBounds = composeRule.onNodeWithContentDescription("收藏").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val replyWidthDp = with(composeRule.density) { replyBounds.width.toDp() }
         val floorWidthDp = with(composeRule.density) { floorBounds.width.toDp() }
-        assertTrue("411dp 下左段回复槽应为可伸缩主段（>= 160dp），实际 $replyWidthDp", replyWidthDp >= 160.dp)
-        assertTrue("左段回复槽应宽于中段贴合内容楼层胶囊：reply=$replyWidthDp floor=$floorWidthDp", replyWidthDp > floorWidthDp * 2f)
-        assertTrue("三段胶囊从左至右零重叠：reply=${replyBounds.right} floor=${floorBounds.left} fav=${favBounds.left}", replyBounds.right < floorBounds.left && floorBounds.right < favBounds.left)
+        assertTrue("411dp 下左侧回复槽应为可伸缩主段（>= 160dp），实际 $replyWidthDp", replyWidthDp >= 160.dp)
+        assertTrue("左侧回复槽应宽于贴合内容的楼层入口：reply=$replyWidthDp floor=$floorWidthDp", replyWidthDp > floorWidthDp * 2f)
+        assertTrue("一体化底栏内部控件从左至右零重叠：reply=${replyBounds.right} floor=${floorBounds.left} fav=${favBounds.left}", replyBounds.right <= floorBounds.left + 0.5f && floorBounds.right <= favBounds.left + 0.5f)
         val replyTextBounds = composeRule.onNodeWithText("回复", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         assertTrue(
-            "左段「回复」文字应靠左对齐（左半区内），reply=$replyBounds text=$replyTextBounds",
+            "左侧「回复」文字应靠左对齐（左半区内），reply=$replyBounds text=$replyTextBounds",
             replyTextBounds.center.x < replyBounds.center.x,
         )
 
-        // 滚动至第 6 楼（index = 5）：中段楼层胶囊同步更新为「第 6 楼，点按展开跳页」
+        // 滚动至第 6 楼（index = 5）：楼层入口同步更新为「第 6 楼，点按展开楼层跳转」
         composeRule.runOnIdle { listState.requestScrollToItem(index = 5, scrollOffset = 0) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 6 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 6 楼，点按展开楼层跳转").assertIsDisplayed()
         assertEquals("同屏玻璃数仍严格 <= 2", 2, countNodes(SemanticsMatcher.expectValue(HiGlassMarker, true)))
     }
 
@@ -905,18 +910,17 @@ class ThreadBottomToolbarTest {
             val favUndoReq = server.takeRequest()
             assertTrue(favUndoReq.target.contains("item=favorites") && favUndoReq.target.contains("action=remove"))
 
-            // 2. 更多菜单严格去重：含 刷新/关注/复制链接/在浏览器中打开/分享，不含 收藏/取消收藏/只看楼主/举报
+            // 2. 更多菜单含 只看楼主（顶部收纳）+ 刷新/关注/复制链接/在浏览器中打开/分享，不含重复的 收藏/举报
             composeRule.onNodeWithContentDescription("更多")
                 .assertIsDisplayed()
                 .assertWidthIsAtLeast(48.dp)
                 .assertHeightIsAtLeast(48.dp)
                 .performClick()
             composeRule.waitForIdle()
-            for (item in listOf("刷新", "关注", "复制链接", "在浏览器中打开", "分享")) {
+            for (item in listOf("只看楼主", "刷新", "关注", "复制链接", "在浏览器中打开", "分享")) {
                 composeRule.onNodeWithText(item).assertIsDisplayed()
             }
             assertEquals("更多菜单不得重复出现收藏", 0, composeRule.onAllNodesWithText("收藏").fetchSemanticsNodes().size)
-            assertEquals("更多菜单不得重复出现只看楼主", 0, composeRule.onAllNodesWithText("只看楼主").fetchSemanticsNodes().size)
             assertEquals("更多菜单不得出现举报", 0, composeRule.onAllNodesWithText("举报").fetchSemanticsNodes().size)
 
             // 点击 关注 -> DetailPane Snackbar「已关注」「撤销」
@@ -1161,14 +1165,13 @@ class ThreadBottomToolbarTest {
             composeRule.waitForIdle()
             val maxRightPx = with(composeRule.density) { widthDp.toPx() + 1f }
 
-            // 窄容器自动缩为纯图标 48×48dp（无“回复”文字，保留“回复”内容描述）
-            assertEquals("[$widthDp + 1.25×] 窄容器紧凑态不应渲染“回复”文字", 0, composeRule.onAllNodesWithText("回复").fetchSemanticsNodes().size)
-            val replyBounds = composeRule.onNodeWithContentDescription("回复")
+            // 合并为一体化玻璃条后，340dp / 360dp + 1.25× 空间更充裕，仍完整显示「回复」且全部 ≥ 48×48dp 无重叠/越界
+            val replyBounds = composeRule.onNodeWithText("回复")
                 .assertIsDisplayed()
                 .assertWidthIsAtLeast(48.dp)
                 .assertHeightIsAtLeast(48.dp)
                 .fetchSemanticsNode().boundsInRoot
-            val floorBounds = composeRule.onNodeWithContentDescription("第 111 楼，点按展开跳页")
+            val floorBounds = composeRule.onNodeWithContentDescription("第 111 楼，点按展开楼层跳转")
                 .assertIsDisplayed()
                 .assertWidthIsAtLeast(48.dp)
                 .assertHeightIsAtLeast(48.dp)
@@ -1184,10 +1187,10 @@ class ThreadBottomToolbarTest {
                 .assertHeightIsAtLeast(48.dp)
                 .fetchSemanticsNode().boundsInRoot
 
-            assertTrue("[$widthDp] 回复胶囊不得左越界", replyBounds.left >= -0.5f)
-            assertTrue("[$widthDp] 回复与楼层胶囊不得重叠", replyBounds.right <= floorBounds.left + 0.5f)
-            assertTrue("[$widthDp] 楼层与收藏胶囊不得重叠", floorBounds.right <= favBounds.left + 0.5f)
-            assertTrue("[$widthDp] 更多胶囊不得右溢出 $widthDp", moreBounds.right <= maxRightPx)
+            assertTrue("[$widthDp] 回复槽不得左越界", replyBounds.left >= -0.5f)
+            assertTrue("[$widthDp] 回复与楼层入口不得重叠", replyBounds.right <= floorBounds.left + 0.5f)
+            assertTrue("[$widthDp] 楼层与收藏入口不得重叠", floorBounds.right <= favBounds.left + 0.5f)
+            assertTrue("[$widthDp] 更多按钮不得右溢出 $widthDp", moreBounds.right <= maxRightPx)
         }
     }
 

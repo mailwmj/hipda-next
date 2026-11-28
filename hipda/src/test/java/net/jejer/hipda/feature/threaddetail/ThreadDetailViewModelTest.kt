@@ -234,19 +234,19 @@ class ThreadDetailViewModelTest {
         }
         composeRule.waitForIdle()
 
-        // 1. E4 接入底部三段式工具条后，全屏共 2 个 HiGlassMarker（TopBar 1 + BottomToolbar HiGlassRegion 1）与 4 个 HiGlassBlurActive（TopBar 1 + 底部 3 胶囊，顶栏圆钮零嵌套）
+        // 1. 一体化底栏接入后，全屏共 2 个 HiGlassMarker（TopBar 1 + BottomToolbar HiGlassRegion 1）与 2 个 HiGlassBlurActive（TopBar 1 + 底部整条胶囊 1，顶栏按钮零嵌套）
         composeRule.assertGlassSurfaceCountAtMost(2)
         val glassMarkers = composeRule.onAllNodes(
             matcher = SemanticsMatcher.expectValue(HiGlassMarker, true),
             useUnmergedTree = true,
         ).fetchSemanticsNodes()
-        assertEquals("帖子详情应恰有 2 个玻璃区域（TopBar + 底部三段工具条 HiGlassRegion）", 2, glassMarkers.size)
+        assertEquals("帖子详情应恰有 2 个玻璃区域（TopBar + 底部一体化工具条 HiGlassRegion）", 2, glassMarkers.size)
 
         val blurNodes = composeRule.onAllNodes(
             matcher = SemanticsMatcher.keyIsDefined(HiGlassBlurActive),
             useUnmergedTree = true,
         ).fetchSemanticsNodes()
-        assertEquals("顶栏圆钮严禁嵌套 HiGlassSurface，全树应恰有 4 个 HiGlassBlurActive（TopBar 1 + 底部三段 3）", 4, blurNodes.size)
+        assertEquals("顶栏按钮严禁嵌套 HiGlassSurface，全树应恰有 2 个 HiGlassBlurActive（TopBar 1 + 底部整条 1）", 2, blurNodes.size)
 
         // 2. detailGlassState 的 LayerBackdrop 严格位于 LazyColumn，且与全部玻璃区域（TopBar & BottomToolbar）互不为祖先/后代
         val scrollNode = composeRule.onAllNodes(
@@ -266,16 +266,17 @@ class ThreadDetailViewModelTest {
         )
 
         val rootLayout = composeRule.onRoot().fetchSemanticsNode().layoutInfo
-        assertEquals("全树应恰有 4 处 DrawBackdrop（TopBar 1 + 底部三段胶囊 3，圆钮零嵌套）", 4, countModifiersNamed(rootLayout, "DrawBackdrop"))
+        assertEquals("全树应恰有 2 处 DrawBackdrop（TopBar 1 + 底部整条胶囊 1，按钮零嵌套）", 2, countModifiersNamed(rootLayout, "DrawBackdrop"))
         assertEquals("全树仅允许 1 处 LayerBackdrop（仅楼层 LazyColumn）", 1, countModifiersNamed(rootLayout, "LayerBackdrop"))
 
-        // 3. 所有顶栏圆形按钮触控区均 ≥ 48×48dp
-        for (cd in listOf("返回", "全屏阅读", "只看楼主")) {
+        // 3. 顶栏动作仅保留返回与全屏阅读（只看楼主已收纳至底部更多菜单），触控区均 ≥ 48×48dp
+        for (cd in listOf("返回", "全屏阅读")) {
             composeRule.onNodeWithContentDescription(cd)
                 .assertIsDisplayed()
                 .assertWidthIsAtLeast(48.dp)
                 .assertHeightIsAtLeast(48.dp)
         }
+        composeRule.onNodeWithContentDescription("只看楼主").assertDoesNotExist()
 
         // 切换全屏按钮后切换为“显示列表”并同样保持 ≥ 48×48dp
         composeRule.onNodeWithContentDescription("全屏阅读").performClick()
@@ -307,19 +308,21 @@ class ThreadDetailViewModelTest {
         }
         composeRule.waitForIdle()
 
-        // 1. 经底部楼层胶囊确认第 1 页并翻到第 2 页，再滚至第 8 楼（index=7, offset=36）
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
+        // 1. 经底部楼层入口确认第 1 页并翻到第 2 页，再滚至第 8 楼（index=7, offset=36）
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").assertIsDisplayed()
         composeRule.runOnIdle { vm.nextPage() }
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 21 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 21 楼，点按展开楼层跳转").assertIsDisplayed()
 
         composeRule.runOnIdle { listState.requestScrollToItem(index = 7, scrollOffset = 36) }
         composeRule.waitForIdle()
         assertEquals(7, listState.firstVisibleItemIndex)
         assertEquals(36, listState.firstVisibleItemScrollOffset)
 
-        // 2. 开启“只看楼主”：顶栏下方展示“只看楼主 ×”胶囊，“×”内容描述为“退出只看”且 ≥ 48×48dp
-        composeRule.onNodeWithContentDescription("只看楼主").performClick()
+        // 2. 从底部「更多」菜单开启“只看楼主”：顶栏下方展示“只看楼主 ×”胶囊，“×”内容描述为“退出只看”且 ≥ 48×48dp
+        composeRule.onNodeWithContentDescription("更多").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("只看楼主").performClick()
         composeRule.waitForIdle()
 
         assertTrue(detailRepo.loadCalls.last().filter is ThreadDetailFilter.AuthorOnly)
@@ -328,7 +331,6 @@ class ThreadDetailViewModelTest {
             .assertIsDisplayed()
             .assertWidthIsAtLeast(48.dp)
             .assertHeightIsAtLeast(48.dp)
-        composeRule.onNodeWithContentDescription("看全部").assertIsDisplayed()
 
         // 3. 点击胶囊“×”退出过滤：恢复全帖第 2 页并精准定位回切换前正在阅读的第 8 楼与偏移量
         composeRule.onNodeWithContentDescription("退出只看").performClick()
@@ -340,16 +342,18 @@ class ThreadDetailViewModelTest {
         assertEquals("退出只看应保留原像素偏移", 36, listState.firstVisibleItemScrollOffset)
         composeRule.onNodeWithContentDescription("退出只看").assertDoesNotExist()
 
-        // 4. 展开内联跳页条并点击“首页”回到第 1 页
-        composeRule.onNodeWithContentDescription("第 28 楼，点按展开跳页").performClick()
+        // 4. 展开内联楼层跳转条并点击“顶楼”回到第 1 页第 1 楼
+        composeRule.onNodeWithContentDescription("第 28 楼，点按展开楼层跳转").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("首页").performClick()
+        composeRule.onNodeWithText("顶楼").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithContentDescription("第 1 楼，点按展开跳页").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("第 1 楼，点按展开楼层跳转").assertIsDisplayed()
 
         // 5. 过滤结果为空展示“没有符合条件的楼层”+“看全部”，点击后恢复全帖
         detailRepo.returnEmptyForFilter = true
-        composeRule.onNodeWithContentDescription("只看楼主").performClick()
+        composeRule.onNodeWithContentDescription("更多").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("只看楼主").performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithText("没有符合条件的楼层").assertIsDisplayed()
@@ -458,7 +462,9 @@ class ThreadDetailViewModelTest {
         }
         waitForIdle()
 
-        onNodeWithContentDescription("只看楼主").performClick()
+        onNodeWithContentDescription("更多").performClick()
+        waitForIdle()
+        onNodeWithText("只看楼主").performClick()
         waitForIdle()
         onNodeWithText("只看楼主").assertIsDisplayed()
 

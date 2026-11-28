@@ -556,8 +556,10 @@ class QuickReplySheetTest {
         composeRule.waitForIdle()
         assertEquals("按返回应从 PositionStack 回到原第 1 页", 1, detailVm.uiState.value.page)
 
-        // 4. 开启「只看楼主」过滤模式后仍可直接回复与引用
-        composeRule.onNodeWithContentDescription("只看楼主").performClick()
+        // 4. 从底部「更多」菜单开启「只看楼主」过滤模式后仍可直接回复与引用
+        composeRule.onNodeWithContentDescription("更多").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("只看楼主").performClick()
         composeRule.waitForIdle()
         assertTrue(detailVm.uiState.value.filter is ThreadDetailFilterUi.AuthorOnly)
 

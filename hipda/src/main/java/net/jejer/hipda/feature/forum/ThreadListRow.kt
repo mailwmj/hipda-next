@@ -68,7 +68,7 @@ fun resolveThreadTitleColor(colorScheme: ColorScheme, isVisited: Boolean, darkTh
 fun resolveThreadRowBackground(colorScheme: ColorScheme, selected: Boolean): Color =
     if (selected) colorScheme.secondaryContainer.copy(alpha = THREAD_ROW_SELECTED_ALPHA) else colorScheme.surface
 
-/** 论坛帖子列表项：去色块噪音、内联置顶图钉与「新」溢出兜底、作者全宽不截断、精简绝对时间与内缩圆角选中底。 */
+/** 论坛帖子列表项：去色块噪音、内联置顶图钉、作者全宽不截断、精简绝对时间与内缩圆角选中底。 */
 @Composable
 fun ThreadListRow(
     item: ThreadListItem,
@@ -86,20 +86,12 @@ fun ThreadListRow(
     val longClickLabel = if (onLongClick != null) stringResource(R.string.common_action_open_last_page) else null
     val stickyLabel = stringResource(R.string.forum_badge_sticky)
     val pollLabel = stringResource(R.string.forum_badge_poll)
-    val newLabel = stringResource(R.string.forum_badge_new)
     val yesterdayLabel = stringResource(R.string.forum_time_yesterday)
     val summary = item.summary
     val titleColor = resolveThreadTitleColor(cs, item.isVisited, darkTheme)
     val titleStyle = if (item.isVisited) HiTheme.typography.threadTitleRead else HiTheme.typography.threadTitle
     val bodySmall = MaterialTheme.typography.bodySmall
-    val newLabelStyle = MaterialTheme.typography.labelSmall
-    val newSpanStyle = remember(newLabelStyle, cs.primary) { newLabelStyle.toSpanStyle().copy(color = cs.primary) }
     val metaNumericStyle = remember(bodySmall) { bodySmall.copy(fontFeatureSettings = "tnum") }
-
-    var lastMeasuredWidthPx by remember(item.tid, summary.title, summary.isSticky, summary.isNew, titleStyle) { mutableIntStateOf(-1) }
-    var newBadgeOverflowed by remember(item.tid, summary.title, summary.isSticky, summary.isNew, titleStyle) { mutableStateOf(false) }
-    val showNewInline = summary.isNew && !newBadgeOverflowed
-    val showNewInMeta = summary.isNew && newBadgeOverflowed
 
     val inlineContent = remember(summary.isSticky, stickyLabel, cs.onSurfaceVariant) {
         if (!summary.isSticky) emptyMap()
@@ -109,11 +101,10 @@ fun ThreadListRow(
             },
         )
     }
-    val titleAnnotated = remember(summary.title, summary.isSticky, showNewInline, newLabel, newSpanStyle) {
+    val titleAnnotated = remember(summary.title, summary.isSticky) {
         buildAnnotatedString {
             if (summary.isSticky) { appendInlineContent(STICKY_PIN_INLINE_ID, " "); append(" ") }
             append(summary.title)
-            if (showNewInline) { append("  "); withStyle(newSpanStyle) { append(newLabel) } }
         }
     }
     val authorMetaText = remember(summary.isPoll, summary.typeName, summary.author, pollLabel) {
@@ -157,16 +148,6 @@ fun ThreadListRow(
                     color = titleColor,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    onTextLayout = { result ->
-                        if (!summary.isNew) return@Text
-                        val widthPx = result.layoutInput.constraints.maxWidth
-                        if (widthPx != lastMeasuredWidthPx) {
-                            lastMeasuredWidthPx = widthPx
-                            newBadgeOverflowed = if (newBadgeOverflowed) false else result.hasVisualOverflow
-                        } else if (!newBadgeOverflowed && result.hasVisualOverflow) {
-                            newBadgeOverflowed = true
-                        }
-                    },
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -174,7 +155,6 @@ fun ThreadListRow(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (compactLayout) ThreadAuthorAvatar(summary.avatarUrl, summary.author, 20.dp)
-                    if (showNewInMeta) Text(newLabel, style = newLabelStyle, color = cs.primary, maxLines = 1, softWrap = false)
                     Text(authorMetaText, style = bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (countText.isNotEmpty() || timeText.isNotEmpty()) {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {

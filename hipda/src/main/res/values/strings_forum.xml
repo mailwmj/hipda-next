@@ -24,6 +24,5 @@
     <!-- 列表项轻量标记与日期 -->
     <string name="forum_badge_sticky">置顶</string>
     <string name="forum_badge_poll">投票</string>
-    <string name="forum_badge_new">新</string>
     <string name="forum_time_yesterday">昨天</string>
 </resources>

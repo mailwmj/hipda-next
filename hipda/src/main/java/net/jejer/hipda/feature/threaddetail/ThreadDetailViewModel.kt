@@ -702,16 +702,60 @@ class ThreadDetailViewModel(
         loadByPostIdInternal(cleanPid, highlight = true)
     }
 
+    /** 同帖跳至第 1 页顶楼（优先原地零网络落位；跳前压入 [PositionStack] 支持按返回回到原楼）。 */
+    fun jumpToFirstFloor(fromAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank()) return
+        if (cur.firstLoadedPage == 1 && cur.rawFloors.isNotEmpty()) {
+            val firstPid = cur.rawFloors.first().postId
+            val currentAnchor = fromAnchor ?: resolveCurrentAnchor(cur)
+            if (currentAnchor != null && !(currentAnchor.postId == firstPid && currentAnchor.scrollOffsetPx == 0)) {
+                pushCurrentAnchorForJump(currentAnchor)
+            }
+            cancelPagingJobs()
+            val token = ++scrollTokenSeq
+            val nextEpoch = ++sessionGeneration
+            metaState.update {
+                it.copy(
+                    page = 1,
+                    resetEpoch = nextEpoch,
+                    isPrepending = false,
+                    isAppending = false,
+                    prependError = null,
+                    appendError = null,
+                    pendingScroll = PendingScrollTarget(token, firstPid, 0),
+                    highlightedFloor = null,
+                    canPopPositionStack = positionStack.isNotEmpty,
+                )
+            }
+            return
+        }
+        pushCurrentAnchorForJump(fromAnchor)
+        loadInternal(1, cur.filter, AccessPriority.UserBlocking, scrollToTop = true)
+    }
+
+    /** 单页或已加载区间内按楼层号原地跳转（匹配该楼层或最近的后续楼层，压入 [PositionStack] 并短暂高亮）。 */
+    fun jumpToFloorNumber(targetFloor: Int, fromAnchor: ReadingPositionAnchor? = null) {
+        val cur = metaState.value
+        if (cur.tid.isBlank() || cur.rawFloors.isEmpty()) return
+        val resolved = cur.rawFloors.firstOrNull { it.floor >= targetFloor } ?: cur.rawFloors.last()
+        jumpToFloor(targetPid = resolved.postId, targetTid = cur.tid, fromAnchor = fromAnchor)
+    }
+
     /** 同帖跳至末页末楼（先压入 [PositionStack]，经 `PrependAnchorController` 定位并高亮，覆盖 `R-M7-G1 S2`）。 */
     fun jumpToLastPage(fromAnchor: ReadingPositionAnchor? = null) {
         val cur = metaState.value
         if (cur.tid.isBlank()) return
-        if (cur.filter is ThreadDetailFilterUi.All && cur.lastLoadedPage >= cur.lastPage && cur.rawFloors.isNotEmpty()) {
+        if (cur.lastLoadedPage >= cur.lastPage && cur.rawFloors.isNotEmpty()) {
             jumpToFloor(targetPid = cur.rawFloors.last().postId, targetTid = cur.tid, fromAnchor = fromAnchor)
             return
         }
         pushCurrentAnchorForJump(fromAnchor)
-        loadLastPageInternal(highlightLast = true)
+        if (cur.filter !is ThreadDetailFilterUi.All) {
+            loadInternal(cur.lastPage, cur.filter, AccessPriority.UserBlocking, scrollToLast = true)
+        } else {
+            loadLastPageInternal(highlightLast = true)
+        }
     }
 
     /** 拉取被警告楼层对应的 `misc.php?action=viewwarning` 记录（经项目统一 [SiteAccessGateway]）。 */

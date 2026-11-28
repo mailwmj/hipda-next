@@ -36,10 +36,9 @@ data class ForumMetadata(
 /** 64dp 收起图标轨上的版块展示模式（product-design.md §3.2）。 */
 @Immutable
 sealed interface CollapsedForumDisplay {
-    /** 默认：18dp 矢量图标 + 下方 10sp 1–2 字短标。 */
-    data class IconWithShortLabel(
+    /** 默认：居中 22dp 纯矢量图标（与顶部功能入口和底部按钮统一节奏，不显示下方字母/文字）。 */
+    data class IconOnly(
         val icon: ImageVector,
-        val shortLabel: String,
     ) : CollapsedForumDisplay
 
     /** 回退：未知 `fid` 或图标撞车时的 28×28dp 圆角短标/首字徽标。 */
@@ -50,7 +49,7 @@ sealed interface CollapsedForumDisplay {
 
 /**
  * 纯函数计算 64dp 收起轨中每个关注版块的展示形态：
- * - 若版块有内置矢量图标，且在当前关注列表中无其他版块映射到同一图标，展示 [CollapsedForumDisplay.IconWithShortLabel]；
+ * - 若版块有内置矢量图标，且在当前关注列表中无其他版块映射到同一图标，展示 [CollapsedForumDisplay.IconOnly]；
  * - 若版块无内置图标（未知 `fid`）或与列表中其他版块图标撞车，自动回退为 [CollapsedForumDisplay.MonogramBadge]。
  */
 fun resolveCollapsedForumDisplays(
@@ -64,10 +63,7 @@ fun resolveCollapsedForumDisplays(
     return forums.associate { forum ->
         val icon = forum.icon
         val display = if (icon != null && (iconCounts[icon] ?: 0) == 1) {
-            CollapsedForumDisplay.IconWithShortLabel(
-                icon = icon,
-                shortLabel = forum.shortLabel,
-            )
+            CollapsedForumDisplay.IconOnly(icon = icon)
         } else {
             CollapsedForumDisplay.MonogramBadge(badgeText = forum.badgeMonogram)
         }

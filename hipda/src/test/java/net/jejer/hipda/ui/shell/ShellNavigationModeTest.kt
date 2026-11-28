@@ -340,12 +340,12 @@ class ShellNavigationModeTest {
         assertEquals("21 个内置版块 fid 应唯一", 21, builtIns.map { it.fid }.distinct().size)
         assertEquals("21 个内置版块矢量图标应互不撞车", 21, builtIns.mapNotNull { it.icon }.distinct().size)
 
-        // 21 个内置版块一起关注时全部走矢量图标 + 短标
+        // 21 个内置版块一起关注时全部走居中纯矢量图标（无下方字母/文字）
         val allDisplays = resolveCollapsedForumDisplays(builtIns)
         builtIns.forEach { forum ->
             val display = allDisplays[forum.fid]
-            assertTrue("内置版块 ${forum.fullName} 不应撞车", display is CollapsedForumDisplay.IconWithShortLabel)
-            assertTrue("短标长度应为 1..2 字符：${forum.shortLabel}", forum.shortLabel.length in 1..2)
+            assertTrue("内置版块 ${forum.fullName} 不应撞车", display is CollapsedForumDisplay.IconOnly)
+            assertTrue("短标长度应为 1..2 字符（供未知/撞车回退）：${forum.shortLabel}", forum.shortLabel.length in 1..2)
         }
 
         // 未知 fid 回退为无图标 + 首字/短标徽标
@@ -361,7 +361,7 @@ class ShellNavigationModeTest {
         assertEquals(CollapsedForumDisplay.MonogramBadge("摄"), unknownFallbackDisplay[999])
         assertEquals(CollapsedForumDisplay.MonogramBadge("PC"), unknownFallbackDisplay[998])
 
-        // 图标撞车检测：两版块映射到同一图标时自动回退为短标徽标，不撞车项保持图标+短标
+        // 图标撞车检测：两版块映射到同一图标时自动回退为短标徽标，不撞车项保持纯矢量图标
         val sharedIcon = Icons.Rounded.ShoppingCart
         val collidingA = ForumMetadata(fid = 101, fullName = "交易一区", shortLabel = "交", icon = sharedIcon)
         val collidingB = ForumMetadata(fid = 102, fullName = "二手市场", shortLabel = "二", icon = sharedIcon)
@@ -371,7 +371,7 @@ class ShellNavigationModeTest {
         val collisionResult = resolveCollapsedForumDisplays(listOf(collidingA, collidingB, uniqueC))
         assertEquals(CollapsedForumDisplay.MonogramBadge("交"), collisionResult[101])
         assertEquals(CollapsedForumDisplay.MonogramBadge("二"), collisionResult[102])
-        assertTrue(collisionResult[2] is CollapsedForumDisplay.IconWithShortLabel)
+        assertTrue(collisionResult[2] is CollapsedForumDisplay.IconOnly)
     }
 
     @Test

@@ -7,8 +7,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -47,18 +45,19 @@ internal val ThreadDetailTopBarHeight: Dp = 56.dp
 
 /**
  * 帖子详情透明极简顶栏（严格 1 个 `HiGlassStyle.TopBar` 玻璃区域，未滚动纯 `surface` 无底线，向下滚动以
- * `HiMotion.effectsDefault()` 渐进显露玻璃与 `0.5dp` 底线；单行标题 + `48dp` 无底纯图标动作，零嵌套玻璃）。
+ * `HiMotion.effectsDefault()` 渐进显露玻璃与 `0.5dp` 底线；单行标题 + `48dp` 无底纯图标窗口级动作，零嵌套玻璃；
+ * 「只看楼主」已收纳至底部工具条「更多」菜单，单栏右侧彻底清爽、三栏仅保留「全屏阅读 / 显示列表」）。
  */
 @Composable
 internal fun ThreadDetailTopBar(
     title: String,
     @Suppress("UNUSED_PARAMETER") authorName: String? = null,
     chromeSpec: DetailChromeSpec,
-    isAuthorOnly: Boolean,
+    @Suppress("UNUSED_PARAMETER") isAuthorOnly: Boolean = false,
     isScrolledState: State<Boolean>,
     glassState: HiGlassState,
     onBack: () -> Unit,
-    onToggleAuthorOnly: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onToggleAuthorOnly: () -> Unit = {},
     modifier: Modifier = Modifier,
     onScrollToTop: (() -> Unit)? = null,
 ) {
@@ -92,7 +91,10 @@ internal fun ThreadDetailTopBar(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(ThreadDetailTopBarHeight)
-                        .padding(start = if (chromeSpec.showBack) 4.dp else 16.dp, end = 4.dp),
+                        .padding(
+                            start = if (chromeSpec.showBack) 4.dp else 16.dp,
+                            end = if (chromeSpec.fullScreenState != null) 4.dp else 16.dp,
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (chromeSpec.showBack) {
@@ -103,7 +105,7 @@ internal fun ThreadDetailTopBar(
                             .weight(1f)
                             .fillMaxHeight()
                             .then(if (onScrollToTop != null) Modifier.hiTopBarTapToScrollTop(onScrollToTop, enabled = isScrolledState.value) else Modifier)
-                            .padding(start = if (chromeSpec.showBack) 4.dp else 0.dp, end = 8.dp),
+                            .padding(start = if (chromeSpec.showBack) 4.dp else 0.dp, end = if (chromeSpec.fullScreenState != null) 8.dp else 0.dp),
                         contentAlignment = Alignment.CenterStart,
                     ) {
                         Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -116,12 +118,6 @@ internal fun ThreadDetailTopBar(
                             onClick = fs.onToggle,
                         )
                     }
-                    TopBarActionButton(
-                        icon = if (isAuthorOnly) Icons.Rounded.Person else Icons.Outlined.Person,
-                        contentDescription = stringResource(if (isAuthorOnly) R.string.thread_detail_action_view_all else R.string.thread_detail_action_author_only),
-                        active = isAuthorOnly,
-                        onClick = onToggleAuthorOnly,
-                    )
                 }
             }
         }

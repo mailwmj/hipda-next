@@ -320,32 +320,29 @@ class ForumListBehaviorTest {
         }
         composeRule.waitForIdle()
 
-        // 1. withPic=true 不渲染「图」；isSticky=true 内联图钉且无独立「置顶」文本；isPoll + typeName 合入元信息行；绝对时间今日输出 HH:mm
+        // 1. withPic=true 不渲染「图」；isSticky=true 内联图钉且无独立「置顶」文本；isNew=true 不渲染「新」标签；isPoll + typeName 合入元信息行；绝对时间今日输出 HH:mm
         composeRule.onNodeWithText("图", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithText("置顶", useUnmergedTree = true).assertDoesNotExist()
         val pinNode = composeRule.onNodeWithContentDescription("置顶", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
         val shortTitleNode = composeRule.onNodeWithText("短标题新帖测试", substring = true, useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
         assertTrue("置顶图钉应内联在标题首行垂直范围内", pinNode.boundsInRoot.top >= shortTitleNode.boundsInRoot.top - 2f && pinNode.boundsInRoot.bottom <= shortTitleNode.boundsInRoot.bottom + 2f)
-        // 短标题 isNew=true：「新」内联在标题末尾，元信息行不重复渲染单独「新」节点
         val shortTitleText = shortTitleNode.config[SemanticsProperties.Text].joinToString("") { it.text }
-        assertTrue("短标题应把「新」内联在末尾，实际=$shortTitleText", shortTitleText.endsWith("新"))
+        assertFalse("已取消列表「新」标签，短标题末尾不得附加「新」：$shortTitleText", shortTitleText.endsWith("新"))
         composeRule.onNodeWithText("新", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithText("投票 · 手机 · long_author_1", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithText("09:05", useUnmergedTree = true).assertIsDisplayed()
 
-        // 2. 超长 2 行截断标题 + isNew=true：标题发生 hasVisualOverflow，「新」自动回落到元信息行首完整可见；作者名不因 Spacer 被腰斩
+        // 2. 超长 2 行截断标题 + isNew=true：不渲染「新」标签；作者名不因 Spacer 被腰斩
         currentItem = longOverflowNewItem
         composeRule.waitForIdle()
         val longTitleNode = composeRule.onNodeWithText("这是一条非常非常长", substring = true, useUnmergedTree = true).fetchSemanticsNode()
         val titleLayouts = mutableListOf<TextLayoutResult>()
         longTitleNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(titleLayouts)
         assertTrue("超长标题在 274dp 下必须触发 2 行视觉溢出", titleLayouts.single().hasVisualOverflow)
-        val fallbackNewBounds = composeRule.onNodeWithText("新", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        composeRule.onNodeWithText("新", useUnmergedTree = true).assertDoesNotExist()
         val authorNode = composeRule.onNodeWithText("long_author_1", useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
         val authorLayouts = mutableListOf<TextLayoutResult>()
         authorNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(authorLayouts)
-        assertTrue("回落后的「新」应位于标题下方元信息行", fallbackNewBounds.top >= longTitleNode.boundsInRoot.bottom - 2f)
-        assertTrue("回落后的「新」应位于作者名左侧", fallbackNewBounds.right <= authorNode.boundsInRoot.left + 2f)
         assertFalse("去掉 Spacer(weight(1f)) 后，13 字符作者名在 274dp 窄中栏应完整显示不截断", authorLayouts.single().hasVisualOverflow)
 
         // 3. 投票 + 同名分类「投票」去重，不出现「投票 · 投票」
