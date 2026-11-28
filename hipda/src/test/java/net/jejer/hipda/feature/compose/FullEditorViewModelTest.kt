@@ -665,4 +665,47 @@ class FullEditorViewModelTest {
         advanceUntilIdle()
         assertEquals(7L, vm.uiState.value.focusRequestVersion)
     }
+
+    /** 修复轮 1（B1 + S1）：restoreSavedStateIfFresh 不递增 focusRequestVersion；访客原地登录对 NewThread/Reply 递增，EditPost 等原文加载后递增。 */
+    @Test
+    fun u5a_fix1_restoreSavedStateDoesNotBumpFocus_andGuestInPlaceLoginBumpsForNewThreadAndReply() = runTest(testDispatcher) {
+        val postRepo = FakePostRepository().apply {
+            prePostHandler = { req ->
+                if (req is PrePostRequest.EditPost) {
+                    PrePostResult.Success(defaultSamplePrePostInfo().copy(subject = "原标题", text = "原正文"))
+                } else {
+                    PrePostResult.Success(defaultSamplePrePostInfo())
+                }
+            }
+        }
+        val authRepo = FakeQuickReplyAuthRepository(initialAccount = null)
+        val vm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+
+        // S1: 访客态开 NewThread -> focusRequestVersion == 0；原地登录 -> +1
+        vm.open(FullEditorRequest.NewThread(initialFid = 2))
+        advanceUntilIdle()
+        assertEquals(0L, vm.uiState.value.focusRequestVersion)
+        authRepo.setSignedIn()
+        advanceUntilIdle()
+        assertEquals(1L, vm.uiState.value.focusRequestVersion)
+
+        // S1: 登出后访客态开 Reply -> 不递增；原地登录 -> +1
+        vm.requestClose(emitSavedSnackbar = false)
+        authRepo.setSignedOut()
+        advanceUntilIdle()
+        vm.open(FullEditorRequest.Reply(FullEditorHandoff(tid = "1001", fid = 2, text = "abc", selectionStart = 3, selectionEnd = 3)))
+        advanceUntilIdle()
+        assertEquals(1L, vm.uiState.value.focusRequestVersion)
+        authRepo.setSignedIn()
+        advanceUntilIdle()
+        assertEquals(2L, vm.uiState.value.focusRequestVersion)
+
+        // B1: 进程重建恢复已有打开会话（restoreSavedStateIfFresh）不触发初次打开聚焦版本递增
+        val exported = vm.exportSavedState()
+        val freshVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+        freshVm.restoreSavedStateIfFresh(exported)
+        advanceUntilIdle()
+        assertTrue(freshVm.uiState.value.isOpen)
+        assertEquals("进程重建恢复既有会话不应主动推进 focusRequestVersion", 0L, freshVm.uiState.value.focusRequestVersion)
+    }
 }

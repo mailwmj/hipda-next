@@ -17,10 +17,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -31,6 +35,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.click
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.HasDefaultViewModelProviderFactory
 import androidx.lifecycle.ViewModel
@@ -86,6 +91,7 @@ import net.jejer.hipda.data.post.PostTestSettingsRepository
 import net.jejer.hipda.data.post.gbkHtmlResponse
 import net.jejer.hipda.data.settings.AppSettings
 import net.jejer.hipda.data.settings.PaneSplit
+import net.jejer.hipda.feature.app.MultiPaneResizableWindowHost
 import net.jejer.hipda.feature.app.MultiPaneTestHarness
 import net.jejer.hipda.feature.app.NextAppRoot
 import net.jejer.hipda.feature.app.verticalHingeLayoutInfo
@@ -131,7 +137,15 @@ class U5aFocusAndOverlayTest {
         val hideCalls = AtomicInteger(0)
         override fun show() { showCalls.incrementAndGet() }
         override fun hide() { hideCalls.incrementAndGet() }
+        fun reset() { showCalls.set(0); hideCalls.set(0) }
     }
+
+    private val emojiSlot: @androidx.compose.runtime.Composable (QuickReplyEmojiPanelHost) -> Unit = { host ->
+        EmojiPanelRendererImpl().Content(host, Modifier)
+    }
+
+    private fun isNodeFocused(matcher: SemanticsMatcher): Boolean =
+        composeRule.onNode(matcher).fetchSemanticsNode().config.getOrNull(SemanticsProperties.Focused) == true
 
     /** 验收 1(a)：快速回复输入「abc」点「展开全屏」→ 完整编辑器正文自动获得焦点、内容「abc」光标在末尾且触发 show()；覆盖全屏/居中模态/右栏三种形态。 */
     @Test
@@ -721,6 +735,193 @@ class U5aFocusAndOverlayTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithContentDescription("关闭").assertIsDisplayed()
         assertEquals(0, composeRule.onAllNodesWithContentDescription("返回").fetchSemanticsNodes().size)
+    }
+
+    /** 修复轮 1 阻断 B1 回归（移植自 V-U5a probe3a）：发新帖标题输字后跨形态旋转 1280→749→411 与 StateRestorationTester 恢复不丢输入、正文不抢标题焦点且不重调 show()。 */
+    @Test
+    @Config(qualifiers = "w1280dp-h800dp-xhdpi")
+    fun regressionB1_rotationAndStateRestoration_preservesInputAndDoesNotReGrabFocus() {
+        val restorationTester = StateRestorationTester(composeRule)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val owner = ownerWithComposeVms(harness, postRepo, editorVm)
+        val keyboardSpy = RecordingKeyboardController()
+        var winSize by mutableStateOf(DpSize(1280.dp, 800.dp))
+
+        restorationTester.setContent {
+            MultiPaneResizableWindowHost(winSize) {
+                CompositionLocalProvider(
+                    LocalViewModelStoreOwner provides owner,
+                    LocalSoftwareKeyboardController provides keyboardSpy,
+                ) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = harness.authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            emojiPanelSlot = emojiSlot,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 在发新帖（无草稿）中聚焦标题并输入内容（标题保持聚焦）
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+        val subjectMatcher = hasSetTextAction() and SemanticsMatcher.expectValue(
+            SemanticsProperties.ContentDescription,
+            listOf("标题"),
+        )
+        val bodyMatcher = hasSetTextAction() and SemanticsMatcher.expectValue(
+            SemanticsProperties.ContentDescription,
+            listOf("正文"),
+        )
+        assertTrue("发新帖初始应聚焦标题", isNodeFocused(subjectMatcher))
+        composeRule.onNode(subjectMatcher).performTextInput("旋转不丢标题")
+        composeRule.waitForIdle()
+        assertTrue("输入标题后标题应仍聚焦", isNodeFocused(subjectMatcher))
+
+        // 1. 旋转/缩窗（1280 -> 749 -> 411）：不丢输入、不重调 show()、标题不被正文抢焦
+        keyboardSpy.reset()
+        winSize = DpSize(749.dp, 559.dp)
+        composeRule.waitForIdle()
+        val showAfterResizeToModal = keyboardSpy.showCalls.get()
+        val bodyFocusedAfterResizeToModal = isNodeFocused(bodyMatcher)
+        val subjectFocusedAfterResizeToModal = isNodeFocused(subjectMatcher)
+        winSize = DpSize(411.dp, 891.dp)
+        composeRule.waitForIdle()
+        val showAfterResizeToFull = keyboardSpy.showCalls.get()
+        val bodyFocusedAfterResizeToFull = isNodeFocused(bodyMatcher)
+        val subjectFocusedAfterResizeToFull = isNodeFocused(subjectMatcher)
+
+        assertEquals("旋转后不得丢失已输入标题", "旋转不丢标题", editorVm.uiState.value.subject)
+
+        // 2. StateRestorationTester 模拟 Activity 重建恢复（ViewModel 存活，Composable 重建）
+        keyboardSpy.reset()
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+
+        assertEquals("状态恢复后不得丢失已输入标题", "旋转不丢标题", editorVm.uiState.value.subject)
+        composeRule.onNodeWithText("旋转不丢标题").assertIsDisplayed()
+
+        assertTrue(
+            "旋转/状态恢复不得重复抢焦点或把标题焦点抢走: " +
+                "resizeModal(show=$showAfterResizeToModal,subj=$subjectFocusedAfterResizeToModal,body=$bodyFocusedAfterResizeToModal) " +
+                "resizeFull(show=$showAfterResizeToFull,subj=$subjectFocusedAfterResizeToFull,body=$bodyFocusedAfterResizeToFull) " +
+                "restore(show=${keyboardSpy.showCalls.get()},subj=${isNodeFocused(subjectMatcher)},body=${isNodeFocused(bodyMatcher)})",
+            showAfterResizeToModal == 0 && showAfterResizeToFull == 0 &&
+                !bodyFocusedAfterResizeToModal && !bodyFocusedAfterResizeToFull &&
+                !isNodeFocused(bodyMatcher) && keyboardSpy.showCalls.get() == 0,
+        )
+    }
+
+    /** 修复轮 1 阻断 B1 回归（移植自 V-U5a probe3a2）：回复输字后 StateRestorationTester 恢复不丢输入且不重复调用 show()。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun regressionB1_replyStateRestoration_preservesInputAndDoesNotReCallShow() {
+        val restorationTester = StateRestorationTester(composeRule)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val owner = ownerWithComposeVms(harness, postRepo, editorVm)
+        val keyboardSpy = RecordingKeyboardController()
+
+        restorationTester.setContent {
+            MultiPaneResizableWindowHost(DpSize(411.dp, 891.dp)) {
+                CompositionLocalProvider(
+                    LocalViewModelStoreOwner provides owner,
+                    LocalSoftwareKeyboardController provides keyboardSpy,
+                ) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = harness.authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            emojiPanelSlot = emojiSlot,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.Reply(FullEditorHandoff("1001", 2, "abc", 3, 3, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+        val bodyMatcher = hasSetTextAction() and hasText("abcdef", substring = true)
+        composeRule.onNode(hasSetTextAction()).performTextInput("def")
+        composeRule.waitForIdle()
+        assertEquals("abcdef", editorVm.uiState.value.body.serialize())
+        assertTrue(keyboardSpy.showCalls.get() >= 1)
+
+        keyboardSpy.reset()
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+
+        assertEquals("状态恢复后不得丢失输入", "abcdef", editorVm.uiState.value.body.serialize())
+        composeRule.onNode(bodyMatcher).assertIsDisplayed()
+        assertEquals("状态恢复后不应为同一已消费会话重复调用 show()", 0, keyboardSpy.showCalls.get())
+    }
+
+    /** 修复轮 1 建议 S1：访客态打开 NewThread / Reply 后原地登录成功，自动聚焦标题或正文并触发 show()。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun regressionS1_guestOpensNewThreadAndReplyThenLogsInInPlace_autoFocusesAndShowsKeyboard() {
+        val postRepo = FakePostRepository()
+        val authRepo = FakeQuickReplyAuthRepository(initialAccount = null)
+        val vm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+        val kb = RecordingKeyboardController()
+
+        composeRule.setContent {
+            CompositionLocalProvider(LocalSoftwareKeyboardController provides kb) {
+                HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
+                    FullEditorScreen(viewModel = vm, onOpenLogin = {})
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. 访客态打开 NewThread -> 不弹键盘；原地登录后 -> 标题自动聚焦并调 show()
+        composeRule.runOnIdle { vm.open(FullEditorRequest.NewThread(initialFid = 2)) }
+        composeRule.waitForIdle()
+        assertEquals("访客态开新帖不得调 show()", 0, kb.showCalls.get())
+        assertFalse("访客态开新帖不得自动聚焦标题", isNodeFocused(hasSetTextAction() and SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf("标题"))))
+
+        composeRule.runOnIdle { authRepo.setSignedIn() }
+        composeRule.waitForIdle()
+        assertTrue("访客态新帖原地登录后应自动聚焦标题", isNodeFocused(hasSetTextAction() and SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf("标题"))))
+        assertTrue("访客态新帖原地登录后应调 show()", kb.showCalls.get() >= 1)
+
+        // 2. 退出登录再访客态打开 Reply -> 不弹键盘；原地登录后 -> 正文自动聚焦并调 show()
+        composeRule.runOnIdle {
+            vm.requestClose(emitSavedSnackbar = false)
+            authRepo.setSignedOut()
+        }
+        composeRule.waitForIdle()
+        kb.reset()
+
+        composeRule.runOnIdle {
+            vm.open(FullEditorRequest.Reply(FullEditorHandoff(tid = "2607001", fid = 2, text = "guest reply", selectionStart = 11, selectionEnd = 11, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+        assertEquals("访客态开回复不得调 show()", 0, kb.showCalls.get())
+
+        composeRule.runOnIdle { authRepo.setSignedIn() }
+        composeRule.waitForIdle()
+        assertTrue("访客态回复原地登录后应自动聚焦正文", isNodeFocused(hasSetTextAction() and hasText("guest reply")))
+        assertTrue("访客态回复原地登录后应调 show()", kb.showCalls.get() >= 1)
     }
 
     private fun ownerWithComposeVms(

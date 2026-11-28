@@ -575,7 +575,7 @@ class FullEditorIntegrationTest {
      */
     @Test
     @Config(qualifiers = "w749dp-h559dp-xhdpi")
-    fun probe4b_drawerAboveRightPaneEditor_backPriorityPreservedAcrossStateRestoration() {
+    fun probe4b_modalEditorAboveDrawer_backPriorityPreservedAcrossStateRestoration() {
         val restorationTester = StateRestorationTester(composeRule)
         val harness = MultiPaneTestHarness()
         val postRepo = FakePostRepository()

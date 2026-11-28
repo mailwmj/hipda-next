@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,8 +59,36 @@ fun FullEditorScreen(
     registerBackHandler: Boolean = true,
     onRegisterBackAction: ((() -> Unit)?) -> Unit = {},
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
+) = FullEditorScreenContent(
+    viewModel = viewModel,
+    onOpenLogin = onOpenLogin,
+    modifier = modifier,
+    isModalCard = isModalCard,
+    registerBackHandler = registerBackHandler,
+    onRegisterBackAction = onRegisterBackAction,
+    emojiPanelSlot = emojiPanelSlot,
+    externalConsumedFocusVersion = null,
+)
+
+@Composable
+internal fun FullEditorScreenContent(
+    viewModel: FullEditorViewModel,
+    onOpenLogin: () -> Unit,
+    modifier: Modifier = Modifier,
+    isModalCard: Boolean = false,
+    registerBackHandler: Boolean = true,
+    onRegisterBackAction: ((() -> Unit)?) -> Unit = {},
+    emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
+    externalConsumedFocusVersion: MutableLongState? = null,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val localConsumedFocusVersion = rememberSaveable(uiState.sessionId) { mutableLongStateOf(0L) }
+    val consumedFocusVersionState = externalConsumedFocusVersion ?: localConsumedFocusVersion
+    SideEffect {
+        if (consumedFocusVersionState.longValue > uiState.focusRequestVersion) {
+            consumedFocusVersionState.longValue = uiState.focusRequestVersion
+        }
+    }
     val effectiveEmojiSlot = rememberResolvedEmojiPanelSlot(emojiPanelSlot)
     val hasEmojiSlot = effectiveEmojiSlot != null
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -147,12 +176,12 @@ fun FullEditorScreen(
                     val shouldFocusSubject = uiState.isNewThread && uiState.subject.isBlank()
                     val showAutoFocusKeyboard: () -> Unit = { if (!emojiController.isEmojiModeActive) keyboardController?.show() }
                     if (uiState.isNewThread) {
-                        NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.focusRequestVersion, uiState.isLoggedIn, shouldFocusSubject, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress, showAutoFocusKeyboard)
+                        NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.focusRequestVersion, consumedFocusVersionState, uiState.isLoggedIn, shouldFocusSubject, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress, showAutoFocusKeyboard)
                     } else if (uiState.isEditPost && uiState.showsEditSubjectField) {
                         EditPostMetaSection(uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.validationError, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
                     }
                     ImageUploadStrip(uiState.uploads, uiState.insertedImageIds, uiState.uploadSummaryProgress, viewModel::onInsertUploadedImage, viewModel::retryUpload, viewModel::removeUpload)
-                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, uiState.isLoggedIn, shouldFocusSubject, previewUriByImageId, visualBodyPlaceholder, bodyContentDescription, viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress, showAutoFocusKeyboard)
+                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, consumedFocusVersionState, uiState.isLoggedIn, shouldFocusSubject, previewUriByImageId, visualBodyPlaceholder, bodyContentDescription, viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress, showAutoFocusKeyboard)
                     if (uiState.validationError == FullEditorValidationError.ContentTooShort) {
                         Text(stringResource(FullEditorValidationError.ContentTooShort.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
                     }
@@ -165,6 +194,13 @@ fun FullEditorScreen(
                     if (isModalCard || bottomSlotHeightDp > 0.dp || isEmojiPanelOpen) 0.dp else navBarBottomDp,
                     launchImagePicker,
                 ) { if (hasEmojiSlot) emojiController.toggle() }
+            }
+        }
+
+        val latestEditorInterior by rememberUpdatedState(editorInterior)
+        val movableInterior = remember {
+            movableContentOf { colModifier: Modifier ->
+                latestEditorInterior(colModifier)
             }
         }
 
@@ -182,10 +218,10 @@ fun FullEditorScreen(
                         modifier = Modifier.fillMaxWidth().fillMaxHeight().heightIn(max = 720.dp),
                         shape = cardShape, color = cs.surface, contentColor = cs.onSurface, tonalElevation = 2.dp,
                         border = BorderStroke(0.5.dp, cs.outlineVariant.copy(alpha = 0.5f)),
-                    ) { editorInterior(Modifier.fillMaxSize().background(cs.surface)) }
+                    ) { movableInterior(Modifier.fillMaxSize().background(cs.surface)) }
                 }
             } else {
-                editorInterior(Modifier.weight(1f).fillMaxWidth().background(cs.surface))
+                movableInterior(Modifier.weight(1f).fillMaxWidth().background(cs.surface))
             }
             if (!isEditWaitingOriginal) {
                 EmojiPanelSlotBox(
@@ -322,7 +358,7 @@ private fun <K> EditorDropdownField(label: String, selectedLabel: String?, isErr
 }
 
 @Composable
-private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumMetadata>, typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, focusRequestVersion: Long, isLoggedIn: Boolean, shouldFocusSubject: Boolean, validationError: FullEditorValidationError?, onSelectForum: (Int) -> Unit, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}) {
+private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumMetadata>, typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, focusRequestVersion: Long, consumedFocusVersionState: MutableLongState, isLoggedIn: Boolean, shouldFocusSubject: Boolean, validationError: FullEditorValidationError?, onSelectForum: (Int) -> Unit, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val forumOptions = remember(availableForums) { availableForums.map { it.fid to it.fullName } }
     val selectedForumName = selectedFid?.takeIf { it > 0 }?.let { ForumMetadataRegistry.resolve(it).fullName }
@@ -337,7 +373,7 @@ private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumM
         if (validationError == FullEditorValidationError.SelectForum || validationError == FullEditorValidationError.SelectCategory) {
             Text(stringResource(validationError.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error)
         }
-        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress, focusRequestVersion, isLoggedIn, shouldFocusSubject, onShowKeyboard)
+        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress, focusRequestVersion, consumedFocusVersionState, isLoggedIn, shouldFocusSubject, onShowKeyboard)
     }
     HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
 }
@@ -359,7 +395,7 @@ private fun EditPostMetaSection(typeOptions: Map<String, String>, hasSelectableC
 }
 
 @Composable
-private fun EditorSubjectField(subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, focusRequestVersion: Long = 0L, isLoggedIn: Boolean = false, shouldFocus: Boolean = false, onShowKeyboard: () -> Unit = {}) {
+private fun EditorSubjectField(subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, focusRequestVersion: Long = 0L, consumedFocusVersionState: MutableLongState? = null, isLoggedIn: Boolean = false, shouldFocus: Boolean = false, onShowKeyboard: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val subjectHint = stringResource(R.string.compose_field_subject_hint)
     val subjectStyle = MaterialTheme.typography.titleMedium.copy(color = cs.onSurface)
@@ -369,7 +405,9 @@ private fun EditorSubjectField(subject: String, syncVersion: Long, validationErr
     val latestOnInputPress by rememberUpdatedState(onInputPress)
     LaunchedEffect(subjectInteraction) { subjectInteraction.interactions.collect { if (it is PressInteraction.Press) latestOnInputPress() } }
     LaunchedEffect(focusRequestVersion) {
-        if (isLoggedIn && focusRequestVersion > 0L && shouldFocus) {
+        val consumed = consumedFocusVersionState?.longValue ?: 0L
+        if (isLoggedIn && focusRequestVersion > consumed && shouldFocus) {
+            consumedFocusVersionState?.longValue = focusRequestVersion
             runCatching { focusRequester.requestFocus() }
             onShowKeyboard()
         }
@@ -386,7 +424,7 @@ private fun EditorSubjectField(subject: String, syncVersion: Long, validationErr
 }
 
 @Composable
-private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Long, focusRequestVersion: Long, isLoggedIn: Boolean, preferSubjectFocus: Boolean, previewUriByImageId: Map<String, Uri>, visualPlaceholder: String?, bodyContentDescription: String, onTextBlockChanged: (String, String, Int, Int) -> Unit, onTextBlockSelectionChanged: (String, Int, Int) -> Unit, onRemoveInlineImage: (String) -> Unit, onBackspaceAtBlockStart: () -> Unit, onActiveFocusRequester: (FocusRequester) -> Unit = {}, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}) {
+private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Long, focusRequestVersion: Long, consumedFocusVersionState: MutableLongState, isLoggedIn: Boolean, preferSubjectFocus: Boolean, previewUriByImageId: Map<String, Uri>, visualPlaceholder: String?, bodyContentDescription: String, onTextBlockChanged: (String, String, Int, Int) -> Unit, onTextBlockSelectionChanged: (String, Int, Int) -> Unit, onRemoveInlineImage: (String) -> Unit, onBackspaceAtBlockStart: () -> Unit, onActiveFocusRequester: (FocusRequester) -> Unit = {}, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val bodyStyle = HiTheme.typography.postBody.copy(color = cs.onSurface)
     val latestOnBs by rememberUpdatedState(onBackspaceAtBlockStart)
@@ -407,7 +445,8 @@ private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Lon
                         if (isActive) SideEffect { onActiveFocusRequester(focusRequester) }
                         val fieldState = rememberSyncedTextFieldState(block.text, syncVersion, targetSel, isActive, { txt, sel -> onTextBlockChanged(block.id, txt, sel.start, sel.end) }, { sel -> onTextBlockSelectionChanged(block.id, sel.start, sel.end) }, { focused })
                         LaunchedEffect(focusRequestVersion, isActive) {
-                            if (isLoggedIn && focusRequestVersion > 0L && isActive && !preferSubjectFocus) {
+                            if (isLoggedIn && focusRequestVersion > consumedFocusVersionState.longValue && isActive && !preferSubjectFocus) {
+                                consumedFocusVersionState.longValue = focusRequestVersion
                                 runCatching { focusRequester.requestFocus() }
                                 onShowKeyboard()
                             }

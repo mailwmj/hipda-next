@@ -245,9 +245,19 @@ fun rememberFullEditorHostController(
         }
     }
 
+    val consumedFocusVersionState = rememberSaveable(uiState?.sessionId ?: 0L) { mutableLongStateOf(0L) }
+    val latestConsumedFocusVersionState by rememberUpdatedState(consumedFocusVersionState)
     val movableEditor = remember {
         movableContentOf { editorVm: FullEditorViewModel, isModal: Boolean ->
-            FullEditorScreen(editorVm, { latestOpenLogin() }, isModalCard = isModal, registerBackHandler = false, onRegisterBackAction = { backAction = it }, emojiPanelSlot = latestEmojiSlot)
+            FullEditorScreenContent(
+                viewModel = editorVm,
+                onOpenLogin = { latestOpenLogin() },
+                isModalCard = isModal,
+                registerBackHandler = false,
+                onRegisterBackAction = { backAction = it },
+                emojiPanelSlot = latestEmojiSlot,
+                externalConsumedFocusVersion = latestConsumedFocusVersionState,
+            )
         }
     }
     val effectiveRightW = referenceRightPaneWidthDp(paneLayout, effectiveMiddleWidthDp, persistedSplit)
