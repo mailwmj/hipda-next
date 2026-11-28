@@ -49,7 +49,12 @@ private fun dampingFor(value: Float, canPrev: Boolean, canNext: Boolean): Float 
 
 /** 论坛列表横向切换状态：拖拽期同步写 state，松手/入场交由标准 `Animatable`，`try/finally` 兜底归零。 */
 @Stable
-internal class ForumSwipeState(initialOffsetPx: Float, private val scope: CoroutineScope, private val reducedMotion: () -> Boolean) {
+internal class ForumSwipeState(
+    initialOffsetPx: Float,
+    private val scope: CoroutineScope,
+    private val reducedMotion: () -> Boolean,
+    private val isGenerationValid: () -> Boolean = { true },
+) {
     private val offsetAnim = Animatable(initialOffsetPx)
     private var pendingEnter = initialOffsetPx != 0f
     private var isDragging by mutableStateOf(false)
@@ -67,6 +72,7 @@ internal class ForumSwipeState(initialOffsetPx: Float, private val scope: Corout
     }
 
     fun onDragDelta(deltaPx: Float, widthPx: Float, canPrev: Boolean, canNext: Boolean) {
+        if (!isGenerationValid()) { resetImmediate(); return }
         if (isExiting || widthPx <= 0f) return
         if (!isDragging) {
             val cur = offsetAnim.value
@@ -82,6 +88,7 @@ internal class ForumSwipeState(initialOffsetPx: Float, private val scope: Corout
         velocityX: Float, widthPx: Float, flingThresholdPx: Float, nearZeroPx: Float,
         neighborForStep: (Int) -> ForumListSource?, onCommitSwitch: (ForumListSource, Float) -> Unit,
     ) {
+        if (!isGenerationValid()) { resetImmediate(); return }
         if (isExiting || !isDragging) return
         val cur = dragOffsetPx
         val step = resolveForumSwipeStep(cur, velocityX, widthPx, flingThresholdPx, nearZeroPx)
@@ -110,8 +117,10 @@ internal class ForumSwipeState(initialOffsetPx: Float, private val scope: Corout
         val start = snapStartPx ?: offsetAnim.value
         if (!scope.isActive || reducedMotion() || abs(start - targetPx) < SWIPE_SNAP_EPSILON_PX) {
             isDragging = false; dragOffsetPx = 0f; rawDragPx = 0f
-            if (scope.isActive) activeAnimJob = scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetAnim.snapTo(targetPx) }
-            onComplete?.invoke(); return
+            val valid = isGenerationValid()
+            if (!valid) isExiting = false
+            if (scope.isActive) activeAnimJob = scope.launch(start = CoroutineStart.UNDISPATCHED) { offsetAnim.snapTo(if (valid) targetPx else 0f) }
+            if (valid) onComplete?.invoke(); return
         }
         activeAnimJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             var completed = false
@@ -119,6 +128,7 @@ internal class ForumSwipeState(initialOffsetPx: Float, private val scope: Corout
                 if (snapStartPx != null) offsetAnim.snapTo(snapStartPx)
                 isDragging = false; dragOffsetPx = 0f; rawDragPx = 0f
                 offsetAnim.animateTo(targetValue = targetPx, animationSpec = spec, initialVelocity = velocity)
+                if (!isGenerationValid()) return@launch
                 completed = true; onComplete?.invoke()
             } finally {
                 if (!completed) {

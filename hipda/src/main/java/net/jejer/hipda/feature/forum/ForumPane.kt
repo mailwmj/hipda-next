@@ -122,10 +122,11 @@ fun ForumPane(
         val latestOnSelectSource by rememberUpdatedState(onSelectSource)
         val latestWidthPx by rememberUpdatedState(widthPx)
         val latestFollowed by rememberUpdatedState(uiState.followedForums)
-        val swipeState = remember(source, viewModel, motionScope) {
+        val authGen = viewModel.authGeneration.collectAsStateWithLifecycle().value
+        val swipeState = remember(source, viewModel, motionScope, authGen) {
             val enterSign = viewModel.consumeSwipeHandoff(source).takeIf { chromeSpec.showForumTabs }
             val initPx = if (enterSign != null && widthPx > 0f && !latestReducedMotion) enterSign * widthPx else 0f
-            ForumSwipeState(initPx, motionScope) { latestReducedMotion }
+            ForumSwipeState(initPx, motionScope, { latestReducedMotion }) { viewModel.authGeneration.value == authGen }
         }
         LaunchedEffect(swipeState) { swipeState.startPendingEnterIfNeeded() }
         LaunchedEffect(chromeSpec.showForumTabs, swipeState) { if (!chromeSpec.showForumTabs) { viewModel.clearSwipeHandoff(); swipeState.resetImmediate() } }

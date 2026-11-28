@@ -97,8 +97,10 @@ class ForumViewModel internal constructor(
     private val _refreshErrors = MutableSharedFlow<UiError>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private var activeRefreshJob: Job? = null
     private var pendingSwipeHandoff: ForumSwipeHandoff? = null
+    private val _authGeneration = MutableStateFlow(0)
 
     val refreshErrors: SharedFlow<UiError> = _refreshErrors.asSharedFlow()
+    internal val authGeneration: StateFlow<Int> = _authGeneration.asStateFlow()
 
     val uiState: StateFlow<ForumUiState> = combine(activeSource, latestSettings, buyAndSellTypeId) { src, s, bsType ->
         Triple(src, s, effectiveTypeId(src, bsType))
@@ -288,6 +290,7 @@ class ForumViewModel internal constructor(
     private fun resetForAuthChange(uidChanged: Boolean) {
         activeRefreshJob?.cancel()
         pendingSwipeHandoff = null
+        _authGeneration.value += 1
         initializedQueries.clear(); todayNewInitialized = false
         if (uidChanged) todayNewState.value = TodayNewState()
         auxState.update {
