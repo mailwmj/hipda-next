@@ -54,7 +54,7 @@ import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.motion.rememberHiMotionCoroutineScope
 import net.jejer.hipda.ui.designsystem.topbar.hiTopBarTapToScrollTop
 
-internal val FORUM_TOP_BAR_TITLE_ROW_HEIGHT: Dp = 56.dp
+internal val FORUM_TOP_BAR_TITLE_ROW_HEIGHT: Dp = 48.dp
 private const val TopBarSnapEpsilonPx: Float = 0.5f
 
 @Immutable

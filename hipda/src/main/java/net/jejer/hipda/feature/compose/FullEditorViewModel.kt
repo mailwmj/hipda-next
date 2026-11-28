@@ -195,8 +195,14 @@ class FullEditorViewModel internal constructor(
                 _uiState.update { cur ->
                     val nextErr = if (loggedIn && cur.inlineError?.uiError?.action == UiErrorAction.Login) null else cur.inlineError
                     val nextEditErr = if (loggedIn && cur.editLoadError?.uiError?.action == UiErrorAction.Login) null else cur.editLoadError
-                    if (cur.isLoggedIn == loggedIn && cur.inlineError == nextErr && cur.editLoadError == nextEditErr) cur
-                    else cur.copy(isLoggedIn = loggedIn, inlineError = nextErr, editLoadError = nextEditErr)
+                    val bumpFocus = becameLoggedIn && cur.isOpen && !cur.isEditPost
+                    if (cur.isLoggedIn == loggedIn && cur.inlineError == nextErr && cur.editLoadError == nextEditErr && !bumpFocus) cur
+                    else cur.copy(
+                        isLoggedIn = loggedIn,
+                        inlineError = nextErr,
+                        editLoadError = nextEditErr,
+                        focusRequestVersion = if (bumpFocus) cur.focusRequestVersion + 1L else cur.focusRequestVersion,
+                    )
                 }
                 val snap = _uiState.value
                 if (becameLoggedIn && snap.isOpen && snap.prePostInfo == null && prePostJob?.isActive != true) {
@@ -225,7 +231,12 @@ class FullEditorViewModel internal constructor(
         if (cur.isOpen) {
             if (isSameSessionTarget(cur, request)) {
                 val pick = (request as? FullEditorRequest.Reply)?.handoff?.openImagePickerImmediately == true
-                _uiState.update { it.copy(focusRequestVersion = it.focusRequestVersion + 1L, pendingImagePickerTrigger = if (pick) it.pendingImagePickerTrigger + 1L else it.pendingImagePickerTrigger) }
+                _uiState.update {
+                    it.copy(
+                        focusRequestVersion = if (it.isLoggedIn) it.focusRequestVersion + 1L else it.focusRequestVersion,
+                        pendingImagePickerTrigger = if (pick) it.pendingImagePickerTrigger + 1L else it.pendingImagePickerTrigger,
+                    )
+                }
                 return
             }
             persistOrCleanDraft(cur, emitSavedSnackbar = true)
@@ -282,6 +293,7 @@ class FullEditorViewModel internal constructor(
             uploads = toUploadedItems((saved.uploadedImageIds + doc.insertedImageIds()).distinct()),
             hadPersistedDraft = saved.hadPersistedDraft, showDraftBanner = saved.showDraftRestoredBanner,
             editOriginal = restoredOrig, isLoadingEditOriginal = saved.mode is FullEditorMode.EditPost && restoredOrig == null,
+            requestFocus = false,
         )
         if (saved.mode is FullEditorMode.EditPost) loadEditPostSession(token, preserveRestoredInput = restoredOrig != null) else prefetchPrePostIfEligible(token)
     }
@@ -598,10 +610,12 @@ class FullEditorViewModel internal constructor(
             val applyBody = !overwriteOnlyIfEmpty || cur.body.isVisuallyEmpty()
             val body = if (applyBody) EditorBodyDocument.parse(draft.content) else cur.body
             val extra = toUploadedItems((draft.attachments + body.insertedImageIds()).distinct().filterNot { it in cur.uploadedImageIds })
+            val filledDraftSubject = applySub && draft.subject.isNotBlank()
             cur.copy(
                 subject = if (applySub) draft.subject else cur.subject,
                 selectedTypeId = if (applySub && draft.typeId.isNotBlank()) draft.typeId else cur.selectedTypeId,
                 body = body, bodySyncVersion = if (applyBody) cur.bodySyncVersion + 1L else cur.bodySyncVersion,
+                focusRequestVersion = if (cur.isLoggedIn && filledDraftSubject) cur.focusRequestVersion + 1L else cur.focusRequestVersion,
                 uploads = cur.uploads + extra, hadPersistedDraft = true, showDraftRestoredBanner = applySub || applyBody || extra.isNotEmpty(),
             )
         }
@@ -653,6 +667,7 @@ class FullEditorViewModel internal constructor(
                 cur.copy(
                     prePostInfo = info, typeOptions = info.typeOptions, editOriginal = original,
                     subject = restored?.subject ?: original.subject, selectedTypeId = typeId, body = doc, bodySyncVersion = cur.bodySyncVersion + 1L,
+                    focusRequestVersion = if (cur.isLoggedIn) cur.focusRequestVersion + 1L else cur.focusRequestVersion,
                     uploads = toUploadedItems(images), hadPersistedDraft = restored != null, showDraftRestoredBanner = restored != null,
                     isLoadingEditOriginal = false, isPrefetchingPrePost = false, editLoadError = null,
                 )
@@ -666,11 +681,14 @@ class FullEditorViewModel internal constructor(
         body: EditorBodyDocument = EditorBodyDocument.empty(), uploads: List<UploadAttachmentItem> = emptyList(),
         hadPersistedDraft: Boolean = false, showDraftBanner: Boolean = false, cooldownSeconds: Int? = null, bumpPickerTrigger: Boolean = false,
         editOriginal: EditOriginalSnapshot? = null, isLoadingEditOriginal: Boolean = false, resetSnackbar: Boolean = false,
+        requestFocus: Boolean = true,
     ) = _uiState.update { cur ->
         val nextReset = if (resetSnackbar) ++snackbarResetSeq else cur.snackbarResetSeq
         cur.copy(
             isOpen = isOpen, sessionId = sessionId, mode = mode, selectedFid = selectedFid, typeOptions = emptyMap(), selectedTypeId = selectedTypeId,
-            subject = subject, body = body, bodySyncVersion = cur.bodySyncVersion + 1L, uploads = uploads, uploadBatchTotal = 0, uploadBatchCompleted = 0,
+            subject = subject, body = body, bodySyncVersion = cur.bodySyncVersion + 1L,
+            focusRequestVersion = if (isOpen && requestFocus && cur.isLoggedIn) cur.focusRequestVersion + 1L else cur.focusRequestVersion,
+            uploads = uploads, uploadBatchTotal = 0, uploadBatchCompleted = 0,
             prePostInfo = null, isPrefetchingPrePost = false, isSubmitting = false,
             cooldownSeconds = cooldownSeconds ?: maxOf(cur.cooldownSeconds, postRepository.getRemainingCooldownSeconds().coerceAtLeast(0)),
             hadPersistedDraft = hadPersistedDraft, showDraftRestoredBanner = showDraftBanner, validationError = null, inlineError = null,

@@ -363,9 +363,9 @@ class ThreadBottomToolbarTest {
     }
 
     @Test
-    fun u2_topBarAligns56dp_hidesAuthorSubtitle_andUsesBorderlessPureIconButtons() {
-        assertEquals("详情顶栏高度必须与论坛顶栏标题行 56.dp 严格相等", FORUM_TOP_BAR_TITLE_ROW_HEIGHT, ThreadDetailTopBarHeight)
-        assertEquals(56.dp, ThreadDetailTopBarHeight)
+    fun u2_topBarAligns48dp_hidesAuthorSubtitle_andUsesBorderlessPureIconButtons() {
+        assertEquals("详情顶栏高度必须与论坛顶栏标题行 48.dp 严格相等", FORUM_TOP_BAR_TITLE_ROW_HEIGHT, ThreadDetailTopBarHeight)
+        assertEquals(48.dp, ThreadDetailTopBarHeight)
 
         var isFullScreen by mutableStateOf(false)
         val scrolledState = mutableStateOf(false)

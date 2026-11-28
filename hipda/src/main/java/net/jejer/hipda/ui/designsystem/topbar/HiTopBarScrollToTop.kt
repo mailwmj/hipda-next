@@ -146,7 +146,7 @@ fun HiSolidTopBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(48.dp)
                     .padding(start = if (hasBack) 4.dp else 16.dp, end = endPadding),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

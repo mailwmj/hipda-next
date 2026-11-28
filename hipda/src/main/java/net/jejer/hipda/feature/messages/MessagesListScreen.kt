@@ -41,7 +41,7 @@ import net.jejer.hipda.ui.designsystem.motion.*
 import net.jejer.hipda.ui.designsystem.state.*
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
 
-private val TOP_BAR_ROW_HEIGHT = 56.dp
+private val TOP_BAR_ROW_HEIGHT = 48.dp
 
 /** 消息列表主界面（纯色顶栏，零毛玻璃）：单栏含 `短消息 | 提醒` 分段标签与未读点，侧栏态隐藏标签行。 */
 @OptIn(ExperimentalMaterial3Api::class)

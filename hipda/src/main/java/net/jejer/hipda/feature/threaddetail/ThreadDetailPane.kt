@@ -470,6 +470,8 @@ fun ThreadDetailPane(
     onExpandToFullEditor: ((FullEditorHandoff) -> Unit)? = null,
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
     onThreadDeleted: (() -> Unit)? = null,
+    quickReplyMaxWidthDp: Dp = Dp.Unspecified,
+    quickReplyAlignment: Alignment = Alignment.BottomCenter,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val latestUiState by rememberUpdatedState(uiState)
@@ -1116,6 +1118,8 @@ fun ThreadDetailPane(
                         quickReplyOccupiedBottomDp = occupied
                         shouldLiftListForQuickReply = shouldLift
                     },
+                    maxSheetWidthDp = quickReplyMaxWidthDp,
+                    sheetAlignment = quickReplyAlignment,
                 )
             }
 

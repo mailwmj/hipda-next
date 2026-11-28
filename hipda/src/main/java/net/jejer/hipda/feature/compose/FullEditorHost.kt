@@ -23,6 +23,8 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import net.jejer.hipda.R
+import net.jejer.hipda.data.settings.PaneSplit
+import net.jejer.hipda.feature.app.resolvePaneSplitAnchors
 import net.jejer.hipda.feature.common.*
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.hiHorizontalSafeInsets
@@ -34,6 +36,27 @@ const val FULL_EDITOR_MODAL_HORIZONTAL_MARGIN_DP: Float = 48f
 
 /** 完整编辑器多栏投放形态（严格遵循 `product-design.md` §4.2）。 */
 enum class FullEditorPlacement { FullScreen, CenteredModal, RightPane }
+
+/** 计算只剩右栏（全屏阅读或收起列表）时与正常三栏一致的参考右栏宽（供完整编辑器形态与快速回复限宽共用）。 */
+fun referenceRightPaneWidthDp(
+    paneLayout: ShellPaneLayout,
+    effectiveMiddleWidthDp: Dp,
+    persistedSplit: PaneSplit = PaneSplit.DEFAULT,
+): Dp {
+    if (!paneLayout.isThreePane) return paneLayout.rightPaneWidthDp.dp
+    val referenceMiddleDp = if (effectiveMiddleWidthDp <= 0.5.dp) {
+        val anchorDp = if (persistedSplit == PaneSplit.COLLAPSED) {
+            paneLayout.middlePaneWidthDp
+        } else {
+            resolvePaneSplitAnchors(paneLayout, hasDetailContent = true)[persistedSplit]
+                ?: paneLayout.middlePaneWidthDp
+        }
+        anchorDp.dp
+    } else {
+        effectiveMiddleWidthDp
+    }
+    return (paneLayout.contentWidthDp.dp - referenceMiddleDp).coerceAtLeast(0.dp)
+}
 
 fun resolveFullEditorPlacement(paneLayout: ShellPaneLayout, windowHeightDp: Float, effectiveRightPaneWidthDp: Float = paneLayout.rightPaneWidthDp.toFloat()): FullEditorPlacement = when {
     windowHeightDp < 480f -> FullEditorPlacement.FullScreen
@@ -156,6 +179,7 @@ fun rememberFullEditorHostController(
     onRefreshForum: () -> Unit, onOpenThread: (ThreadNavArgs) -> Unit, onOpenLogin: () -> Unit,
     injectedViewModel: FullEditorViewModel? = null, injectedRequestBus: FullEditorRequestBus? = null,
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
+    persistedSplit: PaneSplit = PaneSplit.DEFAULT,
 ): FullEditorHostController {
     val resources = LocalResources.current
     var savedState by rememberSaveable(stateSaver = FullEditorSavedStateSaver) { mutableStateOf(FullEditorSavedState()) }
@@ -221,12 +245,22 @@ fun rememberFullEditorHostController(
         }
     }
 
+    val consumedFocusVersionState = rememberSaveable(uiState?.sessionId ?: 0L) { mutableLongStateOf(0L) }
+    val latestConsumedFocusVersionState by rememberUpdatedState(consumedFocusVersionState)
     val movableEditor = remember {
         movableContentOf { editorVm: FullEditorViewModel, isModal: Boolean ->
-            FullEditorScreen(editorVm, { latestOpenLogin() }, isModalCard = isModal, registerBackHandler = false, onRegisterBackAction = { backAction = it }, emojiPanelSlot = latestEmojiSlot)
+            FullEditorScreenContent(
+                viewModel = editorVm,
+                onOpenLogin = { latestOpenLogin() },
+                isModalCard = isModal,
+                registerBackHandler = false,
+                onRegisterBackAction = { backAction = it },
+                emojiPanelSlot = latestEmojiSlot,
+                externalConsumedFocusVersion = latestConsumedFocusVersionState,
+            )
         }
     }
-    val effectiveRightW = if (paneLayout.isThreePane) (paneLayout.contentWidthDp.dp - effectiveMiddleWidthDp).coerceAtLeast(0.dp) else paneLayout.rightPaneWidthDp.dp
+    val effectiveRightW = referenceRightPaneWidthDp(paneLayout, effectiveMiddleWidthDp, persistedSplit)
     val placement = resolveFullEditorPlacement(paneLayout, windowHeightDp, effectiveRightW.value)
     val invokeBack: () -> Unit = { backAction?.invoke() ?: vm?.requestClose(true) }
     return FullEditorHostController(

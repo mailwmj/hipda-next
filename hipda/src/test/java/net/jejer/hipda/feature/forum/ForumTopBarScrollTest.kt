@@ -582,11 +582,11 @@ class ForumTopBarScrollTest {
         }
     }
 
-    /** U1 验收 1：论坛顶栏无标签态高严格 56dp，静止态底线透明度为 0f（像素零色差），滚动后随动效平滑淡入显示。 */
+    /** U1/U5a 验收：论坛顶栏无标签态高严格 48dp，静止态底线透明度为 0f（像素零色差），滚动后随动效平滑淡入显示。 */
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     @Config(qualifiers = "w411dp-h891dp-xhdpi")
-    fun forumTopBar_height56dp_andBottomDividerHiddenAtRestFadesInOnScroll() = withAnimatorDurationScale(1f) {
+    fun forumTopBar_height48dp_andBottomDividerHiddenAtRestFadesInOnScroll() = withAnimatorDurationScale(1f) {
         var scrolled by mutableStateOf(false)
         setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
@@ -612,7 +612,7 @@ class ForumTopBarScrollTest {
         waitForIdle()
 
         val barBounds = onNodeWithTag("forum_top_bar_host").fetchSemanticsNode().boundsInRoot
-        assertEquals("论坛顶栏（无标签态）高度必须严格为 56dp", 56f, with(density) { barBounds.height.toDp().value }, 0.5f)
+        assertEquals("论坛顶栏（无标签态）高度必须严格为 48dp", 48f, with(density) { barBounds.height.toDp().value }, 0.5f)
 
         fun bottomLineMaxChannelDelta(): Int {
             val bmp = onNodeWithTag("forum_top_bar_host").captureToImage().asAndroidBitmap()

@@ -851,7 +851,7 @@ class HiAdaptiveShellTest {
         val bottomAccountBounds = onNodeWithTag(HiShellTestTags.SidebarAccountRow).fetchSemanticsNode().boundsInRoot
         assertEquals("749dp 下左侧栏应贴左", 0f, sidebarBounds.left, 1f)
         assertEquals("749dp 下左侧栏宽应为 64dp", 64f, with(density) { sidebarBounds.width.toDp().value }, 1f)
-        assertEquals("64dp 图标轨顶部栏（含 24dp 状态栏）应精确为 80dp（顶栏净高 56dp）", 80f, with(density) { topBarBounds.height.toDp().value }, 1f)
+        assertEquals("64dp 图标轨顶部栏（含 24dp 状态栏）应精确为 72dp（顶栏净高 48dp）", 72f, with(density) { topBarBounds.height.toDp().value }, 1f)
 
         // 断言默认 3 个关注版块（Discovery=2, Buy & Sell=6, Geek Talks=7）全部完整位于可视区、列表区内且严格位于底栏之上
         listOf(2, 6, 7).forEach { fid ->
@@ -1011,10 +1011,10 @@ class HiAdaptiveShellTest {
         onNodeWithTag(HiShellTestTags.sidebarEntry(ShellSidebarEntry.FavoritesAndAttention)).assertDoesNotExist()
     }
 
-    /** U1 验收 1：展开态左侧栏与 64dp 收起态左侧栏顶部栏高度严格统一为 56dp（与中栏论坛顶栏 56dp 对齐）。 */
+    /** U1/U5a 验收：展开态左侧栏与 64dp 收起态左侧栏顶部栏高度严格统一为 48dp（与中栏论坛顶栏 48dp 对齐）。 */
     @Test
     @Config(qualifiers = "w933dp-h696dp-xhdpi")
-    fun sidebarTopBar_expandedAndCollapsed_alignAt56dpHorizon() = withAnimatorDurationScale(0f) {
+    fun sidebarTopBar_expandedAndCollapsed_alignAt48dpHorizon() = withAnimatorDurationScale(0f) {
         setContent {
             HiTheme(themeMode = HiThemeMode.LIGHT, seed = HiColorPresets.Brand.toSeed()) {
                 HiAdaptiveShell(
@@ -1033,8 +1033,8 @@ class HiAdaptiveShellTest {
 
         val expandedTopBar = onNodeWithTag(HiShellTestTags.SidebarTopBar).fetchSemanticsNode().boundsInRoot
         val expandedToggle = onNodeWithTag(HiShellTestTags.SidebarToggleButton).fetchSemanticsNode().boundsInRoot
-        assertEquals("展开态左栏顶栏高度必须为 56dp", 56f, with(density) { expandedTopBar.height.toDp().value }, 0.5f)
-        assertEquals("展开态收起按钮垂直居中于 56dp 顶栏", expandedTopBar.center.y, expandedToggle.center.y, 1.5f)
+        assertEquals("展开态左栏顶栏高度必须为 48dp", 48f, with(density) { expandedTopBar.height.toDp().value }, 0.5f)
+        assertEquals("展开态收起按钮垂直居中于 48dp 顶栏", expandedTopBar.center.y, expandedToggle.center.y, 1.5f)
 
         // 切换至 64dp 收起态
         onNodeWithTag(HiShellTestTags.SidebarToggleButton).performClick()
@@ -1042,8 +1042,8 @@ class HiAdaptiveShellTest {
 
         val collapsedTopBar = onNodeWithTag(HiShellTestTags.SidebarTopBar).fetchSemanticsNode().boundsInRoot
         val collapsedToggle = onNodeWithTag(HiShellTestTags.SidebarToggleButton).fetchSemanticsNode().boundsInRoot
-        assertEquals("64dp 收起态左栏顶栏高度必须为 56dp", 56f, with(density) { collapsedTopBar.height.toDp().value }, 0.5f)
-        assertEquals("收起态展开按钮垂直居中于 56dp 顶栏", collapsedTopBar.center.y, collapsedToggle.center.y, 1.5f)
+        assertEquals("64dp 收起态左栏顶栏高度必须为 48dp", 48f, with(density) { collapsedTopBar.height.toDp().value }, 0.5f)
+        assertEquals("收起态展开按钮垂直居中于 48dp 顶栏", collapsedTopBar.center.y, collapsedToggle.center.y, 1.5f)
     }
 
     @Test

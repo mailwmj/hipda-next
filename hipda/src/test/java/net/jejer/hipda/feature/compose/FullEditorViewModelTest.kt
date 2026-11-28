@@ -23,8 +23,10 @@ import net.jejer.hipda.data.post.PostSubmitRequest
 import net.jejer.hipda.data.post.PostSubmitResult
 import net.jejer.hipda.data.post.PrePostRequest
 import net.jejer.hipda.data.post.PrePostResult
+import net.jejer.hipda.data.settings.PaneSplit
 import net.jejer.hipda.ui.shell.ShellHingeBoundsDp
 import net.jejer.hipda.ui.shell.calculateShellPaneLayout
+import androidx.compose.ui.unit.dp
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -565,5 +567,145 @@ class FullEditorViewModelTest {
         vm.open(FullEditorRequest.fromHandoff(FullEditorHandoff("2609999", 2, "[attachimg]77001[/attachimg]", 0, 0, threadAuthor = "linus_hi")))
         advanceUntilIdle()
         assertTrue(vm.uiState.value.hasSendableContent)
+    }
+
+    /** U5a 验收 2：referenceRightPaneWidthDp + resolveFullEditorPlacement 单测表（正常 / 全屏阅读 / COLLAPSED / BALANCED）。 */
+    @Test
+    fun u5a_referenceRightPaneWidthDp_andPlacementMatrix_consistentAcrossRightPaneOnlyStates() {
+        // 749×559 (64 / 274 / 411)
+        val w749 = calculateShellPaneLayout(749f, 559f, hasDetailContent = true)
+        assertEquals(411.dp, referenceRightPaneWidthDp(w749, w749.middlePaneWidthDp.dp, PaneSplit.DEFAULT))
+        assertEquals(411.dp, referenceRightPaneWidthDp(w749, 0.dp, PaneSplit.DEFAULT))
+        assertEquals(411.dp, referenceRightPaneWidthDp(w749, 0.dp, PaneSplit.COLLAPSED))
+        assertEquals(FullEditorPlacement.CenteredModal, resolveFullEditorPlacement(w749, 559f, referenceRightPaneWidthDp(w749, w749.middlePaneWidthDp.dp, PaneSplit.DEFAULT).value))
+        assertEquals(FullEditorPlacement.CenteredModal, resolveFullEditorPlacement(w749, 559f, referenceRightPaneWidthDp(w749, 0.dp, PaneSplit.DEFAULT).value))
+        assertEquals(FullEditorPlacement.CenteredModal, resolveFullEditorPlacement(w749, 559f, referenceRightPaneWidthDp(w749, 0.dp, PaneSplit.COLLAPSED).value))
+
+        // 933×696 (187 / 298 / 448; BALANCED middle=373, right=373)
+        val w933 = calculateShellPaneLayout(933f, 696f, hasDetailContent = true)
+        assertEquals(448.dp, referenceRightPaneWidthDp(w933, w933.middlePaneWidthDp.dp, PaneSplit.DEFAULT))
+        assertEquals(448.dp, referenceRightPaneWidthDp(w933, 0.dp, PaneSplit.DEFAULT))
+        assertEquals(448.dp, referenceRightPaneWidthDp(w933, 0.dp, PaneSplit.COLLAPSED))
+        assertEquals(373.dp, referenceRightPaneWidthDp(w933, 373.dp, PaneSplit.BALANCED))
+        assertEquals(373.dp, referenceRightPaneWidthDp(w933, 0.dp, PaneSplit.BALANCED))
+        for ((mid, split) in listOf(w933.middlePaneWidthDp.dp to PaneSplit.DEFAULT, 0.dp to PaneSplit.DEFAULT, 0.dp to PaneSplit.COLLAPSED, 373.dp to PaneSplit.BALANCED, 0.dp to PaneSplit.BALANCED)) {
+            assertEquals(FullEditorPlacement.CenteredModal, resolveFullEditorPlacement(w933, 696f, referenceRightPaneWidthDp(w933, mid, split).value))
+        }
+
+        // 1280×800 (220 / 380 / 680; BALANCED middle=480, right=580)
+        val w1280 = calculateShellPaneLayout(1280f, 800f, hasDetailContent = true)
+        assertEquals(680.dp, referenceRightPaneWidthDp(w1280, w1280.middlePaneWidthDp.dp, PaneSplit.DEFAULT))
+        assertEquals(680.dp, referenceRightPaneWidthDp(w1280, 0.dp, PaneSplit.DEFAULT))
+        assertEquals(680.dp, referenceRightPaneWidthDp(w1280, 0.dp, PaneSplit.COLLAPSED))
+        assertEquals(580.dp, referenceRightPaneWidthDp(w1280, 0.dp, PaneSplit.BALANCED))
+        for ((mid, split) in listOf(w1280.middlePaneWidthDp.dp to PaneSplit.DEFAULT, 0.dp to PaneSplit.DEFAULT, 0.dp to PaneSplit.COLLAPSED, 0.dp to PaneSplit.BALANCED)) {
+            assertEquals(FullEditorPlacement.RightPane, resolveFullEditorPlacement(w1280, 800f, referenceRightPaneWidthDp(w1280, mid, split).value))
+        }
+
+        // 手机单栏 411×891 -> FullScreen；铰链双栏 749×559 -> CenteredModal & 371dp
+        val phone = calculateShellPaneLayout(411f, 891f, hasDetailContent = true)
+        assertEquals(0.dp, referenceRightPaneWidthDp(phone, 0.dp, PaneSplit.DEFAULT))
+        assertEquals(FullEditorPlacement.FullScreen, resolveFullEditorPlacement(phone, 891f, referenceRightPaneWidthDp(phone, 0.dp, PaneSplit.DEFAULT).value))
+
+        val hinge = calculateShellPaneLayout(749f, 559f, hingeBoundsDp = ShellHingeBoundsDp(371f, 378f), hasDetailContent = true)
+        assertEquals(371.dp, referenceRightPaneWidthDp(hinge, 0.dp, PaneSplit.DEFAULT))
+        assertEquals(FullEditorPlacement.CenteredModal, resolveFullEditorPlacement(hinge, 559f, referenceRightPaneWidthDp(hinge, 0.dp, PaneSplit.DEFAULT).value))
+    }
+
+    /** U5a 验收 1(e)：新会话 / 延迟非空草稿标题 / EditPost 原文完成均递增 focusRequestVersion，未登录不递增，同目标重开保持递增。 */
+    @Test
+    fun u5a_focusRequestVersion_tracksNewSessionDraftTitleEditLoad_andPreservesSameTargetReopen() = runTest(testDispatcher) {
+        val draftFid2 = DraftEntity(DraftKey.newThread("2").value, subject = "有标题草稿", content = "正文内容", updatedAt = 1_000L)
+        val draftFid6 = DraftEntity(DraftKey.newThread("6").value, subject = "", content = "仅有正文无标题", updatedAt = 1_000L)
+        val postRepo = FakePostRepository(initialDrafts = mapOf(draftFid2.key to draftFid2, draftFid6.key to draftFid6)).apply {
+            prePostHandler = { req ->
+                if (req is PrePostRequest.EditPost) {
+                    PrePostResult.Success(defaultSamplePrePostInfo().copy(subject = "原标题", text = "原正文"))
+                } else {
+                    PrePostResult.Success(defaultSamplePrePostInfo())
+                }
+            }
+        }
+        val authRepo = FakeQuickReplyAuthRepository(initialAccount = null)
+        val vm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+
+        // 未登录开新会话不递增 focusRequestVersion
+        vm.open(FullEditorRequest.NewThread(initialFid = 7))
+        advanceUntilIdle()
+        assertEquals(0L, vm.uiState.value.focusRequestVersion)
+        vm.requestClose(emitSavedSnackbar = false)
+
+        // 登录后开无草稿新会话：递增 1 次
+        authRepo.setSignedIn()
+        advanceUntilIdle()
+        vm.open(FullEditorRequest.NewThread(initialFid = 7))
+        assertEquals(1L, vm.uiState.value.focusRequestVersion)
+        advanceUntilIdle()
+        assertEquals(1L, vm.uiState.value.focusRequestVersion)
+
+        // 同目标重开：再递增 1 次（既有行为不回归）
+        vm.open(FullEditorRequest.NewThread(initialFid = 7))
+        assertEquals(2L, vm.uiState.value.focusRequestVersion)
+
+        // 带非空草稿标题的新会话：resetSession +1，loadNewThreadDraft 再 +1
+        vm.open(FullEditorRequest.NewThread(initialFid = 2))
+        assertEquals(3L, vm.uiState.value.focusRequestVersion)
+        advanceUntilIdle()
+        assertEquals(4L, vm.uiState.value.focusRequestVersion)
+
+        // 仅正文无标题的草稿：resetSession +1，loadNewThreadDraft 不额外递增
+        vm.open(FullEditorRequest.NewThread(initialFid = 6))
+        assertEquals(5L, vm.uiState.value.focusRequestVersion)
+        advanceUntilIdle()
+        assertEquals(5L, vm.uiState.value.focusRequestVersion)
+
+        // EditPost：resetSession +1，原文加载完成后再 +1
+        vm.open(FullEditorRequest.EditPost(fid = 2, tid = "2607001", pid = "5501"))
+        assertEquals(6L, vm.uiState.value.focusRequestVersion)
+        advanceUntilIdle()
+        assertEquals(7L, vm.uiState.value.focusRequestVersion)
+    }
+
+    /** 修复轮 1（B1 + S1）：restoreSavedStateIfFresh 不递增 focusRequestVersion；访客原地登录对 NewThread/Reply 递增，EditPost 等原文加载后递增。 */
+    @Test
+    fun u5a_fix1_restoreSavedStateDoesNotBumpFocus_andGuestInPlaceLoginBumpsForNewThreadAndReply() = runTest(testDispatcher) {
+        val postRepo = FakePostRepository().apply {
+            prePostHandler = { req ->
+                if (req is PrePostRequest.EditPost) {
+                    PrePostResult.Success(defaultSamplePrePostInfo().copy(subject = "原标题", text = "原正文"))
+                } else {
+                    PrePostResult.Success(defaultSamplePrePostInfo())
+                }
+            }
+        }
+        val authRepo = FakeQuickReplyAuthRepository(initialAccount = null)
+        val vm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+
+        // S1: 访客态开 NewThread -> focusRequestVersion == 0；原地登录 -> +1
+        vm.open(FullEditorRequest.NewThread(initialFid = 2))
+        advanceUntilIdle()
+        assertEquals(0L, vm.uiState.value.focusRequestVersion)
+        authRepo.setSignedIn()
+        advanceUntilIdle()
+        assertEquals(1L, vm.uiState.value.focusRequestVersion)
+
+        // S1: 登出后访客态开 Reply -> 不递增；原地登录 -> +1
+        vm.requestClose(emitSavedSnackbar = false)
+        authRepo.setSignedOut()
+        advanceUntilIdle()
+        vm.open(FullEditorRequest.Reply(FullEditorHandoff(tid = "1001", fid = 2, text = "abc", selectionStart = 3, selectionEnd = 3)))
+        advanceUntilIdle()
+        assertEquals(1L, vm.uiState.value.focusRequestVersion)
+        authRepo.setSignedIn()
+        advanceUntilIdle()
+        assertEquals(2L, vm.uiState.value.focusRequestVersion)
+
+        // B1: 进程重建恢复已有打开会话（restoreSavedStateIfFresh）不触发初次打开聚焦版本递增
+        val exported = vm.exportSavedState()
+        val freshVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, FakeComposeSettingsRepository()) { 10_000L }
+        freshVm.restoreSavedStateIfFresh(exported)
+        advanceUntilIdle()
+        assertTrue(freshVm.uiState.value.isOpen)
+        assertEquals("进程重建恢复既有会话不应主动推进 focusRequestVersion", 0L, freshVm.uiState.value.focusRequestVersion)
     }
 }

@@ -69,7 +69,7 @@ internal fun SettingsSolidTopBar(
     val bgColor by animateColorAsState(if (scrolled) cs.surfaceContainer else cs.surface, HiMotion.effectsDefault(), label = "SettingsTopBarColor")
     Column(modifier.fillMaxWidth().background(bgColor)) {
         Spacer(Modifier.windowInsetsTopHeight(WindowInsets.hiTopSafeBar))
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = if (showBack) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = if (showBack) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
             if (showBack && onBack != null) {
                 val interaction = remember { MutableInteractionSource() }
                 IconButton(onBack, Modifier.defaultMinSize(48.dp, 48.dp).hiPressScale(interaction), interactionSource = interaction) {

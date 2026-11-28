@@ -40,8 +40,8 @@ import net.jejer.hipda.ui.designsystem.glass.HiGlassSurface
 import net.jejer.hipda.ui.designsystem.motion.HiMotion
 import net.jejer.hipda.ui.designsystem.topbar.hiTopBarTapToScrollTop
 
-/** 帖子详情透明顶栏固定高度（不含状态栏内边距），与 `FORUM_TOP_BAR_TITLE_ROW_HEIGHT` 严格对齐 56dp。 */
-internal val ThreadDetailTopBarHeight: Dp = 56.dp
+/** 帖子详情透明顶栏固定高度（不含状态栏内边距），与 `FORUM_TOP_BAR_TITLE_ROW_HEIGHT` 严格对齐 48dp。 */
+internal val ThreadDetailTopBarHeight: Dp = 48.dp
 
 /**
  * 帖子详情透明极简顶栏（严格 1 个 `HiGlassStyle.TopBar` 玻璃区域，未滚动纯 `surface` 无底线，向下滚动以

@@ -38,6 +38,7 @@ import net.jejer.hipda.feature.common.currentHiImageLoader
 import net.jejer.hipda.ui.designsystem.HiShapeTokens
 import net.jejer.hipda.ui.designsystem.HiTheme
 import net.jejer.hipda.ui.designsystem.feedback.hiListItemPressIndication
+import net.jejer.hipda.ui.shell.ForumVectorIcons
 
 /** 窄中栏紧凑副行排版阈值（product-design.md §4.2：< 300dp 取消独立大头像列）。 */
 val FORUM_COMPACT_ROW_WIDTH_THRESHOLD: Dp = 300.dp
@@ -157,9 +158,13 @@ fun ThreadListRow(
                     if (compactLayout) ThreadAuthorAvatar(summary.avatarUrl, summary.author, 20.dp)
                     Text(authorMetaText, style = bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (countText.isNotEmpty() || timeText.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (countText.isNotEmpty()) Text(countText, style = metaNumericStyle, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
-                            if (countText.isNotEmpty() && timeText.isNotEmpty()) Text("·", style = bodySmall, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (countText.isNotEmpty()) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(ForumVectorIcons.ChatBubble, contentDescription = null, modifier = Modifier.size(14.dp), tint = cs.onSurfaceVariant)
+                                    Text(countText, style = metaNumericStyle, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                }
+                            }
                             if (timeText.isNotEmpty()) Text(timeText, style = metaNumericStyle, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
                         }
                     }

@@ -142,7 +142,7 @@ import net.jejer.hipda.ui.designsystem.motion.hiShrinkVertically
 import net.jejer.hipda.ui.designsystem.motion.hiSlideInHorizontally
 import net.jejer.hipda.ui.designsystem.motion.hiSlideOutHorizontally
 
-private val SidebarFixedBarHeight: Dp = 56.dp
+private val SidebarFixedBarHeight: Dp = 48.dp
 private val SidebarBottomFixedBarHeight: Dp = 48.dp
 private val SidebarSlotSize: Dp = 48.dp
 private val SidebarPillSize: Dp = 44.dp
@@ -464,7 +464,7 @@ private fun SidebarColumnBody(
     val collapsedDisplays = remember(forums) { resolveCollapsedForumDisplays(forums) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // 顶部固定区（56dp，与中/右栏顶栏水平对齐；静止无底线，滚动后渐变 surfaceContainer + 0.5dp 底线）
+        // 顶部固定区（48dp，与中/右栏顶栏水平对齐；静止无底线，滚动后渐变 surfaceContainer + 0.5dp 底线）
         Box(
             modifier = Modifier
                 .testTag(HiShellTestTags.SidebarTopBar)
