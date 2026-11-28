@@ -68,6 +68,7 @@ import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import net.jejer.hipda.data.account.SavedAccount
+import net.jejer.hipda.data.auth.AuthRepository
 import net.jejer.hipda.data.auth.DefaultAuthRepository
 import net.jejer.hipda.data.auth.ForumHttpClient
 import net.jejer.hipda.data.auth.computeLegacyPasswordMd5
@@ -155,13 +156,14 @@ class V_U5aFocusAndRegressionProbesTest {
         harness: MultiPaneTestHarness,
         postRepo: PostRepository,
         editorVm: FullEditorViewModel,
+        authRepo: AuthRepository = harness.authRepo,
     ): ViewModelStoreOwner {
         val store = ViewModelStore()
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
                 modelClass.isAssignableFrom(QuickReplyViewModel::class.java) ->
-                    QuickReplyViewModel(postRepo, harness.authRepo, clockMs = { 10_000L }) as T
+                    QuickReplyViewModel(postRepo, authRepo, clockMs = { 10_000L }) as T
                 modelClass.isAssignableFrom(FullEditorViewModel::class.java) -> editorVm as T
                 else -> harness.vmFactory.create(modelClass)
             }
@@ -870,5 +872,463 @@ class V_U5aFocusAndRegressionProbesTest {
             dispatchIme(ime)
             assertEquals("FullEditor 表情->IME ime=$ime 底缘偏移", edBaseline, editorToolbarBottomDp(), 0.5f)
         }
+    }
+
+    /** Probe 5a (复验1): 旋转/恢复后标题、正文各自原焦点保持且 show() 不被重调；恢复后再次点「展开全屏」或同目标重开仍能聚焦。 */
+    @Test
+    @Config(qualifiers = "w1280dp-h800dp-xhdpi")
+    fun probe5a_rotationAndRestore_preserveFocusedFieldAndAllowPostRestoreFocus() {
+        val restorationTester = StateRestorationTester(composeRule)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val owner = composeOwnerWithVms(harness, postRepo, editorVm)
+        val keyboardSpy = SpySoftwareKeyboardController()
+        var winSize by mutableStateOf(DpSize(1280.dp, 800.dp))
+
+        restorationTester.setContent {
+            MultiPaneResizableWindowHost(winSize) {
+                CompositionLocalProvider(
+                    LocalViewModelStoreOwner provides owner,
+                    LocalSoftwareKeyboardController provides keyboardSpy,
+                ) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = harness.authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            emojiPanelSlot = emojiSlot,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        val subjectMatcher = hasSetTextAction() and SemanticsMatcher.expectValue(
+            SemanticsProperties.ContentDescription,
+            listOf("标题"),
+        )
+        val bodyMatcher = hasSetTextAction() and SemanticsMatcher.expectValue(
+            SemanticsProperties.ContentDescription,
+            listOf("正文"),
+        )
+
+        // A. 标题聚焦：1280 -> 749 -> 411 旋转 + StateRestorationTester 恢复
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNode(subjectMatcher).performTextInput("标题保焦")
+        composeRule.waitForIdle()
+        assertTrue("标题应持有初始焦点", isNodeFocused(subjectMatcher))
+
+        val probe5aFailures = mutableListOf<String>()
+        fun checkFalse(cond: Boolean, msg: String) {
+            if (!cond) probe5aFailures += msg
+        }
+
+        keyboardSpy.reset()
+        winSize = DpSize(749.dp, 559.dp)
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls == 0, "A1 标题缩窗至 CenteredModal showCalls=${keyboardSpy.showCalls}")
+        checkFalse(isNodeFocused(subjectMatcher), "A1 缩窗至 CenteredModal(749) 后标题焦点丢失(subj=${isNodeFocused(subjectMatcher)}, body=${isNodeFocused(bodyMatcher)})")
+        checkFalse(!isNodeFocused(bodyMatcher), "A1 缩窗至 CenteredModal 后正文抢焦")
+
+        winSize = DpSize(411.dp, 891.dp)
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls == 0, "A2 标题缩窗至 FullScreen showCalls=${keyboardSpy.showCalls}")
+        checkFalse(isNodeFocused(subjectMatcher), "A2 缩窗至 FullScreen(411) 后标题焦点丢失(subj=${isNodeFocused(subjectMatcher)}, body=${isNodeFocused(bodyMatcher)})")
+        checkFalse(!isNodeFocused(bodyMatcher), "A2 缩窗至 FullScreen 后正文抢焦")
+
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls == 0, "A3 标题状态恢复 showCalls=${keyboardSpy.showCalls}")
+        checkFalse("标题保焦" == editorVm.uiState.value.subject, "A3 状态恢复丢失标题输入=${editorVm.uiState.value.subject}")
+        checkFalse(isNodeFocused(subjectMatcher), "A3 状态恢复后标题焦点丢失(subj=${isNodeFocused(subjectMatcher)}, body=${isNodeFocused(bodyMatcher)})")
+        checkFalse(!isNodeFocused(bodyMatcher), "A3 状态恢复后正文抢焦")
+
+        // B. 正文聚焦：用户点击正文输入后，411 -> 749 -> 1280 旋转 + StateRestorationTester 恢复
+        composeRule.onNode(bodyMatcher).performClick()
+        composeRule.onNode(bodyMatcher).performTextInput("正文保焦")
+        composeRule.waitForIdle()
+        checkFalse(isNodeFocused(bodyMatcher), "B0 点击正文后正文未获焦")
+
+        keyboardSpy.reset()
+        winSize = DpSize(749.dp, 559.dp)
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls == 0, "B1 正文旋转至 CenteredModal showCalls=${keyboardSpy.showCalls}")
+        checkFalse(isNodeFocused(bodyMatcher), "B1 旋转至 CenteredModal(749) 后正文焦点丢失(subj=${isNodeFocused(subjectMatcher)}, body=${isNodeFocused(bodyMatcher)})")
+        checkFalse(!isNodeFocused(subjectMatcher), "B1 旋转至 CenteredModal 后标题抢焦")
+
+        winSize = DpSize(1280.dp, 800.dp)
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls == 0, "B2 正文旋转至 RightPane showCalls=${keyboardSpy.showCalls}")
+        checkFalse(isNodeFocused(bodyMatcher), "B2 旋转至 RightPane(1280) 后正文焦点丢失(subj=${isNodeFocused(subjectMatcher)}, body=${isNodeFocused(bodyMatcher)})")
+        checkFalse(!isNodeFocused(subjectMatcher), "B2 旋转至 RightPane 后标题抢焦")
+
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls == 0, "B3 正文状态恢复 showCalls=${keyboardSpy.showCalls}")
+        checkFalse("正文保焦" == editorVm.uiState.value.body.serialize(), "B3 状态恢复丢失正文输入=${editorVm.uiState.value.body.serialize()}")
+        checkFalse(isNodeFocused(bodyMatcher), "B3 状态恢复后正文焦点丢失(subj=${isNodeFocused(subjectMatcher)}, body=${isNodeFocused(bodyMatcher)})")
+        checkFalse(!isNodeFocused(subjectMatcher), "B3 状态恢复后标题抢焦")
+
+        // C. 恢复后同目标重开 & 再次点「展开全屏」仍能聚焦（已消费版本不得吞掉后续请求）
+        composeRule.runOnIdle { editorVm.requestClose(emitSavedSnackbar = false) }
+        winSize = DpSize(411.dp, 891.dp)
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+        val replyBodyMatcher = hasSetTextAction()
+        composeRule.onNode(replyBodyMatcher).performTextInput("不吞后续")
+        composeRule.waitForIdle()
+        checkFalse(isNodeFocused(replyBodyMatcher), "C0 回复展开全屏后正文未聚焦")
+
+        keyboardSpy.reset()
+        restorationTester.emulateSavedInstanceStateRestore()
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls == 0, "C1 回复恢复后重调了 show()=${keyboardSpy.showCalls}")
+        checkFalse(isNodeFocused(replyBodyMatcher), "C1 回复恢复后正文原焦点丢失")
+
+        // C1: 恢复后同目标重开仍聚焦并调 show()
+        keyboardSpy.reset()
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.Reply(FullEditorHandoff("1001", 2, "不吞后续", 4, 4, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls >= 1, "C2 恢复后同目标重开未调用 show()=${keyboardSpy.showCalls}")
+        checkFalse(isNodeFocused(replyBodyMatcher), "C2 恢复后同目标重开正文未聚焦")
+
+        // C2: 恢复后关闭并再次通过 QuickReply -> 展开全屏 仍能聚焦并调 show()
+        composeRule.onAllNodesWithContentDescription("返回").let { it[it.fetchSemanticsNodes().lastIndex] }.performClick()
+        composeRule.waitForIdle()
+        checkFalse(!editorVm.uiState.value.isOpen, "C3 点击返回后编辑器未关闭")
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        keyboardSpy.reset()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+        checkFalse(keyboardSpy.showCalls >= 1, "C4 恢复后再次展开全屏未调用 show()=${keyboardSpy.showCalls}")
+        checkFalse(isNodeFocused(replyBodyMatcher), "C4 恢复后再次展开全屏正文未聚焦")
+
+        assertTrue("probe5a 检查失败项:\n" + probe5aFailures.joinToString("\n"), probe5aFailures.isEmpty())
+    }
+
+    /** Probe 5b (复验2): 关闭编辑器后再打开另一个新会话（发新帖 -> 关闭 -> 回复 -> 关闭 -> 发新帖）仍自动聚焦并 show()。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun probe5b_closeEditorThenOpenDifferentSession_autoFocusesAndShows() {
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val owner = composeOwnerWithVms(harness, postRepo, editorVm)
+        val keyboardSpy = SpySoftwareKeyboardController()
+
+        composeRule.setContent {
+            MultiPaneResizableWindowHost(DpSize(411.dp, 891.dp)) {
+                CompositionLocalProvider(
+                    LocalViewModelStoreOwner provides owner,
+                    LocalSoftwareKeyboardController provides keyboardSpy,
+                ) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = harness.authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            emojiPanelSlot = emojiSlot,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        val subjectMatcher = hasSetTextAction() and SemanticsMatcher.expectValue(
+            SemanticsProperties.ContentDescription,
+            listOf("标题"),
+        )
+
+        // 1. 打开 NewThread -> 确认标题聚焦且 show() >= 1
+        composeRule.onNodeWithContentDescription("发新帖").performClick()
+        composeRule.waitForIdle()
+        assertTrue("发新帖应聚焦标题", isNodeFocused(subjectMatcher))
+        assertTrue("发新帖应调用 show()", keyboardSpy.showCalls >= 1)
+
+        // 2. 通过顶栏返回关闭编辑器（底层页面若同样含返回按钮，编辑器浮层位于最上层最后一个）
+        composeRule.onAllNodesWithContentDescription("返回").let { it[it.fetchSemanticsNodes().lastIndex] }.performClick()
+        composeRule.waitForIdle()
+        assertFalse("关闭后编辑器应处于关闭状态", editorVm.uiState.value.isOpen)
+
+        // 3. 打开另一个新会话（进入帖子 -> 回复 -> 展开全屏）-> 正文聚焦且 show() >= 1
+        composeRule.onNodeWithText("测试帖子标题 1001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("回复").performClick()
+        composeRule.waitForIdle()
+        keyboardSpy.reset()
+        composeRule.onNodeWithContentDescription("展开全屏").performClick()
+        composeRule.waitForIdle()
+
+        assertTrue("展开全屏后应打开回复会话", editorVm.uiState.value.mode is FullEditorMode.Reply)
+        assertTrue("从发新帖关闭后转入回复仍必须自动聚焦正文", isNodeFocused(hasSetTextAction()))
+        assertTrue("从发新帖关闭后转入回复仍必须调用 show()", keyboardSpy.showCalls >= 1)
+
+        // 4. 再关闭回复并通过另一个 Reply 目标直接打开新会话 -> 同样聚焦并 show()
+        composeRule.onAllNodesWithContentDescription("返回").let { it[it.fetchSemanticsNodes().lastIndex] }.performClick()
+        composeRule.waitForIdle()
+        keyboardSpy.reset()
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.Reply(FullEditorHandoff("1002", 2, "二号会话", 4, 4, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+        assertTrue("关闭后再开新回复会话正文必须聚焦", isNodeFocused(hasSetTextAction() and hasText("二号会话")))
+        assertTrue("关闭后再开新回复会话必须调用 show()", keyboardSpy.showCalls >= 1)
+    }
+
+    /** Probe 5c (复验3): 访客态打开 NewThread/Reply 后原地登录自动聚焦并 show()；EditPost 不受影响。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun probe5c_guestOpenThenInPlaceLogin_autoFocusesNewThreadAndReply_editPostUnaffected() {
+        val authRepo = FakeQuickReplyAuthRepository(initialAccount = null)
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository().apply {
+            prePostHandler = { req ->
+                when {
+                    authRepo.currentAccount.value == null ->
+                        PrePostResult.AuthRequired(net.jejer.hipda.data.auth.AuthRequiredReason.NOT_LOGGED_IN)
+                    req is PrePostRequest.EditPost -> PrePostResult.Success(
+                        defaultSamplePrePostInfo().copy(subject = "编辑原标题E", text = "编辑原正文E"),
+                    )
+                    else -> PrePostResult.Success(defaultSamplePrePostInfo())
+                }
+            }
+        }
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), authRepo, harness.settingsRepo) { 10_000L }
+        val owner = composeOwnerWithVms(harness, postRepo, editorVm, authRepo)
+        val keyboardSpy = SpySoftwareKeyboardController()
+
+        composeRule.setContent {
+            MultiPaneResizableWindowHost(DpSize(411.dp, 891.dp)) {
+                CompositionLocalProvider(
+                    LocalViewModelStoreOwner provides owner,
+                    LocalSoftwareKeyboardController provides keyboardSpy,
+                ) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            emojiPanelSlot = emojiSlot,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        val subjectMatcher = hasSetTextAction() and SemanticsMatcher.expectValue(
+            SemanticsProperties.ContentDescription,
+            listOf("标题"),
+        )
+
+        // 1. 访客态打开 NewThread -> 不弹键盘不聚焦；原地登录后标题自动聚焦并调 show()
+        composeRule.runOnIdle { editorVm.open(FullEditorRequest.NewThread(2)) }
+        composeRule.waitForIdle()
+        assertEquals("访客态打开 NewThread 不得调用 show()", 0, keyboardSpy.showCalls)
+        assertFalse("访客态打开 NewThread 不得聚焦标题", isNodeFocused(subjectMatcher))
+        composeRule.onNodeWithText("登录").assertIsDisplayed()
+
+        composeRule.runOnIdle { authRepo.setSignedIn() }
+        composeRule.waitForIdle()
+        assertTrue("访客态 NewThread 原地登录后标题必须自动聚焦", isNodeFocused(subjectMatcher))
+        assertTrue("访客态 NewThread 原地登录后必须调用 show()", keyboardSpy.showCalls >= 1)
+
+        // 2. 访客态打开 Reply -> 不弹键盘不聚焦；原地登录后正文自动聚焦并调 show()，且保留交接选区
+        composeRule.runOnIdle {
+            editorVm.requestClose(emitSavedSnackbar = false)
+            authRepo.setSignedOut()
+        }
+        composeRule.waitForIdle()
+        keyboardSpy.reset()
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.Reply(FullEditorHandoff("1001", 2, "访客草拟", 2, 4, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+        val replyBodyMatcher = hasSetTextAction() and hasText("访客草拟")
+        assertEquals("访客态打开 Reply 不得调用 show()", 0, keyboardSpy.showCalls)
+        assertFalse("访客态打开 Reply 不得聚焦正文", isNodeFocused(replyBodyMatcher))
+
+        composeRule.runOnIdle { authRepo.setSignedIn() }
+        composeRule.waitForIdle()
+        assertTrue("访客态 Reply 原地登录后正文必须自动聚焦", isNodeFocused(replyBodyMatcher))
+        assertTrue("访客态 Reply 原地登录后必须调用 show()", keyboardSpy.showCalls >= 1)
+        assertEquals("访客态 Reply 原地登录后交接选区应保留", TextRange(2, 4), selectionOf(replyBodyMatcher))
+
+        // 3a. EditPost（已登录打开）：原文加载后聚焦正文且调 show()；重复 auth 状态刷新不得重调 show()
+        composeRule.runOnIdle { editorVm.requestClose(emitSavedSnackbar = false) }
+        composeRule.waitForIdle()
+        keyboardSpy.reset()
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.EditPost(2, "1001", "5001", 1, true, 1, "linus_hi"))
+        }
+        composeRule.waitUntil(timeoutMillis = 3_000L) { editorVm.uiState.value.editOriginal != null }
+        composeRule.waitForIdle()
+
+        val editBodyMatcher = hasSetTextAction() and hasText("编辑原正文E")
+        assertTrue("已登录 EditPost 加载原文后正文必须聚焦", isNodeFocused(editBodyMatcher))
+        assertEquals("已登录 EditPost 加载原文后 show() 应恰好调用 1 次", 1, keyboardSpy.showCalls)
+
+        // 重复触发登录态刷新时 EditPost 已消费且无 becameLoggedIn，不得重抢焦点
+        keyboardSpy.reset()
+        composeRule.runOnIdle { authRepo.setSignedIn() }
+        composeRule.waitForIdle()
+        assertEquals("EditPost 已加载下重复 SignedIn 不得重调 show()", 0, keyboardSpy.showCalls)
+        assertTrue("EditPost 焦点应保持在正文", isNodeFocused(editBodyMatcher))
+
+        // 3b. EditPost（访客态打开后原地登录）：访客态不聚焦不调 show()；原地登录后自动发起加载，且加载完成前不提前触发 show()，加载完成后聚焦正文
+        val delayedEditReload = CompletableDeferred<PrePostResult>()
+        composeRule.runOnIdle {
+            editorVm.requestClose(emitSavedSnackbar = false)
+            authRepo.setSignedOut()
+        }
+        composeRule.waitForIdle()
+        keyboardSpy.reset()
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.EditPost(2, "1001", "5002", 1, true, 1, "linus_hi"))
+        }
+        composeRule.waitForIdle()
+        assertEquals("访客态打开 EditPost 不得调用 show()", 0, keyboardSpy.showCalls)
+        assertEquals("访客态 EditPost 等待原文时不挂载输入框", 0, composeRule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size)
+
+        postRepo.prePostHandler = { delayedEditReload.await() }
+        composeRule.runOnIdle { authRepo.setSignedIn() }
+        composeRule.waitForIdle()
+        assertEquals(
+            "EditPost 访客态原地登录但原文尚未加载完成时不得提前触发 show()",
+            0,
+            keyboardSpy.showCalls,
+        )
+        delayedEditReload.complete(
+            PrePostResult.Success(defaultSamplePrePostInfo().copy(subject = "编辑原标题E2", text = "编辑原正文E2")),
+        )
+        composeRule.waitUntil(timeoutMillis = 3_000L) { editorVm.uiState.value.editOriginal != null }
+        composeRule.waitForIdle()
+        assertTrue("EditPost 原地登录后加载完成应聚焦正文", isNodeFocused(hasSetTextAction() and hasText("编辑原正文E2")))
+        assertEquals("EditPost 原地登录后加载完成应调用 show() 1 次", 1, keyboardSpy.showCalls)
+    }
+
+    /** Probe 5d (复验4): movableContentOf 跨 FullScreen / CenteredModal / RightPane 旋转切换保留输入、选区、表情面板状态且仅挂载 1 个编辑器实例。 */
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-xhdpi")
+    fun probe5d_movableContentOf_rotationBetweenPlacements_preservesInputSelectionEmojiAndSingleInstance() {
+        val harness = MultiPaneTestHarness()
+        val postRepo = FakePostRepository()
+        val editorVm = FullEditorViewModel(postRepo, FakeImageUploadRepository(), harness.authRepo, harness.settingsRepo) { 10_000L }
+        val owner = composeOwnerWithVms(harness, postRepo, editorVm)
+        val keyboardSpy = SpySoftwareKeyboardController()
+        var winSize by mutableStateOf(DpSize(411.dp, 891.dp))
+
+        composeRule.setContent {
+            MultiPaneResizableWindowHost(winSize) {
+                CompositionLocalProvider(
+                    LocalViewModelStoreOwner provides owner,
+                    LocalSoftwareKeyboardController provides keyboardSpy,
+                ) {
+                    ProvideGlassEnvironment(state = GlassEnvironmentState.RefractionAndBlur) {
+                        NextAppRoot(
+                            settingsFlow = harness.settingsRepo.settings,
+                            currentAccountFlow = harness.authRepo.currentAccount,
+                            smsUnreadCountFlow = harness.smsUnread,
+                            notifyUnreadCountFlow = harness.notifyUnread,
+                            hostViewModel = harness.hostViewModel,
+                            forumViewModel = harness.forumViewModel,
+                            fullEditorViewModel = editorVm,
+                            emojiPanelSlot = emojiSlot,
+                        )
+                    }
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle {
+            editorVm.open(FullEditorRequest.Reply(FullEditorHandoff("1001", 2, "", 0, 0, threadAuthor = "linus_hi")))
+        }
+        composeRule.waitForIdle()
+
+        val bodyMatcher = hasSetTextAction() and hasText("移动保活选区")
+        composeRule.onNode(hasSetTextAction()).performTextInput("移动保活选区")
+        composeRule.waitForIdle()
+        composeRule.onNode(bodyMatcher).performSemanticsAction(SemanticsActions.SetSelection) { it(2, 4, false) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("表情").performClick()
+        composeRule.waitForIdle()
+
+        val probe5dFailures = mutableListOf<String>()
+        fun check5d(cond: Boolean, msg: String) {
+            if (!cond) probe5dFailures += msg
+        }
+
+        fun assertIntactAndSingleInstance(stage: String) {
+            val insertBtnCount = composeRule.onAllNodesWithContentDescription("插入图片").fetchSemanticsNodes().size
+            val textFieldCount = composeRule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size
+            val bodyText = editorVm.uiState.value.body.serialize()
+            val bodyNodes = composeRule.onAllNodes(bodyMatcher).fetchSemanticsNodes()
+            val currentSel = if (bodyNodes.size == 1) selectionOf(bodyMatcher) else null
+            val kbIconCount = composeRule.onAllNodesWithContentDescription("键盘").fetchSemanticsNodes().size
+            val defaultTabVisible = composeRule.onAllNodesWithContentDescription("默认表情").fetchSemanticsNodes().isNotEmpty()
+            val backspaceVisible = composeRule.onAllNodesWithContentDescription("删除").fetchSemanticsNodes().isNotEmpty()
+
+            check5d(insertBtnCount == 1, "$stage: 插入图片按钮数=$insertBtnCount (expected 1)")
+            check5d(textFieldCount == 1, "$stage: 输入框数=$textFieldCount (expected 1)")
+            check5d(bodyText == "移动保活选区", "$stage: 输入内容='$bodyText' (expected '移动保活选区')")
+            check5d(bodyNodes.size == 1, "$stage: 正文节点数=${bodyNodes.size}")
+            check5d(currentSel == TextRange(2, 4), "$stage: 选区=$currentSel (expected TextRange(2, 4))")
+            check5d(kbIconCount == 1, "$stage: 键盘切换图标数=$kbIconCount (expected 1)")
+            check5d(defaultTabVisible && backspaceVisible, "$stage: 表情面板丢失(defaultTab=$defaultTabVisible, backspace=$backspaceVisible)")
+        }
+
+        assertIntactAndSingleInstance("FullScreen(411x891)")
+
+        winSize = DpSize(749.dp, 559.dp)
+        composeRule.waitForIdle()
+        assertIntactAndSingleInstance("FullScreen->CenteredModal(749x559)")
+
+        winSize = DpSize(1280.dp, 800.dp)
+        composeRule.waitForIdle()
+        assertIntactAndSingleInstance("CenteredModal->RightPane(1280x800)")
+
+        winSize = DpSize(749.dp, 559.dp)
+        composeRule.waitForIdle()
+        assertIntactAndSingleInstance("RightPane->CenteredModal(749x559)")
+
+        winSize = DpSize(411.dp, 891.dp)
+        composeRule.waitForIdle()
+        assertIntactAndSingleInstance("CenteredModal->FullScreen(411x891)")
+
+        winSize = DpSize(1280.dp, 800.dp)
+        composeRule.waitForIdle()
+        assertIntactAndSingleInstance("FullScreen->RightPane(1280x800)")
+
+        winSize = DpSize(411.dp, 891.dp)
+        composeRule.waitForIdle()
+        assertIntactAndSingleInstance("RightPane->FullScreen(411x891)")
+
+        assertTrue("probe5d 检查失败项:\n" + probe5dFailures.joinToString("\n"), probe5dFailures.isEmpty())
     }
 }
