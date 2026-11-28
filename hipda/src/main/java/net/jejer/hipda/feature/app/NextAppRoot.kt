@@ -107,7 +107,7 @@ import net.jejer.hipda.ui.shell.HiSidebarAccount
 import net.jejer.hipda.ui.shell.HiSidebarState
 import net.jejer.hipda.ui.shell.ShellPaneLayoutMode
 import net.jejer.hipda.ui.shell.ShellSidebarEntry
-import net.jejer.hipda.ui.shell.calculateShellPaneLayout
+import net.jejer.hipda.ui.shell.currentShellPaneLayout
 
 /** M5/M6 新版应用根容器：驱动实时主题、单源设置持久化、宿主级槽位缓存、多栏阅读引擎、分区 Snackbar 与 M6 可选功能插槽。 */
 @Composable
@@ -303,24 +303,19 @@ fun NextAppRoot(
         )
     }
 
-    val initialPaneLayout = remember(windowDpSize, sidebarCollapsedPref, appState.hasDetailContent) {
-        calculateShellPaneLayout(
-            widthDp = windowDpSize.width.value,
-            heightDp = windowDpSize.height.value,
-            leftCollapsedPref = sidebarCollapsedPref,
-            hasDetailContent = appState.hasDetailContent,
-        )
-    }
-    var latestPaneLayout by remember { mutableStateOf(initialPaneLayout) }
+    val currentPaneLayout = currentShellPaneLayout(
+        leftCollapsedPref = sidebarCollapsedPref,
+        hasDetailContent = appState.hasDetailContent,
+    )
     var latestMiddleWidthDp by remember {
         mutableStateOf(
             when {
                 appState.isFullScreenReading -> 0.dp
-                initialPaneLayout.isThreePane -> {
-                    val anchors = resolvePaneSplitAnchors(initialPaneLayout, appState.hasDetailContent)
-                    (anchors[resolveEffectivePaneSplit(persistedSplit, anchors)] ?: initialPaneLayout.middlePaneWidthDp).dp
+                currentPaneLayout.isThreePane -> {
+                    val anchors = resolvePaneSplitAnchors(currentPaneLayout, appState.hasDetailContent)
+                    (anchors[resolveEffectivePaneSplit(persistedSplit, anchors)] ?: currentPaneLayout.middlePaneWidthDp).dp
                 }
-                else -> initialPaneLayout.middlePaneWidthDp.dp
+                else -> currentPaneLayout.middlePaneWidthDp.dp
             },
         )
     }
@@ -333,19 +328,19 @@ fun NextAppRoot(
     val openManageForums: () -> Unit = {
         hostViewModel.openSettingsGroup(
             group = SettingsGroup.ForumAndPost,
-            openDetailInSinglePane = !latestPaneLayout.hasDetailPane,
+            openDetailInSinglePane = !currentPaneLayout.hasDetailPane,
         )
     }
 
     val effectiveMiddleForRef = if (appState.isFullScreenReading) 0.dp else latestMiddleWidthDp
-    val constrainQuickReplySheet = latestPaneLayout.hasDetailPane &&
-        (appState.isFullScreenReading || (latestPaneLayout.isThreePane && latestMiddleWidthDp <= 0.5.dp))
+    val constrainQuickReplySheet = currentPaneLayout.hasDetailPane &&
+        (appState.isFullScreenReading || (currentPaneLayout.isThreePane && latestMiddleWidthDp <= 0.5.dp))
     val quickReplyMaxWidthDp = if (constrainQuickReplySheet) {
-        referenceRightPaneWidthDp(latestPaneLayout, effectiveMiddleForRef, persistedSplit)
+        referenceRightPaneWidthDp(currentPaneLayout, effectiveMiddleForRef, persistedSplit)
     } else {
         Dp.Unspecified
     }
-    val quickReplyAlignment = if (constrainQuickReplySheet && latestPaneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) {
+    val quickReplyAlignment = if (constrainQuickReplySheet && currentPaneLayout.layoutMode == ShellPaneLayoutMode.HingeTwoPane) {
         Alignment.BottomEnd
     } else {
         Alignment.BottomCenter
@@ -354,7 +349,7 @@ fun NextAppRoot(
     val currentQuickReplyAlignment = rememberUpdatedState(quickReplyAlignment)
 
     val editorHost = rememberFullEditorHostController(
-        paneLayout = latestPaneLayout,
+        paneLayout = currentPaneLayout,
         windowHeightDp = windowDpSize.height.value,
         effectiveMiddleWidthDp = effectiveMiddleForRef,
         selectedThreadTid = appState.selectedThread?.tid,
@@ -397,7 +392,6 @@ fun NextAppRoot(
                 ) { destination, contentPadding ->
                     if (destination == appState.selectedDestination) {
                         SideEffect {
-                            latestPaneLayout = paneLayout
                             latestBottomPaddingDp = contentPadding.calculateBottomPadding()
                         }
                     }
@@ -565,8 +559,8 @@ fun NextAppRoot(
                     )
                 }
 
-                val bottomPillVisible = !latestPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || latestPaneLayout.hasDetailPane)
-                val snackbarFullScreen = appState.isFullScreenReading || (isImageViewerOpen && latestPaneLayout.layoutMode != ShellPaneLayoutMode.HingeTwoPane)
+                val bottomPillVisible = !currentPaneLayout.isSidebar && !appState.isFullScreenReading && (!appState.isSinglePaneSecondary || currentPaneLayout.hasDetailPane)
+                val snackbarFullScreen = appState.isFullScreenReading || (isImageViewerOpen && currentPaneLayout.layoutMode != ShellPaneLayoutMode.HingeTwoPane)
                 val detailTopHasBottomBar = when (appState.detailDrilldownStack.lastOrNull()) {
                     is DetailDrilldownEntry.UserProfile -> false
                     is DetailDrilldownEntry.SmsConversation -> true
@@ -580,7 +574,7 @@ fun NextAppRoot(
                 }
                 MultiPaneSnackbarHost(
                     hostState = snackbarHostState,
-                    paneLayout = latestPaneLayout,
+                    paneLayout = currentPaneLayout,
                     effectiveMiddleWidthDp = latestMiddleWidthDp,
                     isFullScreen = snackbarFullScreen,
                     bottomPillVisible = bottomPillVisible,

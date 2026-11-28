@@ -121,6 +121,36 @@ private data class ShellContentScopeImpl(
 }
 
 /**
+ * 按当帧实时窗口尺寸、竖直物理铰链分隔态、侧栏收起偏好与详情占用状态同步计算分栏布局，
+ * 供 [HiAdaptiveShell] 与外层宿主共享同一帧布局决策，消除 `SideEffect` 回写滞后。
+ */
+@Composable
+fun currentShellPaneLayout(
+    leftCollapsedPref: Boolean,
+    hasDetailContent: Boolean,
+): ShellPaneLayout {
+    val windowDpSize = LocalWindowInfo.current.containerDpSize
+    val windowPosture = currentWindowAdaptiveInfoV2().windowPosture
+    val density = LocalDensity.current
+    val verticalSeparatingHinge = windowPosture.hingeList.firstOrNull { it.isVertical && it.isSeparating }
+    val hingeBoundsDp = verticalSeparatingHinge?.bounds?.let { bounds ->
+        with(density) {
+            ShellHingeBoundsDp(
+                left = bounds.left.toDp().value,
+                right = bounds.right.toDp().value,
+            )
+        }
+    }
+    return calculateShellPaneLayout(
+        widthDp = windowDpSize.width.value,
+        heightDp = windowDpSize.height.value,
+        hingeBoundsDp = hingeBoundsDp,
+        leftCollapsedPref = leftCollapsedPref,
+        hasDetailContent = hasDetailContent,
+    )
+}
+
+/**
  * HiPDA Next 自适应主外壳：按实时窗口尺寸与竖直物理铰链分隔状态，在底部悬浮毛玻璃胶囊、
  * 紧凑胶囊、600–839dp 64dp 图标轨（含 240dp 模态浮层）与 ≥ 840dp 可伸缩常驻左侧栏之间切换。
  *
@@ -148,19 +178,9 @@ fun HiAdaptiveShell(
     content: @Composable ShellContentScope.(ShellDestination, PaddingValues) -> Unit,
 ) {
     val windowDpSize = LocalWindowInfo.current.containerDpSize
-    val windowPosture = currentWindowAdaptiveInfoV2().windowPosture
     val density = LocalDensity.current
     val widthDp = windowDpSize.width.value
     val heightDp = windowDpSize.height.value
-    val verticalSeparatingHinge = windowPosture.hingeList.firstOrNull { it.isVertical && it.isSeparating }
-    val hingeBoundsDp = verticalSeparatingHinge?.bounds?.let { bounds ->
-        with(density) {
-            ShellHingeBoundsDp(
-                left = bounds.left.toDp().value,
-                right = bounds.right.toDp().value,
-            )
-        }
-    }
 
     val isLandscape = widthDp >= heightDp
     var internalCollapsedPortrait by rememberSaveable { mutableStateOf(false) }
@@ -172,10 +192,7 @@ fun HiAdaptiveShell(
         internalCollapsedPortrait
     }
 
-    val paneLayout = calculateShellPaneLayout(
-        widthDp = widthDp,
-        heightDp = heightDp,
-        hingeBoundsDp = hingeBoundsDp,
+    val paneLayout = currentShellPaneLayout(
         leftCollapsedPref = effectiveCollapsedPref,
         hasDetailContent = hasDetailContent,
     )

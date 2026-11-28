@@ -70,12 +70,54 @@ fun FullEditorScreen(
     externalConsumedFocusVersion = null,
 )
 
+@Immutable
+private sealed interface EditorFocusTarget {
+    data object Subject : EditorFocusTarget
+    data class Body(val blockId: String) : EditorFocusTarget
+}
+
+@Immutable
+private data class PendingFocusRestore(val version: Long, val target: EditorFocusTarget)
+
+@Stable
+private class EditorFocusTracker(initialPlacement: FullEditorPlacement) {
+    var lastPlacement: FullEditorPlacement = initialPlacement
+    var focusedTarget: EditorFocusTarget? = null
+    var subjectSelection: TextRange? = null
+    var pendingRestore: PendingFocusRestore? = null
+    private var nextVersion: Long = 0L
+
+    fun onFocusChanged(target: EditorFocusTarget, isFocused: Boolean) {
+        if (isFocused) focusedTarget = target
+        else if (focusedTarget == target) focusedTarget = null
+    }
+
+    fun onSubjectFocusChanged(isFocused: Boolean, selection: TextRange) {
+        onFocusChanged(EditorFocusTarget.Subject, isFocused)
+        if (isFocused) subjectSelection = selection
+    }
+
+    fun onPlacement(placement: FullEditorPlacement): PendingFocusRestore? {
+        if (placement != lastPlacement) {
+            lastPlacement = placement
+            val target = focusedTarget ?: pendingRestore?.target
+            if (target != null) pendingRestore = PendingFocusRestore(++nextVersion, target)
+        }
+        return pendingRestore
+    }
+
+    fun consume(version: Long) {
+        if (pendingRestore?.version == version) pendingRestore = null
+    }
+}
+
 @Composable
 internal fun FullEditorScreenContent(
     viewModel: FullEditorViewModel,
     onOpenLogin: () -> Unit,
     modifier: Modifier = Modifier,
     isModalCard: Boolean = false,
+    placement: FullEditorPlacement = if (isModalCard) FullEditorPlacement.CenteredModal else FullEditorPlacement.FullScreen,
     registerBackHandler: Boolean = true,
     onRegisterBackAction: ((() -> Unit)?) -> Unit = {},
     emojiPanelSlot: (@Composable (QuickReplyEmojiPanelHost) -> Unit)? = null,
@@ -84,6 +126,8 @@ internal fun FullEditorScreenContent(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val localConsumedFocusVersion = rememberSaveable(uiState.sessionId) { mutableLongStateOf(0L) }
     val consumedFocusVersionState = externalConsumedFocusVersion ?: localConsumedFocusVersion
+    val focusTracker = remember(uiState.sessionId) { EditorFocusTracker(placement) }
+    val pendingFocusRestore = focusTracker.onPlacement(placement)
     SideEffect {
         if (consumedFocusVersionState.longValue > uiState.focusRequestVersion) {
             consumedFocusVersionState.longValue = uiState.focusRequestVersion
@@ -175,13 +219,15 @@ internal fun FullEditorScreenContent(
                     }
                     val shouldFocusSubject = uiState.isNewThread && uiState.subject.isBlank()
                     val showAutoFocusKeyboard: () -> Unit = { if (!emojiController.isEmojiModeActive) keyboardController?.show() }
+                    val afterMoveFocusRestore: () -> Unit = { if (emojiController.isEmojiModeActive) keyboardController?.hide() }
                     if (uiState.isNewThread) {
-                        NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.focusRequestVersion, consumedFocusVersionState, uiState.isLoggedIn, shouldFocusSubject, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress, showAutoFocusKeyboard)
+                        NewThreadMetaSection(uiState.selectedFid, uiState.availableForums, uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.focusRequestVersion, consumedFocusVersionState, uiState.isLoggedIn, shouldFocusSubject, uiState.validationError, viewModel::selectForum, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress, showAutoFocusKeyboard, focusTracker, pendingFocusRestore, afterMoveFocusRestore)
                     } else if (uiState.isEditPost && uiState.showsEditSubjectField) {
-                        EditPostMetaSection(uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.validationError, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress)
+                        EditPostMetaSection(uiState.typeOptions, uiState.hasSelectableCategories, uiState.selectedTypeId, uiState.subject, uiState.bodySyncVersion, uiState.validationError, viewModel::selectCategory, viewModel::onSubjectChanged, onInputPress, focusTracker, pendingFocusRestore, afterMoveFocusRestore)
                     }
                     ImageUploadStrip(uiState.uploads, uiState.insertedImageIds, uiState.uploadSummaryProgress, viewModel::onInsertUploadedImage, viewModel::retryUpload, viewModel::removeUpload)
-                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, consumedFocusVersionState, uiState.isLoggedIn, shouldFocusSubject, previewUriByImageId, visualBodyPlaceholder, bodyContentDescription, viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress, showAutoFocusKeyboard)
+                    EditorRichBodySection(uiState.body, uiState.bodySyncVersion, uiState.focusRequestVersion, consumedFocusVersionState, uiState.isLoggedIn, shouldFocusSubject, previewUriByImageId, visualBodyPlaceholder, bodyContentDescription, viewModel::onTextBlockChanged, viewModel::onTextBlockSelectionChanged, viewModel::onRemoveInlineImageBlock, viewModel::onBackspace, { activeBodyFocusRequester = it }, onInputPress, showAutoFocusKeyboard, focusTracker, pendingFocusRestore, afterMoveFocusRestore)
+                    LaunchedEffect(pendingFocusRestore?.version) { pendingFocusRestore?.let { focusTracker.consume(it.version) } }
                     if (uiState.validationError == FullEditorValidationError.ContentTooShort) {
                         Text(stringResource(FullEditorValidationError.ContentTooShort.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
                     }
@@ -351,7 +397,7 @@ private fun <K> EditorDropdownField(label: String, selectedLabel: String?, isErr
 }
 
 @Composable
-private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumMetadata>, typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, focusRequestVersion: Long, consumedFocusVersionState: MutableLongState, isLoggedIn: Boolean, shouldFocusSubject: Boolean, validationError: FullEditorValidationError?, onSelectForum: (Int) -> Unit, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}) {
+private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumMetadata>, typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, focusRequestVersion: Long, consumedFocusVersionState: MutableLongState, isLoggedIn: Boolean, shouldFocusSubject: Boolean, validationError: FullEditorValidationError?, onSelectForum: (Int) -> Unit, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}, focusTracker: EditorFocusTracker? = null, pendingFocusRestore: PendingFocusRestore? = null, onAfterFocusRestore: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val forumOptions = remember(availableForums) { availableForums.map { it.fid to it.fullName } }
     val selectedForumName = selectedFid?.takeIf { it > 0 }?.let { ForumMetadataRegistry.resolve(it).fullName }
@@ -366,13 +412,13 @@ private fun NewThreadMetaSection(selectedFid: Int?, availableForums: List<ForumM
         if (validationError == FullEditorValidationError.SelectForum || validationError == FullEditorValidationError.SelectCategory) {
             Text(stringResource(validationError.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error)
         }
-        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress, focusRequestVersion, consumedFocusVersionState, isLoggedIn, shouldFocusSubject, onShowKeyboard)
+        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress, focusRequestVersion, consumedFocusVersionState, isLoggedIn, shouldFocusSubject, onShowKeyboard, focusTracker, pendingFocusRestore, onAfterFocusRestore)
     }
     HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
 }
 
 @Composable
-private fun EditPostMetaSection(typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}) {
+private fun EditPostMetaSection(typeOptions: Map<String, String>, hasSelectableCategories: Boolean, selectedTypeId: String, subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSelectCategory: (String) -> Unit, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, focusTracker: EditorFocusTracker? = null, pendingFocusRestore: PendingFocusRestore? = null, onAfterFocusRestore: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (hasSelectableCategories) {
@@ -382,20 +428,28 @@ private fun EditPostMetaSection(typeOptions: Map<String, String>, hasSelectableC
                 Text(stringResource(validationError.messageRes), style = MaterialTheme.typography.bodySmall, color = cs.error)
             }
         }
-        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress)
+        EditorSubjectField(subject, syncVersion, validationError, onSubjectChanged, onInputPress, focusTracker = focusTracker, pendingFocusRestore = pendingFocusRestore, onAfterFocusRestore = onAfterFocusRestore)
     }
     HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
 }
 
 @Composable
-private fun EditorSubjectField(subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, focusRequestVersion: Long = 0L, consumedFocusVersionState: MutableLongState? = null, isLoggedIn: Boolean = false, shouldFocus: Boolean = false, onShowKeyboard: () -> Unit = {}) {
+private fun EditorSubjectField(subject: String, syncVersion: Long, validationError: FullEditorValidationError?, onSubjectChanged: (String) -> Unit, onInputPress: () -> Unit = {}, focusRequestVersion: Long = 0L, consumedFocusVersionState: MutableLongState? = null, isLoggedIn: Boolean = false, shouldFocus: Boolean = false, onShowKeyboard: () -> Unit = {}, focusTracker: EditorFocusTracker? = null, pendingFocusRestore: PendingFocusRestore? = null, onAfterFocusRestore: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val subjectHint = stringResource(R.string.compose_field_subject_hint)
     val subjectStyle = MaterialTheme.typography.titleMedium.copy(color = cs.onSurface)
-    val subjectFieldState = rememberSyncedTextFieldState(text = subject, syncVersion = syncVersion, onTextChanged = { txt, _ -> onSubjectChanged(txt) })
+    var focused by remember { mutableStateOf(false) }
+    val subjectFieldState = rememberSyncedTextFieldState(
+        text = subject,
+        syncVersion = syncVersion,
+        onTextChanged = { txt, sel -> focusTracker?.subjectSelection = sel; onSubjectChanged(txt) },
+        onSelectionChanged = { sel -> focusTracker?.subjectSelection = sel },
+        isFocused = { focused },
+    )
     val subjectInteraction = remember { MutableInteractionSource() }
     val focusRequester = remember { FocusRequester() }
     val latestOnInputPress by rememberUpdatedState(onInputPress)
+    val latestAfterRestore by rememberUpdatedState(onAfterFocusRestore)
     LaunchedEffect(subjectInteraction) { subjectInteraction.interactions.collect { if (it is PressInteraction.Press) latestOnInputPress() } }
     LaunchedEffect(focusRequestVersion) {
         val consumed = consumedFocusVersionState?.longValue ?: 0L
@@ -405,10 +459,22 @@ private fun EditorSubjectField(subject: String, syncVersion: Long, validationErr
             onShowKeyboard()
         }
     }
+    LaunchedEffect(pendingFocusRestore?.version) {
+        val restore = pendingFocusRestore ?: return@LaunchedEffect
+        if (restore.target == EditorFocusTarget.Subject) {
+            focusTracker?.consume(restore.version)
+            focusTracker?.subjectSelection?.let { saved ->
+                val clamped = TextRange(saved.start.coerceIn(0, subjectFieldState.text.length), saved.end.coerceIn(0, subjectFieldState.text.length))
+                if (subjectFieldState.selection != clamped) subjectFieldState.edit { selection = clamped }
+            }
+            runCatching { focusRequester.requestFocus() }
+            latestAfterRestore()
+        }
+    }
     val titleErr = validationError == FullEditorValidationError.EnterTitle || validationError == FullEditorValidationError.TitleTooShort
     Box(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clip(HiShapeTokens.Small).background(cs.surfaceContainerLow).border(1.dp, if (titleErr) cs.error else cs.outlineVariant, HiShapeTokens.Small).padding(horizontal = 12.dp, vertical = 12.dp), Alignment.CenterStart) {
         BasicTextField(
-            subjectFieldState, Modifier.fillMaxWidth().focusRequester(focusRequester).semantics { contentDescription = subjectHint }, textStyle = subjectStyle, cursorBrush = SolidColor(cs.primary),
+            subjectFieldState, Modifier.fillMaxWidth().focusRequester(focusRequester).onFocusChanged { st -> focused = st.isFocused; focusTracker?.onSubjectFocusChanged(st.isFocused, subjectFieldState.selection) }.semantics { contentDescription = subjectHint }, textStyle = subjectStyle, cursorBrush = SolidColor(cs.primary),
             interactionSource = subjectInteraction, lineLimits = TextFieldLineLimits.MultiLine(1, 2),
             decorator = { inner -> Box(Modifier.fillMaxWidth()) { if (subjectFieldState.text.isEmpty()) Text(subjectHint, style = subjectStyle, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis); inner() } },
         )
@@ -417,11 +483,12 @@ private fun EditorSubjectField(subject: String, syncVersion: Long, validationErr
 }
 
 @Composable
-private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Long, focusRequestVersion: Long, consumedFocusVersionState: MutableLongState, isLoggedIn: Boolean, preferSubjectFocus: Boolean, previewUriByImageId: Map<String, Uri>, visualPlaceholder: String?, bodyContentDescription: String, onTextBlockChanged: (String, String, Int, Int) -> Unit, onTextBlockSelectionChanged: (String, Int, Int) -> Unit, onRemoveInlineImage: (String) -> Unit, onBackspaceAtBlockStart: () -> Unit, onActiveFocusRequester: (FocusRequester) -> Unit = {}, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}) {
+private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Long, focusRequestVersion: Long, consumedFocusVersionState: MutableLongState, isLoggedIn: Boolean, preferSubjectFocus: Boolean, previewUriByImageId: Map<String, Uri>, visualPlaceholder: String?, bodyContentDescription: String, onTextBlockChanged: (String, String, Int, Int) -> Unit, onTextBlockSelectionChanged: (String, Int, Int) -> Unit, onRemoveInlineImage: (String) -> Unit, onBackspaceAtBlockStart: () -> Unit, onActiveFocusRequester: (FocusRequester) -> Unit = {}, onInputPress: () -> Unit = {}, onShowKeyboard: () -> Unit = {}, focusTracker: EditorFocusTracker? = null, pendingFocusRestore: PendingFocusRestore? = null, onAfterFocusRestore: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val bodyStyle = HiTheme.typography.postBody.copy(color = cs.onSurface)
     val latestOnBs by rememberUpdatedState(onBackspaceAtBlockStart)
     val latestOnInputPress by rememberUpdatedState(onInputPress)
+    val latestAfterRestore by rememberUpdatedState(onAfterFocusRestore)
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
         document.blocks.forEachIndexed { index, block ->
             key(block.id) {
@@ -444,10 +511,19 @@ private fun EditorRichBodySection(document: EditorBodyDocument, syncVersion: Lon
                                 onShowKeyboard()
                             }
                         }
+                        LaunchedEffect(pendingFocusRestore?.version) {
+                            val restore = pendingFocusRestore ?: return@LaunchedEffect
+                            if (restore.target == EditorFocusTarget.Body(block.id)) {
+                                focusTracker?.consume(restore.version)
+                                if (fieldState.selection != targetSel) fieldState.edit { selection = targetSel }
+                                runCatching { focusRequester.requestFocus() }
+                                latestAfterRestore()
+                            }
+                        }
                         BasicTextField(
                             fieldState,
                             Modifier.fillMaxWidth().heightIn(min = if (isLast) 140.dp else 32.dp).focusRequester(focusRequester)
-                                .onFocusChanged { st -> focused = st.isFocused; if (st.isFocused) { onActiveFocusRequester(focusRequester); onTextBlockSelectionChanged(block.id, fieldState.selection.start, fieldState.selection.end) } }
+                                .onFocusChanged { st -> focused = st.isFocused; focusTracker?.onFocusChanged(EditorFocusTarget.Body(block.id), st.isFocused); if (st.isFocused) { onActiveFocusRequester(focusRequester); onTextBlockSelectionChanged(block.id, fieldState.selection.start, fieldState.selection.end) } }
                                 .onPreviewKeyEvent { ev -> if (hasPrevImg && ev.type == KeyEventType.KeyDown && ev.key == Key.Backspace && fieldState.selection == TextRange(0)) { latestOnBs(); true } else false }
                                 .semantics { contentDescription = bodyContentDescription },
                             textStyle = bodyStyle, cursorBrush = SolidColor(cs.primary), interactionSource = blockInteraction, lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = if (isLast) 5 else 1),

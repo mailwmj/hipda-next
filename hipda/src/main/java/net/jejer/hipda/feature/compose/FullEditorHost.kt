@@ -248,11 +248,12 @@ fun rememberFullEditorHostController(
     val consumedFocusVersionState = rememberSaveable(uiState?.sessionId ?: 0L) { mutableLongStateOf(0L) }
     val latestConsumedFocusVersionState by rememberUpdatedState(consumedFocusVersionState)
     val movableEditor = remember {
-        movableContentOf { editorVm: FullEditorViewModel, isModal: Boolean ->
+        movableContentOf { editorVm: FullEditorViewModel, currentPlacement: FullEditorPlacement, isModal: Boolean ->
             FullEditorScreenContent(
                 viewModel = editorVm,
                 onOpenLogin = { latestOpenLogin() },
                 isModalCard = isModal,
+                placement = currentPlacement,
                 registerBackHandler = false,
                 onRegisterBackAction = { backAction = it },
                 emojiPanelSlot = latestEmojiSlot,
@@ -270,7 +271,7 @@ fun rememberFullEditorHostController(
             if (vm != null) {
                 // 随投放位置挂载 BackHandler：右栏态在 HiAdaptiveShell 内低于抽屉，全屏/居中态在壳层之上且低于看图与登录浮层
                 key(uiState?.sessionId ?: 0L) { BackHandler(enabled = uiState?.isOpen == true, onBack = invokeBack) }
-                FullEditorPlacementFrame(p, winW, uiState?.isSubmitting == true, invokeBack) { isModal -> movableEditor(vm, isModal) }
+                FullEditorPlacementFrame(p, winW, uiState?.isSubmitting == true, invokeBack) { isModal -> movableEditor(vm, p, isModal) }
             }
         },
     )
